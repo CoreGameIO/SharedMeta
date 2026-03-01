@@ -43,7 +43,7 @@ jobs:
       - name: Assemble UPM package
         run: |
           PKG=com.coregame.sharedmeta
-          mkdir -p build/upm/Runtime/Analyzers build/upm/Editor
+          mkdir -p build/upm/Runtime/Analyzers
           # Package metadata
           cp $PKG/package.json build/upm/
           cp $PKG/package.json.meta build/upm/ || true
@@ -57,14 +57,42 @@ jobs:
           cp src/SharedMeta.Generator/bin/Release/netstandard2.0/SharedMeta.Generator.dll build/upm/Runtime/Analyzers/
           cp $PKG/Runtime/Analyzers/SharedMeta.Generator.dll.meta build/upm/Runtime/Analyzers/
           cp $PKG/Runtime/Analyzers.meta build/upm/Runtime/ || true
-          # Editor scripts + assembly definition
-          cp -r $PKG/Editor/ build/upm/Editor/
+          # Editor scripts + assembly definition (copy contents, not directory itself)
+          cp -r $PKG/Editor build/upm/
           cp $PKG/Editor.meta build/upm/ || true
           # Documentation
           cp $PKG/SharedMeta-UserGuide.md build/upm/ || true
           cp $PKG/SharedMeta-UserGuide.md.meta build/upm/ || true
           cp $PKG/SharedMeta-AI.md build/upm/ || true
           cp $PKG/SharedMeta-AI.md.meta build/upm/ || true
+          # Generate .meta files for root docs (stable GUIDs for immutable package)
+          cat > build/upm/README.md.meta << 'META'
+          fileFormatVersion: 2
+          guid: b1e5a4f2c3d647e8a9f0b1c2d3e4f5a6
+          TextScriptImporter:
+            externalObjects: {}
+            userData:
+            assetBundleName:
+            assetBundleVariant:
+          META
+          cat > build/upm/CHANGELOG.md.meta << 'META'
+          fileFormatVersion: 2
+          guid: c2f6b5a3d4e758f9b0a1c2d3e4f5a6b7
+          TextScriptImporter:
+            externalObjects: {}
+            userData:
+            assetBundleName:
+            assetBundleVariant:
+          META
+          cat > build/upm/LICENSE.meta << 'META'
+          fileFormatVersion: 2
+          guid: d3a7c6b4e5f869a0c1b2d3e4f5a6b7c8
+          DefaultImporter:
+            externalObjects: {}
+            userData:
+            assetBundleName:
+            assetBundleVariant:
+          META
 
       - name: Update package.json version
         run: |
