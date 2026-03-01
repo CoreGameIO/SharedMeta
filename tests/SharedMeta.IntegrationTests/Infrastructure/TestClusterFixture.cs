@@ -38,12 +38,14 @@ public class TestClusterFixture : IAsyncLifetime
         builder.AddSiloBuilderConfigurator<SiloConfigurator>();
 
         Cluster = builder.Build();
-        await Cluster.DeployAsync();
+        using var deployCts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        await Cluster.DeployAsync().WaitAsync(deployCts.Token);
     }
 
     public async Task DisposeAsync()
     {
-        await Cluster.StopAllSilosAsync();
+        using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await Cluster.StopAllSilosAsync().WaitAsync(stopCts.Token);
     }
 
     /// <summary>

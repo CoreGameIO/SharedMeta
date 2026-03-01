@@ -22,7 +22,7 @@ public class CounterServiceTests
         _fixture = fixture;
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task SingleClient_AddValue_UpdatesState()
     {
         // Arrange
@@ -58,7 +58,7 @@ public class CounterServiceTests
         Assert.Empty(client.DetectedIssues);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task SingleClient_Reset_ClearsState()
     {
         // Arrange
@@ -87,7 +87,7 @@ public class CounterServiceTests
         Assert.Empty(client.DetectedIssues);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task TwoClients_SameEntity_SeeBroadcasts()
     {
         // Arrange
@@ -149,7 +149,7 @@ public class CounterServiceTests
         Assert.Empty(client2.DetectedIssues);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task MultipleClients_ConcurrentAdds_StateConsistent()
     {
         // Arrange
@@ -244,7 +244,7 @@ public class CounterServiceTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task Client_JoinsLate_GetsCurrentState()
     {
         // Arrange
@@ -277,7 +277,7 @@ public class CounterServiceTests
         Assert.Empty(client2.DetectedIssues);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task SeparateEntities_IndependentState()
     {
         // Arrange
@@ -311,7 +311,7 @@ public class CounterServiceTests
         Assert.Empty(client.DetectedIssues);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ServerTimeTicks_FlowsToState()
     {
         // Arrange
@@ -347,7 +347,7 @@ public class CounterServiceTests
         Assert.Empty(client.DetectedIssues);
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ServerTimeTicks_ConsistentAcrossBroadcast()
     {
         // Arrange — two clients on the same entity

@@ -29,7 +29,7 @@ public class ServerPatchIntegrationTests
         _output = output;
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ServerPatch_SingleAdd_StateUpdatedViaPatch()
     {
         // Override AddValue to ServerPatch mode
@@ -64,7 +64,7 @@ public class ServerPatchIntegrationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ServerPatch_MultipleAdds_StateAccumulates()
     {
         _fixture.ExecutionModeProvider.SetMode("ICounterService", "Add", ExecutionMode.ServerPatch);
@@ -100,7 +100,7 @@ public class ServerPatchIntegrationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ServerPatch_Reset_ClearsState()
     {
         _fixture.ExecutionModeProvider.SetMode("ICounterService", "Add", ExecutionMode.ServerPatch);
@@ -138,7 +138,7 @@ public class ServerPatchIntegrationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ServerPatch_TwoClients_BroadcastAppliesPatch()
     {
         _fixture.ExecutionModeProvider.SetMode("ICounterService", "Add", ExecutionMode.ServerPatch);
@@ -190,7 +190,7 @@ public class ServerPatchIntegrationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ServerPatch_MixedModes_SomeServerPatchSomeServer()
     {
         // Only Add is ServerPatch; Reset stays as Server mode
@@ -233,7 +233,7 @@ public class ServerPatchIntegrationTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task ServerPatch_LateJoiner_GetsCurrentState()
     {
         _fixture.ExecutionModeProvider.SetMode("ICounterService", "Add", ExecutionMode.ServerPatch);

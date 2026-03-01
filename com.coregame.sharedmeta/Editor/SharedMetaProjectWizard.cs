@@ -492,7 +492,7 @@ namespace SharedMeta.Editor
             EditorGUI.EndDisabledGroup();
         }
 
-        private static Type FindMetaGameClientType()
+        private static Type? FindMetaGameClientType()
         {
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
@@ -506,7 +506,7 @@ namespace SharedMeta.Editor
         private static void CreateMetaGameClientObject(Type clientType)
         {
             // Check if one already exists in the scene
-            var existing = UnityEngine.Object.FindObjectOfType(clientType) as Component;
+            var existing = UnityEngine.Object.FindAnyObjectByType(clientType) as Component;
             if (existing != null)
             {
                 if (!EditorUtility.DisplayDialog("Already Exists",
@@ -3144,50 +3144,54 @@ For full documentation see: https://github.com/CoreGameIO/SharedMeta
             return "0.1.0";
         }
 
-        // ─── EditorPrefs persistence ─────────────────────────────────────
+        // ─── Settings persistence (ProjectSettings/SharedMetaSettings.asset) ───
 
         private void SaveSettings()
         {
-            EditorPrefs.SetString("SharedMeta_Wizard_Version", _sharedMetaVersion);
-            EditorPrefs.SetString("SharedMeta_Wizard_SharedName", _sharedProjectName);
-            EditorPrefs.SetString("SharedMeta_Wizard_StateName", _sharedStateName);
-            EditorPrefs.SetInt("SharedMeta_Wizard_Transport", _transportIndex);
-            EditorPrefs.SetInt("SharedMeta_Wizard_Serializer", _serializerIndex);
-            EditorPrefs.SetInt("SharedMeta_Wizard_ServerPort", _serverPort);
-            EditorPrefs.SetBool("SharedMeta_Wizard_Auth", _enableAuth);
-            EditorPrefs.SetBool("SharedMeta_Wizard_Nullable", _enableNullable);
-            EditorPrefs.SetBool("SharedMeta_Wizard_LocalNuget", _useLocalNuget);
-            EditorPrefs.SetString("SharedMeta_Wizard_LocalNugetPath", _localNugetPath);
-            EditorPrefs.SetString("SharedMeta_Wizard_SharedOutputDir", _sharedOutputDir);
-            EditorPrefs.SetString("SharedMeta_Wizard_SharedDotnetDir", _sharedDotnetDir);
-            EditorPrefs.SetString("SharedMeta_Wizard_ServerName", _serverProjectName);
-            EditorPrefs.SetString("SharedMeta_Wizard_ServerDir", _serverOutputDir);
-            EditorPrefs.SetString("SharedMeta_Wizard_ClientDir", _clientOutputDir);
-            EditorPrefs.SetInt("SharedMeta_Wizard_Template", _templateIndex);
-            EditorPrefs.SetInt("SharedMeta_Wizard_Mode", (int)_wizardMode);
-            EditorPrefs.SetInt("SharedMeta_Wizard_CurrentStep", _currentStep);
+            var s = SharedMetaEditorSettings.instance;
+            s.wizardVersion = _sharedMetaVersion;
+            s.sharedProjectName = _sharedProjectName;
+            s.sharedStateName = _sharedStateName;
+            s.transportIndex = _transportIndex;
+            s.serializerIndex = _serializerIndex;
+            s.serverPort = _serverPort;
+            s.enableAuth = _enableAuth;
+            s.enableNullable = _enableNullable;
+            s.useLocalNuget = _useLocalNuget;
+            s.localNugetPath = _localNugetPath;
+            s.sharedOutputDir = _sharedOutputDir;
+            s.sharedDotnetDir = _sharedDotnetDir;
+            s.serverProjectName = _serverProjectName;
+            s.serverOutputDir = _serverOutputDir;
+            s.clientOutputDir = _clientOutputDir;
+            s.templateIndex = _templateIndex;
+            s.wizardMode = (int)_wizardMode;
+            s.currentStep = _currentStep;
+            s.Save();
         }
 
         private void LoadSettings()
         {
-            _sharedMetaVersion = EditorPrefs.GetString("SharedMeta_Wizard_Version", "");
-            _sharedProjectName = EditorPrefs.GetString("SharedMeta_Wizard_SharedName", "MyGame.Shared");
-            _sharedStateName = EditorPrefs.GetString("SharedMeta_Wizard_StateName", "PlayerProfile");
-            _transportIndex = EditorPrefs.GetInt("SharedMeta_Wizard_Transport", 0);
-            _serializerIndex = EditorPrefs.GetInt("SharedMeta_Wizard_Serializer", 0);
-            _serverPort = EditorPrefs.GetInt("SharedMeta_Wizard_ServerPort", 5000);
-            _enableAuth = EditorPrefs.GetBool("SharedMeta_Wizard_Auth", true);
-            _enableNullable = EditorPrefs.GetBool("SharedMeta_Wizard_Nullable", true);
-            _useLocalNuget = EditorPrefs.GetBool("SharedMeta_Wizard_LocalNuget", false);
-            _localNugetPath = EditorPrefs.GetString("SharedMeta_Wizard_LocalNugetPath", "");
-            _sharedOutputDir = EditorPrefs.GetString("SharedMeta_Wizard_SharedOutputDir", $"Assets/Scripts/{_sharedProjectName}");
-            _sharedDotnetDir = EditorPrefs.GetString("SharedMeta_Wizard_SharedDotnetDir", $"../{_sharedProjectName}");
-            _serverProjectName = EditorPrefs.GetString("SharedMeta_Wizard_ServerName", "MyGame.Server");
-            _serverOutputDir = EditorPrefs.GetString("SharedMeta_Wizard_ServerDir", "../Server");
-            _clientOutputDir = EditorPrefs.GetString("SharedMeta_Wizard_ClientDir", "Assets/Scripts/Meta");
-            _templateIndex = EditorPrefs.GetInt("SharedMeta_Wizard_Template", 0);
-            _wizardMode = (WizardMode)EditorPrefs.GetInt("SharedMeta_Wizard_Mode", 0);
-            _currentStep = EditorPrefs.GetInt("SharedMeta_Wizard_CurrentStep", 0);
+            var s = SharedMetaEditorSettings.instance;
+            s.MigrateFromEditorPrefsIfNeeded();
+            _sharedMetaVersion = s.wizardVersion;
+            _sharedProjectName = s.sharedProjectName;
+            _sharedStateName = s.sharedStateName;
+            _transportIndex = s.transportIndex;
+            _serializerIndex = s.serializerIndex;
+            _serverPort = s.serverPort;
+            _enableAuth = s.enableAuth;
+            _enableNullable = s.enableNullable;
+            _useLocalNuget = s.useLocalNuget;
+            _localNugetPath = s.localNugetPath;
+            _sharedOutputDir = string.IsNullOrEmpty(s.sharedOutputDir) ? $"Assets/Scripts/{_sharedProjectName}" : s.sharedOutputDir;
+            _sharedDotnetDir = string.IsNullOrEmpty(s.sharedDotnetDir) ? $"../{_sharedProjectName}" : s.sharedDotnetDir;
+            _serverProjectName = s.serverProjectName;
+            _serverOutputDir = s.serverOutputDir;
+            _clientOutputDir = s.clientOutputDir;
+            _templateIndex = s.templateIndex;
+            _wizardMode = (WizardMode)s.wizardMode;
+            _currentStep = s.currentStep;
         }
     }
 }

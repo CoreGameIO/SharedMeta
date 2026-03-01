@@ -26,7 +26,7 @@ public class MultiClientScenarioTests
         _output = output;
     }
 
-    [Fact]
+    [Fact(Timeout = 60_000)]
     public async Task FullScenario_PersonalAndSharedState_AllClientsConverge()
     {
         var testId = Guid.NewGuid().ToString("N")[..8];

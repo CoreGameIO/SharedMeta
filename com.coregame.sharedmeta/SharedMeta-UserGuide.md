@@ -45,23 +45,23 @@ Use **SharedMeta > Project Wizard** in Unity to scaffold server/client projects.
 
 ## Step 1: Define Shared State
 
-State classes need dual serialization attributes and must implement `ISharedState`:
+State classes need serialization attributes and must implement `ISharedState`:
 
 ```csharp
-[MemoryPackable]       // For client-server transport
-[GenerateSerializer]   // For Orleans grain persistence
+[MemoryPackable, MessagePackObject]
 public partial class GameState : ISharedState
 {
-    [Id(0)] public int Score { get; set; }
-    [Id(1)] public List<string> Items { get; set; } = new();
-    [Id(2)] public string CurrentPlayerId { get; set; } = "";
+    [Key(0), MemoryPackOrder(0)] public int Score { get; set; }
+    [Key(1), MemoryPackOrder(1)] public List<string> Items { get; set; } = new();
+    [Key(2), MemoryPackOrder(2)] public string CurrentPlayerId { get; set; } = "";
 }
 ```
 
 Rules:
 - Class must be `partial` (required for code generation)
-- Every property needs `[Id(n)]` for Orleans schema evolution
-- All nested types also need `[MemoryPackable]` + `[GenerateSerializer]`
+- Every property needs ordinal attributes: `[Key(n)]` (MessagePack) and/or `[MemoryPackOrder(n)]` (MemoryPack)
+- All nested types also need serialization attributes
+- `[GenerateSerializer]` / `[Id(n)]` (Orleans) are **not needed** on state classes
 
 ---
 
@@ -200,11 +200,39 @@ public interface IGameService : IMetaService { ... }
 
 ---
 
+## Server Runner (Unity Editor)
+
+Launch and manage the server directly from Unity without switching to a terminal.
+
+**Open:** `SharedMeta > Server Runner`
+
+### Setup
+1. Click **"..."** to browse to your server `.csproj` file (e.g., `MyGame.Server/MyGame.Server.csproj`)
+2. If you used the Project Wizard, the path is auto-detected
+
+### Controls
+- **Start** — runs `dotnet run --project <your.csproj>` and streams console output
+- **Stop** — terminates the server process (including Orleans silo)
+- **Clear** — clears the console log
+- **IDE** — opens the server solution in your default IDE (Rider, Visual Studio, VS Code)
+- **Reveal** — opens the server project folder in file explorer
+
+### Features
+- Console output with color-coded errors (red) and warnings (yellow)
+- Search/filter console output
+- Auto-scroll toggle
+- Status indicator: Stopped / Starting / Running / Stopping
+- **Survives domain reload** — the server keeps running when scripts recompile or you enter Play mode
+- **Extra Args** field for additional CLI arguments (e.g., `--configuration Release`)
+- Server is automatically stopped when Unity Editor closes
+
+---
+
 ## Checklist: Adding a New Method
 
 1. Add method to `[MetaService]` interface with `[MetaMethod(Mode = ...)]`
 2. Implement in `[MetaServiceImpl]` class
-3. If using new argument/return types — add `[MemoryPackable]` + `[GenerateSerializer]` + `[Id(n)]`
+3. If using new argument/return types — add `[MemoryPackable, MessagePackObject]` + `[Key(n), MemoryPackOrder(n)]`
 4. Build shared project (generator runs automatically)
 5. On client: use generated `IXServiceApiClient` to call the method
 

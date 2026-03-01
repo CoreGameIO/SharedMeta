@@ -41,6 +41,7 @@ jobs:
         run: dotnet build SharedMeta.slnx -c Release /p:Version=${{ steps.version.outputs.version }} --nologo
 
       - name: Run tests
+        timeout-minutes: 10
         run: dotnet test SharedMeta.slnx -c Release --no-build --nologo
 
       - name: Pack
