@@ -1,0 +1,34 @@
+<Solution>
+  <Folder Name="/examples/" />
+  <Folder Name="/examples/CardGame_TheFool/">
+    <Project Path="examples/CardGame_TheFool/CardGame.Client/CardGame.Client.csproj" />
+    <Project Path="examples/CardGame_TheFool/CardGame.GameSimulation/CardGame.GameSimulation.csproj" />
+    <Project Path="examples/CardGame_TheFool/CardGame.Server/CardGame.Server.csproj" />
+    <Project Path="examples/CardGame_TheFool/CardGame.Shared/CardGame.Shared.csproj" />
+  </Folder>
+  <Folder Name="/examples/Expedition/">
+    <Project Path="examples/Expedition/Expedition.Client/Expedition.Client.csproj" />
+    <Project Path="examples/Expedition/Expedition.Server/Expedition.Server.csproj" />
+    <Project Path="examples/Expedition/Expedition.Shared/Expedition.Shared.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/SharedMeta.Core/SharedMeta.Core.csproj" />
+    <Project Path="src/SharedMeta.Client/SharedMeta.Client.csproj" />
+    <Project Path="src/SharedMeta.Serialization.MemoryPack/SharedMeta.Serialization.MemoryPack.csproj" />
+    <Project Path="src/Orleans.Stubs/Orleans.Stubs.csproj" />
+    <Project Path="src/SharedMeta.Generator/SharedMeta.Generator.csproj" />
+    <Project Path="src/SharedMeta.Auth/SharedMeta.Auth.csproj" />
+    <Project Path="src/SharedMeta.Debug/SharedMeta.Debug.csproj" />
+    <Project Path="src/SharedMeta.Orleans/SharedMeta.Orleans.csproj" />
+    <Project Path="src/SharedMeta.Serialization.MessagePack/SharedMeta.Serialization.MessagePack.csproj" />
+    <Project Path="src/SharedMeta.Server.Core/SharedMeta.Server.Core.csproj" />
+    <Project Path="src/SharedMeta.Server/SharedMeta.Server.csproj" />
+    <Project Path="src/SharedMeta.Transport.HttpPolling/SharedMeta.Transport.HttpPolling.csproj" />
+    <Project Path="src/SharedMeta.Transport.SignalR/SharedMeta.Transport.SignalR.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SharedMeta.IntegrationTests/SharedMeta.IntegrationTests.csproj" />
+    <Project Path="tests/SharedMeta.Test.Meta1/SharedMeta.Test.Meta1.csproj" />
+    <Project Path="tests/SharedMeta.Test.Server/SharedMeta.Test.Server.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <PackageId>CoreGame.SharedMeta.Transport.SignalR</PackageId>
+    <IsPackable>true</IsPackable>
+    <Description>SignalR WebSocket transport: MetaHub (server) and SignalRConnection (client) with MessagePack binary protocol.</Description>
+    <PackageTags>gamedev;multiplayer;deterministic;meta;shared-logic;signalr;websocket;transport</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharedMeta.Core\SharedMeta.Core.csproj" />
+    <ProjectReference Include="..\SharedMeta.Orleans\SharedMeta.Orleans.csproj" />
+    <ProjectReference Include="..\SharedMeta.Serialization.MessagePack\SharedMeta.Serialization.MessagePack.csproj" />
+    <ProjectReference Include="..\SharedMeta.Server.Core\SharedMeta.Server.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Client-side SignalR -->
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />
+    <!-- MessagePack protocol for SignalR (binary, compact, byte[] as raw binary) -->
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" />
+    <!-- Server-side SignalR (for MetaHub) -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+</Project>

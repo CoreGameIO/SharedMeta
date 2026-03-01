@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <LangVersion>latest</LangVersion>
+    <PackageId>CoreGame.SharedMeta.Generator</PackageId>
+    <IsPackable>true</IsPackable>
+    <Description>Roslyn source generator: produces service dispatchers, typed API clients, context injection, DI registration, and MetaProvider routing at compile time.</Description>
+    <PackageTags>gamedev;multiplayer;deterministic;meta;shared-logic;roslyn;source-generator;codegen</PackageTags>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <!-- 4.3.1 for Unity 6 source generator compatibility (ForAttributeWithMetadataName) -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" VersionOverride="4.3.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Pack the analyzer DLL into the correct folder for Roslyn -->
+    <None Include="$(OutputPath)/SharedMeta.Generator.dll" Pack="true" PackagePath="analyzers/dotnet/cs" />
+    <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <!-- Copy built DLL to UPM package for Unity source generator support -->
+  <Target Name="CopyToUpmPackage" AfterTargets="Build">
+    <Copy SourceFiles="$(OutputPath)SharedMeta.Generator.dll"
+          DestinationFolder="$(ProjectDir)../../com.coregame.sharedmeta/Runtime/Analyzers/"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

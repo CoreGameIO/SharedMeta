@@ -1,0 +1,963 @@
+using Microsoft.Extensions.Logging;
+using Orleans;
+using Orleans.Runtime;
+using Orleans.Utilities;
+using SharedMeta.Core;
+using SharedMeta.Core.Packets;
+using SharedMeta.Core.Transport;
+using SharedMeta.Server;
+using SharedMeta.Server.Core.Grains;
+
+namespace SharedMeta.Server.Core.Session
+{
+    /// <summary>
+    /// Session manager grain implementation.
+    /// Manages player sessions, entity subscriptions, and message routing.
+    ///
+    /// Broadcast ordering guarantees:
+    /// - Per-entity ordering via EntitySequenceNumber gap detection
+    /// - RPC broadcast bundling (all broadcasts queued during active RPC)
+    /// - Deferred RPC responses when entity sequence gap is detected
+    /// </summary>
+    public class SessionManagerGrain : Grain, ISessionManager, ISessionManagerReference
+    {
+        private readonly IMetaSerializer _serializer;
+        private readonly ILogger<SessionManagerGrain> _logger;
+        private readonly IEntityGrainResolver _entityGrainResolver;
+
+        // Session state
+        private readonly string _playerId;
+        private Guid _currentSessionId;
+        private readonly List<Guid> _previousSessionIds = [];
+        private long _sequenceNumber;
+
+        // Pending responses for reconnection replay — one SequenceNumber per response
+        private readonly List<SessionResponse> _pendingPackets = [];
+        private const int MaxPendingPackets = 1000;
+
+        // Subscriptions
+        private readonly Dictionary<string, EntitySubscriptionInfo> _subscribedEntities = new();
+
+        // Observer (Hub connection) - managed with expiration-based cleanup (Orleans built-in)
+        private readonly ObserverManager<ISessionObserver> _observerManager;
+        private IDisposable? _observerCleanupTimer;
+        private static readonly TimeSpan ObserverCleanupInterval = TimeSpan.FromSeconds(30);
+
+        // Per-entity ordering state
+        private readonly Dictionary<string, EntityOrderingState> _entityStates = new();
+
+        // Active RPC state: when true, broadcasts are queued instead of sent
+        private bool _inActiveRpc;
+        private readonly List<QueuedBroadcast> _rpcBroadcastQueue = [];
+
+        // Deferred responses: RPC results waiting for entity sequence gaps to fill
+        private readonly List<DeferredResponse> _deferredResponses = [];
+
+        // Saved subscriptions for reconnect after transport disconnect
+        private List<SavedSubscription>? _savedSubscriptions;
+
+        #region Nested Types
+
+        private class EntitySubscriptionInfo
+        {
+            public EntitySubscriptionInfo(string entityId, string stateTypeName, IEntityGrainBase grainRef)
+            {
+                EntityId = entityId;
+                StateTypeName = stateTypeName;
+                GrainRef = grainRef;
+            }
+            public string EntityId { get; set; }
+            public string StateTypeName { get; set; }
+            public IEntityGrainBase GrainRef { get; set; }
+        }
+
+        private class EntityOrderingState
+        {
+            public long KnownEntitySequence { get; set; }
+            public SortedDictionary<long, EntityBroadcast> HeldBroadcasts { get; } = new();
+        }
+
+        private class QueuedBroadcast
+        {
+            public string EntityId { get; set; } = "";
+            public long EntitySequenceNumber { get; set; }
+            public EntityBroadcast Broadcast { get; set; } = new();
+        }
+
+        private class DeferredResponse
+        {
+            public long RequestId { get; set; }
+            public string EntityId { get; set; } = "";
+            public long RequiredEntitySeq { get; set; }
+            public EntityCallResult Result { get; set; } = new();
+            public RpcCall OriginalCall { get; set; } = new();
+        }
+
+        private class SavedSubscription
+        {
+            public string EntityId { get; set; } = "";
+            public string StateTypeName { get; set; } = "";
+            public long LastKnownEntitySequence { get; set; }
+        }
+
+        #endregion
+
+        public SessionManagerGrain(IMetaSerializer serializer, ILogger<SessionManagerGrain> logger, IEntityGrainResolver entityGrainResolver)
+        {
+            _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
+            _observerManager = new ObserverManager<ISessionObserver>(TimeSpan.FromMinutes(2), _logger);
+            _playerId = this.GetPrimaryKeyString();
+        }
+
+        public override Task OnActivateAsync(CancellationToken cancellationToken)
+        {
+            _logger.SessionActivated(_playerId);
+
+            // Set up timer for cleaning up expired observers
+            _observerCleanupTimer = this.RegisterGrainTimer(
+                CleanupExpiredObservers,
+                ObserverCleanupInterval,
+                ObserverCleanupInterval);
+
+            return base.OnActivateAsync(cancellationToken);
+        }
+
+        public override async Task OnDeactivateAsync(DeactivationReason reason, CancellationToken cancellationToken)
+        {
+            _logger.SessionDeactivating(_playerId);
+
+            _observerCleanupTimer?.Dispose();
+
+            // During silo shutdown all grains deactivate concurrently —
+            // entity grains are already gone, no point calling them
+            if (reason.ReasonCode != DeactivationReasonCode.ShuttingDown)
+            {
+                foreach (var sub in _subscribedEntities.Values)
+                {
+                    try
+                    {
+                        await sub.GrainRef.UnsubscribeAsync(_playerId);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.ErrorUnsubscribingOnDeactivate(ex, sub.EntityId);
+                    }
+                }
+            }
+
+            await base.OnDeactivateAsync(reason, cancellationToken);
+        }
+
+        #region Session Management
+
+        public async Task<SessionConnectionResult> ConnectAsync(Guid sessionId, long lastAcknowledgedSequence)
+        {
+            // New session for this player
+            if (_currentSessionId == Guid.Empty)
+            {
+                _currentSessionId = sessionId;
+                _sequenceNumber = 0;
+                _logger.NewSessionStarted(_playerId, sessionId);
+
+                return new SessionConnectionResult
+                {
+                    Success = true,
+                    SessionId = sessionId,
+                    IsNewSession = true,
+                    MissedPackets = new List<SessionResponse>(),
+                    ServerTimeTicks = DateTime.UtcNow.Ticks
+                };
+            }
+
+            // Same session - resume
+            if (sessionId == _currentSessionId)
+            {
+                var missedPackets = _pendingPackets
+                    .Where(p => p.SequenceNumber > lastAcknowledgedSequence)
+                    .ToList();
+
+                // Re-stamp missed packets with current server time for clock sync
+                var now = DateTime.UtcNow.Ticks;
+                foreach (var packet in missedPackets)
+                    packet.ServerTimeTicks = now;
+
+                // Re-subscribe to saved entities from transport disconnect
+                List<ResubscribedEntity>? resubscribedEntities = null;
+                if (_savedSubscriptions is { Count: > 0 })
+                {
+                    resubscribedEntities = await ResubscribeSavedEntitiesAsync();
+                    _savedSubscriptions = null;
+                }
+
+                _logger.SessionResumed(_playerId, missedPackets.Count);
+
+                return new SessionConnectionResult
+                {
+                    Success = true,
+                    SessionId = sessionId,
+                    IsNewSession = false,
+                    MissedPackets = missedPackets,
+                    ServerTimeTicks = now,
+                    ResubscribedEntities = resubscribedEntities
+                };
+            }
+
+            // Old session (superseded)
+            if (_previousSessionIds.Contains(sessionId))
+            {
+                _logger.OldSessionRejected(sessionId, _playerId);
+
+                return new SessionConnectionResult
+                {
+                    Success = false,
+                    Error = "Session superseded by a newer session",
+                    SessionId = _currentSessionId,
+                    ServerTimeTicks = DateTime.UtcNow.Ticks
+                };
+            }
+
+            // New session - supersede current
+            // Notify old observers BEFORE clearing
+            await _observerManager.Notify(o => o.OnSessionTerminated("Session superseded by new connection"));
+            _observerManager.Clear();
+
+            // Unsubscribe from all entities — new client starts with clean slate
+            foreach (var sub in _subscribedEntities.Values)
+            {
+                try { await sub.GrainRef.UnsubscribeAsync(_playerId); }
+                catch { /* best effort */ }
+            }
+            _subscribedEntities.Clear();
+
+            _previousSessionIds.Add(_currentSessionId);
+            _currentSessionId = sessionId;
+            _pendingPackets.Clear();
+            _entityStates.Clear();
+            _deferredResponses.Clear();
+            _sequenceNumber = 0;
+
+            _logger.SessionSuperseded(sessionId, _playerId);
+
+            return new SessionConnectionResult
+            {
+                Success = true,
+                SessionId = sessionId,
+                IsNewSession = true,
+                MissedPackets = new List<SessionResponse>(),
+                ServerTimeTicks = DateTime.UtcNow.Ticks
+            };
+        }
+
+        public Task SetObserverAsync(ISessionObserver observer)
+        {
+            _observerManager.Subscribe(observer, observer);
+            _logger.ObserverSubscribed(_playerId, _observerManager.Count);
+            return Task.CompletedTask;
+        }
+
+        public Task ClearObserverAsync()
+        {
+            _observerManager.Clear();
+            _logger.ObserversCleared(_playerId);
+            return Task.CompletedTask;
+        }
+
+        public async Task GracefulDisconnectAsync()
+        {
+            _observerManager.Clear();
+
+            // Unsubscribe from all entities
+            foreach (var sub in _subscribedEntities.Values)
+            {
+                try
+                {
+                    await sub.GrainRef.UnsubscribeAsync(_playerId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.ErrorUnsubscribingOnDeactivate(ex, sub.EntityId);
+                }
+            }
+
+            // Full cleanup — client explicitly left, cannot resume
+            _subscribedEntities.Clear();
+            _entityStates.Clear();
+            _deferredResponses.Clear();
+            _pendingPackets.Clear();
+            _savedSubscriptions = null;
+            _currentSessionId = Guid.Empty;
+            _sequenceNumber = 0;
+
+            _logger.GracefulDisconnect(_playerId);
+        }
+
+        public async Task OnTransportDisconnectedAsync()
+        {
+            _observerManager.Clear();
+
+            // Save subscriptions for potential reconnect
+            _savedSubscriptions = _subscribedEntities.Values.Select(sub => new SavedSubscription
+            {
+                EntityId = sub.EntityId,
+                StateTypeName = sub.StateTypeName,
+                LastKnownEntitySequence = _entityStates.TryGetValue(sub.EntityId, out var es)
+                    ? es.KnownEntitySequence : 0
+            }).ToList();
+
+            // Unsubscribe from entity grains to stop receiving broadcasts
+            foreach (var sub in _subscribedEntities.Values)
+            {
+                try
+                {
+                    await sub.GrainRef.UnsubscribeAsync(_playerId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.ErrorUnsubscribingOnDeactivate(ex, sub.EntityId);
+                }
+            }
+
+            // Clear active state but keep session + pending packets + saved subscriptions
+            _subscribedEntities.Clear();
+            _entityStates.Clear();
+            _deferredResponses.Clear();
+
+            _logger.TransportDisconnected(_playerId, _savedSubscriptions.Count);
+        }
+
+        #endregion
+
+        #region Entity Subscriptions
+
+        public async Task<EntitySubscriptionResult> SubscribeToEntityAsync(string entityId, string stateTypeName)
+        {
+            if (_subscribedEntities.TryGetValue(entityId, out var existing))
+            {
+                // Already subscribed - return current state
+                var snapshot = await existing.GrainRef.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>());
+
+                // Update entity ordering state
+                _entityStates[entityId] = new EntityOrderingState
+                {
+                    KnownEntitySequence = snapshot.CurrentSequenceNumber
+                };
+
+                return new EntitySubscriptionResult
+                {
+                    Success = true,
+                    StateBytes = snapshot.StateBytes,
+                    EntitySequenceNumber = snapshot.CurrentSequenceNumber,
+                    OptimisticRandomBytes = snapshot.OptimisticRandomBytes
+                };
+            }
+
+            try
+            {
+                // Get entity grain by type
+                var entityGrain = GetEntityGrain(entityId, stateTypeName);
+                if (entityGrain == null)
+                {
+                    return new EntitySubscriptionResult
+                    {
+                        Success = false,
+                        Error = $"Could not resolve entity grain for type {stateTypeName}"
+                    };
+                }
+
+                // Subscribe to entity
+                var snapshot = await entityGrain.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>());
+
+                _subscribedEntities[entityId] = new EntitySubscriptionInfo(
+                    entityId: entityId,
+                    stateTypeName: stateTypeName,
+                    grainRef: entityGrain
+                );
+
+                // Initialize entity ordering state
+                _entityStates[entityId] = new EntityOrderingState
+                {
+                    KnownEntitySequence = snapshot.CurrentSequenceNumber
+                };
+
+                _logger.SubscribedToEntity(_playerId, entityId, snapshot.CurrentSequenceNumber);
+
+                return new EntitySubscriptionResult
+                {
+                    Success = true,
+                    StateBytes = snapshot.StateBytes,
+                    EntitySequenceNumber = snapshot.CurrentSequenceNumber,
+                    OptimisticRandomBytes = snapshot.OptimisticRandomBytes
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorSubscribing(ex, entityId);
+                return new EntitySubscriptionResult
+                {
+                    Success = false,
+                    Error = ex.Message
+                };
+            }
+        }
+
+        public async Task UnsubscribeFromEntityAsync(string entityId)
+        {
+            var playerId = this.GetPrimaryKeyString();
+
+            if (_subscribedEntities.Remove(entityId, out var sub))
+            {
+                try
+                {
+                    await sub.GrainRef.UnsubscribeAsync(playerId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.ErrorUnsubscribing(ex, entityId);
+                }
+
+                // Clean up ordering state
+                _entityStates.Remove(entityId);
+                _deferredResponses.RemoveAll(d => d.EntityId == entityId);
+
+                _logger.UnsubscribedFromEntity(playerId, entityId);
+            }
+        }
+
+        #endregion
+
+        #region RPC Handling
+
+        public async Task<SessionResponse> SendToEntityAsync(string entityId, long requestId, RpcCall call, long lastAcknowledgedSequence, Guid sessionId)
+        {
+            // Reject calls from superseded sessions
+            if (sessionId != _currentSessionId)
+            {
+                _logger.RpcSessionSuperseded(requestId, sessionId, _currentSessionId);
+                return SessionResponse.ForError("Session superseded");
+            }
+
+            if (lastAcknowledgedSequence > 0)
+                CleanupPendingPacketsBySequence(lastAcknowledgedSequence);
+
+            // Idempotency: return cached response for duplicate requests (reconnection)
+            var cached = _pendingPackets.FirstOrDefault(p =>
+                p.Operations.Any(o => o.RequestId == requestId && o.RequestId > 0));
+            if (cached != null)
+            {
+                _logger.CachedResponseReturned(requestId);
+                return cached;
+            }
+
+            if (!_subscribedEntities.TryGetValue(entityId, out var sub) || sub.GrainRef == null)
+                return SessionResponse.ForError($"Not subscribed to entity {entityId}");
+
+            _logger.SendToEntity(_playerId, entityId, requestId, call.ServiceName, call.MethodName);
+
+            _inActiveRpc = true;
+            _rpcBroadcastQueue.Clear();
+            try
+            {
+                var result = await sub.GrainRef.HandleCallAsync(call);
+                _inActiveRpc = false;
+
+                // CrossOptimistic: advance KnownEntitySequence for cross-entity calls.
+                // This causes their broadcasts (queued in _rpcBroadcastQueue) to be
+                // treated as duplicates and silently skipped in BuildPrecedingOperations.
+                if (call.IsCrossOptimistic && result.CrossEntityCalls is { Count: > 0 })
+                {
+                    foreach (var crossCall in result.CrossEntityCalls)
+                    {
+                        var crossState = GetOrCreateEntityState(crossCall.EntityId);
+                        crossState.KnownEntitySequence = Math.Max(
+                            crossState.KnownEntitySequence, crossCall.EntitySequenceNumber);
+                    }
+                }
+
+                var state = GetOrCreateEntityState(entityId);
+                _logger.RpcReturned(_playerId, entityId, result.EntitySequenceNumber, state.KnownEntitySequence, _rpcBroadcastQueue.Count, result.HasError);
+
+                // Collect preceding broadcasts queued during RPC + drain held
+                var allOps = CollectPrecedingOps(state, entityId);
+
+                if (state.KnownEntitySequence >= result.EntitySequenceNumber - 1)
+                    return BuildFastPathResponse(allOps, state, entityId, requestId, result);
+                else
+                    return BuildDeferredResponse(allOps, state, entityId, requestId, result, call);
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorCallingEntity(ex, entityId);
+                return SessionResponse.ForError(ex.Message);
+            }
+            finally
+            {
+                _inActiveRpc = false;
+                _rpcBroadcastQueue.Clear();
+            }
+        }
+
+        /// <summary>
+        /// Collect preceding operations from RPC broadcast queue and drain held broadcasts.
+        /// No sequence numbers assigned yet — just collect SessionOps.
+        /// </summary>
+        private List<SessionOp> CollectPrecedingOps(EntityOrderingState state, string entityId)
+        {
+            var ops = new List<SessionOp>();
+            var precedingOps = BuildPrecedingOperations();
+            if (precedingOps != null)
+                ops.AddRange(precedingOps);
+
+            DrainHeldBroadcasts(state, entityId);
+            return ops;
+        }
+
+        /// <summary>
+        /// Fast path: no entity sequence gap — include RPC result in response.
+        /// Assigns ONE sequence number to the whole SessionResponse.
+        /// </summary>
+        private SessionResponse BuildFastPathResponse(
+            List<SessionOp> allOps, EntityOrderingState state, string entityId,
+            long requestId, EntityCallResult result)
+        {
+            state.KnownEntitySequence = Math.Max(state.KnownEntitySequence, result.EntitySequenceNumber);
+
+            allOps.Add(CallResultToSessionOp(entityId, requestId, result));
+
+            // Drain held broadcasts that may now be in order after advancing knownSeq
+            DrainHeldBroadcasts(state, entityId);
+            MergeOutgoingBatch(allOps);
+
+            var sessionSeq = ++_sequenceNumber;
+            var response = new SessionResponse
+            {
+                SequenceNumber = sessionSeq,
+                Operations = OrderOps(allOps),
+                ServerTimeTicks = DateTime.UtcNow.Ticks
+            };
+
+            // Store for reconnection replay
+            _pendingPackets.Add(response);
+            CleanupPendingPacketsByCount();
+
+            _logger.FastPath(_playerId, sessionSeq, allOps.Count, state.KnownEntitySequence);
+
+            return response;
+        }
+
+        /// <summary>
+        /// Deferred path: entity sequence gap detected — defer RPC result, return only preceding ops.
+        /// If there are preceding ops, assigns ONE sequence number. Otherwise seq=0.
+        /// </summary>
+        private SessionResponse BuildDeferredResponse(
+            List<SessionOp> allOps, EntityOrderingState state, string entityId,
+            long requestId, EntityCallResult result, RpcCall call)
+        {
+            _logger.DeferredPath(_playerId, requestId, result.EntitySequenceNumber, state.KnownEntitySequence, allOps.Count);
+
+            _deferredResponses.Add(new DeferredResponse
+            {
+                RequestId = requestId,
+                EntityId = entityId,
+                RequiredEntitySeq = result.EntitySequenceNumber,
+                Result = result,
+                OriginalCall = call
+            });
+
+            MergeOutgoingBatch(allOps);
+
+            if (allOps.Count > 0)
+            {
+                var sessionSeq = ++_sequenceNumber;
+                var response = new SessionResponse
+                {
+                    SequenceNumber = sessionSeq,
+                    Operations = OrderOps(allOps),
+                    ServerTimeTicks = DateTime.UtcNow.Ticks
+                };
+                _pendingPackets.Add(response);
+                CleanupPendingPacketsByCount();
+                return response;
+            }
+
+            return new SessionResponse { Operations = new List<SessionOp>(), ServerTimeTicks = DateTime.UtcNow.Ticks };
+        }
+
+        /// <summary>
+        /// Merge any buffered operations from DrainHeldBroadcasts/ResolveDeferredResponses into ops list.
+        /// </summary>
+        private void MergeOutgoingBatch(List<SessionOp> ops)
+        {
+            if (_outgoingBatch.Count > 0)
+            {
+                ops.AddRange(_outgoingBatch);
+                _outgoingBatch.Clear();
+            }
+        }
+
+        /// <summary>
+        /// Order operations by entity for deterministic delivery.
+        /// </summary>
+        private static List<SessionOp> OrderOps(List<SessionOp> ops)
+        {
+            if (ops.Count <= 1) return ops;
+            return ops.OrderBy(o => o.EntityId).ToList();
+        }
+
+        #endregion
+
+        #region Broadcast Ordering
+
+        // Batch buffer: collects operations during a single method call, flushed at the end
+        private readonly List<SessionOp> _outgoingBatch = new();
+
+        public async Task ReceiveBroadcastAsync(string entityId, EntityBroadcast broadcast, long entitySequenceNumber)
+        {
+            var state = GetOrCreateEntityState(entityId);
+
+            _logger.BroadcastReceived(_playerId, entityId, entitySequenceNumber, state.KnownEntitySequence, _inActiveRpc, _observerManager.Count, broadcast.ServiceName, broadcast.MethodName);
+
+            if (_inActiveRpc)
+            {
+                // During active RPC: queue for bundling (no session seq yet)
+                _rpcBroadcastQueue.Add(new QueuedBroadcast
+                {
+                    EntityId = entityId,
+                    EntitySequenceNumber = entitySequenceNumber,
+                    Broadcast = broadcast
+                });
+                _logger.BroadcastQueuedForRpc(_playerId, entitySequenceNumber);
+                return;
+            }
+
+            var expectedNext = state.KnownEntitySequence + 1;
+
+            if (entitySequenceNumber == expectedNext)
+            {
+                // In order — buffer for batch delivery
+                state.KnownEntitySequence = entitySequenceNumber;
+                BufferBroadcast(entityId, broadcast);
+
+                // Drain any held broadcasts that are now in order
+                DrainHeldBroadcasts(state, entityId);
+
+                // Check if any deferred RPC responses are now satisfied
+                ResolveDeferredResponses(entityId);
+            }
+            else if (entitySequenceNumber > expectedNext)
+            {
+                // Out of order — hold (no session seq yet)
+                _logger.BroadcastOutOfOrder(entityId, entitySequenceNumber, expectedNext);
+                state.HeldBroadcasts[entitySequenceNumber] = broadcast;
+            }
+            else
+            {
+                _logger.BroadcastDuplicate(_playerId, entitySequenceNumber, expectedNext);
+            }
+
+            // Flush all buffered operations as one batch to the client
+            await FlushOutgoingBatch();
+        }
+
+        /// <summary>
+        /// Buffer a broadcast as a SessionOp for batch delivery. No sequence assigned yet.
+        /// </summary>
+        private void BufferBroadcast(string entityId, EntityBroadcast broadcast)
+        {
+            _logger.BufferBroadcast(_playerId, entityId);
+
+            // Add to outgoing batch
+            _outgoingBatch.Add(BroadcastToSessionOp(entityId, broadcast));
+        }
+
+        /// <summary>
+        /// Flush all buffered operations as a single SessionResponse with ONE sequence number.
+        /// </summary>
+        private async Task FlushOutgoingBatch()
+        {
+            if (_outgoingBatch.Count == 0) return;
+
+            var sessionSeq = ++_sequenceNumber;
+            var response = new SessionResponse
+            {
+                SequenceNumber = sessionSeq,
+                Operations = _outgoingBatch.OrderBy(o => o.EntityId).ToList(),
+                ServerTimeTicks = DateTime.UtcNow.Ticks
+            };
+
+            _logger.FlushBatch(_playerId, sessionSeq, response.Operations.Count);
+
+            // Store for reconnection replay
+            _pendingPackets.Add(response);
+            CleanupPendingPacketsByCount();
+
+            await _observerManager.Notify(o => o.OnBatch(response));
+            _outgoingBatch.Clear();
+        }
+
+        private void DrainHeldBroadcasts(EntityOrderingState state, string entityId)
+        {
+            while (state.HeldBroadcasts.Count > 0)
+            {
+                var first = state.HeldBroadcasts.First();
+                if (first.Key != state.KnownEntitySequence + 1) break;
+
+                state.HeldBroadcasts.Remove(first.Key);
+                state.KnownEntitySequence = first.Key;
+                BufferBroadcast(entityId, first.Value);
+            }
+        }
+
+        /// <summary>
+        /// Build preceding operations from broadcasts queued during an active RPC.
+        /// Applies per-entity ordering: only includes in-order broadcasts, holds out-of-order ones.
+        /// No sequence numbers assigned — just returns SessionOps.
+        /// </summary>
+        private List<SessionOp>? BuildPrecedingOperations()
+        {
+            if (_rpcBroadcastQueue.Count == 0) return null;
+
+            // Group by entity and sort by entity sequence within each group
+            var sorted = _rpcBroadcastQueue
+                .OrderBy(b => b.EntityId)
+                .ThenBy(b => b.EntitySequenceNumber)
+                .ToList();
+
+            var result = new List<SessionOp>();
+            foreach (var b in sorted)
+            {
+                var state = GetOrCreateEntityState(b.EntityId);
+                var expectedNext = state.KnownEntitySequence + 1;
+
+                if (b.EntitySequenceNumber == expectedNext)
+                {
+                    // In order — include in preceding operations
+                    state.KnownEntitySequence = b.EntitySequenceNumber;
+                    result.Add(BroadcastToSessionOp(b.EntityId, b.Broadcast));
+                }
+                else if (b.EntitySequenceNumber > expectedNext)
+                {
+                    // Out of order — hold for later delivery
+                    state.HeldBroadcasts[b.EntitySequenceNumber] = b.Broadcast;
+                }
+                // else: duplicate/old, ignore
+            }
+
+            return result.Count > 0 ? result : null;
+        }
+
+        /// <summary>
+        /// Check if any deferred RPC responses can now be resolved (gap filled).
+        /// Resolved responses are buffered to _outgoingBatch.
+        /// </summary>
+        private void ResolveDeferredResponses(string entityId)
+        {
+            var state = GetOrCreateEntityState(entityId);
+
+            for (int i = _deferredResponses.Count - 1; i >= 0; i--)
+            {
+                var deferred = _deferredResponses[i];
+                if (deferred.EntityId != entityId) continue;
+                if (state.KnownEntitySequence < deferred.RequiredEntitySeq - 1) continue;
+
+                // Gap filled!
+                _deferredResponses.RemoveAt(i);
+                state.KnownEntitySequence = Math.Max(state.KnownEntitySequence, deferred.RequiredEntitySeq);
+
+                var deferredOp = CallResultToSessionOp(entityId, deferred.RequestId, deferred.Result);
+
+                _logger.DeferredResolved(deferred.RequestId);
+
+                // Buffer to outgoing batch (will be flushed with other operations)
+                _outgoingBatch.Add(deferredOp);
+            }
+        }
+
+        /// <summary>
+        /// Convert an EntityBroadcast to a SessionOp (no sequence number).
+        /// </summary>
+        private SessionOp BroadcastToSessionOp(string entityId, EntityBroadcast broadcast)
+        {
+            return new SessionOp
+            {
+                EntityId = entityId,
+                RequestId = 0,
+                MainOperation = new OperationResult
+                {
+                    Call = new RpcCall
+                    {
+                        ServiceName = broadcast.ServiceName,
+                        MethodName = broadcast.MethodName,
+                        Payload = broadcast.Payload ?? Array.Empty<byte>(),
+                        CallerId = broadcast.ExcludePlayerId,
+                        ServerTimeTicks = broadcast.ServerTimeTicks
+                    },
+                    Response = new RpcResponse { ReplayPayload = broadcast.ReplayPayload, RandomScrollDelta = broadcast.RandomScrollDelta, PatchBytes = broadcast.PatchBytes }
+                },
+                TriggerOperations = broadcast.TriggerBroadcasts?.Select(t => new OperationResult
+                {
+                    Call = new RpcCall
+                    {
+                        ServiceName = t.ServiceName,
+                        MethodName = t.MethodName,
+                        Payload = t.Payload ?? Array.Empty<byte>(),
+                        ServerTimeTicks = t.ServerTimeTicks
+                    },
+                    Response = new RpcResponse { ReplayPayload = t.ReplayPayload, RandomScrollDelta = t.RandomScrollDelta, PatchBytes = t.PatchBytes }
+                }).ToList()
+            };
+        }
+
+        /// <summary>
+        /// Convert an EntityCallResult to a SessionOp (no sequence number).
+        /// </summary>
+        private SessionOp CallResultToSessionOp(string entityId, long requestId, EntityCallResult result)
+        {
+            return new SessionOp
+            {
+                EntityId = entityId,
+                RequestId = requestId,
+                MainOperation = result.MainOperation,
+                TriggerOperations = result.TriggerOperations,
+                Error = result.Error,
+                CrossEntityOperations = result.CrossEntityCalls?.Select(c => new CrossEntityOperationInfo
+                {
+                    EntityId = c.EntityId,
+                    ServiceName = c.ServiceName,
+                    MethodName = c.MethodName,
+                    ResultBytes = c.ResultBytes
+                }).ToList()
+            };
+        }
+
+        private EntityOrderingState GetOrCreateEntityState(string entityId)
+        {
+            if (!_entityStates.TryGetValue(entityId, out var state))
+            {
+                state = new EntityOrderingState();
+                _entityStates[entityId] = state;
+            }
+            return state;
+        }
+
+        #endregion
+
+        #region Entity Notifications
+
+        public Task NotifyEntityDeactivatingAsync(string entityId)
+        {
+            if (_subscribedEntities.Remove(entityId))
+            {
+                _entityStates.Remove(entityId);
+                _deferredResponses.RemoveAll(d => d.EntityId == entityId);
+
+                _logger.EntityDeactivated(entityId);
+
+                // Notify observers ([OneWay] — fire-and-forget)
+                _observerManager.Notify(o => o.OnEntityDeactivating(entityId));
+            }
+            return Task.CompletedTask;
+        }
+
+        #endregion
+
+        #region Acknowledgment
+
+        public Task AcknowledgeSequenceAsync(long sequenceNumber)
+        {
+            CleanupPendingPacketsBySequence(sequenceNumber);
+            return Task.CompletedTask;
+        }
+
+        private void CleanupPendingPacketsBySequence(long acknowledgedSequence)
+        {
+            var countBefore = _pendingPackets.Count;
+            _pendingPackets.RemoveAll(p => p.SequenceNumber <= acknowledgedSequence);
+            var removed = countBefore - _pendingPackets.Count;
+
+            if (removed > 0)
+            {
+                _logger.PacketsCleanedBySeq(removed, acknowledgedSequence);
+            }
+        }
+
+        #endregion
+
+        #region Helpers
+
+        public Task<Guid> GetCurrentSessionIdAsync()
+        {
+            return Task.FromResult(_currentSessionId);
+        }
+
+        /// <summary>
+        /// Re-subscribe to entities saved during transport disconnect.
+        /// Returns state for all entities (client always gets a fresh state on reconnect).
+        /// </summary>
+        private async Task<List<ResubscribedEntity>> ResubscribeSavedEntitiesAsync()
+        {
+            var result = new List<ResubscribedEntity>();
+
+            foreach (var saved in _savedSubscriptions!)
+            {
+                try
+                {
+                    var entityGrain = GetEntityGrain(saved.EntityId, saved.StateTypeName);
+                    if (entityGrain == null) continue;
+
+                    var snapshot = await entityGrain.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>());
+
+                    _subscribedEntities[saved.EntityId] = new EntitySubscriptionInfo(
+                        entityId: saved.EntityId,
+                        stateTypeName: saved.StateTypeName,
+                        grainRef: entityGrain);
+
+                    _entityStates[saved.EntityId] = new EntityOrderingState
+                    {
+                        KnownEntitySequence = snapshot.CurrentSequenceNumber
+                    };
+
+                    result.Add(new ResubscribedEntity
+                    {
+                        EntityId = saved.EntityId,
+                        StateBytes = snapshot.StateBytes,
+                        EntitySequenceNumber = snapshot.CurrentSequenceNumber,
+                        OptimisticRandomBytes = snapshot.OptimisticRandomBytes
+                    });
+
+                    _logger.SubscribedToEntity(_playerId, saved.EntityId, snapshot.CurrentSequenceNumber);
+                }
+                catch (Exception ex)
+                {
+                    _logger.ErrorSubscribing(ex, saved.EntityId);
+                }
+            }
+
+            return result;
+        }
+
+        private IEntityGrainBase? GetEntityGrain(string entityId, string stateTypeName)
+        {
+            return _entityGrainResolver.GetEntityGrain(GrainFactory, stateTypeName, entityId);
+        }
+
+        private Task CleanupExpiredObservers()
+        {
+            _observerManager.ClearExpired();
+            return Task.CompletedTask;
+        }
+
+        private void CleanupPendingPacketsByCount()
+        {
+            if (_pendingPackets.Count > MaxPendingPackets)
+            {
+                var toRemove = _pendingPackets.Count - MaxPendingPackets / 2;
+                _pendingPackets.RemoveRange(0, toRemove);
+                _logger.PacketsCleanedByCount(toRemove);
+            }
+        }
+
+        #endregion
+    }
+}

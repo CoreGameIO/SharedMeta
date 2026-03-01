@@ -1,0 +1,21 @@
+bin/
+obj/
+build/
+*.user
+.vs/
+*.DotSettings.user
+*.nupkg
+*.snupkg
+
+# Generator DLL is a build artifact (rebuilt by CI for upm branch)
+Runtime/Analyzers/SharedMeta.Generator.dll
+Runtime/Analyzers/SharedMeta.Generator.pdb
+Runtime/Analyzers/SharedMeta.Generator.deps.json
+
+# OS
+Thumbs.db
+.DS_Store
+nul
+/.claude/
+CLAUDE.md
+/CLAUDE.md.meta

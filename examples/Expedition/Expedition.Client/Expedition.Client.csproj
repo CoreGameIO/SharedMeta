@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Uncomment to use HTTP long-polling instead of SignalR WebSocket -->
+    <!-- <DefineConstants>$(DefineConstants);USE_HTTP_POLLING</DefineConstants> -->
+    <IsPackable>false</IsPackable>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)Generated</CompilerGeneratedFilesOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\SharedMeta.Generator\SharedMeta.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\SharedMeta.Client\SharedMeta.Client.csproj" />
+    <ProjectReference Include="..\..\..\src\SharedMeta.Transport.SignalR\SharedMeta.Transport.SignalR.csproj" />
+    <ProjectReference Include="..\..\..\src\SharedMeta.Transport.HttpPolling\SharedMeta.Transport.HttpPolling.csproj" />
+    <ProjectReference Include="..\..\..\src\SharedMeta.Serialization.MemoryPack\SharedMeta.Serialization.MemoryPack.csproj" />
+    <ProjectReference Include="..\Expedition.Shared\Expedition.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

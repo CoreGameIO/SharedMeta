@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.1;net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)Generated</CompilerGeneratedFilesOutputPath>
+    <PackageId>CoreGame.SharedMeta.Core</PackageId>
+    <IsPackable>true</IsPackable>
+    <Description>Core framework: shared state, service attributes, MetaContext, deterministic random, transport interfaces. Targets netstandard2.1 (Unity) and net10.0 (server).</Description>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <!-- Source files live in the UPM package directory -->
+  <ItemGroup>
+    <Compile Include="../../com.coregame.sharedmeta/Runtime/Core/**/*.cs" Link="%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="../../com.coregame.sharedmeta/Runtime/Polyfills.cs" Link="Polyfills.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <!-- Include documentation as contentFiles — auto-placed in consuming projects -->
+  <ItemGroup>
+    <Content Include="$(MSBuildThisFileDirectory)../../com.coregame.sharedmeta/SharedMeta-UserGuide.md" Pack="true" PackagePath="contentFiles/any/any/SharedMeta/" BuildAction="None" CopyToOutputDirectory="Never" />
+    <Content Include="$(MSBuildThisFileDirectory)../../com.coregame.sharedmeta/SharedMeta-AI.md" Pack="true" PackagePath="contentFiles/any/any/SharedMeta/" BuildAction="None" CopyToOutputDirectory="Never" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MemoryPack" />
+  </ItemGroup>
+
+  <!-- Orleans + MessagePack: real packages for .NET, stubs for Unity/netstandard -->
+  <ItemGroup Condition="'$(TargetFramework)' != 'netstandard2.1'">
+    <PackageReference Include="Microsoft.Orleans.Serialization.Abstractions" />
+    <PackageReference Include="Microsoft.Orleans.Sdk" />
+    <PackageReference Include="MessagePack" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+    <ProjectReference Include="..\Orleans.Stubs\Orleans.Stubs.csproj" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Bundle Orleans.Stubs into Core's netstandard2.1 NuGet output -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);IncludeOrleansStubs</TargetsForTfmSpecificBuildOutput>
+  </PropertyGroup>
+  <Target Name="IncludeOrleansStubs">
+    <ItemGroup>
+      <BuildOutputInPackage Include="$(OutputPath)Orleans.Stubs.dll" TargetFramework="netstandard2.1" />
+    </ItemGroup>
+  </Target>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharedMeta.Generator\SharedMeta.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)Generated</CompilerGeneratedFilesOutputPath>
+    <!-- MemoryPack enabled by default for FileGrainStorage serialization.
+         Set DisableMemoryPack=true to use a different serializer (e.g. MessagePack). -->
+    <DefineConstants Condition="'$(DisableMemoryPack)' != 'true'">$(DefineConstants);USE_MEMORYPACK</DefineConstants>
+    <PackageId>CoreGame.SharedMeta.Server.Core</PackageId>
+    <IsPackable>true</IsPackable>
+    <Description>Server core: EntityGrain, MetaProviderBase, SessionManagerGrain, FileGrainStorage, persistence policies.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharedMeta.Core\SharedMeta.Core.csproj" />
+    <ProjectReference Include="..\SharedMeta.Server\SharedMeta.Server.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+    <PackageReference Include="Microsoft.Orleans.Core.Abstractions" />
+    <PackageReference Include="Microsoft.Orleans.Runtime" />
+    <PackageReference Include="Microsoft.Orleans.Sdk" />
+    <PackageReference Include="MessagePack" />
+  </ItemGroup>
+
+  <!-- MemoryPack for FileGrainStorage serialization (opt-out: set DisableMemoryPack=true) -->
+  <ItemGroup Condition="'$(DisableMemoryPack)' != 'true'">
+    <PackageReference Include="MemoryPack" />
+  </ItemGroup>
+
+</Project>

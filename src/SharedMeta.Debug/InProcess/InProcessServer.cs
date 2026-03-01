@@ -1,0 +1,206 @@
+using SharedMeta.Core.Transport;
+using SharedMeta.Server.Core.Transport;
+
+namespace SharedMeta.Debug.InProcess
+{
+    /// <summary>
+    /// In-process server for testing without network transport.
+    /// Manages connections and routes messages to IMetaConnectionHandler.
+    /// </summary>
+    public class InProcessServer
+    {
+        private readonly IMetaConnectionHandlerFactory _handlerFactory;
+        private readonly Dictionary<string, InProcessConnectionState> _connections = new();
+        private readonly object _lock = new();
+
+        /// <summary>
+        /// Settings for failure simulation.
+        /// </summary>
+        public FailureSimulationSettings FailureSettings { get; } = new();
+
+        public InProcessServer(IMetaConnectionHandlerFactory handlerFactory)
+        {
+            _handlerFactory = handlerFactory ?? throw new ArgumentNullException(nameof(handlerFactory));
+        }
+
+        /// <summary>
+        /// Create a new client connection to this server.
+        /// </summary>
+        public InProcessConnection CreateConnection()
+        {
+            var connectionId = Guid.NewGuid().ToString("N")[..8];
+            var connection = new InProcessConnection(this, connectionId);
+            return connection;
+        }
+
+        /// <summary>
+        /// Internal: Called when client connects.
+        /// </summary>
+        internal void OnClientConnected(InProcessConnection connection, InProcessBroadcastSender broadcastSender)
+        {
+            lock (_lock)
+            {
+                var handler = _handlerFactory.Create(connection.ConnectionId, broadcastSender);
+                _connections[connection.ConnectionId] = new InProcessConnectionState
+                {
+                    Connection = connection,
+                    Handler = handler,
+                    BroadcastSender = broadcastSender
+                };
+            }
+        }
+
+        /// <summary>
+        /// Internal: Called when client disconnects.
+        /// </summary>
+        internal async Task OnClientDisconnectedAsync(string connectionId)
+        {
+            InProcessConnectionState? state;
+            lock (_lock)
+            {
+                if (!_connections.TryGetValue(connectionId, out state))
+                    return;
+                _connections.Remove(connectionId);
+            }
+
+            await state.Handler.OnDisconnectedAsync();
+            state.Handler.Dispose();
+        }
+
+        /// <summary>
+        /// Internal: Handle session connect request.
+        /// </summary>
+        internal Task<SessionConnectResponse> SessionConnectAsync(string connectionId, SessionConnectRequest request)
+        {
+            var handler = GetHandler(connectionId);
+            return handler.SessionConnectAsync(request);
+        }
+
+        /// <summary>
+        /// Internal: Handle subscribe request.
+        /// </summary>
+        internal Task<SubscribeResponse> SubscribeAsync(string connectionId, SubscribeRequest request)
+        {
+            var handler = GetHandler(connectionId);
+            return handler.SubscribeAsync(request);
+        }
+
+        /// <summary>
+        /// Internal: Handle unsubscribe request.
+        /// </summary>
+        internal Task<UnsubscribeResponse> UnsubscribeAsync(string connectionId, UnsubscribeRequest request)
+        {
+            var handler = GetHandler(connectionId);
+            return handler.UnsubscribeAsync(request);
+        }
+
+        /// <summary>
+        /// Internal: Handle RPC call request.
+        /// Returns SessionResponse with result and session-level sequence number.
+        /// </summary>
+        internal Task<SessionResponse> RpcCallAsync(string connectionId, RpcCallRequest request)
+        {
+            var handler = GetHandler(connectionId);
+            return handler.RpcCallAsync(request);
+        }
+
+        /// <summary>
+        /// Internal: Handle graceful disconnect request.
+        /// </summary>
+        internal async Task GracefulDisconnectAsync(string connectionId)
+        {
+            var handler = GetHandler(connectionId);
+            await handler.GracefulDisconnectAsync();
+        }
+
+        /// <summary>
+        /// Internal: Handle acknowledge sequence request.
+        /// </summary>
+        internal Task<AcknowledgeResponse> AcknowledgeSequenceAsync(string connectionId, AcknowledgeRequest request)
+        {
+            var handler = GetHandler(connectionId);
+            return handler.AcknowledgeSequenceAsync(request);
+        }
+
+        private IMetaConnectionHandler GetHandler(string connectionId)
+        {
+            lock (_lock)
+            {
+                if (!_connections.TryGetValue(connectionId, out var state))
+                    throw new InvalidOperationException($"Connection {connectionId} not found");
+                return state.Handler;
+            }
+        }
+
+        /// <summary>
+        /// Force disconnect a specific client (for testing).
+        /// </summary>
+        public async Task ForceDisconnectAsync(string connectionId)
+        {
+            InProcessConnectionState? state;
+            lock (_lock)
+            {
+                if (!_connections.TryGetValue(connectionId, out state))
+                    return;
+            }
+
+            state.Connection.SimulateDisconnect();
+            await OnClientDisconnectedAsync(connectionId);
+        }
+
+        /// <summary>
+        /// Get all active connection IDs.
+        /// </summary>
+        public IReadOnlyList<string> GetActiveConnections()
+        {
+            lock (_lock)
+            {
+                return _connections.Keys.ToList();
+            }
+        }
+
+        private class InProcessConnectionState
+        {
+            public required InProcessConnection Connection { get; init; }
+            public required IMetaConnectionHandler Handler { get; init; }
+            public required InProcessBroadcastSender BroadcastSender { get; init; }
+        }
+    }
+
+    /// <summary>
+    /// Settings for simulating network failures.
+    /// </summary>
+    public class FailureSimulationSettings
+    {
+        /// <summary>
+        /// Probability (0-1) that a broadcast will be "lost".
+        /// </summary>
+        public double BroadcastLossProbability { get; set; }
+
+        /// <summary>
+        /// Probability (0-1) that the connection will be "dropped" on each operation.
+        /// </summary>
+        public double DisconnectProbability { get; set; }
+
+        /// <summary>
+        /// Random generator for failure simulation.
+        /// </summary>
+        public Random Random { get; set; } = new();
+
+        /// <summary>
+        /// Check if a broadcast should be dropped.
+        /// </summary>
+        public bool ShouldDropBroadcast()
+        {
+            return BroadcastLossProbability > 0 && Random.NextDouble() < BroadcastLossProbability;
+        }
+
+        /// <summary>
+        /// Check if the connection should be dropped.
+        /// </summary>
+        public bool ShouldDisconnect()
+        {
+            return DisconnectProbability > 0 && Random.NextDouble() < DisconnectProbability;
+        }
+    }
+}

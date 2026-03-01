@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <!-- Enable server-side code generation -->
+    <DefineConstants>SHAREDMETA_SERVER</DefineConstants>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)Generated</CompilerGeneratedFilesOutputPath>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Include source files from Test.Meta1 for code generation -->
+    <Compile Include="..\SharedMeta.Test.Meta1\*.cs" Link="Meta1\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Core dependencies -->
+    <ProjectReference Include="..\..\src\SharedMeta.Core\SharedMeta.Core.csproj" />
+    <ProjectReference Include="..\..\src\SharedMeta.Client\SharedMeta.Client.csproj" />
+    <!-- Server-side infrastructure -->
+    <ProjectReference Include="..\..\src\SharedMeta.Server.Core\SharedMeta.Server.Core.csproj" />
+    <ProjectReference Include="..\..\src\SharedMeta.Serialization.MemoryPack\SharedMeta.Serialization.MemoryPack.csproj" />
+    <!-- Generator for server-side code -->
+    <ProjectReference Include="..\..\src\SharedMeta.Generator\SharedMeta.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MemoryPack" />
+  </ItemGroup>
+
+</Project>

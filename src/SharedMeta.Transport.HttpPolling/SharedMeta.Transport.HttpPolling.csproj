@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <PackageId>CoreGame.SharedMeta.Transport.HttpPolling</PackageId>
+    <IsPackable>true</IsPackable>
+    <Description>HTTP long-polling transport: server endpoints and HttpPollingConnection client for universal compatibility.</Description>
+    <PackageTags>gamedev;multiplayer;deterministic;meta;shared-logic;http;polling;transport</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharedMeta.Core\SharedMeta.Core.csproj" />
+    <ProjectReference Include="..\SharedMeta.Orleans\SharedMeta.Orleans.csproj" />
+    <ProjectReference Include="..\SharedMeta.Server.Core\SharedMeta.Server.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Server-side ASP.NET Minimal API + Client-side HttpClient -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+</Project>

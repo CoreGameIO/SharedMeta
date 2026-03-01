@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.1;net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <PackageId>CoreGame.SharedMeta.Serialization.MemoryPack</PackageId>
+    <IsPackable>true</IsPackable>
+    <Description>MemoryPack-based IMetaSerializer implementation for RPC payload serialization. Targets netstandard2.1 (Unity) and net10.0.</Description>
+    <PackageTags>gamedev;multiplayer;deterministic;meta;shared-logic;serialization;memorypack</PackageTags>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <!-- Source files live in the UPM package directory -->
+  <ItemGroup>
+    <Compile Include="../../com.coregame.sharedmeta/Runtime/Serialization/MemoryPack/**/*.cs" Link="%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MemoryPack" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharedMeta.Core\SharedMeta.Core.csproj" />
+  </ItemGroup>
+
+</Project>

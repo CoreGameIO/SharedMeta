@@ -1,0 +1,102 @@
+name: Publish UPM Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version (e.g. 0.1.0)'
+        required: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="0.0.0-dev"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Build Generator DLL
+        run: dotnet build src/SharedMeta.Generator/SharedMeta.Generator.csproj -c Release --nologo -v q
+
+      - name: Assemble UPM package
+        run: |
+          PKG=com.coregame.sharedmeta
+          mkdir -p build/upm/Runtime/Analyzers build/upm/Editor
+          # Package metadata
+          cp $PKG/package.json build/upm/
+          cp $PKG/package.json.meta build/upm/ || true
+          cp README.md build/upm/
+          cp LICENSE build/upm/ || true
+          cp CHANGELOG.md build/upm/ || true
+          # Runtime sources (without build artifacts)
+          rsync -a --exclude='obj/' --exclude='bin/' $PKG/Runtime/ build/upm/Runtime/
+          cp $PKG/Runtime.meta build/upm/ || true
+          # Generator DLL (built in previous step) + .meta
+          cp src/SharedMeta.Generator/bin/Release/netstandard2.0/SharedMeta.Generator.dll build/upm/Runtime/Analyzers/
+          cp $PKG/Runtime/Analyzers/SharedMeta.Generator.dll.meta build/upm/Runtime/Analyzers/
+          cp $PKG/Runtime/Analyzers.meta build/upm/Runtime/ || true
+          # Editor scripts + assembly definition
+          cp -r $PKG/Editor/ build/upm/Editor/
+          cp $PKG/Editor.meta build/upm/ || true
+          # Documentation
+          cp $PKG/SharedMeta-UserGuide.md build/upm/ || true
+          cp $PKG/SharedMeta-UserGuide.md.meta build/upm/ || true
+          cp $PKG/SharedMeta-AI.md build/upm/ || true
+          cp $PKG/SharedMeta-AI.md.meta build/upm/ || true
+
+      - name: Update package.json version
+        run: |
+          cd build/upm
+          jq --arg v "${{ steps.version.outputs.version }}" '.version = $v' package.json > tmp.json
+          mv tmp.json package.json
+          echo "Package version set to: ${{ steps.version.outputs.version }}"
+          cat package.json
+
+      - name: Push to upm branch
+        run: |
+          cd build/upm
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b upm
+          git add .
+          git commit -m "UPM package v${{ steps.version.outputs.version }}"
+          git tag "v${{ steps.version.outputs.version }}" || true
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git push -f origin upm
+          git push origin "v${{ steps.version.outputs.version }}" || true
+
+      - name: Create tarball for GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          cd build/upm
+          tar -czf "../com.coregame.sharedmeta-${{ steps.version.outputs.version }}.tgz" .
+          echo "Tarball created: com.coregame.sharedmeta-${{ steps.version.outputs.version }}.tgz"
+
+      - name: Upload Release Asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/com.coregame.sharedmeta-${{ steps.version.outputs.version }}.tgz

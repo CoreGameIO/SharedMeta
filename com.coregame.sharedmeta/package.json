@@ -1,0 +1,23 @@
+{
+  "name": "com.coregame.sharedmeta",
+  "version": "0.1.0",
+  "displayName": "SharedMeta",
+  "description": "Framework for shared game meta-logic between Client and Server with deterministic replay.",
+  "unity": "6000.0",
+  "unityRelease": "0f1",
+  "documentationUrl": "https://github.com/CoreGame-IO/SharedMeta",
+  "changelogUrl": "https://github.com/CoreGame-IO/SharedMeta/blob/main/CHANGELOG.md",
+  "licensesUrl": "https://github.com/CoreGame-IO/SharedMeta/blob/main/LICENSE",
+  "dependencies": {},
+  "keywords": [
+    "networking",
+    "multiplayer",
+    "deterministic",
+    "meta",
+    "shared-logic"
+  ],
+  "author": {
+    "name": "CoreGame.IO",
+    "url": "https://coregame.io"
+  }
+}

@@ -1,0 +1,44 @@
+using System.Collections.Generic;
+using Orleans;
+
+namespace SharedMeta.Server.Core.Grains
+{
+    /// <summary>
+    /// A broadcast to be sent to subscribers.
+    /// Contains both the original arguments (Payload) and the server-side replay context (ReplayPayload).
+    /// </summary>
+    [GenerateSerializer]
+    public class EntityBroadcast
+    {
+        [Id(0)] public string ServiceName { get; set; } = "";
+        [Id(1)] public string MethodName { get; set; } = "";
+        /// <summary>Original serialized arguments.</summary>
+        [Id(2)] public byte[] Payload { get; set; } = Array.Empty<byte>();
+        [Id(3)] public string? ExcludePlayerId { get; set; }
+        /// <summary>Server-side replay context for deterministic client execution.</summary>
+        [Id(4)] public byte[]? ReplayPayload { get; set; }
+
+        /// <summary>
+        /// Triggered operations executed after the main method.
+        /// Nested inside the main broadcast to preserve atomicity with the parent operation.
+        /// </summary>
+        [Id(5)] public List<EntityBroadcast>? TriggerBroadcasts { get; set; }
+
+        /// <summary>
+        /// Server time (UTC ticks) from the original RpcCall for deterministic replay.
+        /// </summary>
+        [Id(6)] public long ServerTimeTicks { get; set; }
+
+        /// <summary>
+        /// Delta of optimistic random ScrollId during this call.
+        /// Used by client for desync detection after broadcast replay.
+        /// </summary>
+        [Id(7)] public long RandomScrollDelta { get; set; }
+
+        /// <summary>
+        /// Serialized state diff patch for ServerPatch mode.
+        /// When present, subscribers apply this instead of replaying.
+        /// </summary>
+        [Id(8)] public byte[]? PatchBytes { get; set; }
+    }
+}

@@ -1,0 +1,4 @@
+using SharedMeta.Core;
+
+// Explicit serializer type for code generation
+[assembly: MetaSerializer(SerializerType.MemoryPack)]
