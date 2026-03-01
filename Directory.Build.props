@@ -3,8 +3,8 @@
     <Authors>CoreGame.IO</Authors>
     <Company>CoreGame.IO</Company>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/CoreGame-IO/SharedMeta</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/CoreGame-IO/SharedMeta</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/CoreGameIO/SharedMeta</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/CoreGameIO/SharedMeta</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <Description>SharedMeta — framework for shared game meta-logic between Client and Server with deterministic replay.</Description>
     <PackageTags>gamedev;multiplayer;deterministic;meta;shared-logic;orleans</PackageTags>

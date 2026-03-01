@@ -5,9 +5,9 @@
   "description": "Framework for shared game meta-logic between Client and Server with deterministic replay.",
   "unity": "6000.0",
   "unityRelease": "0f1",
-  "documentationUrl": "https://github.com/CoreGame-IO/SharedMeta",
-  "changelogUrl": "https://github.com/CoreGame-IO/SharedMeta/blob/main/CHANGELOG.md",
-  "licensesUrl": "https://github.com/CoreGame-IO/SharedMeta/blob/main/LICENSE",
+  "documentationUrl": "https://github.com/CoreGameIO/SharedMeta",
+  "changelogUrl": "https://github.com/CoreGameIO/SharedMeta/blob/main/CHANGELOG.md",
+  "licensesUrl": "https://github.com/CoreGameIO/SharedMeta/blob/main/LICENSE",
   "dependencies": {},
   "keywords": [
     "networking",

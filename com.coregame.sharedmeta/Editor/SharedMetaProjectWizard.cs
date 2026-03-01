@@ -2783,7 +2783,7 @@ Unity: Call `ProcessPendingBroadcasts()` from `MonoBehaviour.Update()`.
 9. `DateTime.Now` instead of `Context.ServerTimeTicks` — clock difference
 10. Dictionary iteration in deterministic logic — order not guaranteed
 
-For full documentation see: https://github.com/CoreGame-IO/SharedMeta
+For full documentation see: https://github.com/CoreGameIO/SharedMeta
 ";
         }
 
