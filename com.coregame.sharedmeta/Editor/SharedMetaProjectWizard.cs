@@ -67,7 +67,7 @@ namespace SharedMeta.Editor
         private bool _clientFoldout = true;
         private bool _sceneFoldout = true;
 
-        private int _templateIndex; // 0 = Simple Profile, 1 = Reversi, 2 = Expedition
+        private int _templateIndex; // 0 = Simple Profile, 1 = Othello, 2 = Expedition
 
         // Wizard mode
         private enum WizardMode { Interactive, Classic }
@@ -78,7 +78,7 @@ namespace SharedMeta.Editor
         private static readonly string[] SerializerOptions = { "MemoryPack", "MessagePack" };
         private static readonly string[] TemplateOptions = {
             "Simple Profile",
-            "Reversi (2-player with matchmaking)",
+            "Othello (2-player with matchmaking)",
             "Expedition (single-player with energy)"
         };
         private static readonly string[] StepLabels = {
@@ -184,7 +184,10 @@ namespace SharedMeta.Editor
 
             EditorGUI.BeginDisabledGroup(_currentStep == 0);
             if (GUILayout.Button("< Back", GUILayout.Height(28), GUILayout.Width(80)))
+            {
                 _currentStep--;
+                GUIUtility.keyboardControl = 0; // clear focus to prevent value leak
+            }
             EditorGUI.EndDisabledGroup();
 
             GUILayout.FlexibleSpace();
@@ -192,9 +195,15 @@ namespace SharedMeta.Editor
             if (_currentStep < StepLabels.Length - 1)
             {
                 if (GUILayout.Button("Skip >", GUILayout.Height(28), GUILayout.Width(80)))
+                {
                     _currentStep++;
+                    GUIUtility.keyboardControl = 0;
+                }
                 if (GUILayout.Button("Next >", GUILayout.Height(28), GUILayout.Width(80)))
+                {
                     _currentStep++;
+                    GUIUtility.keyboardControl = 0;
+                }
             }
 
             EditorGUILayout.EndHorizontal();
@@ -573,7 +582,7 @@ namespace SharedMeta.Editor
             switch (_templateIndex)
             {
                 case 0: GenerateSimpleProfileFiles(unityDir, ns, stateName); break;
-                case 1: GenerateReversiFiles(unityDir, ns); break;
+                case 1: GenerateOthelloFiles(unityDir, ns); break;
                 case 2: GenerateExpeditionFiles(unityDir, ns); break;
             }
 
@@ -713,19 +722,19 @@ namespace SharedMeta.Editor
             return sb.ToString();
         }
 
-        // ─── Template: Reversi ──────────────────────────────────────────
+        // ─── Template: Othello ──────────────────────────────────────────
 
-        private void GenerateReversiFiles(string dir, string ns)
+        private void GenerateOthelloFiles(string dir, string ns)
         {
-            WriteFile(Path.Combine(dir, "State"), "ProfileState.cs", GenReversiProfileState(ns));
-            WriteFile(Path.Combine(dir, "Services"), "IProfileService.cs", GenReversiProfileInterface(ns));
-            WriteFile(Path.Combine(dir, "Impl"), "ProfileService.cs", GenReversiProfileImpl(ns));
-            WriteFile(Path.Combine(dir, "State"), "ReversiState.cs", GenReversiGameState(ns));
-            WriteFile(Path.Combine(dir, "Services"), "IReversiService.cs", GenReversiGameInterface(ns));
-            WriteFile(Path.Combine(dir, "Impl"), "ReversiService.cs", GenReversiGameImpl(ns));
+            WriteFile(Path.Combine(dir, "State"), "ProfileState.cs", GenOthelloProfileState(ns));
+            WriteFile(Path.Combine(dir, "Services"), "IProfileService.cs", GenOthelloProfileInterface(ns));
+            WriteFile(Path.Combine(dir, "Impl"), "ProfileService.cs", GenOthelloProfileImpl(ns));
+            WriteFile(Path.Combine(dir, "State"), "OthelloState.cs", GenOthelloGameState(ns));
+            WriteFile(Path.Combine(dir, "Services"), "IOthelloService.cs", GenOthelloGameInterface(ns));
+            WriteFile(Path.Combine(dir, "Impl"), "OthelloService.cs", GenOthelloGameImpl(ns));
         }
 
-        private string GenReversiProfileState(string ns)
+        private string GenOthelloProfileState(string ns)
         {
             var sb = new StringBuilder();
             AppendSerializerUsing(sb);
@@ -748,7 +757,7 @@ namespace SharedMeta.Editor
             return sb.ToString();
         }
 
-        private string GenReversiProfileInterface(string ns)
+        private string GenOthelloProfileInterface(string ns)
         {
             var sb = new StringBuilder();
             sb.AppendLine("using System.Threading.Tasks;");
@@ -768,7 +777,7 @@ namespace SharedMeta.Editor
             sb.AppendLine("        void SetName(string name);");
             sb.AppendLine();
             sb.AppendLine("        [MetaMethod(Alias = \"RequestMatch\", Mode = ExecutionMode.Server)]");
-            sb.AppendLine("        Task<bool> RequestMatch(int playerCount);");
+            sb.AppendLine("        Task<bool> RequestMatch();");
             sb.AppendLine();
             sb.AppendLine("        [MetaMethod(Alias = \"CancelMatch\", Mode = ExecutionMode.Server)]");
             sb.AppendLine("        Task CancelMatch();");
@@ -780,7 +789,7 @@ namespace SharedMeta.Editor
             return sb.ToString();
         }
 
-        private string GenReversiProfileImpl(string ns)
+        private string GenOthelloProfileImpl(string ns)
         {
             var sb = new StringBuilder();
             sb.AppendLine("using System.Threading.Tasks;");
@@ -800,12 +809,12 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine("        public void SetName(string name) => State.DisplayName = name;");
             sb.AppendLine();
-            sb.AppendLine("        public async Task<bool> RequestMatch(int playerCount)");
+            sb.AppendLine("        public async Task<bool> RequestMatch()");
             sb.AppendLine("        {");
             sb.AppendLine("            var ok = await LobbyRequester.RequestMatchAsync(new MatchRequest");
             sb.AppendLine("            {");
-            sb.AppendLine("                GameMode = $\"reversi-{playerCount}p\",");
-            sb.AppendLine("                PlayerCount = playerCount,");
+            sb.AppendLine("                GameMode = \"othello\",");
+            sb.AppendLine("                PlayerCount = 2,");
             sb.AppendLine("                MaxWaitSeconds = 60");
             sb.AppendLine("            });");
             sb.AppendLine("            if (ok) State.IsSearching = true;");
@@ -814,7 +823,7 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine("        public async Task CancelMatch()");
             sb.AppendLine("        {");
-            sb.AppendLine("            await LobbyRequester.CancelMatchAsync();");
+            sb.AppendLine("            await LobbyRequester.CancelMatchAsync(\"othello\");");
             sb.AppendLine("            State.IsSearching = false;");
             sb.AppendLine("        }");
             sb.AppendLine();
@@ -839,7 +848,7 @@ namespace SharedMeta.Editor
             return sb.ToString();
         }
 
-        private string GenReversiGameState(string ns)
+        private string GenOthelloGameState(string ns)
         {
             var sb = new StringBuilder();
             AppendSerializerUsing(sb);
@@ -852,7 +861,7 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             AppendSerializerAttr(sb);
 
-            sb.AppendLine("    public partial class ReversiState : ISharedState");
+            sb.AppendLine("    public partial class OthelloState : ISharedState");
             sb.AppendLine("    {");
             sb.AppendLine("        public const int BoardSize = 8;");
             sb.AppendLine();
@@ -868,15 +877,15 @@ namespace SharedMeta.Editor
             return sb.ToString();
         }
 
-        private string GenReversiGameInterface(string ns)
+        private string GenOthelloGameInterface(string ns)
         {
             var sb = new StringBuilder();
             sb.AppendLine("using SharedMeta.Core;");
             sb.AppendLine();
             sb.AppendLine($"namespace {ns}");
             sb.AppendLine("{");
-            sb.AppendLine("    [MetaService(StateType = typeof(ReversiState)]");
-            sb.AppendLine("    public interface IReversiService : IMetaService");
+            sb.AppendLine("    [MetaService(StateType = typeof(OthelloState))]");
+            sb.AppendLine("    public interface IOthelloService : IMetaService");
             sb.AppendLine("    {");
             sb.AppendLine("        [MetaMethod(Alias = \"RegisterPlayer\", Mode = ExecutionMode.Server, GenerateClientApi = false)]");
             sb.AppendLine("        void RegisterPlayer(string playerId);");
@@ -891,7 +900,7 @@ namespace SharedMeta.Editor
             return sb.ToString();
         }
 
-        private string GenReversiGameImpl(string ns)
+        private string GenOthelloGameImpl(string ns)
         {
             var sb = new StringBuilder();
             sb.AppendLine("using System;");
@@ -899,8 +908,8 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine($"namespace {ns}");
             sb.AppendLine("{");
-            sb.AppendLine("    [MetaServiceImpl(typeof(IReversiService), typeof(ReversiState))]");
-            sb.AppendLine("    public partial class ReversiService : IReversiService");
+            sb.AppendLine("    [MetaServiceImpl(typeof(IOthelloService), typeof(OthelloState))]");
+            sb.AppendLine("    public partial class OthelloService : IOthelloService");
             sb.AppendLine("    {");
             sb.AppendLine("        public void RegisterPlayer(string playerId)");
             sb.AppendLine("        {");
@@ -910,7 +919,7 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine("        public void NewGame()");
             sb.AppendLine("        {");
-            sb.AppendLine("            State.Board = new int[ReversiState.BoardSize * ReversiState.BoardSize];");
+            sb.AppendLine("            State.Board = new int[OthelloState.BoardSize * OthelloState.BoardSize];");
             sb.AppendLine("            // Initial 4 pieces in the center");
             sb.AppendLine("            State.Board[27] = 2; State.Board[28] = 1;");
             sb.AppendLine("            State.Board[35] = 1; State.Board[36] = 2;");
@@ -923,7 +932,7 @@ namespace SharedMeta.Editor
             sb.AppendLine("        public bool PlacePiece(int row, int col)");
             sb.AppendLine("        {");
             sb.AppendLine("            if (State.Phase != GamePhase.Playing) return false;");
-            sb.AppendLine("            int idx = row * ReversiState.BoardSize + col;");
+            sb.AppendLine("            int idx = row * OthelloState.BoardSize + col;");
             sb.AppendLine("            if (State.Board[idx] != 0) return false;");
             sb.AppendLine();
             sb.AppendLine("            int flipped = FlipPieces(row, col, State.CurrentPlayer, apply: true);");
@@ -1508,6 +1517,7 @@ namespace SharedMeta.Editor
             sb.AppendLine("            {");
             sb.AppendLine("                // Register your server-side services here");
             sb.AppendLine("                // svc.AddTransient<IRandomService, RandomServiceImpl>();");
+            sb.AppendLine("                svc.AddTransient<ILobbyRequester>(sp => new OrleansLobbyRequester(sp.GetRequiredService<IGrainFactory>()));");
             sb.AppendLine("            });");
             sb.AppendLine("        });");
             sb.AppendLine("});");
@@ -1732,17 +1742,17 @@ namespace SharedMeta.Editor
                     sb.AppendLine("        await profile.SetNameAsync(\"Player\");");
                     sb.AppendLine($"        Debug.Log($\"Profile: {{profile.State.DisplayName}}, Level: {{profile.State.Level}}\");");
                     break;
-                case 1: // Reversi
+                case 1: // Othello
                     sb.AppendLine("        // UserOwned service — convenience method (no entityId needed)");
                     sb.AppendLine("        var profile = await Client.GetProfileServiceAsync();");
                     sb.AppendLine("        await profile.SetNameAsync(\"Player\");");
                     sb.AppendLine("        Debug.Log($\"Profile: {profile.State.DisplayName}\");");
                     sb.AppendLine();
                     sb.AppendLine("        // To start matchmaking:");
-                    sb.AppendLine("        // await profile.RequestMatchAsync(2);");
+                    sb.AppendLine("        // await profile.RequestMatchAsync();");
                     sb.AppendLine("        // After match found, access the game entity (Authorized — requires entityId):");
-                    sb.AppendLine("        // var gameApi = await Client.GetServiceAsync<ReversiServiceApiClient>(gameEntityId);");
-                    sb.AppendLine("        // var gameState = Client.GetState<ReversiState>(gameEntityId);");
+                    sb.AppendLine("        // var gameApi = await Client.GetServiceAsync<OthelloServiceApiClient>(gameEntityId);");
+                    sb.AppendLine("        // var gameState = Client.GetState<OthelloState>(gameEntityId);");
                     break;
                 case 2: // Expedition
                     sb.AppendLine("        // UserOwned service — convenience method (no entityId needed)");

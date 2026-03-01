@@ -76,7 +76,8 @@ namespace SharedMeta.Generator.Generators
                                 info.Methods.Add(new SubscriberMethodInfo
                                 {
                                     MethodName = member.Name,
-                                    EventTypeName = member.Parameters[0].Type.ToDisplayString()
+                                    EventTypeName = member.Parameters[0].Type.ToDisplayString(),
+                                    IsAsync = !member.ReturnsVoid && member.ReturnType.ToDisplayString().StartsWith("System.Threading.Tasks.Task")
                                 });
                             }
                         }
@@ -973,7 +974,8 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
             sb.AppendLine();
 
-            // Subscriber dispatchers
+            // Subscriber dispatchers — replay service method to update state, then fire event
+            var subscriberApplierName = stateTypeName + "PatchApplier";
             foreach (var subscriber in subscriberInterfaces)
             {
                 sb.AppendLine($"        private void Dispatch{subscriber.Name}Broadcast(NetworkBroadcast broadcast)");
@@ -994,6 +996,31 @@ namespace SharedMeta.Generator.Generators
                     {
                         sb.AppendLine($"                    var @event = _serializer.Unpack<{method.EventTypeName}>(broadcast.ArgsBytes)!;");
                     }
+
+                    // Replay the service method to update state
+                    sb.AppendLine("                    if (broadcast.PatchBytes is { Length: > 0 } patchData)");
+                    sb.AppendLine("                    {");
+                    sb.AppendLine($"                        var patch = _serializer.Unpack<PatchNode>(patchData);");
+                    sb.AppendLine($"                        {subscriberApplierName}.Apply(_state, patch, _serializer);");
+                    sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
+                    sb.AppendLine("                    }");
+                    sb.AppendLine("                    else");
+                    sb.AppendLine("                    {");
+                    sb.AppendLine("                        SetContext(broadcast.ReplayContext, broadcast.CallerId, broadcast.ServerTimeTicks);");
+                    if (method.IsAsync)
+                    {
+                        sb.AppendLine($"                        BroadcastValidator.EnsureSyncCompletion(_service.{method.MethodName}(@event), ServiceName, \"{method.MethodName}\");");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"                        _service.{method.MethodName}(@event);");
+                    }
+                    sb.AppendLine("                        ClearContext();");
+                    sb.AppendLine("                    }");
+
+                    // Replay trigger operations if any
+                    sb.AppendLine("                    ReplayTriggerOperations(broadcast.TriggerOperations, broadcast.CallerId, broadcast.ServerTimeTicks);");
+
                     sb.AppendLine($"                    {eventName}?.Invoke(@event);");
                     sb.AppendLine("                    break;");
                     sb.AppendLine("                }");
@@ -1149,6 +1176,7 @@ namespace SharedMeta.Generator.Generators
         {
             public string MethodName { get; set; } = "";
             public string EventTypeName { get; set; } = "";
+            public bool IsAsync { get; set; }
         }
     }
 }

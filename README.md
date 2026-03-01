@@ -53,13 +53,15 @@ Use the three generation tabs:
 
 ### 4. Run
 
+Start the server from Unity: **SharedMeta > Server Runner** — click **Start**.
+
+Or from terminal:
 ```bash
-# Start the server
 cd MyGame.Server
 dotnet run
-
-# Press Play in Unity — MetaGameClient connects automatically
 ```
+
+Press Play in Unity — `MetaGameClient` connects automatically.
 
 ### Quick Start (.NET only)
 
@@ -190,6 +192,39 @@ gameApi.AddItem("sword_01");
 client.OnStateChanged += state => UpdateUI((GameState)state);
 ```
 
+## Running the Server
+
+### From Unity (recommended)
+
+Open **SharedMeta > Server Runner** in the Unity menu. This opens an Editor window where you can:
+
+- **Select your server .csproj** — auto-detected from Wizard settings, or pick manually
+- **Start / Stop** the server with one click
+- **View console output** with search, filtering, and color-coded log levels (errors in red, warnings in yellow)
+- **Open in IDE** or **Reveal** in file explorer
+- **Pass extra arguments** via the "Extra Args" field (e.g. `-- 5001` for a different port)
+
+The server process survives Unity domain reloads (script compilation) and is automatically stopped when the Editor quits. The Runner tracks the process PID across reloads so it can re-attach to a running server.
+
+### From Terminal
+
+```bash
+cd YourGame.Server
+dotnet run
+```
+
+By default the server listens on `http://localhost:5000`. Pass a port as argument: `dotnet run -- 5001`.
+
+### Multiple Clients
+
+To test multiplayer locally (e.g. matchmaking), you need two Unity clients connecting to the same server:
+
+- **Editor + Build**: Press Play in the editor, then Build & Run a standalone player
+- **Two builds**: build twice and run both executables
+- **ParrelSync**: clone the project for a second editor instance
+
+All clients connect to the same server URL. The server handles session management and entity routing via Orleans grains.
+
 ## Examples
 
 ### CardGame "The Fool"
@@ -209,7 +244,7 @@ Single-player dungeon exploration with procedural map generation. Demonstrates: 
 | `Runtime/Transport/` | Conditional transport assemblies: HTTP Polling, SignalR client |
 | `Runtime/Serialization/` | MemoryPack serialization |
 | `Runtime/Orleans.Stubs/` | Stub attributes for Unity (no Orleans dependency) |
-| `Editor/` | Project Wizard, pre-built source generator DLL |
+| `Editor/` | Project Wizard, Server Runner, pre-built source generator DLL |
 | `src/SharedMeta.Generator/` | Source generator: dispatchers, API clients, context injection |
 | `src/SharedMeta.Server/` | Server-side meta context and cross-entity calls |
 | `src/SharedMeta.Server.Core/` | EntityGrain, MetaProvider, file storage, session management |
