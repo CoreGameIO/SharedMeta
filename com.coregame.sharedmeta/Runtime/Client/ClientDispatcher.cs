@@ -58,6 +58,11 @@ namespace SharedMeta.Client
         // can modify state, causing desyncs.
         private int _broadcastSuppressCount;
 
+        // Serializes the RPC response processing path in ProcessServerResponse.
+        // Prevents interleaving of MarkDirectResponse + ForceDrain + direct broadcast delivery
+        // between concurrent RPC responses arriving on different threads.
+        private readonly object _processResponseLock = new();
+
         // Server time synchronization
         private long _lastServerTimeTicks;
         private long _localTimeAtLastSync;
@@ -478,35 +483,46 @@ namespace SharedMeta.Client
             if (resolvedRequests != null)
             {
                 // Response contains RPC result(s).
-
-                // 1. Push any accompanying broadcast ops to the buffer
-                if (broadcastOps is { Count: > 0 })
+                // Lock to serialize concurrent RPC response processing and prevent
+                // interleaving of MarkDirectResponse/ForceDrain/delivery sequences.
+                lock (_processResponseLock)
                 {
-                    _broadcastBuffer.Push(new SessionResponse
+                    // 1. Mark this sequence as direct FIRST.
+                    //    The server bundles broadcasts with the RPC response (fast path) and
+                    //    does NOT send a separate observer notification for this sequence.
+                    //    Marking as direct tells the buffer to skip this sequence if a stale
+                    //    broadcast duplicate arrives later.
+                    if (response.SequenceNumber > 0)
                     {
-                        SequenceNumber = response.SequenceNumber,
-                        Operations = broadcastOps
-                    });
+                        _broadcastBuffer.MarkDirectResponse(response.SequenceNumber);
+                    }
+
+                    // 2. Force-drain preceding broadcasts that are ready.
+                    //    MarkDirectResponse may have advanced past a gap, unblocking
+                    //    broadcasts that were waiting after the direct sequence.
+                    ForceDrainPendingBroadcasts();
+
+                    // 3. Deliver accompanying broadcast ops DIRECTLY to handlers.
+                    //    These ops arrived bundled with the RPC response (server fast-path
+                    //    bundles all broadcasts received during the RPC into one SessionResponse).
+                    //    They will NOT arrive again as a separate broadcast.
+                    //
+                    //    Previously, these were pushed to the buffer at the response's sequence
+                    //    number and then MarkDirectResponse would cause them to be skipped when
+                    //    a gap existed — losing broadcast ops (e.g., operations from other clients
+                    //    that happened during this RPC).
+                    if (broadcastOps is { Count: > 0 })
+                    {
+                        foreach (var op in broadcastOps)
+                        {
+                            DeliverBroadcast(op.EntityId, op);
+                        }
+                    }
                 }
 
-                // 2. Force-drain preceding broadcasts. MUST happen BEFORE MarkDirectResponse:
-                //    if seq == head, MarkDirectResponse calls AdvancePastDirectResponses which
-                //    shifts the buffer and advances head — destroying any broadcasts we just
-                //    pushed at that sequence. Draining first delivers them and advances head,
-                //    making the subsequent MarkDirectResponse a safe no-op (seq < head).
-                ForceDrainPendingBroadcasts();
-
-                // 3. Mark this sequence as direct (won't arrive again as broadcast)
-                if (response.SequenceNumber > 0)
-                {
-                    _broadcastBuffer.MarkDirectResponse(response.SequenceNumber);
-                }
-
-                // 4. Drain again: MarkDirectResponse may have advanced past a gap,
-                //    unblocking broadcasts that were waiting after the direct sequence.
-                ForceDrainPendingBroadcasts();
-
-                // 5. Complete the TCS(es) — caller continues with local replay
+                // 4. Complete the TCS(es) outside the lock — caller continues with local replay.
+                //    TrySetResult may trigger synchronous continuations; keeping it outside
+                //    the lock avoids potential deadlocks with reentrant calls.
                 foreach (var (op, pending) in resolvedRequests)
                 {
                     MetaLog.Debug($"[ClientDispatcher] Resolved reqId={pending.RequestId}, method={pending.ServiceName}.{pending.MethodName}");
