@@ -391,4 +391,53 @@ public class CounterServiceTests
         Assert.Empty(client1.DetectedIssues);
         Assert.Empty(client2.DetectedIssues);
     }
+
+    /// <summary>
+    /// Proves that broadcast handlers must not run under _lock.
+    /// A handler that fires an RPC from a background thread and waits for the result
+    /// deadlocks because: handler thread holds _lock, background thread needs _lock
+    /// for SuppressBroadcasts() in the generated API client.
+    /// </summary>
+    [Fact(Timeout = 10_000)]
+    public async Task BroadcastHandler_RpcFromBackgroundThread_ShouldNotDeadlock()
+    {
+        var server = new InProcessServer(_fixture.CreateHandlerFactory());
+        await using var client1 = new TestClientSetup(server, "handler_player");
+        await using var client2 = new TestClientSetup(server, "trigger_player");
+
+        await client1.ConnectAsync();
+        await client2.ConnectAsync();
+
+        var entityId = $"deadlock_{Guid.NewGuid():N}";
+
+        var resolver1 = client1.CreateResolver();
+        var resolver2 = client2.CreateResolver();
+
+        var api1 = await resolver1.GetServiceAsync<CounterServiceApiClient>(entityId);
+        var api2 = await resolver2.GetServiceAsync<CounterServiceApiClient>(entityId);
+
+        var handlerCompleted = new TaskCompletionSource<bool>();
+
+        // Client1 handler: on broadcast, fire RPC from background thread and wait for result.
+        // This simulates a real-world pattern where a broadcast triggers a follow-up server call.
+        api1.OnAddValue_Replayed += args =>
+        {
+            // Handler runs during DeliverBroadcast.
+            // Task.Run puts the RPC on a different thread.
+            // .Wait() blocks this thread until the RPC completes.
+            // If _lock is held here, the background thread can't acquire it → deadlock.
+            var task = Task.Run(async () => await api1.AddValueAsync(500, 100));
+            task.Wait();
+            handlerCompleted.TrySetResult(true);
+        };
+
+        // Client2 triggers a broadcast that reaches client1's handler
+        await api2.AddValueAsync(100, 1);
+
+        // If _lock is held during handler invocation, this never completes (deadlock → timeout)
+        await handlerCompleted.Task;
+
+        var state1 = resolver1.GetState<CounterState>(entityId);
+        Assert.Equal(600, state1.Sum); // 100 from client2 + 500 from handler
+    }
 }

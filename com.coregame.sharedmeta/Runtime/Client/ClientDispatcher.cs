@@ -1,8 +1,6 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using SharedMeta.Core;
 using SharedMeta.Core.Logging;
@@ -30,6 +28,13 @@ namespace SharedMeta.Client
     /// Client-side dispatcher for managing entity subscriptions and broadcasts.
     /// Wraps IConnection to provide broadcast subscription pattern and frame-based processing.
     ///
+    /// All shared state is protected by a single reentrant lock (_lock).
+    /// Client-side traffic is low, so contention is negligible and simplicity wins.
+    ///
+    /// IMPORTANT: Callbacks (broadcast handlers, TCS completions, events) are always
+    /// invoked OUTSIDE _lock to prevent deadlocks when handlers make reentrant calls
+    /// (e.g., firing RPCs from a broadcast handler on a background thread).
+    ///
     /// Two processing modes:
     /// - Frame-based (default): call ProcessPendingBroadcasts() once per frame from the game loop
     /// - Immediate: set ImmediateMode = true for console apps or tests
@@ -37,13 +42,14 @@ namespace SharedMeta.Client
     public class ClientDispatcher : IClientDispatcher
     {
         private readonly IConnection _connection;
-        private readonly ConcurrentDictionary<string, List<Action<SessionOp>>> _broadcastHandlers = new();
+        private readonly object _lock = new();
+
+        private readonly Dictionary<string, List<Action<SessionOp>>> _broadcastHandlers = new();
         private readonly Dictionary<string, string> _subscribedEntities = new(); // entityId → stateTypeName
-        private readonly object _subscriptionLock = new();
         private long _nextRequestId;
 
         // Pending RPC requests awaiting response
-        private readonly ConcurrentDictionary<long, PendingRequest> _pendingRequests = new();
+        private readonly Dictionary<long, PendingRequest> _pendingRequests = new();
 
         // Session management
         private Guid _sessionId;
@@ -58,10 +64,9 @@ namespace SharedMeta.Client
         // can modify state, causing desyncs.
         private int _broadcastSuppressCount;
 
-        // Serializes the RPC response processing path in ProcessServerResponse.
-        // Prevents interleaving of MarkDirectResponse + ForceDrain + direct broadcast delivery
-        // between concurrent RPC responses arriving on different threads.
-        private readonly object _processResponseLock = new();
+        // Guards against duplicate HandleSessionTerminated calls
+        // (transport event + RPC error can both detect supersede)
+        private bool _terminated;
 
         // Server time synchronization
         private long _lastServerTimeTicks;
@@ -76,7 +81,7 @@ namespace SharedMeta.Client
         public Guid SessionId => _sessionId;
 
         /// <summary>Current client-side request ID counter.</summary>
-        public long CurrentRequestId => Interlocked.Read(ref _nextRequestId);
+        public long CurrentRequestId { get { lock (_lock) return _nextRequestId; } }
 
         /// <summary>Last acknowledged sequence number.</summary>
         public long LastAcknowledgedSequence => _lastAcknowledgedSequence;
@@ -84,6 +89,7 @@ namespace SharedMeta.Client
         /// <summary>
         /// Approximate current server time (UTC ticks).
         /// Computed from last received server time + local elapsed delta.
+        /// No lock — monotonic approximation, torn read is harmless.
         /// </summary>
         public long ServerTimeTicks =>
             _lastServerTimeTicks == 0
@@ -91,24 +97,20 @@ namespace SharedMeta.Client
                 : _lastServerTimeTicks + (DateTime.UtcNow.Ticks - _localTimeAtLastSync);
 
         /// <summary>
-        /// When true (default), broadcasts are processed immediately when they arrive in order.
+        /// When true, broadcasts are processed immediately when they arrive in order.
         /// Set to false for frame-based processing, then call ProcessPendingBroadcasts() manually.
         /// </summary>
-        public bool ImmediateMode
-        {
-            get => _broadcastBuffer.OnReadyToDrain != null;
-            set => _broadcastBuffer.OnReadyToDrain = value ? () => ProcessPendingBroadcasts() : null;
-        }
+        public bool ImmediateMode { get; set; }
 
         /// <summary>
         /// Next expected broadcast sequence number.
         /// </summary>
-        public long NextExpectedSequence => _broadcastBuffer.Head;
+        public long NextExpectedSequence { get { lock (_lock) return _broadcastBuffer.Head; } }
 
         /// <summary>
         /// True if there's a gap in received broadcasts.
         /// </summary>
-        public bool HasSequenceGap => _broadcastBuffer.HasGap;
+        public bool HasSequenceGap { get { lock (_lock) return _broadcastBuffer.HasGap; } }
 
         public ClientDispatcher(IConnection connection)
         {
@@ -135,7 +137,7 @@ namespace SharedMeta.Client
             if (!result.Success)
                 throw new InvalidOperationException($"Failed to subscribe to entity '{entityId}': {result.Error}");
 
-            lock (_subscriptionLock)
+            lock (_lock)
             {
                 _subscribedEntities[entityId] = stateTypeName ?? "";
             }
@@ -155,13 +157,11 @@ namespace SharedMeta.Client
 
             await _connection.UnsubscribeAsync(entityId);
 
-            lock (_subscriptionLock)
+            lock (_lock)
             {
                 _subscribedEntities.Remove(entityId);
+                _broadcastHandlers.Remove(entityId);
             }
-
-
-            _broadcastHandlers.TryRemove(entityId, out _);
         }
 
         public Task<SessionOp> SendAsync(string entityId, RpcCall call, string? stateTypeName = null)
@@ -171,21 +171,24 @@ namespace SharedMeta.Client
             if (call == null)
                 throw new ArgumentNullException(nameof(call));
 
-            var requestId = Interlocked.Increment(ref _nextRequestId);
             var payloadBytes = call.Payload ?? Array.Empty<byte>();
 
-            // Create pending request with TCS
-            var pending = new PendingRequest
+            PendingRequest pending;
+            lock (_lock)
             {
-                RequestId = requestId,
-                EntityId = entityId,
-                ServiceName = call.ServiceName,
-                MethodName = call.MethodName,
-                Payload = payloadBytes,
-                IsCrossOptimistic = call.IsCrossOptimistic,
-                ServerTimeTicks = call.ServerTimeTicks
-            };
-            _pendingRequests[requestId] = pending;
+                var requestId = ++_nextRequestId;
+                pending = new PendingRequest
+                {
+                    RequestId = requestId,
+                    EntityId = entityId,
+                    ServiceName = call.ServiceName,
+                    MethodName = call.MethodName,
+                    Payload = payloadBytes,
+                    IsCrossOptimistic = call.IsCrossOptimistic,
+                    ServerTimeTicks = call.ServerTimeTicks
+                };
+                _pendingRequests[requestId] = pending;
+            }
 
             // Start SignalR call without blocking - completion handled separately
             _ = SendAndCompleteAsync(pending);
@@ -209,15 +212,24 @@ namespace SharedMeta.Client
                 // Top-level transport error (server rejected before producing any ops)
                 if (response.HasError)
                 {
-                    if (_pendingRequests.TryRemove(pending.RequestId, out _))
+                    // Detect session supersede from RPC rejection (defense-in-depth:
+                    // the transport's OnSessionTerminated event may be lost)
+                    if (response.Error != null && response.Error.Contains("superseded", StringComparison.OrdinalIgnoreCase))
                     {
-                        pending.Tcs.TrySetException(
-                            new InvalidOperationException($"RPC call failed: {response.Error}"));
+                        HandleSessionTerminated(response.Error);
+                        return;
                     }
+
+                    lock (_lock)
+                    {
+                        _pendingRequests.Remove(pending.RequestId);
+                    }
+                    pending.Tcs.TrySetException(
+                        new InvalidOperationException($"RPC call failed: {response.Error}"));
                     return;
                 }
 
-                // Unified processing: resolves any matching pending requests, pushes broadcasts
+                // ProcessServerResponse handles its own locking
                 ProcessServerResponse(response);
             }
             catch (Exception ex)
@@ -235,9 +247,13 @@ namespace SharedMeta.Client
             if (handler == null)
                 throw new ArgumentNullException(nameof(handler));
 
-            var handlers = _broadcastHandlers.GetOrAdd(entityId, _ => new List<Action<SessionOp>>());
-            lock (handlers)
+            lock (_lock)
             {
+                if (!_broadcastHandlers.TryGetValue(entityId, out var handlers))
+                {
+                    handlers = new List<Action<SessionOp>>();
+                    _broadcastHandlers[entityId] = handlers;
+                }
                 handlers.Add(handler);
             }
 
@@ -253,7 +269,7 @@ namespace SharedMeta.Client
 
         public bool IsSubscribed(string entityId)
         {
-            lock (_subscriptionLock)
+            lock (_lock)
             {
                 return _subscribedEntities.ContainsKey(entityId);
             }
@@ -274,8 +290,11 @@ namespace SharedMeta.Client
             if (string.IsNullOrEmpty(PlayerId))
                 throw new InvalidOperationException("PlayerId must be set before connecting session");
 
-            _sessionId = sessionId;
-            _lastAcknowledgedSequence = lastAcknowledgedSequence;
+            lock (_lock)
+            {
+                _sessionId = sessionId;
+                _lastAcknowledgedSequence = lastAcknowledgedSequence;
+            }
 
             var result = await _connection.SessionConnectAsync(PlayerId, sessionId == Guid.Empty ? null : sessionId, lastAcknowledgedSequence);
 
@@ -294,18 +313,21 @@ namespace SharedMeta.Client
                 };
             }
 
-            _sessionId = result.SessionId;
-            IsSessionConnected = true;
-
-            // Sync clock from connect response
-            if (result.ServerTimeTicks > 0)
+            lock (_lock)
             {
-                _lastServerTimeTicks = result.ServerTimeTicks;
-                _localTimeAtLastSync = DateTime.UtcNow.Ticks;
+                _sessionId = result.SessionId;
+                IsSessionConnected = true;
+                _terminated = false;
+
+                // Sync clock from connect response
+                if (result.ServerTimeTicks > 0)
+                {
+                    _lastServerTimeTicks = result.ServerTimeTicks;
+                    _localTimeAtLastSync = DateTime.UtcNow.Ticks;
+                }
             }
 
-            // Process missed packets first — resolves pending requests from cached responses
-            // and delivers missed broadcasts to maintain ordering
+            // Process missed packets — ProcessServerResponse handles its own locking
             if (result.MissedPackets is { Count: > 0 })
             {
                 MetaLog.Info($"[ClientDispatcher] Processing {result.MissedPackets.Count} missed packets");
@@ -334,7 +356,12 @@ namespace SharedMeta.Client
         /// </summary>
         private Task ResendPendingRequestsAsync()
         {
-            var pendingList = _pendingRequests.Values.ToList();
+            List<PendingRequest> pendingList;
+            lock (_lock)
+            {
+                pendingList = _pendingRequests.Values.ToList();
+            }
+
             if (pendingList.Count == 0)
                 return Task.CompletedTask;
 
@@ -359,15 +386,22 @@ namespace SharedMeta.Client
                 // Top-level transport error
                 if (response.HasError)
                 {
-                    if (_pendingRequests.TryRemove(pending.RequestId, out _))
+                    if (response.Error != null && response.Error.Contains("superseded", StringComparison.OrdinalIgnoreCase))
                     {
-                        pending.Tcs.TrySetException(
-                            new InvalidOperationException($"RPC call failed: {response.Error}"));
+                        HandleSessionTerminated(response.Error);
+                        return;
                     }
+
+                    lock (_lock)
+                    {
+                        _pendingRequests.Remove(pending.RequestId);
+                    }
+                    pending.Tcs.TrySetException(
+                        new InvalidOperationException($"RPC call failed: {response.Error}"));
                     return;
                 }
 
-                // Unified processing: resolves any matching pending requests, pushes broadcasts
+                // ProcessServerResponse handles its own locking
                 ProcessServerResponse(response);
             }
             catch (Exception ex)
@@ -379,20 +413,33 @@ namespace SharedMeta.Client
 
         public async Task AcknowledgeSequenceAsync(long sequenceNumber)
         {
-            _lastAcknowledgedSequence = sequenceNumber;
+            lock (_lock)
+            {
+                _lastAcknowledgedSequence = sequenceNumber;
+            }
             await _connection.AcknowledgeSequenceAsync(sequenceNumber);
         }
 
         /// <inheritdoc/>
         public void SuppressBroadcasts()
         {
-            Interlocked.Increment(ref _broadcastSuppressCount);
+            lock (_lock)
+            {
+                _broadcastSuppressCount++;
+            }
         }
 
         /// <inheritdoc/>
         public void ResumeBroadcasts()
         {
-            if (Interlocked.Decrement(ref _broadcastSuppressCount) == 0)
+            bool shouldDrain;
+            lock (_lock)
+            {
+                _broadcastSuppressCount--;
+                shouldDrain = _broadcastSuppressCount == 0;
+            }
+
+            if (shouldDrain)
             {
                 ProcessPendingBroadcasts();
             }
@@ -401,34 +448,31 @@ namespace SharedMeta.Client
         /// <summary>
         /// Process pending broadcasts. Call this once per frame from game loop.
         /// Drains all ready broadcasts (those without gaps before them) and delivers to handlers.
-        /// Thread-safe: uses a local drain buffer so concurrent and reentrant calls are safe.
+        /// Lock is held only during drain; handlers are invoked outside lock.
         /// </summary>
         /// <returns>Number of broadcasts processed.</returns>
         public int ProcessPendingBroadcasts()
         {
-            // While broadcast processing is suppressed, don't drain.
-            // This prevents broadcasts from modifying state between receiving an RPC response
-            // and completing the local replay (which would cause desyncs).
-            if (_broadcastSuppressCount > 0)
-                return 0;
-
-            // Use a local buffer to avoid thread-safety issues.
-            // In InProcess testing, observer callbacks fire synchronously on the grain thread
-            // while RPC continuations run on thread pool threads — both can trigger this via
-            // OnReadyToDrain. Reentrant calls (handler → Push → OnReadyToDrain) are also possible.
-            // Each call gets its own buffer; DrainReady is internally synchronized via spin lock,
-            // so concurrent calls get disjoint message sets.
-            var buffer = new List<SessionResponse>();
             int totalCount = 0;
 
             // Loop to pick up messages that handlers may have pushed during delivery
             while (true)
             {
-                buffer.Clear();
-                var count = _broadcastBuffer.DrainReady(buffer);
-                if (count == 0) break;
+                var buffer = new List<SessionResponse>();
+                lock (_lock)
+                {
+                    // While broadcast processing is suppressed, don't drain.
+                    // This prevents broadcasts from modifying state between receiving an RPC response
+                    // and completing the local replay (which would cause desyncs).
+                    if (_broadcastSuppressCount > 0)
+                        return totalCount;
 
-                totalCount += count;
+                    var count = _broadcastBuffer.DrainReady(buffer);
+                    if (count == 0) break;
+                    totalCount += count;
+                }
+
+                // Outside lock: deliver to handlers
                 foreach (var response in buffer)
                 {
                     DeliverResponseBroadcasts(response);
@@ -441,6 +485,7 @@ namespace SharedMeta.Client
         private void HandleBatch(SessionResponse response)
         {
             MetaLog.Debug($"[ClientDispatcher] HandleBatch: seq={response.SequenceNumber}, opsCount={response.Operations?.Count ?? 0}");
+            // ProcessServerResponse handles its own locking
             ProcessServerResponse(response);
         }
 
@@ -448,45 +493,48 @@ namespace SharedMeta.Client
         /// Unified processing for all server responses (RPC results, deferred results, broadcasts).
         /// Categorizes ops by RequestId: matches pending RPC requests or collects as broadcasts.
         /// A single response can contain a mix of RPC results for different RequestIds and broadcasts.
+        ///
+        /// State mutations happen under _lock; callbacks (handlers, TCS) happen outside _lock.
         /// </summary>
         private void ProcessServerResponse(SessionResponse response)
         {
-            // Update server clock from every response
-            if (response.ServerTimeTicks > 0)
-            {
-                _lastServerTimeTicks = response.ServerTimeTicks;
-                _localTimeAtLastSync = DateTime.UtcNow.Ticks;
-            }
-
-            // Categorize ops: match pending requests by RequestId, collect broadcasts
             List<(SessionOp op, PendingRequest pending)>? resolvedRequests = null;
             List<SessionOp>? broadcastOps = null;
+            bool isPureBroadcast;
 
-            if (response.Operations != null)
+            // Phase 1: Under lock — state mutations only
+            lock (_lock)
             {
-                foreach (var op in response.Operations)
+                // Update server clock from every response
+                if (response.ServerTimeTicks > 0)
                 {
-                    if (op.RequestId > 0 && _pendingRequests.TryRemove(op.RequestId, out var pending))
-                    {
-                        resolvedRequests ??= new();
-                        resolvedRequests.Add((op, pending));
-                    }
-                    else if (op.RequestId == 0)
-                    {
-                        broadcastOps ??= new();
-                        broadcastOps.Add(op);
-                    }
-                    // else: RequestId > 0 but no matching pending request — ignore (duplicate or stale)
+                    _lastServerTimeTicks = response.ServerTimeTicks;
+                    _localTimeAtLastSync = DateTime.UtcNow.Ticks;
                 }
-            }
 
-            if (resolvedRequests != null)
-            {
-                // Response contains RPC result(s).
-                // Lock to serialize concurrent RPC response processing and prevent
-                // interleaving of MarkDirectResponse/ForceDrain/delivery sequences.
-                lock (_processResponseLock)
+                // Categorize ops: match pending requests by RequestId, collect broadcasts
+                if (response.Operations != null)
                 {
+                    foreach (var op in response.Operations)
+                    {
+                        if (op.RequestId > 0 && _pendingRequests.Remove(op.RequestId, out var pending))
+                        {
+                            resolvedRequests ??= new();
+                            resolvedRequests.Add((op, pending));
+                        }
+                        else if (op.RequestId == 0)
+                        {
+                            broadcastOps ??= new();
+                            broadcastOps.Add(op);
+                        }
+                        // else: RequestId > 0 but no matching pending request — ignore (duplicate or stale)
+                    }
+                }
+
+                if (resolvedRequests != null)
+                {
+                    // Response contains RPC result(s).
+
                     // 1. Mark this sequence as direct FIRST.
                     //    The server bundles broadcasts with the RPC response (fast path) and
                     //    does NOT send a separate observer notification for this sequence.
@@ -497,57 +545,70 @@ namespace SharedMeta.Client
                         _broadcastBuffer.MarkDirectResponse(response.SequenceNumber);
                     }
 
-                    // 2. Force-drain preceding broadcasts that are ready.
-                    //    MarkDirectResponse may have advanced past a gap, unblocking
-                    //    broadcasts that were waiting after the direct sequence.
-                    ForceDrainPendingBroadcasts();
+                    isPureBroadcast = false;
+                }
+                else
+                {
+                    // Pure broadcast — push whole response to buffer for ordered delivery
+                    _broadcastBuffer.Push(response);
+                    isPureBroadcast = true;
+                }
+            }
 
-                    // 3. Deliver accompanying broadcast ops DIRECTLY to handlers.
-                    //    These ops arrived bundled with the RPC response (server fast-path
-                    //    bundles all broadcasts received during the RPC into one SessionResponse).
-                    //    They will NOT arrive again as a separate broadcast.
-                    //
-                    //    Previously, these were pushed to the buffer at the response's sequence
-                    //    number and then MarkDirectResponse would cause them to be skipped when
-                    //    a gap existed — losing broadcast ops (e.g., operations from other clients
-                    //    that happened during this RPC).
-                    if (broadcastOps is { Count: > 0 })
+            // Phase 2: Outside lock — callbacks
+            if (!isPureBroadcast)
+            {
+                // 2. Force-drain preceding broadcasts that are ready.
+                //    MarkDirectResponse may have advanced past a gap, unblocking
+                //    broadcasts that were waiting after the direct sequence.
+                ForceDrainPendingBroadcasts();
+
+                // 3. Deliver accompanying broadcast ops DIRECTLY to handlers.
+                //    These ops arrived bundled with the RPC response (server fast-path
+                //    bundles all broadcasts received during the RPC into one SessionResponse).
+                //    They will NOT arrive again as a separate broadcast.
+                //
+                //    Previously, these were pushed to the buffer at the response's sequence
+                //    number and then MarkDirectResponse would cause them to be skipped when
+                //    a gap existed — losing broadcast ops (e.g., operations from other clients
+                //    that happened during this RPC).
+                if (broadcastOps is { Count: > 0 })
+                {
+                    foreach (var op in broadcastOps)
                     {
-                        foreach (var op in broadcastOps)
-                        {
-                            DeliverBroadcast(op.EntityId, op);
-                        }
+                        DeliverBroadcast(op.EntityId, op);
                     }
                 }
 
-                // 4. Complete the TCS(es) outside the lock — caller continues with local replay.
-                //    TrySetResult may trigger synchronous continuations; keeping it outside
-                //    the lock avoids potential deadlocks with reentrant calls.
-                foreach (var (op, pending) in resolvedRequests)
+                // 4. Complete the TCS(es) — caller continues with local replay.
+                foreach (var (op, pending) in resolvedRequests!)
                 {
                     MetaLog.Debug($"[ClientDispatcher] Resolved reqId={pending.RequestId}, method={pending.ServiceName}.{pending.MethodName}");
                     pending.Tcs.TrySetResult(op);
                 }
             }
-            else
+            else if (ImmediateMode)
             {
-                // Pure broadcast — push whole response to buffer for ordered delivery
-                _broadcastBuffer.Push(response);
+                // In immediate mode, process broadcasts right away
+                ProcessPendingBroadcasts();
             }
         }
 
         /// <summary>
         /// Drain and deliver all ready broadcasts, bypassing the suppression check.
         /// Used for PrecedingBroadcasts that must be applied before local replay.
+        /// Lock is held only during drain; handlers are invoked outside lock.
         /// </summary>
         private void ForceDrainPendingBroadcasts()
         {
-            var buffer = new List<SessionResponse>();
             while (true)
             {
-                buffer.Clear();
-                var count = _broadcastBuffer.DrainReady(buffer);
-                if (count == 0) break;
+                var buffer = new List<SessionResponse>();
+                lock (_lock)
+                {
+                    var count = _broadcastBuffer.DrainReady(buffer);
+                    if (count == 0) break;
+                }
 
                 foreach (var response in buffer)
                 {
@@ -569,19 +630,24 @@ namespace SharedMeta.Client
             }
         }
 
+        /// <summary>
+        /// Deliver a single broadcast op to registered handlers.
+        /// Snapshots handlers under lock, invokes them outside lock.
+        /// </summary>
         private void DeliverBroadcast(string entityId, SessionOp op)
         {
             MetaLog.Debug($"[ClientDispatcher] DeliverBroadcast: entityId={entityId}, method={op.ServiceName}.{op.MethodName}");
 
-            if (!_broadcastHandlers.TryGetValue(entityId, out var handlers))
+            List<Action<SessionOp>>? handlersCopy;
+            lock (_lock)
             {
-                MetaLog.Warning($"[ClientDispatcher] No handlers for entityId={entityId}, registered entities: {string.Join(", ", _broadcastHandlers.Keys)}");
-                return;
-            }
+                if (!_broadcastHandlers.TryGetValue(entityId, out var handlers))
+                {
+                    MetaLog.Warning($"[ClientDispatcher] No handlers for entityId={entityId}, registered entities: {string.Join(", ", _broadcastHandlers.Keys)}");
+                    return;
+                }
 
-            List<Action<SessionOp>> handlersCopy;
-            lock (handlers)
-            {
+                // Copy — handlers may unsubscribe during delivery (Dispose → RemoveBroadcastHandler)
                 handlersCopy = new List<Action<SessionOp>>(handlers);
             }
 
@@ -602,11 +668,14 @@ namespace SharedMeta.Client
 
         private void HandleDisconnected(TransportDisconnectReason reason)
         {
-            MetaLog.Info($"[ClientDispatcher] Disconnected: {reason}, keeping {_pendingRequests.Count} pending requests for reconnect");
+            lock (_lock)
+            {
+                MetaLog.Info($"[ClientDispatcher] Disconnected: {reason}, keeping {_pendingRequests.Count} pending requests for reconnect");
 
-            // Keep _subscribedEntities — needed for re-subscribing after reconnect
-            _broadcastBuffer.Clear();
-            IsSessionConnected = false;
+                // Keep _subscribedEntities — needed for re-subscribing after reconnect
+                _broadcastBuffer.Clear();
+                IsSessionConnected = false;
+            }
 
             // Keep pending requests - they will be re-sent on reconnect
             OnConnectionStatusChanged?.Invoke(ConnectionStatus.Disconnected, reason.ToString());
@@ -628,10 +697,6 @@ namespace SharedMeta.Client
 
         /// <summary>
         /// Re-establish session and re-subscribe to all entities after transport reconnect.
-        /// </summary>
-        /// <summary>
-        /// Fired when server re-subscribed entities on reconnect.
-        /// MetaClient uses this to refresh local entity states.
         /// </summary>
         public event Action<List<ResubscribedEntityInfo>>? OnEntitiesResubscribed;
 
@@ -659,7 +724,7 @@ namespace SharedMeta.Client
                 {
                     // Server didn't re-subscribe — do it manually
                     Dictionary<string, string> entitiesToResubscribe;
-                    lock (_subscriptionLock)
+                    lock (_lock)
                     {
                         entitiesToResubscribe = new Dictionary<string, string>(_subscribedEntities);
                     }
@@ -690,17 +755,26 @@ namespace SharedMeta.Client
 
         private void HandleSessionTerminated(string reason)
         {
-            MetaLog.Warning($"[ClientDispatcher] Session terminated: {reason}");
-            lock (_subscriptionLock)
+            List<PendingRequest> pendingToFail;
+            lock (_lock)
             {
+                if (_terminated) return; // Already handled (transport event + RPC error can both fire)
+                _terminated = true;
+
+                MetaLog.Warning($"[ClientDispatcher] Session terminated: {reason}");
                 _subscribedEntities.Clear();
+                _broadcastBuffer.Clear();
+                IsSessionConnected = false;
+
+                pendingToFail = _pendingRequests.Values.ToList();
+                _pendingRequests.Clear();
             }
 
-            _broadcastBuffer.Clear();
-            IsSessionConnected = false;
-
-            // Session terminated - fail all pending requests
-            FailAllPendingRequests($"Session terminated: {reason}");
+            // Fail TCS outside lock
+            foreach (var pending in pendingToFail)
+            {
+                pending.Tcs.TrySetException(new InvalidOperationException($"Session terminated: {reason}"));
+            }
 
             if (reason.Contains("superseded", StringComparison.OrdinalIgnoreCase))
             {
@@ -724,23 +798,29 @@ namespace SharedMeta.Client
             ServerTimeTicks = pending.ServerTimeTicks
         };
 
+        /// <summary>
+        /// Fail all pending requests. Acquires lock internally.
+        /// </summary>
         private void FailAllPendingRequests(string reason)
         {
-            var pendingIds = _pendingRequests.Keys.ToList();
-            foreach (var requestId in pendingIds)
+            List<PendingRequest> pendingToFail;
+            lock (_lock)
             {
-                if (_pendingRequests.TryRemove(requestId, out var pending))
-                {
-                    pending.Tcs.TrySetException(new InvalidOperationException(reason));
-                }
+                pendingToFail = _pendingRequests.Values.ToList();
+                _pendingRequests.Clear();
+            }
+
+            foreach (var pending in pendingToFail)
+            {
+                pending.Tcs.TrySetException(new InvalidOperationException(reason));
             }
         }
 
         private void RemoveBroadcastHandler(string entityId, Action<SessionOp> handler)
         {
-            if (_broadcastHandlers.TryGetValue(entityId, out var handlers))
+            lock (_lock)
             {
-                lock (handlers)
+                if (_broadcastHandlers.TryGetValue(entityId, out var handlers))
                 {
                     handlers.Remove(handler);
                 }
@@ -750,7 +830,7 @@ namespace SharedMeta.Client
         /// <summary>
         /// Number of pending requests awaiting response.
         /// </summary>
-        public int PendingRequestCount => _pendingRequests.Count;
+        public int PendingRequestCount { get { lock (_lock) return _pendingRequests.Count; } }
 
         /// <summary>
         /// Reset dispatcher state for session restart (after supersede).
@@ -758,17 +838,25 @@ namespace SharedMeta.Client
         /// </summary>
         public void ResetForRestart()
         {
-            lock (_subscriptionLock)
+            List<PendingRequest> pendingToFail;
+            lock (_lock)
             {
                 _subscribedEntities.Clear();
+                _broadcastHandlers.Clear();
+                _broadcastBuffer.Reset(1);
+                pendingToFail = _pendingRequests.Values.ToList();
+                _pendingRequests.Clear();
+                _lastAcknowledgedSequence = 0;
+                _sessionId = Guid.Empty;
+                _nextRequestId = 0;
+                _terminated = false;
+                IsSessionConnected = false;
             }
-            _broadcastHandlers.Clear();
-            _broadcastBuffer.Reset(1);
-            FailAllPendingRequests("Session restart");
-            _lastAcknowledgedSequence = 0;
-            _sessionId = Guid.Empty;
-            Interlocked.Exchange(ref _nextRequestId, 0);
-            IsSessionConnected = false;
+
+            foreach (var pending in pendingToFail)
+            {
+                pending.Tcs.TrySetException(new InvalidOperationException("Session restart"));
+            }
         }
 
         public void Dispose()
@@ -779,11 +867,19 @@ namespace SharedMeta.Client
             _connection.OnReconnecting -= HandleReconnecting;
             _connection.OnReconnected -= HandleTransportReconnected;
 
-            // Fail all pending requests on dispose
-            FailAllPendingRequests("ClientDispatcher disposed");
+            List<PendingRequest> pendingToFail;
+            lock (_lock)
+            {
+                pendingToFail = _pendingRequests.Values.ToList();
+                _pendingRequests.Clear();
+                _broadcastHandlers.Clear();
+                _broadcastBuffer.Clear();
+            }
 
-            _broadcastHandlers.Clear();
-            _broadcastBuffer.Clear();
+            foreach (var pending in pendingToFail)
+            {
+                pending.Tcs.TrySetException(new InvalidOperationException("ClientDispatcher disposed"));
+            }
         }
 
         private class BroadcastSubscription : IDisposable
