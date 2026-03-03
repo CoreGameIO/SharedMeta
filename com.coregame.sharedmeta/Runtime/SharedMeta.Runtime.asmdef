@@ -1,6 +1,6 @@
 {
   "name": "SharedMeta.Runtime",
-  "rootNamespace": "",
+  "rootNamespace": "SharedMeta",
   "references": [],
   "includePlatforms": [],
   "excludePlatforms": [],

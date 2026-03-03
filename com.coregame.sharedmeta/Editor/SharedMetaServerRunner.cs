@@ -1023,17 +1023,17 @@ namespace SharedMeta.Editor
         {
             if (!string.IsNullOrEmpty(_serverCsprojPath)) return;
 
-            // Try to get server project info from Wizard settings
+            // Build path from Wizard settings: solutionDir / serverName / serverName.csproj
             var s = SharedMetaEditorSettings.instance;
             var serverName = s.serverProjectName;
-            var serverDir = s.serverOutputDir;
-            if (string.IsNullOrEmpty(serverName) || string.IsNullOrEmpty(serverDir)) return;
+            var solutionDir = s.solutionDir;
+            if (string.IsNullOrEmpty(serverName) || string.IsNullOrEmpty(solutionDir)) return;
 
-            var resolved = ResolveRelativePath(serverDir);
-            var csproj = Path.Combine(resolved, $"{serverName}.csproj");
-            if (File.Exists(csproj))
+            var relPath = solutionDir.TrimEnd('/', '\\') + "/" + serverName + "/" + serverName + ".csproj";
+            var resolved = ResolveRelativePath(relPath);
+            if (File.Exists(resolved))
             {
-                _serverCsprojPath = csproj;
+                _serverCsprojPath = relPath;  // store relative path
                 SaveSettings();
             }
         }

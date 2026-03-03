@@ -1,6 +1,6 @@
 {
     "name": "SharedMeta.Transport.Http",
-    "rootNamespace": "",
+    "rootNamespace": "SharedMeta.Transport.Http",
     "references": [
         "SharedMeta.Runtime"
     ],

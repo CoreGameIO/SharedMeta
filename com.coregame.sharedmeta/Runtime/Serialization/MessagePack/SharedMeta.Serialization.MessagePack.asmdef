@@ -1,6 +1,6 @@
 {
     "name": "SharedMeta.Serialization.MessagePack",
-    "rootNamespace": "",
+    "rootNamespace": "SharedMeta.Serialization.MessagePack",
     "references": ["SharedMeta.Runtime"],
     "includePlatforms": [],
     "excludePlatforms": [],

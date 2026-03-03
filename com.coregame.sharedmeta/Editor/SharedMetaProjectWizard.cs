@@ -34,11 +34,16 @@ namespace SharedMeta.Editor
 
         // Shared project settings
         private string _sharedOutputDir = "Assets/Scripts/MyGame.Shared";
-        private string _sharedDotnetDir = "../MyGame.Shared";
+
+        // Solution directory (root for .NET projects)
+        private string _solutionDir = "../";
 
         // Server settings
         private string _serverProjectName = "MyGame.Server";
-        private string _serverOutputDir = "../Server";
+
+        // Derived paths (from solutionDir + project names)
+        private string SharedDotnetDir => _solutionDir.TrimEnd('/', '\\') + "/" + _sharedProjectName;
+        private string ServerOutputDir => _solutionDir.TrimEnd('/', '\\') + "/" + _serverProjectName;
 
         // Client settings
         private string _clientOutputDir = "Assets/Scripts/Meta";
@@ -113,9 +118,6 @@ namespace SharedMeta.Editor
                 _sharedMetaVersion = DetectVersionFromLocalNupkg();
             if (string.IsNullOrEmpty(_sharedMetaVersion))
                 _sharedMetaVersion = DetectVersionFromPackageJson();
-            // When using local nupkgs, ensure version matches actual nupkg (e.g., "0.1.0-local")
-            if (!string.IsNullOrEmpty(_localNugetPath))
-                _useLocalNuget = true;
             CheckSerializerPackage();
             CheckTransportDependency();
         }
@@ -268,8 +270,28 @@ namespace SharedMeta.Editor
         {
             _sharedMetaVersion = EditorGUILayout.TextField("SharedMeta Version", _sharedMetaVersion);
             _sharedProjectName = EditorGUILayout.TextField("Shared Project Name", _sharedProjectName);
+            _serverProjectName = EditorGUILayout.TextField("Server Project Name", _serverProjectName);
             _sharedStateName = EditorGUILayout.TextField("Shared State Name", _sharedStateName);
             _templateIndex = EditorGUILayout.Popup("Template", _templateIndex, TemplateOptions);
+
+            // Solution directory (root for .NET projects)
+            EditorGUILayout.BeginHorizontal();
+            _solutionDir = EditorGUILayout.TextField("Solution Directory", _solutionDir);
+            if (GUILayout.Button("...", GUILayout.Width(30)))
+            {
+                var selected = EditorUtility.OpenFolderPanel("Solution Root Directory", _solutionDir, "");
+                if (!string.IsNullOrEmpty(selected))
+                {
+                    var projectRoot = Directory.GetParent(Application.dataPath)!.FullName;
+                    _solutionDir = ComputeRelativeDir(projectRoot, selected);
+                }
+            }
+            EditorGUILayout.EndHorizontal();
+            EditorGUI.indentLevel++;
+            EditorGUILayout.LabelField("Shared .NET", SharedDotnetDir);
+            EditorGUILayout.LabelField("Server", ServerOutputDir);
+            EditorGUI.indentLevel--;
+
             _transportIndex = EditorGUILayout.Popup("Transport", _transportIndex, TransportOptions);
             _serializerIndex = EditorGUILayout.Popup("Serializer", _serializerIndex, SerializerOptions);
             _serverPort = EditorGUILayout.IntField("Server Port", _serverPort);
@@ -391,19 +413,11 @@ namespace SharedMeta.Editor
                     _sharedOutputDir = selected;
             }
             EditorGUILayout.EndHorizontal();
-            EditorGUILayout.BeginHorizontal();
-            _sharedDotnetDir = EditorGUILayout.TextField(".NET Project Dir", _sharedDotnetDir);
-            if (GUILayout.Button("...", GUILayout.Width(30)))
-            {
-                var selected = EditorUtility.OpenFolderPanel("Shared .NET Directory", _sharedDotnetDir, "");
-                if (!string.IsNullOrEmpty(selected))
-                    _sharedDotnetDir = selected;
-            }
-            EditorGUILayout.EndHorizontal();
+            EditorGUILayout.LabelField(".NET Project Dir", SharedDotnetDir);
 
             // Status: detect existing project parts
             var unityDir = ResolveOutputDir(_sharedOutputDir);
-            var dotnetDir = ResolveOutputDir(_sharedDotnetDir);
+            var dotnetDir = ResolveOutputDir(SharedDotnetDir);
             bool unityExists = File.Exists(Path.Combine(unityDir, $"{_sharedProjectName}.asmdef"));
             bool dotnetExists = File.Exists(Path.Combine(dotnetDir, $"{_sharedProjectName}.csproj"));
 
@@ -430,16 +444,7 @@ namespace SharedMeta.Editor
 
         private void DrawServerProjectStep()
         {
-            _serverProjectName = EditorGUILayout.TextField("Project Name", _serverProjectName);
-            EditorGUILayout.BeginHorizontal();
-            _serverOutputDir = EditorGUILayout.TextField("Output Directory", _serverOutputDir);
-            if (GUILayout.Button("...", GUILayout.Width(30)))
-            {
-                var selected = EditorUtility.OpenFolderPanel("Server Output Directory", _serverOutputDir, "");
-                if (!string.IsNullOrEmpty(selected))
-                    _serverOutputDir = selected;
-            }
-            EditorGUILayout.EndHorizontal();
+            EditorGUILayout.LabelField("Output Directory", ServerOutputDir);
             EditorGUILayout.Space(4);
             if (GUILayout.Button("Create Server Project", GUILayout.Height(30)))
                 CreateServerProject();
@@ -548,7 +553,7 @@ namespace SharedMeta.Editor
         private void CreateSharedProject()
         {
             var unityDir = ResolveOutputDir(_sharedOutputDir);
-            var dotnetDir = ResolveOutputDir(_sharedDotnetDir);
+            var dotnetDir = ResolveOutputDir(SharedDotnetDir);
             var ns = _sharedProjectName;
             var stateName = _sharedStateName;
 
@@ -1337,13 +1342,13 @@ namespace SharedMeta.Editor
 
         private void CreateServerProject()
         {
-            var outputDir = ResolveOutputDir(_serverOutputDir);
+            var outputDir = ResolveOutputDir(ServerOutputDir);
             if (!ConfirmOverwrite(outputDir, _serverProjectName))
                 return;
 
             Directory.CreateDirectory(outputDir);
 
-            var sharedDotnetDir = ResolveOutputDir(_sharedDotnetDir);
+            var sharedDotnetDir = ResolveOutputDir(SharedDotnetDir);
             var sharedCsprojPath = Path.Combine(sharedDotnetDir, $"{_sharedProjectName}.csproj");
             var sharedRelPath = ComputeRelativePath(outputDir, sharedCsprojPath);
 
@@ -1450,6 +1455,8 @@ namespace SharedMeta.Editor
             sb.AppendLine("using SharedMeta.Server.Core.Grains;");
             sb.AppendLine("using SharedMeta.Server.Core.Transport;");
             sb.AppendLine("using SharedMeta.Server.Core.Storage;");
+            sb.AppendLine("using SharedMeta.Core.Framework;");
+            sb.AppendLine("using SharedMeta.Orleans.Framework;");
 
             if (_serializerIndex == 0)
                 sb.AppendLine("using SharedMeta.Serialization.MemoryPack;");
@@ -3170,9 +3177,8 @@ For full documentation see: https://github.com/CoreGameIO/SharedMeta
             s.useLocalNuget = _useLocalNuget;
             s.localNugetPath = _localNugetPath;
             s.sharedOutputDir = _sharedOutputDir;
-            s.sharedDotnetDir = _sharedDotnetDir;
+            s.solutionDir = _solutionDir;
             s.serverProjectName = _serverProjectName;
-            s.serverOutputDir = _serverOutputDir;
             s.clientOutputDir = _clientOutputDir;
             s.templateIndex = _templateIndex;
             s.wizardMode = (int)_wizardMode;
@@ -3195,9 +3201,27 @@ For full documentation see: https://github.com/CoreGameIO/SharedMeta
             _useLocalNuget = s.useLocalNuget;
             _localNugetPath = s.localNugetPath;
             _sharedOutputDir = string.IsNullOrEmpty(s.sharedOutputDir) ? $"Assets/Scripts/{_sharedProjectName}" : s.sharedOutputDir;
-            _sharedDotnetDir = string.IsNullOrEmpty(s.sharedDotnetDir) ? $"../{_sharedProjectName}" : s.sharedDotnetDir;
             _serverProjectName = s.serverProjectName;
-            _serverOutputDir = s.serverOutputDir;
+
+            // Load solutionDir with migration from legacy fields
+            if (!string.IsNullOrEmpty(s.solutionDir) && s.solutionDir != "../")
+            {
+                _solutionDir = s.solutionDir;
+            }
+            else if (!string.IsNullOrEmpty(s.serverOutputDir) && s.serverOutputDir != "../Server")
+            {
+                // Legacy migration: derive solutionDir from old serverOutputDir
+                var parent = Path.GetDirectoryName(s.serverOutputDir)?.Replace('\\', '/');
+                if (!string.IsNullOrEmpty(parent))
+                    _solutionDir = parent!;
+            }
+            else if (!string.IsNullOrEmpty(s.sharedDotnetDir) && s.sharedDotnetDir != $"../{_sharedProjectName}")
+            {
+                // Legacy migration: derive from old sharedDotnetDir
+                var parent = Path.GetDirectoryName(s.sharedDotnetDir)?.Replace('\\', '/');
+                if (!string.IsNullOrEmpty(parent))
+                    _solutionDir = parent!;
+            }
             _clientOutputDir = s.clientOutputDir;
             _templateIndex = s.templateIndex;
             _wizardMode = (WizardMode)s.wizardMode;

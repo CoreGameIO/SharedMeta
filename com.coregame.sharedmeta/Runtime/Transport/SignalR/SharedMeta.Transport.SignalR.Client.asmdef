@@ -1,6 +1,6 @@
 {
     "name": "SharedMeta.Transport.SignalR.Client",
-    "rootNamespace": "",
+    "rootNamespace": "SharedMeta.Transport.SignalR",
     "references": [
         "SharedMeta.Runtime"
     ],

@@ -24,9 +24,10 @@ namespace SharedMeta.Editor
         public bool useLocalNuget;
         public string localNugetPath = "";
         public string sharedOutputDir = "Assets/Scripts/MyGame.Shared";
-        public string sharedDotnetDir = "../MyGame.Shared";
+        public string sharedDotnetDir = "../MyGame.Shared";  // legacy, migrated to solutionDir
+        public string solutionDir = "../ServerSolution";
         public string serverProjectName = "MyGame.Server";
-        public string serverOutputDir = "../Server";
+        public string serverOutputDir = "../Server";  // legacy, migrated to solutionDir
         public string clientOutputDir = "Assets/Scripts/Meta";
         public int templateIndex;
         public int wizardMode; // 0 = Interactive, 1 = Classic
