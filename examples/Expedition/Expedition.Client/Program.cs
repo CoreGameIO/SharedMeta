@@ -53,6 +53,7 @@ var client = new MetaClient(
     new SignalRConnection(metaUrl, login.Token),
 #endif
     new MessagePackMetaSerializer(),
+    //new MemoryPackMetaSerializer(),
     new MetaClientOptions
     {
         PlayerId = login.PlayerId,

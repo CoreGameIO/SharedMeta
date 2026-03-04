@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <PackageId>CoreGame.SharedMeta.Transport.SignalR.MessagePack</PackageId>
+    <IsPackable>true</IsPackable>
+    <Description>MessagePack protocol extension for SharedMeta SignalR transport. Provides AddMetaMessagePackProtocol() for both client (IHubConnectionBuilder) and server (ISignalRServerBuilder). No Orleans or server framework dependencies.</Description>
+    <PackageTags>gamedev;multiplayer;deterministic;meta;shared-logic;signalr;messagepack;transport</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharedMeta.Serialization.MessagePack\SharedMeta.Serialization.MessagePack.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" />
+  </ItemGroup>
+
+</Project>

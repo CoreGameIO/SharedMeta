@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <PackageId>CoreGame.SharedMeta.Transport.HttpPolling.Client</PackageId>
+    <IsPackable>true</IsPackable>
+    <Description>Client-only HTTP long-polling transport for SharedMeta. Provides HttpPollingConnection implementing IConnection using System.Net.Http.HttpClient. For Godot, console apps, and other non-Unity .NET clients.</Description>
+    <PackageTags>gamedev;multiplayer;deterministic;meta;shared-logic;http;polling;transport;client</PackageTags>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <!-- Link client-side source files from the full HttpPolling package -->
+  <ItemGroup>
+    <Compile Include="../SharedMeta.Transport.HttpPolling/HttpPollingConnection.cs" Link="HttpPollingConnection.cs" />
+    <Compile Include="../SharedMeta.Transport.HttpPolling/HttpPollingConnectionOptions.cs" Link="HttpPollingConnectionOptions.cs" />
+    <Compile Include="../SharedMeta.Transport.HttpPolling/HttpPollingDtos.cs" Link="HttpPollingDtos.cs" />
+    <Compile Include="../SharedMeta.Transport.HttpPolling/MetaJsonContext.cs" Link="MetaJsonContext.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharedMeta.Core\SharedMeta.Core.csproj" />
+  </ItemGroup>
+
+</Project>

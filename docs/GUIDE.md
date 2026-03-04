@@ -504,6 +504,16 @@ void RawMove([SkipTransform] Vector3 position); // No transformation
 
 ## 8. Transport Configuration
 
+Transport is split into **server** and **client** packages. Server packages include both endpoints and connection classes; client-only packages have no server dependencies (no Orleans, no ASP.NET FrameworkReference) and work with Godot, console apps, and other .NET clients.
+
+| Package | Type | Dependencies |
+|---------|------|-------------|
+| `SharedMeta.Transport.SignalR` | Server + client | Orleans, Server.Core, ASP.NET, MessagePack protocol |
+| `SharedMeta.Transport.SignalR.Client` | Client only | Core, SignalR.Client (JSON protocol by default) |
+| `SharedMeta.Transport.SignalR.MessagePack` | Protocol extension | Serialization.MessagePack, SignalR.Protocols.MessagePack |
+| `SharedMeta.Transport.HttpPolling` | Server + client | Orleans, Server.Core, ASP.NET |
+| `SharedMeta.Transport.HttpPolling.Client` | Client only | Core only (uses System.Net.Http.HttpClient) |
+
 ### SignalR (WebSocket)
 
 **Server:**
@@ -512,7 +522,7 @@ builder.Services.AddSignalR().AddMetaMessagePackProtocol();
 app.MapHub<MetaHub>("/meta");
 ```
 
-**Client:**
+**Client (JSON protocol — default, no extra packages):**
 ```csharp
 var connection = new SignalRConnection(
     serverUrl: "https://localhost:5001/meta",
@@ -520,10 +530,22 @@ var connection = new SignalRConnection(
 );
 ```
 
+**Client (MessagePack protocol — add `SharedMeta.Transport.SignalR.MessagePack`):**
+```csharp
+GeneratedMetaMessagePackConfiguration.Configure();  // auto-generated at startup
+var connection = new SignalRConnection(
+    serverUrl: "https://localhost:5001/meta",
+    accessToken: jwtToken,
+    configureBuilder: builder => builder.AddMetaMessagePackProtocol()
+);
+```
+
+The server supports both JSON and MessagePack protocols simultaneously (SignalR auto-negotiation). JSON clients work with MessagePack servers without configuration.
+
 Features:
 - Real-time bidirectional (WebSocket)
 - Auto-reconnect with exponential backoff: [0s, 2s, 5s, 10s, 30s]
-- MessagePack binary protocol (compact, supports byte[] as raw binary)
+- JSON protocol by default (zero extra dependencies), optional MessagePack (compact binary, raw byte[])
 
 ### HTTP Long-Polling
 
@@ -532,7 +554,7 @@ Features:
 app.MapMetaHttpEndpoints("/meta-http");
 ```
 
-**Client:**
+**Client (.NET — `SharedMeta.Transport.HttpPolling.Client`):**
 ```csharp
 var connection = new HttpPollingConnection(new HttpPollingConnectionOptions
 {
@@ -542,6 +564,15 @@ var connection = new HttpPollingConnection(new HttpPollingConnectionOptions
     MaxRetryDelay = TimeSpan.FromSeconds(30),
     InitialRetryDelay = TimeSpan.FromSeconds(1),
     AccessToken = jwtToken  // optional
+});
+```
+
+**Client (Unity — `UnityHttpConnection`):**
+```csharp
+var connection = new UnityHttpConnection(new UnityHttpConnectionOptions
+{
+    ServerUrl = "https://localhost:5001/meta-http",
+    AccessToken = jwtToken
 });
 ```
 
@@ -1005,10 +1036,25 @@ builder.Host.UseSerilog((ctx, config) => config
 
 ## 15. Client Setup
 
+### NuGet Packages for .NET Clients (Godot, Console, etc.)
+
+```xml
+<ItemGroup>
+  <PackageReference Include="CoreGame.SharedMeta.Core" Version="0.1.0" />
+  <PackageReference Include="CoreGame.SharedMeta.Client" Version="0.1.0" />
+  <PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.1.0" />
+  <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.Client" Version="0.1.0" />
+  <PackageReference Include="CoreGame.SharedMeta.Generator" Version="0.1.0"
+                    PrivateAssets="all" OutputItemType="analyzer" />
+  <!-- Optional: MessagePack protocol for SignalR (better performance) -->
+  <!-- <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.MessagePack" Version="0.1.0" /> -->
+</ItemGroup>
+```
+
 ### Basic Client
 
 ```csharp
-// Transport
+// Transport (JSON protocol by default)
 var connection = new SignalRConnection("https://localhost:5001/meta");
 
 // Serializer (must match server)

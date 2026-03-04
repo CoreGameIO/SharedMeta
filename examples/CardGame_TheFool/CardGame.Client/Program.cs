@@ -10,9 +10,6 @@ using SharedMeta.Core.Transport;
 
 Console.OutputEncoding = Encoding.UTF8;
 
-// Configure MessagePack with source-generated resolvers (must be before creating serializer/SignalR)
-GeneratedMetaMessagePackConfiguration.Configure();
-
 MetaLog.SetLogger(new ConsoleMetaLogger(MetaLogLevel.Info));
 
 // Connection state (shared across modes)

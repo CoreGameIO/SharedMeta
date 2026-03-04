@@ -18,15 +18,14 @@
   <ItemGroup>
     <ProjectReference Include="..\SharedMeta.Core\SharedMeta.Core.csproj" />
     <ProjectReference Include="..\SharedMeta.Orleans\SharedMeta.Orleans.csproj" />
-    <ProjectReference Include="..\SharedMeta.Serialization.MessagePack\SharedMeta.Serialization.MessagePack.csproj" />
     <ProjectReference Include="..\SharedMeta.Server.Core\SharedMeta.Server.Core.csproj" />
+    <!-- MessagePack protocol extensions (client-side extension available transitively) -->
+    <ProjectReference Include="..\SharedMeta.Transport.SignalR.MessagePack\SharedMeta.Transport.SignalR.MessagePack.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- Client-side SignalR -->
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />
-    <!-- MessagePack protocol for SignalR (binary, compact, byte[] as raw binary) -->
-    <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" />
     <!-- Server-side SignalR (for MetaHub) -->
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>

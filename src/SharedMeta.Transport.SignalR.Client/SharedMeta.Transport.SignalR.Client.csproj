@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <PackageId>CoreGame.SharedMeta.Transport.SignalR.Client</PackageId>
+    <IsPackable>true</IsPackable>
+    <Description>Client-only SignalR transport for SharedMeta. Provides SignalRConnection implementing IConnection. Uses JSON protocol by default (no extra dependencies). For Godot, console apps, and other non-Unity .NET clients.</Description>
+    <PackageTags>gamedev;multiplayer;deterministic;meta;shared-logic;signalr;websocket;transport;client</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharedMeta.Core\SharedMeta.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />
+  </ItemGroup>
+
+</Project>

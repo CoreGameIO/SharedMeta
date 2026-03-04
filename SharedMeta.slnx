@@ -23,7 +23,9 @@
     <Project Path="src/SharedMeta.Serialization.MessagePack/SharedMeta.Serialization.MessagePack.csproj" />
     <Project Path="src/SharedMeta.Server.Core/SharedMeta.Server.Core.csproj" />
     <Project Path="src/SharedMeta.Server/SharedMeta.Server.csproj" />
+    <Project Path="src/SharedMeta.Transport.HttpPolling.Client/SharedMeta.Transport.HttpPolling.Client.csproj" />
     <Project Path="src/SharedMeta.Transport.HttpPolling/SharedMeta.Transport.HttpPolling.csproj" />
+    <Project Path="src/SharedMeta.Transport.SignalR.Client/SharedMeta.Transport.SignalR.Client.csproj" />
     <Project Path="src/SharedMeta.Transport.SignalR/SharedMeta.Transport.SignalR.csproj" />
   </Folder>
   <Folder Name="/tests/">

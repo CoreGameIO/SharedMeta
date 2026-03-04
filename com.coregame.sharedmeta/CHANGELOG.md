@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.0] - 2026-03-03
+
+### Added
+- Client-only NuGet transport packages for Godot / .NET clients:
+  - `CoreGame.SharedMeta.Transport.SignalR.Client` — SignalR with JSON protocol (no server deps)
+  - `CoreGame.SharedMeta.Transport.HttpPolling.Client` — HTTP polling with HttpClient (no server deps)
+  - `CoreGame.SharedMeta.Transport.SignalR.MessagePack` — optional MessagePack protocol extension
+- `SignalRConnection` `configureBuilder` callback for custom protocol configuration
+
+### Fixed
+- Subscriber broadcast dispatchers now call service methods to update client state (not just fire events)
+
+### Changed
+- Server-side `SharedMeta.Transport.SignalR` refactored to use `SharedMeta.Transport.SignalR.MessagePack` for protocol extensions
+
 ## [0.1.0] - 2026-03-03
 
 ### Added

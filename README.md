@@ -63,11 +63,32 @@ dotnet run
 
 Press Play in Unity — `MetaGameClient` connects automatically.
 
-### Quick Start (.NET only)
+### Quick Start (.NET Client — Godot, Console, etc.)
+
+Add NuGet packages to your `.csproj`:
+```xml
+<ItemGroup>
+  <PackageReference Include="CoreGame.SharedMeta.Core" Version="0.2.0" />
+  <PackageReference Include="CoreGame.SharedMeta.Client" Version="0.2.0" />
+  <PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.2.0" />
+  <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.Client" Version="0.2.0" />
+  <PackageReference Include="CoreGame.SharedMeta.Generator" Version="0.2.0"
+                    PrivateAssets="all" OutputItemType="analyzer" />
+</ItemGroup>
+```
+
+Client transport packages have no server dependencies (no Orleans, no ASP.NET). Works with Godot (`Godot.NET.Sdk`), console apps, or any `net8.0+` project.
+
+For MessagePack SignalR protocol (optional, better performance):
+```xml
+<PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.MessagePack" Version="0.2.0" />
+```
+
+### Quick Start (examples)
 
 ```bash
-dotnet build SharedMeta.sln
 dotnet run --project examples/CardGame_TheFool/CardGame.Server
+dotnet run --project examples/CardGame_TheFool/CardGame.Client
 ```
 
 ## Architecture
@@ -249,8 +270,11 @@ Single-player dungeon exploration with procedural map generation. Demonstrates: 
 | `src/SharedMeta.Server/` | Server-side meta context and cross-entity calls |
 | `src/SharedMeta.Server.Core/` | EntityGrain, MetaProvider, file storage, session management |
 | `src/SharedMeta.Orleans/` | Orleans grain integration |
-| `src/SharedMeta.Transport.SignalR/` | SignalR WebSocket transport |
-| `src/SharedMeta.Transport.HttpPolling/` | HTTP long-polling transport |
+| `src/SharedMeta.Transport.SignalR/` | SignalR transport — server (MetaHub) + MessagePack protocol |
+| `src/SharedMeta.Transport.SignalR.Client/` | SignalR client-only (JSON default, no server deps) |
+| `src/SharedMeta.Transport.SignalR.MessagePack/` | MessagePack protocol extension for SignalR |
+| `src/SharedMeta.Transport.HttpPolling/` | HTTP polling transport — server endpoints |
+| `src/SharedMeta.Transport.HttpPolling.Client/` | HTTP polling client-only (HttpClient, no server deps) |
 | `src/SharedMeta.Auth/` | JWT authentication middleware |
 | `examples/` | CardGame_TheFool, Expedition — full working examples |
 | `tests/` | Integration and unit tests |
