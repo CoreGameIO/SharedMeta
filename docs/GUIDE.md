@@ -514,6 +514,15 @@ Transport is split into **server** and **client** packages. Server packages incl
 | `SharedMeta.Transport.HttpPolling` | Server + client | Orleans, Server.Core, ASP.NET |
 | `SharedMeta.Transport.HttpPolling.Client` | Client only | Core only (uses System.Net.Http.HttpClient) |
 
+**Unity (BestHTTP) — included in UPM package:**
+
+| Transport | Location | Protocol |
+|-----------|----------|----------|
+| `BestHttpSignalRConnection` | `Runtime/Transport/BestHttpSignalR/` | SignalR via BestHTTP (WebSocket, all platforms incl. WebGL) |
+| `BestHttpPollingConnection` | `Runtime/Transport/BestHttp/` | HTTP long-polling via BestHTTP |
+
+BestHTTP transports require the [Best HTTP](https://assetstore.unity.com/packages/tools/network/best-http-2-155981) Unity asset. They are compiled conditionally via assembly definition `defineConstraints` — no compilation errors if BestHTTP is not installed.
+
 ### SignalR (WebSocket)
 
 **Server:**
@@ -589,6 +598,44 @@ Endpoints:
 | POST | `/disconnect` | Transport disconnect |
 
 Connection identified by `X-Connection-Id` header. Server-side inactivity timeout: 2 minutes.
+
+### BestHTTP SignalR (Unity — all platforms incl. WebGL)
+
+Requires the BestHTTP Unity asset. Uses `BestHTTP.SignalRCore.HubConnection` internally; wraps IFuture-based API with `TaskCompletionSource` for async/await compatibility.
+
+**JSON protocol (default):**
+```csharp
+var connection = new BestHttpSignalRConnection(
+    serverUrl: "https://localhost:5001/meta",
+    accessToken: jwtToken  // optional
+);
+```
+
+**MessagePack protocol:**
+
+Requires scripting define `BESTHTTP_SIGNALR_CORE_ENABLE_MESSAGEPACK_CSHARP` and MessagePack NuGet. Set `MessagePackSerializer.DefaultOptions` before connecting:
+```csharp
+MessagePackSerializer.DefaultOptions = MetaMessagePackOptions.Instance;
+
+var connection = new BestHttpSignalRConnection(new BestHttpSignalRConnectionOptions
+{
+    ServerUrl = "https://localhost:5001/meta",
+    AccessToken = jwtToken,
+    Protocol = new MessagePackCSharpProtocol()
+});
+```
+
+**LitJson type registrations:** The static constructor of `BestHttpSignalRConnection` registers custom importers/exporters for `Guid` (string) and `byte[]` (base64) in LitJson, ensuring compatibility with server-side `System.Text.Json`.
+
+### BestHTTP HTTP Polling (Unity)
+
+```csharp
+var connection = new BestHttpPollingConnection(new BestHttpPollingConnectionOptions
+{
+    ServerUrl = "https://localhost:5001/meta-http",
+    AccessToken = jwtToken  // optional
+});
+```
 
 ### InProcess (Testing)
 
@@ -1040,18 +1087,28 @@ builder.Host.UseSerilog((ctx, config) => config
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="CoreGame.SharedMeta.Core" Version="0.1.0" />
-  <PackageReference Include="CoreGame.SharedMeta.Client" Version="0.1.0" />
-  <PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.1.0" />
-  <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.Client" Version="0.1.0" />
-  <PackageReference Include="CoreGame.SharedMeta.Generator" Version="0.1.0"
+  <PackageReference Include="CoreGame.SharedMeta.Core" Version="0.2.0" />
+  <PackageReference Include="CoreGame.SharedMeta.Client" Version="0.2.0" />
+  <PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.2.0" />
+  <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.Client" Version="0.2.0" />
+  <PackageReference Include="CoreGame.SharedMeta.Generator" Version="0.2.0"
                     PrivateAssets="all" OutputItemType="analyzer" />
   <!-- Optional: MessagePack protocol for SignalR (better performance) -->
-  <!-- <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.MessagePack" Version="0.1.0" /> -->
+  <!-- <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.MessagePack" Version="0.2.0" /> -->
 </ItemGroup>
 ```
 
-### Basic Client
+### Unity Client (BestHTTP)
+
+For Unity projects, transports are included in the UPM package (`com.coregame.sharedmeta`). Use the **SharedMeta Project Wizard** (Window > SharedMeta > Project Wizard) to generate client code with the correct transport configuration.
+
+Available Unity transports:
+- **BestHTTP SignalR** — WebSocket-based, works on all platforms including WebGL. Requires BestHTTP asset.
+- **BestHTTP HTTP Polling** — HTTP long-polling via BestHTTP. Universal compatibility.
+- **SignalR (Microsoft)** — Standard .NET SignalR client. Requires `HAS_SIGNALR` scripting define and SignalR DLLs.
+- **HTTP (UnityWebRequest)** — Uses `UnityHttpConnection` with Newtonsoft.Json. Requires `com.unity.nuget.newtonsoft-json`.
+
+### Basic Client (.NET)
 
 ```csharp
 // Transport (JSON protocol by default)

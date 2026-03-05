@@ -10,6 +10,6 @@
     <PackageTags>gamedev;multiplayer;deterministic;meta;shared-logic;orleans</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- Version set by CI via /p:Version= or defaults to local dev -->
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
   </PropertyGroup>
 </Project>

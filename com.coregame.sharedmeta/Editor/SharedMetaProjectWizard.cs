@@ -79,7 +79,12 @@ namespace SharedMeta.Editor
         private WizardMode _wizardMode = WizardMode.Interactive;
         private int _currentStep; // 0-5
 
-        private static readonly string[] TransportOptions = { "SignalR", "HTTP Polling" };
+        private static readonly string[] TransportOptions = { "SignalR", "HTTP Polling", "BestHttp SignalR", "BestHttp HTTP" };
+
+        // Helper: is the server using SignalR (indices 0, 2) or HTTP Polling (indices 1, 3)?
+        private bool IsServerSignalR => _transportIndex == 0 || _transportIndex == 2;
+        private bool IsBestHttpTransport => _transportIndex >= 2;
+        private bool IsBestHttpSignalRMessagePack => _transportIndex == 2 && _serializerIndex == 1;
         private static readonly string[] SerializerOptions = { "MemoryPack", "MessagePack" };
         private static readonly string[] TemplateOptions = {
             "Simple Profile",
@@ -364,15 +369,19 @@ namespace SharedMeta.Editor
                     GUILayout.Label("Installed", EditorStyles.boldLabel, GUILayout.Width(80));
                     break;
                 case PackageStatus.NotInstalled:
-                    if (_transportIndex == 1)
+                    if (_transportIndex == 1) // HTTP Polling — auto-install Newtonsoft.Json
                     {
                         if (GUILayout.Button("Install", GUILayout.Width(80)))
                             InstallTransportPackage();
                     }
-                    else
+                    else if (_transportIndex == 0) // SignalR — manual install
                     {
                         if (GUILayout.Button("Install", GUILayout.Width(80)))
                             ShowSignalRInstallDialog();
+                    }
+                    else // BestHttp — manual install from Asset Store
+                    {
+                        GUILayout.Label("Not Found", GUILayout.Width(80));
                     }
                     break;
                 case PackageStatus.Checking:
@@ -392,11 +401,19 @@ namespace SharedMeta.Editor
             GUI.color = prevColor;
             EditorGUILayout.EndHorizontal();
 
-            if (_transportIndex == 0 && _transportPkgStatus == PackageStatus.NotInstalled)
-                EditorGUILayout.HelpBox(
-                    "Install Microsoft.AspNetCore.SignalR.Client via NuGetForUnity or place DLLs in Assets/Plugins/.\n" +
-                    "The HAS_SIGNALR scripting define will be added automatically when detected.",
-                    MessageType.Info);
+            if (_transportPkgStatus == PackageStatus.NotInstalled)
+            {
+                if (_transportIndex == 0)
+                    EditorGUILayout.HelpBox(
+                        "Install Microsoft.AspNetCore.SignalR.Client via NuGetForUnity or place DLLs in Assets/Plugins/.\n" +
+                        "The HAS_SIGNALR scripting define will be added automatically when detected.",
+                        MessageType.Info);
+                else if (_transportIndex >= 2)
+                    EditorGUILayout.HelpBox(
+                        "BestHTTP2 not detected. Import the BestHTTP2 .unitypackage into your project.\n" +
+                        "The HAS_BESTHTTP scripting define will be added automatically when the BestHTTP assembly is detected.",
+                        MessageType.Info);
+            }
 
             if (_transportPkgStatus == PackageStatus.Error && !string.IsNullOrEmpty(_transportPkgError))
                 EditorGUILayout.HelpBox(_transportPkgError, MessageType.Error);
@@ -1415,7 +1432,7 @@ namespace SharedMeta.Editor
             sb.AppendLine("    <PackageReference Include=\"CoreGame.SharedMeta.Server.Core\" />");
             sb.AppendLine("    <PackageReference Include=\"CoreGame.SharedMeta.Orleans\" />");
 
-            if (_transportIndex == 0)
+            if (IsServerSignalR)
                 sb.AppendLine("    <PackageReference Include=\"CoreGame.SharedMeta.Transport.SignalR\" />");
             else
                 sb.AppendLine("    <PackageReference Include=\"CoreGame.SharedMeta.Transport.HttpPolling\" />");
@@ -1463,7 +1480,7 @@ namespace SharedMeta.Editor
             else
                 sb.AppendLine("using SharedMeta.Serialization.MessagePack;");
 
-            if (_transportIndex == 0)
+            if (IsServerSignalR)
                 sb.AppendLine("using SharedMeta.Transport.SignalR;");
             else
                 sb.AppendLine("using SharedMeta.Transport.HttpPolling;");
@@ -1531,7 +1548,7 @@ namespace SharedMeta.Editor
             sb.AppendLine();
 
             // Transport
-            if (_transportIndex == 0)
+            if (IsServerSignalR)
             {
                 sb.AppendLine("// SignalR with MessagePack binary protocol");
                 sb.AppendLine("builder.Services.AddSignalR(hubOptions =>");
@@ -1600,7 +1617,7 @@ namespace SharedMeta.Editor
             sb.AppendLine();
 
             // Map transport endpoints
-            if (_transportIndex == 0)
+            if (IsServerSignalR)
             {
                 sb.AppendLine("app.MapHub<MetaHub>(\"/meta\");");
             }
@@ -1673,7 +1690,14 @@ namespace SharedMeta.Editor
             sb.AppendLine("using System;");
             sb.AppendLine("using UnityEngine;");
             sb.AppendLine("using SharedMeta.Client;");
-            sb.AppendLine("using SharedMeta.Client.Network;");
+            if (IsBestHttpTransport)
+            {
+                sb.AppendLine("using SharedMeta.Transport.BestHttp;");
+                if (IsBestHttpSignalRMessagePack)
+                    sb.AppendLine("using BestHTTP.SignalRCore.Encoders;");
+            }
+            else
+                sb.AppendLine("using SharedMeta.Client.Network;");
             sb.AppendLine("using SharedMeta.Core;");
             sb.AppendLine("using SharedMeta.Core.Logging;");
             sb.AppendLine("using SharedMeta.Core.Transport;");
@@ -1681,7 +1705,11 @@ namespace SharedMeta.Editor
             if (_serializerIndex == 0)
                 sb.AppendLine("using SharedMeta.Serialization.MemoryPack;");
             else
+            {
                 sb.AppendLine("using SharedMeta.Serialization.MessagePack;");
+                if (IsBestHttpSignalRMessagePack)
+                    sb.AppendLine("using MessagePack;");
+            }
 
             sb.AppendLine($"using {_sharedProjectName}.Client;");
 
@@ -1703,16 +1731,37 @@ namespace SharedMeta.Editor
             sb.AppendLine();
 
             // Create connection
-            if (_transportIndex == 0) // SignalR
+            switch (_transportIndex)
             {
-                sb.AppendLine("        var connection = new SignalRConnection(serverUrl);");
-            }
-            else // HTTP Polling
-            {
-                sb.AppendLine("        var connection = new UnityHttpConnection(new UnityHttpConnectionOptions");
-                sb.AppendLine("        {");
-                sb.AppendLine("            ServerUrl = serverUrl");
-                sb.AppendLine("        });");
+                case 0: // SignalR
+                    sb.AppendLine("        var connection = new SignalRConnection(serverUrl);");
+                    break;
+                case 1: // HTTP Polling (UnityWebRequest)
+                    sb.AppendLine("        var connection = new UnityHttpConnection(new UnityHttpConnectionOptions");
+                    sb.AppendLine("        {");
+                    sb.AppendLine("            ServerUrl = serverUrl");
+                    sb.AppendLine("        });");
+                    break;
+                case 2: // BestHttp SignalR
+                    if (_serializerIndex == 1) // MessagePack — use binary SignalR protocol
+                    {
+                        sb.AppendLine("        var connection = new BestHttpSignalRConnection(new BestHttpSignalRConnectionOptions");
+                        sb.AppendLine("        {");
+                        sb.AppendLine("            ServerUrl = serverUrl,");
+                        sb.AppendLine("            Protocol = new MessagePackCSharpProtocol()");
+                        sb.AppendLine("        });");
+                    }
+                    else
+                    {
+                        sb.AppendLine("        var connection = new BestHttpSignalRConnection(serverUrl);");
+                    }
+                    break;
+                case 3: // BestHttp HTTP
+                    sb.AppendLine("        var connection = new BestHttpPollingConnection(new BestHttpPollingConnectionOptions");
+                    sb.AppendLine("        {");
+                    sb.AppendLine("            ServerUrl = serverUrl");
+                    sb.AppendLine("        });");
+                    break;
             }
             sb.AppendLine();
 
@@ -1721,6 +1770,11 @@ namespace SharedMeta.Editor
             {
                 sb.AppendLine("        // Configure MessagePack composite resolver (auto-generated)");
                 sb.AppendLine("        GeneratedMetaMessagePackConfiguration.Configure();");
+                if (IsBestHttpSignalRMessagePack)
+                {
+                    sb.AppendLine("        // BestHTTP MessagePackCSharpProtocol uses MessagePackSerializer.DefaultOptions");
+                    sb.AppendLine("        MessagePackSerializer.DefaultOptions = MetaMessagePackOptions.Instance;");
+                }
             }
             if (_serializerIndex == 0)
                 sb.AppendLine("        var serializer = new MemoryPackMetaSerializer();");
@@ -1850,15 +1904,29 @@ namespace SharedMeta.Editor
             sb.Append("        \"SharedMeta.Runtime\"");
 
             // Transport
-            if (_transportIndex == 0)
+            switch (_transportIndex)
             {
-                sb.AppendLine(",");
-                sb.Append("        \"SharedMeta.Transport.SignalR.Client\"");
-            }
-            else
-            {
-                sb.AppendLine(",");
-                sb.Append("        \"SharedMeta.Transport.Http\"");
+                case 0: // SignalR
+                    sb.AppendLine(",");
+                    sb.Append("        \"SharedMeta.Transport.SignalR.Client\"");
+                    break;
+                case 1: // HTTP Polling
+                    sb.AppendLine(",");
+                    sb.Append("        \"SharedMeta.Transport.Http\"");
+                    break;
+                case 2: // BestHttp SignalR
+                    sb.AppendLine(",");
+                    sb.Append("        \"SharedMeta.Transport.BestHttp.SignalR\"");
+                    if (IsBestHttpSignalRMessagePack)
+                    {
+                        sb.AppendLine(",");
+                        sb.Append("        \"BestHTTP\""); // for MessagePackCSharpProtocol
+                    }
+                    break;
+                case 3: // BestHttp HTTP
+                    sb.AppendLine(",");
+                    sb.Append("        \"SharedMeta.Transport.BestHttp\"");
+                    break;
             }
 
             // Serializer
@@ -1936,7 +2004,7 @@ namespace SharedMeta.Editor
                     if (_serializerPkgStatus == PackageStatus.Installed)
                         EnsureSerializerDefine();
 
-                    // Also check HTTP transport dependency if pending
+                    // Also check HTTP transport dependency if pending (only index 1 uses UPM check)
                     if (_transportIndex == 1 && _transportPkgStatus == PackageStatus.Checking)
                     {
                         _transportPkgStatus = _listRequest.Result.Any(p => p.name == "com.unity.nuget.newtonsoft-json")
@@ -2167,34 +2235,53 @@ namespace SharedMeta.Editor
 
         // ─── Transport Dependency ────────────────────────────────────────
 
-        private string GetTransportDependencyLabel() => _transportIndex == 0
-            ? "SignalR Client"
-            : "Newtonsoft.Json (com.unity.nuget.newtonsoft-json)";
+        private string GetTransportDependencyLabel() => _transportIndex switch
+        {
+            0 => "SignalR Client",
+            1 => "Newtonsoft.Json (com.unity.nuget.newtonsoft-json)",
+            2 or 3 => "BestHTTP2",
+            _ => "Transport"
+        };
 
         private void CheckTransportDependency()
         {
             _lastCheckedTransportIndex = _transportIndex;
             _transportPkgError = "";
 
-            if (_transportIndex == 0) // SignalR — detect DLLs via loaded assemblies
+            switch (_transportIndex)
             {
-                var found = IsAssemblyLoaded("Microsoft.AspNetCore.SignalR.Client");
-                _transportPkgStatus = found ? PackageStatus.Installed : PackageStatus.NotInstalled;
-                if (found)
-                    EnsureSignalRDefine();
-            }
-            else // HTTP Polling — check UPM package
-            {
-                _transportPkgStatus = PackageStatus.Checking;
-                // Piggyback on the shared list request (started by CheckSerializerPackage or here)
-                if (_listRequest == null)
-                    _listRequest = Client.List();
+                case 0: // SignalR — detect DLLs via loaded assemblies
+                {
+                    var found = IsAssemblyLoaded("Microsoft.AspNetCore.SignalR.Client");
+                    _transportPkgStatus = found ? PackageStatus.Installed : PackageStatus.NotInstalled;
+                    if (found)
+                        EnsureSignalRDefine();
+                    break;
+                }
+                case 1: // HTTP Polling — check UPM package (Newtonsoft.Json)
+                    _transportPkgStatus = PackageStatus.Checking;
+                    if (_listRequest == null)
+                        _listRequest = Client.List();
+                    break;
+                case 2: // BestHttp SignalR — detect via loaded assemblies (.unitypackage)
+                case 3: // BestHttp HTTP — same assembly
+                {
+                    var found = IsBestHttpDetected();
+                    _transportPkgStatus = found ? PackageStatus.Installed : PackageStatus.NotInstalled;
+                    if (found)
+                    {
+                        EnsureScriptingDefine("HAS_BESTHTTP");
+                        if (IsBestHttpSignalRMessagePack)
+                            EnsureScriptingDefine("BESTHTTP_SIGNALR_CORE_ENABLE_MESSAGEPACK_CSHARP");
+                    }
+                    break;
+                }
             }
         }
 
         private void InstallTransportPackage()
         {
-            if (_transportIndex != 1) return; // Only HTTP can auto-install
+            if (_transportIndex != 1) return; // Only HTTP (Newtonsoft) can auto-install
 
             if (!EditorUtility.DisplayDialog("Install Package",
                 "Install Newtonsoft.Json (com.unity.nuget.newtonsoft-json)?\n\nRequired for HTTP Polling transport.",
@@ -2315,6 +2402,18 @@ namespace SharedMeta.Editor
         {
             EnsureScriptingDefine("HAS_SIGNALR");
         }
+
+        /// <summary>
+        /// Detects BestHTTP2 core (com.tivadar.best.http) — installed as .unitypackage or UPM.
+        /// Checks multiple known assembly names to handle different BestHTTP2 versions.
+        /// </summary>
+        private static bool IsBestHttpDetected()
+        {
+            return IsAssemblyLoaded("BestHTTP");
+        }
+
+        // BestHTTP bundles SignalR in the same assembly, so detection is identical.
+        private static bool IsBestHttpSignalRDetected() => IsBestHttpDetected();
 
         private void EnsureSerializerDefine()
         {
@@ -2912,23 +3011,8 @@ For full documentation see: https://github.com/CoreGameIO/SharedMeta
         /// </summary>
         private string ResolveSharedMetaPackageVersion()
         {
-            if (_useLocalNuget && !string.IsNullOrEmpty(_localNugetPath))
-            {
-                var nugetDir = ResolveOutputDir(_localNugetPath);
-                if (Directory.Exists(nugetDir))
-                {
-                    // Look for CoreGame.SharedMeta.Core.*.nupkg to extract version
-                    var files = Directory.GetFiles(nugetDir, "CoreGame.SharedMeta.Core.*.nupkg");
-                    if (files.Length > 0)
-                    {
-                        var fileName = Path.GetFileNameWithoutExtension(files[0]);
-                        // CoreGame.SharedMeta.Core.0.1.0-local → 0.1.0-local
-                        const string prefix = "CoreGame.SharedMeta.Core.";
-                        if (fileName.StartsWith(prefix))
-                            return fileName.Substring(prefix.Length);
-                    }
-                }
-            }
+            // _sharedMetaVersion is the user-visible version field (auto-detected on init, editable in UI).
+            // Always use it — it's the authoritative source for package version.
             return _sharedMetaVersion;
         }
 
@@ -2966,7 +3050,7 @@ For full documentation see: https://github.com/CoreGameIO/SharedMeta
                 sb.AppendLine($"    <PackageVersion Include=\"CoreGame.SharedMeta.Server.Core\" Version=\"{ver}\" />");
                 sb.AppendLine($"    <PackageVersion Include=\"CoreGame.SharedMeta.Orleans\" Version=\"{ver}\" />");
 
-                if (_transportIndex == 0)
+                if (IsServerSignalR)
                     sb.AppendLine($"    <PackageVersion Include=\"CoreGame.SharedMeta.Transport.SignalR\" Version=\"{ver}\" />");
                 else
                     sb.AppendLine($"    <PackageVersion Include=\"CoreGame.SharedMeta.Transport.HttpPolling\" Version=\"{ver}\" />");
@@ -3014,6 +3098,7 @@ For full documentation see: https://github.com/CoreGameIO/SharedMeta
         {
             var content = File.ReadAllText(propsPath);
             var ver = ResolveSharedMetaPackageVersion();
+            var modified = false;
 
             var packages = new System.Collections.Generic.List<string>
             {
@@ -3028,7 +3113,7 @@ For full documentation see: https://github.com/CoreGameIO/SharedMeta
                 packages.Add("CoreGame.SharedMeta.Server.Core");
                 packages.Add("CoreGame.SharedMeta.Orleans");
 
-                packages.Add(_transportIndex == 0
+                packages.Add(IsServerSignalR
                     ? "CoreGame.SharedMeta.Transport.SignalR"
                     : "CoreGame.SharedMeta.Transport.HttpPolling");
 
@@ -3040,23 +3125,55 @@ For full documentation see: https://github.com/CoreGameIO/SharedMeta
                     packages.Add("CoreGame.SharedMeta.Auth");
             }
 
+            // Update existing SharedMeta entries to the current version
+            foreach (var pkg in packages)
+            {
+                var pattern = $"Include=\"{pkg}\" Version=\"";
+                var idx = content.IndexOf(pattern, StringComparison.Ordinal);
+                if (idx >= 0)
+                {
+                    var verStart = idx + pattern.Length;
+                    var verEnd = content.IndexOf('"', verStart);
+                    if (verEnd > verStart)
+                    {
+                        var existingVer = content.Substring(verStart, verEnd - verStart);
+                        if (existingVer != ver)
+                        {
+                            content = content.Substring(0, verStart) + ver + content.Substring(verEnd);
+                            modified = true;
+                        }
+                    }
+                }
+            }
+
+            // Also ensure the raw serializer NuGet package is present
+            var serializerPkg = _serializerIndex == 0 ? "MemoryPack" : "MessagePack";
+            var serializerVer = _serializerIndex == 0 ? "1.21.4" : "3.1.4";
+
             var linesToAdd = new StringBuilder();
             foreach (var pkg in packages)
             {
                 if (!content.Contains($"\"{pkg}\""))
                     linesToAdd.AppendLine($"    <PackageVersion Include=\"{pkg}\" Version=\"{ver}\" />");
             }
+            if (!content.Contains($"\"{serializerPkg}\""))
+                linesToAdd.AppendLine($"    <PackageVersion Include=\"{serializerPkg}\" Version=\"{serializerVer}\" />");
 
-            if (linesToAdd.Length == 0) return;
+            if (linesToAdd.Length > 0)
+            {
+                // Insert before the last </ItemGroup>
+                var insertIndex = content.LastIndexOf("</ItemGroup>", StringComparison.Ordinal);
+                if (insertIndex >= 0)
+                {
+                    content = content.Insert(insertIndex,
+                        "\n    <!-- SharedMeta (auto-added by Wizard) -->\n" + linesToAdd.ToString());
+                    modified = true;
+                }
+            }
 
-            // Insert before the last </ItemGroup>
-            var insertIndex = content.LastIndexOf("</ItemGroup>", StringComparison.Ordinal);
-            if (insertIndex < 0) return;
+            if (!modified) return;
 
-            var newContent = content.Insert(insertIndex,
-                "\n    <!-- SharedMeta (auto-added by Wizard) -->\n" + linesToAdd.ToString());
-
-            File.WriteAllText(propsPath, newContent, Encoding.UTF8);
+            File.WriteAllText(propsPath, content, Encoding.UTF8);
             Debug.Log($"[SharedMeta] Updated {propsPath} with SharedMeta package versions");
         }
 
@@ -3158,7 +3275,7 @@ For full documentation see: https://github.com/CoreGameIO/SharedMeta
                 }
             }
 
-            return "0.1.0";
+            return "0.2.0";
         }
 
         // ─── Settings persistence (ProjectSettings/SharedMetaSettings.asset) ───

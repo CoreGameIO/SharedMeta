@@ -23,7 +23,7 @@ echo "════════════════════════�
 echo "  SharedMeta NuGet Pack"
 if [ -n "$VERSION" ]; then
     echo "  Version: $VERSION (override)"
-    VERSION_ARG="/p:Version=$VERSION"
+    VERSION_ARG="-p:Version=$VERSION"
 else
     echo "  Version: from Directory.Build.props"
     VERSION_ARG=""
