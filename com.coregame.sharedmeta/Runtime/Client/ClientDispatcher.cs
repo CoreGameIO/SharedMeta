@@ -212,18 +212,17 @@ namespace SharedMeta.Client
                 // Top-level transport error (server rejected before producing any ops)
                 if (response.HasError)
                 {
+                    lock (_lock) { _pendingRequests.Remove(pending.RequestId); }
+
                     // Detect session supersede from RPC rejection (defense-in-depth:
                     // the transport's OnSessionTerminated event may be lost)
                     if (response.Error != null && response.Error.Contains("superseded", StringComparison.OrdinalIgnoreCase))
                     {
+                        pending.Tcs.TrySetException(new InvalidOperationException(response.Error));
                         HandleSessionTerminated(response.Error);
                         return;
                     }
 
-                    lock (_lock)
-                    {
-                        _pendingRequests.Remove(pending.RequestId);
-                    }
                     pending.Tcs.TrySetException(
                         new InvalidOperationException($"RPC call failed: {response.Error}"));
                     return;
@@ -234,9 +233,11 @@ namespace SharedMeta.Client
             }
             catch (Exception ex)
             {
-                // Connection error - don't fail TCS immediately, keep for reconnect
-                // Only fail if session is terminated or timeout exceeded
-                MetaLog.Warning($"[ClientDispatcher] RPC call failed, keeping pending for reconnect: {ex.Message}");
+                // Transport error — request may or may not have reached the server.
+                // Keep pending for reconnect: ResendPendingRequestsAsync will re-send,
+                // and server idempotency (by requestId) prevents duplicates.
+                // If session terminates, HandleSessionTerminated will fail all pending TCS.
+                MetaLog.Warning($"[ClientDispatcher] RPC transport error (keeping pending for reconnect): {ex.Message}");
             }
         }
 
@@ -386,16 +387,15 @@ namespace SharedMeta.Client
                 // Top-level transport error
                 if (response.HasError)
                 {
+                    lock (_lock) { _pendingRequests.Remove(pending.RequestId); }
+
                     if (response.Error != null && response.Error.Contains("superseded", StringComparison.OrdinalIgnoreCase))
                     {
+                        pending.Tcs.TrySetException(new InvalidOperationException(response.Error));
                         HandleSessionTerminated(response.Error);
                         return;
                     }
 
-                    lock (_lock)
-                    {
-                        _pendingRequests.Remove(pending.RequestId);
-                    }
                     pending.Tcs.TrySetException(
                         new InvalidOperationException($"RPC call failed: {response.Error}"));
                     return;
@@ -406,8 +406,8 @@ namespace SharedMeta.Client
             }
             catch (Exception ex)
             {
-                MetaLog.Warning($"[ClientDispatcher] Re-send failed for request {pending.RequestId}: {ex.Message}");
-                // Still keep pending for next reconnect attempt
+                // Transport error on re-send — keep pending for next reconnect attempt.
+                MetaLog.Warning($"[ClientDispatcher] Re-send transport error (keeping pending): {ex.Message}");
             }
         }
 
