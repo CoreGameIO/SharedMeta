@@ -105,6 +105,13 @@ namespace SharedMeta.Core
         public IMetaLogger Log { get; set; } = NullMetaLogger.Instance;
 
         /// <summary>
+        /// Static game configuration for this entity.
+        /// Provided by IMetaConfigProvider on server, sent to client on subscribe.
+        /// Access the typed config via generated Context.Config property in service implementations.
+        /// </summary>
+        public object? Config { get; set; }
+
+        /// <summary>
         /// Patch wrapper for ServerPatch mode. Non-null when patch tracking is active.
         /// The actual type is generated (e.g., GameStatePatchWrapper).
         /// </summary>

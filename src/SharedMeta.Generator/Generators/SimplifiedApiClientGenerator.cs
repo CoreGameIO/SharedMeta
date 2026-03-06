@@ -131,6 +131,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        private readonly IDesyncDiagnostics? _diagnostics;");
             sb.AppendLine("        private readonly ICrossEntityResolver? _crossEntityResolver;");
             sb.AppendLine("        private MetaRandom? _optimisticRandom;");
+            sb.AppendLine("        private readonly object? _config;");
             sb.AppendLine($"        private const string ServiceName = \"{interfaceName}\";");
             sb.AppendLine();
 
@@ -198,7 +199,8 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            IExecutionModeProvider modeProvider,");
             sb.AppendLine($"            IDesyncDiagnostics? diagnostics = null,");
             sb.AppendLine($"            ICrossEntityResolver? crossEntityResolver = null,");
-            sb.AppendLine($"            MetaRandom? optimisticRandom = null)");
+            sb.AppendLine($"            MetaRandom? optimisticRandom = null,");
+            sb.AppendLine($"            object? config = null)");
             sb.AppendLine("        {");
             sb.AppendLine("            _network = network;");
             sb.AppendLine("            _serializer = serializer;");
@@ -207,6 +209,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            _diagnostics = diagnostics;");
             sb.AppendLine("            _crossEntityResolver = crossEntityResolver;");
             sb.AppendLine("            _optimisticRandom = optimisticRandom;");
+            sb.AppendLine("            _config = config;");
             sb.AppendLine($"            _service = new {namespaceName}.{implClassName}();");
             sb.AppendLine();
             sb.AppendLine("            _network.OnBroadcast += HandleBroadcast;");
@@ -530,6 +533,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            ctx.CallerId = _network.PlayerId;");
             sb.AppendLine("            ctx.ServerTimeTicks = serverTimeTicks;");
             sb.AppendLine("            ctx.Random = _optimisticRandom;");
+            sb.AppendLine("            ctx.Config = _config;");
             sb.AppendLine("            MetaContextAccessor.Current = ctx;");
 
             if (!isVoidReturn)
@@ -625,6 +629,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            ctx.ServerTimeTicks = serverTimeTicks;");
             sb.AppendLine("            ctx.CrossEntityResolver = _crossEntityResolver;");
             sb.AppendLine("            ctx.Random = _optimisticRandom;");
+            sb.AppendLine("            ctx.Config = _config;");
             sb.AppendLine("            MetaContextAccessor.Current = ctx;");
 
             if (!isVoidReturn)
@@ -839,6 +844,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            ctx.ServerTimeTicks = serverTimeTicks;");
             sb.AppendLine("            ctx.BeginReplay(replayContext);");
             sb.AppendLine("            ctx.Random = _optimisticRandom;");
+            sb.AppendLine("            ctx.Config = _config;");
             sb.AppendLine("            ctx.ServerRandom = new MetaRandomReplayer(ctx);");
             sb.AppendLine("            MetaContextAccessor.Current = ctx;");
             sb.AppendLine("        }");

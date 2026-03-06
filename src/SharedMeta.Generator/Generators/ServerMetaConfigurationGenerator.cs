@@ -23,6 +23,14 @@ namespace SharedMeta.Generator.Generators
         public int AccessPolicy { get; set; } // 0=Open, 1=Authorized, 2=OwnerOnly
         public bool HasIsAuthorizedMethod { get; set; }
         public string? MetaInitMethodName { get; set; }
+        /// <summary>
+        /// Config type full name from [MetaService(ConfigType = typeof(...))] or resolved default config.
+        /// </summary>
+        public string? ConfigTypeFullName { get; set; }
+        /// <summary>
+        /// True if [MetaService(DefaultConfig = true)] — needs resolution at aggregation time.
+        /// </summary>
+        public bool UsesDefaultConfig { get; set; }
     }
 
     /// <summary>
@@ -94,6 +102,25 @@ namespace SharedMeta.Generator.Generators
                 if (!accessPolicyArg.Value.IsNull && accessPolicyArg.Value.Value is int policyValue)
                 {
                     info.AccessPolicy = policyValue;
+                }
+            }
+
+            // Read ConfigType and DefaultConfig from [MetaService] attribute
+            if (metaServiceAttr != null)
+            {
+                var configTypeArg = metaServiceAttr.NamedArguments.FirstOrDefault(a => a.Key == "ConfigType");
+                if (!configTypeArg.Value.IsNull && configTypeArg.Value.Value is INamedTypeSymbol configType)
+                {
+                    info.ConfigTypeFullName = configType.ToDisplayString();
+                }
+                else
+                {
+                    // Check DefaultConfig flag
+                    var defaultConfigArg = metaServiceAttr.NamedArguments.FirstOrDefault(a => a.Key == "DefaultConfig");
+                    if (!defaultConfigArg.Value.IsNull && defaultConfigArg.Value.Value is true)
+                    {
+                        info.UsesDefaultConfig = true;
+                    }
                 }
             }
 
@@ -169,6 +196,71 @@ namespace SharedMeta.Generator.Generators
             }
 
             return info;
+        }
+
+        /// <summary>
+        /// Resolve DefaultConfig references by finding the class with [MetaConfig(Default = true)]
+        /// in the given compilation or referenced assemblies.
+        /// Call this after collecting all ServiceImplInfos.
+        /// </summary>
+        public static void ResolveDefaultConfigs(IEnumerable<ServiceImplInfo> services, Compilation compilation)
+        {
+            string? defaultConfigType = null;
+
+            // Search for [MetaConfig(Default = true)] in source types
+            defaultConfigType = FindDefaultConfigType(compilation.Assembly.GlobalNamespace);
+
+            // If not found in source, search referenced assemblies
+            if (defaultConfigType == null)
+            {
+                foreach (var reference in compilation.References)
+                {
+                    var assemblySymbol = compilation.GetAssemblyOrModuleSymbol(reference) as IAssemblySymbol;
+                    if (assemblySymbol == null) continue;
+                    var name = assemblySymbol.Name;
+                    if (name.StartsWith("System") || name.StartsWith("Microsoft") ||
+                        name.StartsWith("netstandard") || name.StartsWith("SharedMeta"))
+                        continue;
+
+                    defaultConfigType = FindDefaultConfigType(assemblySymbol.GlobalNamespace);
+                    if (defaultConfigType != null) break;
+                }
+            }
+
+            if (defaultConfigType == null) return;
+
+            foreach (var service in services)
+            {
+                if (service.UsesDefaultConfig && service.ConfigTypeFullName == null)
+                {
+                    service.ConfigTypeFullName = defaultConfigType;
+                }
+            }
+        }
+
+        private static string? FindDefaultConfigType(INamespaceSymbol ns)
+        {
+            foreach (var type in ns.GetTypeMembers())
+            {
+                var attr = type.GetAttributes().FirstOrDefault(a =>
+                    a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaConfigAttribute");
+                if (attr != null)
+                {
+                    var defaultArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "Default");
+                    if (!defaultArg.Value.IsNull && defaultArg.Value.Value is true)
+                    {
+                        return type.ToDisplayString();
+                    }
+                }
+            }
+
+            foreach (var childNs in ns.GetNamespaceMembers())
+            {
+                var result = FindDefaultConfigType(childNs);
+                if (result != null) return result;
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -443,6 +535,21 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
             sb.AppendLine();
 
+            // Override OnInitialize to resolve config
+            var configType = services.Select(s => s.ConfigTypeFullName).FirstOrDefault(c => c != null);
+            if (configType != null)
+            {
+                sb.AppendLine("        protected override void OnInitialize()");
+                sb.AppendLine("        {");
+                sb.AppendLine("            if (ServiceResolver != null)");
+                sb.AppendLine("            {");
+                sb.AppendLine($"                var configProvider = (SharedMeta.Server.Core.IMetaConfigProvider<{configType}>)ServiceResolver(typeof(SharedMeta.Server.Core.IMetaConfigProvider<{configType}>));");
+                sb.AppendLine($"                MetaContext!.Config = configProvider.GetConfig(Context.EntityId);");
+                sb.AppendLine("            }");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+            }
+
             // Implement abstract DispatchCall
             sb.AppendLine("        protected override async Task<DispatchResult> DispatchCall(string serviceName, string methodName, byte[] payload)");
             sb.AppendLine("        {");
@@ -531,23 +638,15 @@ namespace SharedMeta.Generator.Generators
             var servicesWithInit = services.Where(s => s.MetaInitMethodName != null).ToList();
             if (servicesWithInit.Count > 0)
             {
-                sb.AppendLine("        public override async System.Threading.Tasks.Task<int> InitializeStateAsync(int currentVersion)");
+                sb.AppendLine("        protected override async System.Threading.Tasks.Task<int> RunInitAsync(int currentVersion)");
                 sb.AppendLine("        {");
-                sb.AppendLine("            SharedMeta.Core.MetaContextAccessor.Current = MetaContext;");
-                sb.AppendLine("            try");
-                sb.AppendLine("            {");
-                sb.AppendLine("                var version = currentVersion;");
+                sb.AppendLine("            var version = currentVersion;");
                 foreach (var service in servicesWithInit)
                 {
                     var baseName = GetBaseName(service.InterfaceName);
-                    sb.AppendLine($"                version = await (({service.ImplClassFullName})Get{baseName}()).{service.MetaInitMethodName}(version);");
+                    sb.AppendLine($"            version = await (({service.ImplClassFullName})Get{baseName}()).{service.MetaInitMethodName}(version);");
                 }
-                sb.AppendLine("                return version;");
-                sb.AppendLine("            }");
-                sb.AppendLine("            finally");
-                sb.AppendLine("            {");
-                sb.AppendLine("                SharedMeta.Core.MetaContextAccessor.Current = null;");
-                sb.AppendLine("            }");
+                sb.AppendLine("            return version;");
                 sb.AppendLine("        }");
                 sb.AppendLine();
             }

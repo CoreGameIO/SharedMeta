@@ -73,6 +73,7 @@ builder.Host.UseOrleans(siloBuilder =>
             services.ConfigureMeta(svc =>
             {
                 svc.AddTransient<IRandomService, RandomServiceImpl>();
+                svc.AddSingleton<IMetaConfigProvider<ExpeditionConfig>, ExpeditionConfigProvider>();
             });
         });
 });
@@ -148,3 +149,11 @@ if (useServerPatch)
 #endif
 
 await app.RunAsync();
+
+/// <summary>
+/// Provides default expedition config. Can be extended to read from DB, per-entity overrides, etc.
+/// </summary>
+public class ExpeditionConfigProvider : IMetaConfigProvider<ExpeditionConfig>
+{
+    public ExpeditionConfig GetConfig(string entityId) => new();
+}

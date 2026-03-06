@@ -4,16 +4,12 @@ namespace Expedition.Shared
 {
     /// <summary>
     /// Expedition service implementation — maze generation, movement, obstacle removal.
-    /// Uses Context.Random for map generation and IExpeditionProfileService for cross-entity
-    /// energy/money calls during CrossOptimistic execution.
+    /// Uses Config for balance parameters, Context.Random for map generation,
+    /// and IExpeditionProfileService for cross-entity energy/money calls.
     /// </summary>
     [MetaServiceImpl(typeof(IExpeditionService), typeof(ExpeditionState), typeof(IExpeditionProfileService))]
     public partial class ExpeditionService : IExpeditionService
     {
-        private const int MoveCost = 1;
-        private const int ObstacleCost = 5;
-        private const int TreasureReward = 25;
-
         private ExpeditionState state => Context.State;
 
         public void Init(string ownerPlayerId)
@@ -27,60 +23,69 @@ namespace Expedition.Shared
             return state.OwnerPlayerId == playerId;
         }
 
-        public void GenerateMap(int width, int height)
+        [MetaInit]
+        public Task<int> GenerateMap(int version)
         {
-            state.Width = width;
-            state.Height = height;
-            state.PlayerX = 0;
-            state.PlayerY = 0;
-            state.TreasuresCollected = 0;
-            state.IsComplete = false;
-
-            var totalCells = width * height;
-            state.Cells = new List<byte>(totalCells);
-            state.Revealed = new List<bool>(totalCells);
-
-            for (int i = 0; i < totalCells; i++)
+            if (version < 1)
             {
-                state.Cells.Add((byte)CellType.Empty);
-                state.Revealed.Add(false);
-            }
+                var width = Config.MapWidth;
+                var height = Config.MapHeight;
 
-            // Place walls (~20%)
-            for (int i = 0; i < totalCells; i++)
-            {
-                if (i == 0) continue; // Start cell stays empty
-                if (Context.Random!.Next(100) < 20)
-                    state.Cells[i] = (byte)CellType.Wall;
-            }
+                state.Width = width;
+                state.Height = height;
+                state.PlayerX = 0;
+                state.PlayerY = 0;
+                state.TreasuresCollected = 0;
+                state.IsComplete = false;
 
-            // Place obstacles (~10% of remaining empty cells)
-            for (int i = 0; i < totalCells; i++)
-            {
-                if (state.Cells[i] != (byte)CellType.Empty) continue;
-                if (i == 0) continue;
-                if (Context.Random!.Next(100) < 10)
-                    state.Cells[i] = (byte)CellType.Obstacle;
-            }
+                var totalCells = width * height;
+                state.Cells = new List<byte>(totalCells);
+                state.Revealed = new List<bool>(totalCells);
 
-            // Place treasures (~8% of remaining empty cells)
-            int treasureCount = 0;
-            for (int i = 0; i < totalCells; i++)
-            {
-                if (state.Cells[i] != (byte)CellType.Empty) continue;
-                if (i == 0) continue;
-                if (Context.Random!.Next(100) < 8)
+                for (int i = 0; i < totalCells; i++)
                 {
-                    state.Cells[i] = (byte)CellType.Treasure;
-                    treasureCount++;
+                    state.Cells.Add((byte)CellType.Empty);
+                    state.Revealed.Add(false);
                 }
+
+                // Place walls
+                for (int i = 0; i < totalCells; i++)
+                {
+                    if (i == 0) continue; // Start cell stays empty
+                    if (Context.Random!.Next(100) < Config.WallPercent)
+                        state.Cells[i] = (byte)CellType.Wall;
+                }
+
+                // Place obstacles on remaining empty cells
+                for (int i = 0; i < totalCells; i++)
+                {
+                    if (state.Cells[i] != (byte)CellType.Empty) continue;
+                    if (i == 0) continue;
+                    if (Context.Random!.Next(100) < Config.ObstaclePercent)
+                        state.Cells[i] = (byte)CellType.Obstacle;
+                }
+
+                // Place treasures on remaining empty cells
+                int treasureCount = 0;
+                for (int i = 0; i < totalCells; i++)
+                {
+                    if (state.Cells[i] != (byte)CellType.Empty) continue;
+                    if (i == 0) continue;
+                    if (Context.Random!.Next(100) < Config.TreasurePercent)
+                    {
+                        state.Cells[i] = (byte)CellType.Treasure;
+                        treasureCount++;
+                    }
+                }
+                state.TotalTreasures = treasureCount;
+
+                // Reveal 3x3 area around start
+                RevealArea(0, 0);
+
+                state.IsGenerated = true;
+                return Task.FromResult(1);
             }
-            state.TotalTreasures = treasureCount;
-
-            // Reveal 3x3 area around start
-            RevealArea(0, 0);
-
-            state.IsGenerated = true;
+            return Task.FromResult(version);
         }
 
         public async Task<MoveResult> Move(int dx, int dy)
@@ -114,7 +119,7 @@ namespace Expedition.Shared
             if (!state.Revealed[idx])
             {
                 var profileCaller = GetIExpeditionProfileService(state.ProfileEntityId!);
-                bool spent = await profileCaller.SpendEnergyAsync(MoveCost);
+                bool spent = await profileCaller.SpendEnergyAsync(Config.MoveCost);
                 if (!spent)
                     return MoveResult.NoEnergy;
             }
@@ -133,7 +138,7 @@ namespace Expedition.Shared
                 state.TreasuresCollected++;
 
                 var profileCaller = GetIExpeditionProfileService(state.ProfileEntityId!);
-                await profileCaller.AddMoneyAsync(TreasureReward);
+                await profileCaller.AddMoneyAsync(Config.TreasureReward);
 
                 // Check completion
                 if (state.TreasuresCollected >= state.TotalTreasures)
@@ -172,7 +177,7 @@ namespace Expedition.Shared
 
             // Spend energy
             var profileCaller = GetIExpeditionProfileService(state.ProfileEntityId!);
-            bool spent = await profileCaller.SpendEnergyAsync(ObstacleCost);
+            bool spent = await profileCaller.SpendEnergyAsync(Config.ObstacleCost);
             if (!spent)
                 return false;
 

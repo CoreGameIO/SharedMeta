@@ -54,7 +54,7 @@ namespace SharedMeta.Generator
                 }
 
                 // Service Registration Extensions (DI registration)
-                var registrationSource = ServiceRegistrationGenerator.Generate(node, symbol);
+                var registrationSource = ServiceRegistrationGenerator.Generate(node, symbol, ctx.SemanticModel.Compilation);
                 if (registrationSource != null)
                 {
                     var baseName = interfaceName.StartsWith("I") && interfaceName.Length > 1 && char.IsUpper(interfaceName[1])
@@ -233,6 +233,9 @@ namespace SharedMeta.Generator
                     .Any(a => a.Name == "SharedMeta.Server.Core");
                 if (isServerProject) return;
 
+                // Resolve DefaultConfig references
+                ServerMetaConfigurationGenerator.ResolveDefaultConfigs(validImpls!, compilation);
+
                 var rootNamespace = validImpls.First()!.Namespace;
                 var source = ServerMetaConfigurationGenerator.Generate(rootNamespace, validImpls!);
                 if (!string.IsNullOrEmpty(source))
@@ -278,6 +281,9 @@ namespace SharedMeta.Generator
                 }
 
                 if (implInfos.Count == 0) return;
+
+                // Resolve DefaultConfig references
+                ServerMetaConfigurationGenerator.ResolveDefaultConfigs(implInfos, compilation);
 
                 var rootNamespace = implInfos.First().Namespace;
                 var source = ServerMetaConfigurationGenerator.GenerateForServerProject(rootNamespace, implInfos);

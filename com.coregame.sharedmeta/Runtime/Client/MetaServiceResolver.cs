@@ -85,13 +85,15 @@ namespace SharedMeta.Client
             INetwork network;
             object state;
             MetaRandom? optimisticRandom = null;
+            object? entityConfig = null;
 
             if (existingConnection != null)
             {
-                // Reuse existing network, state, and random
+                // Reuse existing network, state, random, and config
                 network = existingConnection.Network;
                 state = existingConnection.State;
                 optimisticRandom = existingConnection.OptimisticRandom;
+                entityConfig = existingConnection.Config;
             }
             else
             {
@@ -121,6 +123,9 @@ namespace SharedMeta.Client
                 {
                     optimisticRandom = MetaRandom.FromString(entityId + ":optimistic");
                 }
+
+                // Create config locally from shared code (no server bytes needed)
+                entityConfig = config.ConfigFactory?.Invoke();
             }
 
             // Create API client using factory
@@ -131,7 +136,8 @@ namespace SharedMeta.Client
                 _modeProvider,
                 _diagnostics,
                 this,
-                optimisticRandom);
+                optimisticRandom,
+                entityConfig);
 
             // Cache connection
             lock (_lock)
@@ -144,7 +150,8 @@ namespace SharedMeta.Client
                         Network = network,
                         StateType = config.StateType,
                         State = state,
-                        OptimisticRandom = optimisticRandom
+                        OptimisticRandom = optimisticRandom,
+                        Config = entityConfig
                     };
                     _connections[entityId] = connection;
                 }
@@ -281,6 +288,8 @@ namespace SharedMeta.Client
             else
                 optimisticRandom = MetaRandom.FromString(entityId + ":optimistic");
 
+            var entityConfig = config.ConfigFactory?.Invoke();
+
             lock (_lock)
             {
                 if (!_connections.ContainsKey(entityId))
@@ -291,7 +300,8 @@ namespace SharedMeta.Client
                         Network = network,
                         StateType = config.StateType,
                         State = state,
-                        OptimisticRandom = optimisticRandom
+                        OptimisticRandom = optimisticRandom,
+                        Config = entityConfig
                     };
                 }
             }
@@ -407,6 +417,7 @@ namespace SharedMeta.Client
             public Type StateType { get; init; } = null!;
             public object State { get; set; } = null!;
             public MetaRandom? OptimisticRandom { get; set; }
+            public object? Config { get; set; }
             public Dictionary<Type, object> ApiClients { get; } = new();
         }
 

@@ -90,19 +90,11 @@ public sealed class GeneratedCounterStateMetaProvider : MetaProviderBase<Counter
         return new CounterStatePatchWrapper(State, root, Context.Serializer);
     }
 
-    public override async System.Threading.Tasks.Task<int> InitializeStateAsync(int currentVersion)
+    protected override async System.Threading.Tasks.Task<int> RunInitAsync(int currentVersion)
     {
-        SharedMeta.Core.MetaContextAccessor.Current = MetaContext;
-        try
-        {
-            var version = currentVersion;
-            version = await ((CounterService)GetCounterService()).Init(version);
-            return version;
-        }
-        finally
-        {
-            SharedMeta.Core.MetaContextAccessor.Current = null;
-        }
+        var version = currentVersion;
+        version = await ((CounterService)GetCounterService()).Init(version);
+        return version;
     }
 
     private ICounterService GetCounterService() => _counterService ??= new CounterService();

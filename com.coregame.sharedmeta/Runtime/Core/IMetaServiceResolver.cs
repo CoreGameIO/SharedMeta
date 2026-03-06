@@ -86,10 +86,22 @@ namespace SharedMeta.Core
         public Type LocalServiceType { get; init; } = null!;
 
         /// <summary>
-        /// Factory to create the API client.
-        /// Parameters: (network, serializer, state, modeProvider, diagnostics, crossEntityResolver, optimisticRandom)
+        /// The config type for this service (from [MetaService(ConfigType=...)] or DefaultConfig).
+        /// Null if no config is configured.
         /// </summary>
-        public Func<INetwork, IMetaSerializer, object, IExecutionModeProvider, IDesyncDiagnostics?, ICrossEntityResolver?, MetaRandom?, object> ApiClientFactory { get; init; } = null!;
+        public Type? ConfigType { get; init; }
+
+        /// <summary>
+        /// Factory to create the default config instance on the client.
+        /// Config is shared code — no need to send bytes from server.
+        /// </summary>
+        public Func<object>? ConfigFactory { get; init; }
+
+        /// <summary>
+        /// Factory to create the API client.
+        /// Parameters: (network, serializer, state, modeProvider, diagnostics, crossEntityResolver, optimisticRandom, config)
+        /// </summary>
+        public Func<INetwork, IMetaSerializer, object, IExecutionModeProvider, IDesyncDiagnostics?, ICrossEntityResolver?, MetaRandom?, object?, object> ApiClientFactory { get; init; } = null!;
 
         /// <summary>
         /// Factory to create the local service instance.

@@ -35,6 +35,23 @@ namespace SharedMeta.Core
     }
 
     /// <summary>
+    /// Marks a class as static game configuration data.
+    /// Config is provided by IMetaConfigProvider on the server and sent to clients on subscribe.
+    /// Access via Context.Config in service methods and [MetaInit].
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class)]
+    public class MetaConfigAttribute : Attribute
+    {
+        /// <summary>
+        /// If true, this config type is the default config.
+        /// Services with DefaultConfig = true on [MetaService] will use this config type
+        /// without needing an explicit ConfigType reference.
+        /// Only one config class should be marked as default per assembly.
+        /// </summary>
+        public bool Default { get; set; }
+    }
+
+    /// <summary>
     /// Attribute to mark an interface as a shared meta service.
     /// The generator will produce Client Proxies and Server Dispatchers.
     /// </summary>
@@ -46,6 +63,19 @@ namespace SharedMeta.Core
         /// Required for DI registration code generation.
         /// </summary>
         public Type? StateType { get; set; }
+
+        /// <summary>
+        /// Explicit config type for this service.
+        /// The config is provided by IMetaConfigProvider and available via Context.Config.
+        /// Takes priority over DefaultConfig.
+        /// </summary>
+        public Type? ConfigType { get; set; }
+
+        /// <summary>
+        /// If true, use the config class marked with [MetaConfig(Default = true)].
+        /// No explicit ConfigType reference needed.
+        /// </summary>
+        public bool DefaultConfig { get; set; }
 
         /// <summary>
         /// Framework subscriber interfaces implemented by this service.

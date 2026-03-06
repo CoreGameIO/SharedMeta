@@ -7,7 +7,7 @@ namespace Expedition.Shared
     /// Move and RemoveObstacle use CrossOptimistic mode for responsive gameplay
     /// with cross-entity calls to profile for energy/money management.
     /// </summary>
-    [MetaService(StateType = typeof(ExpeditionState), AccessPolicy = EntityAccessPolicy.Authorized)]
+    [MetaService(StateType = typeof(ExpeditionState), AccessPolicy = EntityAccessPolicy.Authorized, DefaultConfig = true)]
     public interface IExpeditionService : IMetaService
     {
         /// <summary>
@@ -16,12 +16,6 @@ namespace Expedition.Shared
         /// </summary>
         [MetaMethod(Alias = "Init", Mode = ExecutionMode.Server, GenerateClientApi = false)]
         void Init(string ownerPlayerId);
-
-        /// <summary>
-        /// Generate the maze map. Uses deterministic Context.Random.
-        /// </summary>
-        [MetaMethod(Alias = "GenerateMap", Mode = ExecutionMode.Optimistic)]
-        void GenerateMap(int width, int height);
 
         /// <summary>
         /// Move the player by (dx, dy). Reveals fog, collects treasures.

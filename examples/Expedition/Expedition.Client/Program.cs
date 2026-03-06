@@ -164,15 +164,9 @@ async Task<bool> RunGameAsync()
     var expeditionEntityId = expeditionResult.EntityId;
     var expApi = await client.GetServiceAsync<ExpeditionServiceApiClient>(expeditionEntityId);
 
-    if (expeditionResult.IsNew)
-    {
-        await expApi.GenerateMapAsync(15, 10);
-        Console.WriteLine($"New expedition: {expeditionEntityId}");
-    }
-    else
-    {
-        Console.WriteLine($"Resuming expedition: {expeditionEntityId}");
-    }
+    Console.WriteLine(expeditionResult.IsNew
+        ? $"New expedition: {expeditionEntityId}"
+        : $"Resuming expedition: {expeditionEntityId}");
 
     string statusMessage = "Use arrow keys to move. R+arrow to remove obstacle. B to buy energy. Q to quit.";
     bool awaitingRemoveDirection = false;
@@ -251,7 +245,6 @@ async Task<bool> RunGameAsync()
                     expeditionResult = await profileApi.ResumeOrStartExpeditionAsync();
                     expeditionEntityId = expeditionResult.EntityId;
                     expApi = await client.GetServiceAsync<ExpeditionServiceApiClient>(expeditionEntityId);
-                    await expApi.GenerateMapAsync(15, 10);
                     statusMessage = $"New expedition: {expeditionEntityId}";
                 }
                 else if (key.Key == ConsoleKey.Q) return false;

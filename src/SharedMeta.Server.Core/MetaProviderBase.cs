@@ -306,7 +306,34 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         return Context.Serializer.Pack(_optimisticRandom);
     }
 
-    public virtual Task<int> InitializeStateAsync(int currentVersion)
+    public async Task<int> InitializeStateAsync(int currentVersion)
+    {
+        if (MetaContext == null) return currentVersion;
+
+        // Set up ServerRandom so [MetaInit] methods can use it
+        MetaContext.ServerRandom = new MetaRandomRecorder(_serverRandom, MetaContext);
+        MetaContext.Random = _optimisticRandom;
+        MetaContextAccessor.Current = MetaContext;
+        MetaContext.BeginOperation();
+
+        try
+        {
+            var newVersion = await RunInitAsync(currentVersion);
+            return newVersion;
+        }
+        finally
+        {
+            MetaContext.EndOperation(); // discard replay payload (init is server-only)
+            MetaContextAccessor.Current = null;
+            MetaContext.ServerRandom = null;
+        }
+    }
+
+    /// <summary>
+    /// Override in generated code to call [MetaInit] methods.
+    /// ServerRandom and Config are available during this call.
+    /// </summary>
+    protected virtual Task<int> RunInitAsync(int currentVersion)
     {
         return Task.FromResult(currentVersion);
     }

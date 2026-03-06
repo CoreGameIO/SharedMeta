@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Text;
 using System.Linq;
 using Microsoft.CodeAnalysis;
@@ -11,7 +12,7 @@ namespace SharedMeta.Generator.Generators
     /// </summary>
     public static class ServiceRegistrationGenerator
     {
-        public static string? Generate(InterfaceDeclarationSyntax node, INamedTypeSymbol symbol)
+        public static string? Generate(InterfaceDeclarationSyntax node, INamedTypeSymbol symbol, Compilation? compilation = null)
         {
             // Check for [MetaService] attribute with state type
             var attr = symbol.GetAttributes().FirstOrDefault(a =>
@@ -34,6 +35,24 @@ namespace SharedMeta.Generator.Generators
             if (stateTypeName == null)
             {
                 return null;
+            }
+
+            // Get ConfigType from attribute
+            string? configTypeFullName = null;
+            var configTypeArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "ConfigType");
+            if (!configTypeArg.Value.IsNull && configTypeArg.Value.Value is INamedTypeSymbol configType)
+            {
+                configTypeFullName = configType.ToDisplayString();
+            }
+
+            // Handle DefaultConfig = true
+            if (configTypeFullName == null)
+            {
+                var defaultConfigArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "DefaultConfig");
+                if (defaultConfigArg.Value.Value is true && compilation != null)
+                {
+                    configTypeFullName = FindDefaultConfigType(compilation, symbol.ContainingNamespace);
+                }
             }
 
             var interfaceName = symbol.Name;
@@ -75,8 +94,13 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                ApiClientType = typeof({baseName}ApiClient),");
             sb.AppendLine($"                StateType = typeof({stateTypeFullName}),");
             sb.AppendLine($"                LocalServiceType = typeof({baseName}),");
-            sb.AppendLine($"                ApiClientFactory = (network, serializer, state, modeProvider, diagnostics, crossResolver, optimisticRandom) =>");
-            sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, ({stateTypeFullName})state, modeProvider, diagnostics, crossResolver, optimisticRandom),");
+            if (configTypeFullName != null)
+            {
+                sb.AppendLine($"                ConfigType = typeof({configTypeFullName}),");
+                sb.AppendLine($"                ConfigFactory = () => new {configTypeFullName}(),");
+            }
+            sb.AppendLine($"                ApiClientFactory = (network, serializer, state, modeProvider, diagnostics, crossResolver, optimisticRandom, config) =>");
+            sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, ({stateTypeFullName})state, modeProvider, diagnostics, crossResolver, optimisticRandom, config),");
             sb.AppendLine($"                StateRefresher = (apiClient, state, random) =>");
             sb.AppendLine($"                    (({baseName}ApiClient)apiClient).RefreshState(({stateTypeFullName})state, random)");
             sb.AppendLine("            });");
@@ -94,8 +118,13 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                ApiClientType = typeof({baseName}ApiClient),");
             sb.AppendLine($"                StateType = typeof({stateTypeFullName}),");
             sb.AppendLine($"                LocalServiceType = typeof({baseName}),");
-            sb.AppendLine($"                ApiClientFactory = (network, serializer, state, modeProvider, diagnostics, crossResolver, optimisticRandom) =>");
-            sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, ({stateTypeFullName})state, modeProvider, diagnostics, crossResolver, optimisticRandom),");
+            if (configTypeFullName != null)
+            {
+                sb.AppendLine($"                ConfigType = typeof({configTypeFullName}),");
+                sb.AppendLine($"                ConfigFactory = () => new {configTypeFullName}(),");
+            }
+            sb.AppendLine($"                ApiClientFactory = (network, serializer, state, modeProvider, diagnostics, crossResolver, optimisticRandom, config) =>");
+            sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, ({stateTypeFullName})state, modeProvider, diagnostics, crossResolver, optimisticRandom, config),");
             sb.AppendLine($"                StateRefresher = (apiClient, state, random) =>");
             sb.AppendLine($"                    (({baseName}ApiClient)apiClient).RefreshState(({stateTypeFullName})state, random)");
             sb.AppendLine("            };");
@@ -104,6 +133,42 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("}");
 
             return sb.ToString();
+        }
+
+        private static string? FindDefaultConfigType(Compilation compilation, INamespaceSymbol serviceNamespace)
+        {
+            // Search for [MetaConfig(Default = true)] classes in the same namespace first, then globally
+            var candidates = new List<INamedTypeSymbol>();
+
+            foreach (var tree in compilation.SyntaxTrees)
+            {
+                var model = compilation.GetSemanticModel(tree);
+                var root = tree.GetRoot();
+                foreach (var classDecl in root.DescendantNodes().OfType<ClassDeclarationSyntax>())
+                {
+                    var classSymbol = model.GetDeclaredSymbol(classDecl) as INamedTypeSymbol;
+                    if (classSymbol == null) continue;
+
+                    var metaConfigAttr = classSymbol.GetAttributes().FirstOrDefault(a =>
+                        a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaConfigAttribute");
+                    if (metaConfigAttr == null) continue;
+
+                    var defaultArg = metaConfigAttr.NamedArguments.FirstOrDefault(a => a.Key == "Default");
+                    if (defaultArg.Value.Value is true)
+                    {
+                        candidates.Add(classSymbol);
+                    }
+                }
+            }
+
+            if (candidates.Count == 0) return null;
+
+            // Prefer same namespace
+            var sameNs = candidates.FirstOrDefault(c =>
+                SymbolEqualityComparer.Default.Equals(c.ContainingNamespace, serviceNamespace));
+            if (sameNs != null) return sameNs.ToDisplayString();
+
+            return candidates[0].ToDisplayString();
         }
     }
 }
