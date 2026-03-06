@@ -509,7 +509,8 @@ namespace SharedMeta.Server.Core.Session
             if (precedingOps != null)
                 ops.AddRange(precedingOps);
 
-            DrainHeldBroadcasts(state, entityId);
+            DrainAndResolve(state, entityId);
+
             return ops;
         }
 
@@ -639,11 +640,7 @@ namespace SharedMeta.Server.Core.Session
                 state.KnownEntitySequence = entitySequenceNumber;
                 BufferBroadcast(entityId, broadcast);
 
-                // Drain any held broadcasts that are now in order
-                DrainHeldBroadcasts(state, entityId);
-
-                // Check if any deferred RPC responses are now satisfied
-                ResolveDeferredResponses(entityId);
+                DrainAndResolve(state, entityId);
             }
             else if (entitySequenceNumber > expectedNext)
             {
@@ -745,6 +742,23 @@ namespace SharedMeta.Server.Core.Session
             }
 
             return result.Count > 0 ? result : null;
+        }
+
+        /// <summary>
+        /// Cascading drain + resolve: resolving deferred responses advances KnownEntitySequence,
+        /// which may allow held broadcasts to drain, which may satisfy more deferred responses.
+        /// Repeats until no more progress is made.
+        /// </summary>
+        private void DrainAndResolve(EntityOrderingState state, string entityId)
+        {
+            while (true)
+            {
+                var knownBefore = state.KnownEntitySequence;
+                DrainHeldBroadcasts(state, entityId);
+                ResolveDeferredResponses(entityId);
+                if (state.KnownEntitySequence == knownBefore)
+                    break;
+            }
         }
 
         /// <summary>
