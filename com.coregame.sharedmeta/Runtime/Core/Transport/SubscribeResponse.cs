@@ -28,5 +28,11 @@ namespace SharedMeta.Core.Transport
 
         /// <summary>Serialized optimistic random state for deterministic replay.</summary>
         [Id(4), Key(4)] public byte[]? OptimisticRandomBytes { get; set; }
+
+        /// <summary>Config major version (schema). 0 = no config.</summary>
+        [Id(5), Key(5)] public int ConfigMajorVersion { get; set; }
+
+        /// <summary>Config minor version (data). 0 = no config.</summary>
+        [Id(6), Key(6)] public int ConfigMinorVersion { get; set; }
     }
 }

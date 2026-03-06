@@ -1,4 +1,5 @@
 using SharedMeta.Core.Transport;
+using SharedMeta.Server.Core;
 using SharedMeta.Server.Core.Transport;
 
 namespace SharedMeta.Debug.InProcess
@@ -10,6 +11,7 @@ namespace SharedMeta.Debug.InProcess
     public class InProcessServer
     {
         private readonly IMetaConnectionHandlerFactory _handlerFactory;
+        private readonly IConfigDownloadUrlResolver? _configUrlResolver;
         private readonly Dictionary<string, InProcessConnectionState> _connections = new();
         private readonly object _lock = new();
 
@@ -18,9 +20,10 @@ namespace SharedMeta.Debug.InProcess
         /// </summary>
         public FailureSimulationSettings FailureSettings { get; } = new();
 
-        public InProcessServer(IMetaConnectionHandlerFactory handlerFactory)
+        public InProcessServer(IMetaConnectionHandlerFactory handlerFactory, IConfigDownloadUrlResolver? configUrlResolver = null)
         {
             _handlerFactory = handlerFactory ?? throw new ArgumentNullException(nameof(handlerFactory));
+            _configUrlResolver = configUrlResolver;
         }
 
         /// <summary>
@@ -120,6 +123,23 @@ namespace SharedMeta.Debug.InProcess
         {
             var handler = GetHandler(connectionId);
             return handler.AcknowledgeSequenceAsync(request);
+        }
+
+        /// <summary>
+        /// Internal: Handle get config download URL request.
+        /// Resolved via IConfigDownloadUrlResolver (DI) — does not go through the grain chain.
+        /// </summary>
+        internal Task<ConfigDownloadUrlResponse> GetConfigDownloadUrlAsync(string connectionId, ConfigDownloadUrlRequest request)
+        {
+            try
+            {
+                var url = _configUrlResolver?.GetDownloadUrl(request.StateTypeName, new Core.MetaConfigVersion(request.ConfigMajorVersion, request.ConfigMinorVersion));
+                return Task.FromResult(new ConfigDownloadUrlResponse { Success = true, DownloadUrl = url });
+            }
+            catch (Exception ex)
+            {
+                return Task.FromResult(new ConfigDownloadUrlResponse { Success = false, Error = ex.Message });
+            }
         }
 
         private IMetaConnectionHandler GetHandler(string connectionId)

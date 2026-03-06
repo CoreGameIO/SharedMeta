@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using SharedMeta.Core;
 using SharedMeta.Core.Logging;
 using SharedMeta.Core.Transport;
 
@@ -146,7 +147,8 @@ namespace SharedMeta.Transport.HttpPolling
                 Success = response.Success,
                 Error = response.Error,
                 StateBytes = response.StateBytes,
-                OptimisticRandomBytes = response.OptimisticRandomBytes
+                OptimisticRandomBytes = response.OptimisticRandomBytes,
+                ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion)
             };
         }
 
@@ -175,6 +177,16 @@ namespace SharedMeta.Transport.HttpPolling
                 "/ack",
                 new AcknowledgeRequest { SequenceNumber = sequenceNumber },
                 MetaJsonContext.Default.AcknowledgeRequest);
+        }
+
+        public async Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version)
+        {
+            EnsureSessionConnected();
+            var response = await PostAsync<ConfigDownloadUrlResponse>(
+                "/config-url",
+                new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor },
+                MetaJsonContext.Default.ConfigDownloadUrlRequest);
+            return response?.DownloadUrl;
         }
 
         #region Poll Loop

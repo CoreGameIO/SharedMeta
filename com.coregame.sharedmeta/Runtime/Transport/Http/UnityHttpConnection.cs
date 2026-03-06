@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Serialization;
+using SharedMeta.Core;
 using SharedMeta.Core.Logging;
 using SharedMeta.Core.Transport;
 using UnityEngine.Networking;
@@ -153,7 +154,8 @@ namespace SharedMeta.Client.Network
                 Success = response.Success,
                 Error = response.Error,
                 StateBytes = response.StateBytes ?? Array.Empty<byte>(),
-                OptimisticRandomBytes = response.OptimisticRandomBytes
+                OptimisticRandomBytes = response.OptimisticRandomBytes,
+                ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion)
             };
         }
 
@@ -180,6 +182,15 @@ namespace SharedMeta.Client.Network
             await PostAsync<AcknowledgeResponse>(
                 "/ack",
                 new AcknowledgeRequest { SequenceNumber = sequenceNumber });
+        }
+
+        public async Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version)
+        {
+            EnsureSessionConnected();
+            var response = await PostAsync<ConfigDownloadUrlResponse>(
+                "/config-url",
+                new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor });
+            return response?.DownloadUrl;
         }
 
         #region Poll Loop

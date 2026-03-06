@@ -140,6 +140,21 @@ namespace SharedMeta.Server.Core
         /// Generated code routes to service.IsAuthorized(playerId).
         /// </summary>
         Task<bool> CheckAccessAsync(string playerId);
+
+        /// <summary>
+        /// Config version for this entity. Returns (0,0) if no config.
+        /// Used by EntityGrain to include in subscribe/snapshot responses.
+        /// </summary>
+        MetaConfigVersion ConfigVersion => default;
+
+        /// <summary>
+        /// Initialize config for this entity with the given version.
+        /// Called by EntityGrain during activation.
+        /// For new entities, version is resolved via IConfigVersionResolver or IMetaConfigProvider.CurrentVersion.
+        /// For existing entities, version comes from persisted grain state.
+        /// </summary>
+        /// <param name="version">The config version to use. (0,0) if no config configured.</param>
+        void InitializeConfig(MetaConfigVersion version) { }
     }
 
     /// <summary>

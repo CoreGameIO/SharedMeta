@@ -96,12 +96,21 @@ namespace SharedMeta.Client
                     {
                         PlayerId = PlayerId
                     };
-                    return (network, connectResponse.StateBytes, connectResponse.OptimisticRandomBytes);
+                    return new NetworkSubscribeResult
+                    {
+                        Network = network,
+                        StateBytes = connectResponse.StateBytes,
+                        OptimisticRandomBytes = connectResponse.OptimisticRandomBytes,
+                        ConfigVersion = new MetaConfigVersion(connectResponse.ConfigMajorVersion, connectResponse.ConfigMinorVersion)
+                    };
                 },
                 Serializer,
                 modeProvider,
                 diagnostics
-            );
+            )
+            {
+                ConfigDownloadUrlFactory = (stateTypeName, version) => connection.GetConfigDownloadUrlAsync(stateTypeName, version)
+            };
         }
 
         /// <summary>

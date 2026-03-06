@@ -349,7 +349,8 @@ namespace SharedMeta.Server.Core.Session
                     Success = true,
                     StateBytes = snapshot.StateBytes,
                     EntitySequenceNumber = snapshot.CurrentSequenceNumber,
-                    OptimisticRandomBytes = snapshot.OptimisticRandomBytes
+                    OptimisticRandomBytes = snapshot.OptimisticRandomBytes,
+                    ConfigVersion = snapshot.ConfigVersion
                 };
             }
 
@@ -388,7 +389,8 @@ namespace SharedMeta.Server.Core.Session
                     Success = true,
                     StateBytes = snapshot.StateBytes,
                     EntitySequenceNumber = snapshot.CurrentSequenceNumber,
-                    OptimisticRandomBytes = snapshot.OptimisticRandomBytes
+                    OptimisticRandomBytes = snapshot.OptimisticRandomBytes,
+                    ConfigVersion = snapshot.ConfigVersion
                 };
             }
             catch (Exception ex)
@@ -937,7 +939,8 @@ namespace SharedMeta.Server.Core.Session
                         EntityId = saved.EntityId,
                         StateBytes = snapshot.StateBytes,
                         EntitySequenceNumber = snapshot.CurrentSequenceNumber,
-                        OptimisticRandomBytes = snapshot.OptimisticRandomBytes
+                        OptimisticRandomBytes = snapshot.OptimisticRandomBytes,
+                        ConfigVersion = snapshot.ConfigVersion
                     });
 
                     _logger.SubscribedToEntity(_playerId, saved.EntityId, snapshot.CurrentSequenceNumber);

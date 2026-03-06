@@ -1,4 +1,5 @@
 using Orleans;
+using SharedMeta.Core;
 
 namespace SharedMeta.Server.Core.Session
 {
@@ -13,5 +14,6 @@ namespace SharedMeta.Server.Core.Session
         [Id(2)] public byte[] StateBytes { get; set; } = Array.Empty<byte>();
         [Id(3)] public long EntitySequenceNumber { get; set; }
         [Id(4)] public byte[]? OptimisticRandomBytes { get; set; }
+        [Id(5)] public MetaConfigVersion ConfigVersion { get; set; }
     }
 }

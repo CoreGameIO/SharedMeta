@@ -347,6 +347,20 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     public virtual EntityAccessPolicy AccessPolicy => EntityAccessPolicy.Open;
 
     /// <summary>
+    /// Config version for this entity. Set during activation via InitializeConfig.
+    /// </summary>
+    public MetaConfigVersion ConfigVersion { get; private set; }
+
+    /// <summary>
+    /// Initialize config for this entity with the given version.
+    /// Generated code overrides to resolve config from IMetaConfigProvider.
+    /// </summary>
+    public virtual void InitializeConfig(MetaConfigVersion version)
+    {
+        ConfigVersion = version;
+    }
+
+    /// <summary>
     /// Check if a player is authorized to subscribe to this entity.
     /// Default: Open → true, OwnerOnly → entityId == playerId, Authorized → false (must be overridden).
     /// Generated providers override for Authorized to call service.IsAuthorized(playerId).

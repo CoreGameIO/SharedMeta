@@ -1628,6 +1628,17 @@ namespace SharedMeta.Editor
 
             sb.AppendLine($"app.MapGet(\"/\", () => \"{_serverProjectName} is running\");");
             sb.AppendLine();
+
+            // Config download endpoint
+            sb.AppendLine("// Config download endpoint — serves serialized config bytes for client-side caching.");
+            sb.AppendLine("// Register your IMetaConfigProvider<TConfig> and uncomment:");
+            sb.AppendLine("// app.MapGet(\"/meta/config/{major:int}/{minor:int}\", (int major, int minor, IMetaSerializer ser, IMetaConfigProvider<YourConfig> provider) =>");
+            sb.AppendLine("// {");
+            sb.AppendLine("//     var config = provider.GetConfig(\"\");");
+            sb.AppendLine("//     return Results.Bytes(ser.Pack(config), \"application/octet-stream\");");
+            sb.AppendLine("// });");
+            sb.AppendLine();
+
             sb.AppendLine($"app.Logger.LogInformation(\"=== {_serverProjectName} ===\");");
             sb.AppendLine("app.Logger.LogInformation(\"Listening on http://localhost:{Port}\", port);");
             sb.AppendLine();
@@ -1789,6 +1800,11 @@ namespace SharedMeta.Editor
             sb.AppendLine("        });");
             sb.AppendLine();
             sb.AppendLine("        Client.Resolver.RegisterAllServices();");
+            sb.AppendLine();
+            sb.AppendLine("        // Config download: enable file caching and download for server-provided configs.");
+            sb.AppendLine("        // var resolver = (MetaServiceResolver)Client.Resolver;");
+            sb.AppendLine("        // resolver.ConfigCache = new FileConfigCache(Application.persistentDataPath + \"/config-cache\", serializer);");
+            sb.AppendLine("        // resolver.ConfigDownloader = new UnityConfigDownloader();");
             sb.AppendLine();
             sb.AppendLine("        Debug.Log(\"[SharedMeta] Connecting...\");");
             sb.AppendLine("        await Client.ConnectAsync();");

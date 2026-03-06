@@ -58,5 +58,7 @@ namespace SharedMeta.Core.Transport
         [Id(1), Key(1)] public byte[] StateBytes { get; set; } = Array.Empty<byte>();
         [Id(2), Key(2)] public long EntitySequenceNumber { get; set; }
         [Id(3), Key(3)] public byte[]? OptimisticRandomBytes { get; set; }
+        [Id(4), Key(4)] public int ConfigMajorVersion { get; set; }
+        [Id(5), Key(5)] public int ConfigMinorVersion { get; set; }
     }
 }

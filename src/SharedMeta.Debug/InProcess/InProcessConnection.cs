@@ -1,3 +1,4 @@
+using SharedMeta.Core;
 using SharedMeta.Core.Logging;
 using SharedMeta.Core.Transport;
 
@@ -99,7 +100,8 @@ namespace SharedMeta.Debug.InProcess
                 Success = response.Success,
                 Error = response.Error,
                 StateBytes = response.StateBytes,
-                OptimisticRandomBytes = response.OptimisticRandomBytes
+                OptimisticRandomBytes = response.OptimisticRandomBytes,
+                ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion)
             };
         }
 
@@ -129,6 +131,13 @@ namespace SharedMeta.Debug.InProcess
             {
                 SequenceNumber = sequenceNumber
             });
+        }
+
+        public async Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version)
+        {
+            EnsureConnected();
+            var response = await _server.GetConfigDownloadUrlAsync(_connectionId, new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor });
+            return response.DownloadUrl;
         }
 
         /// <summary>

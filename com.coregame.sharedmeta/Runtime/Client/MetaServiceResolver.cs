@@ -15,7 +15,7 @@ namespace SharedMeta.Client
     /// </summary>
     public class MetaServiceResolver : IMetaServiceResolver, ICrossEntityResolver, IDisposable
     {
-        private readonly Func<string, string, Task<(INetwork Network, byte[]? StateBytes, byte[]? OptimisticRandomBytes)>> _networkFactory;
+        private readonly Func<string, string, Task<NetworkSubscribeResult>> _networkFactory;
         private readonly IMetaSerializer _serializer;
         private readonly IExecutionModeProvider _modeProvider;
         private readonly IDesyncDiagnostics? _diagnostics;
@@ -26,14 +26,30 @@ namespace SharedMeta.Client
         private List<CrossEntityLocalResult>? _recordedResults;
 
         /// <summary>
+        /// Optional config cache for versioned configs.
+        /// </summary>
+        public IMetaConfigCache? ConfigCache { get; set; }
+
+        /// <summary>
+        /// Optional config downloader for fetching configs from server.
+        /// </summary>
+        public IMetaConfigDownloader? ConfigDownloader { get; set; }
+
+        /// <summary>
+        /// Factory to request config download URL from server.
+        /// Parameters: (stateTypeName, version). Set by MetaClient to call IConnection.GetConfigDownloadUrlAsync.
+        /// </summary>
+        public Func<string, MetaConfigVersion, Task<string?>>? ConfigDownloadUrlFactory { get; set; }
+
+        /// <summary>
         /// Creates a MetaServiceResolver.
         /// </summary>
-        /// <param name="networkFactory">Factory that creates networks and returns initial state. Parameters: (entityId, stateTypeName). Returns: (network, stateBytes, optimisticRandomBytes)</param>
+        /// <param name="networkFactory">Factory that creates networks and returns initial state. Parameters: (entityId, stateTypeName). Returns: NetworkSubscribeResult</param>
         /// <param name="serializer">Serializer for RPC calls</param>
         /// <param name="modeProvider">Execution mode provider</param>
         /// <param name="diagnostics">Optional diagnostics handler</param>
         public MetaServiceResolver(
-            Func<string, string, Task<(INetwork Network, byte[]? StateBytes, byte[]? OptimisticRandomBytes)>> networkFactory,
+            Func<string, string, Task<NetworkSubscribeResult>> networkFactory,
             IMetaSerializer serializer,
             IExecutionModeProvider modeProvider,
             IDesyncDiagnostics? diagnostics = null)
@@ -99,13 +115,13 @@ namespace SharedMeta.Client
             {
                 // Create new connection - pass stateTypeName so factory can call Subscribe
                 var stateTypeName = config.StateType.FullName ?? config.StateType.Name;
-                var (newNetwork, stateBytes, optimisticRandomBytes) = await _networkFactory(entityId, stateTypeName);
-                network = newNetwork;
+                var subResult = await _networkFactory(entityId, stateTypeName);
+                network = subResult.Network;
 
                 // Deserialize state from server, or create empty if no state bytes
-                if (stateBytes != null && stateBytes.Length > 0)
+                if (subResult.StateBytes != null && subResult.StateBytes.Length > 0)
                 {
-                    state = _serializer.Unpack(config.StateType, stateBytes)
+                    state = _serializer.Unpack(config.StateType, subResult.StateBytes)
                         ?? throw new InvalidOperationException($"Failed to deserialize state of type '{config.StateType.Name}'");
                 }
                 else
@@ -115,17 +131,17 @@ namespace SharedMeta.Client
                 }
 
                 // Deserialize optimistic random, or create from entityId seed
-                if (optimisticRandomBytes != null && optimisticRandomBytes.Length > 0)
+                if (subResult.OptimisticRandomBytes != null && subResult.OptimisticRandomBytes.Length > 0)
                 {
-                    optimisticRandom = _serializer.Unpack<MetaRandom>(optimisticRandomBytes);
+                    optimisticRandom = _serializer.Unpack<MetaRandom>(subResult.OptimisticRandomBytes);
                 }
                 else
                 {
                     optimisticRandom = MetaRandom.FromString(entityId + ":optimistic");
                 }
 
-                // Create config locally from shared code (no server bytes needed)
-                entityConfig = config.ConfigFactory?.Invoke();
+                // Resolve config: check cache → request URL → download → fallback to factory
+                entityConfig = await ResolveConfigAsync(config, subResult, entityId);
             }
 
             // Create API client using factory
@@ -268,12 +284,12 @@ namespace SharedMeta.Client
                 throw new InvalidOperationException($"No service config registered for state type '{stateTypeName}'");
 
             // Create connection (subscribe to entity)
-            var (network, stateBytes, optimisticRandomBytes) = await _networkFactory(entityId, stateTypeName);
+            var subResult = await _networkFactory(entityId, stateTypeName);
 
             object state;
-            if (stateBytes != null && stateBytes.Length > 0)
+            if (subResult.StateBytes != null && subResult.StateBytes.Length > 0)
             {
-                state = _serializer.Unpack(config.StateType, stateBytes)
+                state = _serializer.Unpack(config.StateType, subResult.StateBytes)
                     ?? throw new InvalidOperationException($"Failed to deserialize state of type '{config.StateType.Name}'");
             }
             else
@@ -283,12 +299,12 @@ namespace SharedMeta.Client
             }
 
             MetaRandom? optimisticRandom = null;
-            if (optimisticRandomBytes != null && optimisticRandomBytes.Length > 0)
-                optimisticRandom = _serializer.Unpack<MetaRandom>(optimisticRandomBytes);
+            if (subResult.OptimisticRandomBytes != null && subResult.OptimisticRandomBytes.Length > 0)
+                optimisticRandom = _serializer.Unpack<MetaRandom>(subResult.OptimisticRandomBytes);
             else
                 optimisticRandom = MetaRandom.FromString(entityId + ":optimistic");
 
-            var entityConfig = config.ConfigFactory?.Invoke();
+            var entityConfig = await ResolveConfigAsync(config, subResult, entityId);
 
             lock (_lock)
             {
@@ -297,7 +313,7 @@ namespace SharedMeta.Client
                     _connections[entityId] = new EntityConnection
                     {
                         EntityId = entityId,
-                        Network = network,
+                        Network = subResult.Network,
                         StateType = config.StateType,
                         State = state,
                         OptimisticRandom = optimisticRandom,
@@ -403,6 +419,60 @@ namespace SharedMeta.Client
                 }
                 _connections.Clear();
             }
+        }
+
+        /// <summary>
+        /// Resolve config for an entity subscription.
+        /// Priority: cache → download → bundled factory.
+        /// </summary>
+        private async Task<object?> ResolveConfigAsync(MetaServiceConfig config, NetworkSubscribeResult subResult, string entityId)
+        {
+            if (config.ConfigType == null || config.ConfigFactory == null)
+                return null;
+
+            var serverVersion = subResult.ConfigVersion;
+
+            // No version from server (0,0) → use bundled config
+            if (serverVersion.Major == 0)
+                return config.ConfigFactory.Invoke();
+
+            var configTypeName = config.ConfigType.FullName ?? config.ConfigType.Name;
+
+            // Check cache
+            if (ConfigCache != null)
+            {
+                var cached = ConfigCache.TryGet(configTypeName, serverVersion);
+                if (cached != null)
+                    return cached;
+            }
+
+            // Try download: request URL from server, then download
+            if (ConfigDownloader != null && ConfigDownloadUrlFactory != null)
+            {
+                try
+                {
+                    var downloadUrl = await ConfigDownloadUrlFactory(configTypeName, serverVersion);
+                    if (downloadUrl != null)
+                    {
+                        var bytes = await ConfigDownloader.DownloadAsync(downloadUrl);
+                        var downloaded = _serializer.Unpack(config.ConfigType, bytes);
+                        if (downloaded != null)
+                        {
+                            ConfigCache?.Put(configTypeName, serverVersion, downloaded);
+                            return downloaded;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Core.Logging.MetaLog.Warning($"[MetaServiceResolver] Config download failed: {ex.Message}. Using bundled config.");
+                }
+            }
+
+            // Fallback: use bundled config from shared code
+            var bundled = config.ConfigFactory.Invoke();
+            ConfigCache?.Put(configTypeName, serverVersion, bundled);
+            return bundled;
         }
 
         public void Dispose()

@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using SharedMeta.Core.Transport;
+using SharedMeta.Server.Core;
 using SharedMeta.Server.Core.Transport;
 
 namespace SharedMeta.Transport.SignalR
@@ -20,12 +21,14 @@ namespace SharedMeta.Transport.SignalR
         private const string HandlerKey = "MetaHandler";
 
         private readonly IMetaConnectionHandlerFactory _handlerFactory;
+        private readonly IConfigDownloadUrlResolver? _configUrlResolver;
         private readonly ILogger<MetaHub> _logger;
 
-        public MetaHub(IMetaConnectionHandlerFactory handlerFactory, ILogger<MetaHub> logger)
+        public MetaHub(IMetaConnectionHandlerFactory handlerFactory, ILogger<MetaHub> logger, IConfigDownloadUrlResolver? configUrlResolver = null)
         {
             _handlerFactory = handlerFactory ?? throw new ArgumentNullException(nameof(handlerFactory));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _configUrlResolver = configUrlResolver;
         }
 
         /// <summary>
@@ -120,6 +123,23 @@ namespace SharedMeta.Transport.SignalR
         {
             var handler = GetOrCreateHandler();
             return handler.AcknowledgeSequenceAsync(request);
+        }
+
+        /// <summary>
+        /// Get the download URL for an entity's config.
+        /// Resolved via IConfigDownloadUrlResolver (DI) — does not go through the grain chain.
+        /// </summary>
+        public Task<ConfigDownloadUrlResponse> GetConfigDownloadUrl(ConfigDownloadUrlRequest request)
+        {
+            try
+            {
+                var url = _configUrlResolver?.GetDownloadUrl(request.StateTypeName, new Core.MetaConfigVersion(request.ConfigMajorVersion, request.ConfigMinorVersion));
+                return Task.FromResult(new ConfigDownloadUrlResponse { Success = true, DownloadUrl = url });
+            }
+            catch (Exception ex)
+            {
+                return Task.FromResult(new ConfigDownloadUrlResponse { Success = false, Error = ex.Message });
+            }
         }
 
         /// <summary>

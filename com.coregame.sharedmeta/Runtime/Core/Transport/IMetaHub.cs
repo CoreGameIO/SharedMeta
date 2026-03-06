@@ -21,6 +21,11 @@ namespace SharedMeta.Core.Transport
         Task<AcknowledgeResponse> AcknowledgeSequence(AcknowledgeRequest request);
 
         /// <summary>
+        /// Get the download URL for an entity's config.
+        /// </summary>
+        Task<ConfigDownloadUrlResponse> GetConfigDownloadUrl(ConfigDownloadUrlRequest request);
+
+        /// <summary>
         /// Graceful disconnect: client explicitly leaves. Session cannot be resumed.
         /// </summary>
         Task GracefulDisconnect();

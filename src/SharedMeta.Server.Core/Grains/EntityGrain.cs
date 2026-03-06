@@ -47,6 +47,7 @@ namespace SharedMeta.Server.Core.Grains
         private readonly EntityGrainOptions _options;
         private readonly IEntityGrainResolver _entityGrainResolver;
         private readonly IExecutionModeProvider? _executionModeProvider;
+        private readonly IConfigVersionResolver? _configVersionResolver;
 
         private IMetaProvider<TState>? _provider;
 
@@ -68,7 +69,8 @@ namespace SharedMeta.Server.Core.Grains
             ILogger<EntityGrain<TState>> logger,
             IOptions<EntityGrainOptions> options,
             IEntityGrainResolver entityGrainResolver,
-            IExecutionModeProvider? executionModeProvider = null)
+            IExecutionModeProvider? executionModeProvider = null,
+            IConfigVersionResolver? configVersionResolver = null)
         {
             _persistentState = persistentState ?? throw new ArgumentNullException(nameof(persistentState));
             _providerFactory = providerFactory ?? throw new ArgumentNullException(nameof(providerFactory));
@@ -77,6 +79,7 @@ namespace SharedMeta.Server.Core.Grains
             _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
             _executionModeProvider = executionModeProvider;
+            _configVersionResolver = configVersionResolver;
         }
 
         public override async Task OnActivateAsync(CancellationToken cancellationToken)
@@ -147,6 +150,15 @@ namespace SharedMeta.Server.Core.Grains
 
             var context = new MetaProviderContext(entityId, _serializer, GrainFactory, _logger);
             _provider.Initialize(context, state.UserState, state.ServerRandomBytes, state.OptimisticRandomBytes);
+
+            // Resolve config version: use persisted version, or resolve for new entities
+            _provider.InitializeConfig(state.ConfigVersion);
+
+            // Persist resolved config version if it changed (first activation or upgrade)
+            if (_provider.ConfigVersion != state.ConfigVersion)
+            {
+                state.ConfigVersion = _provider.ConfigVersion;
+            }
 
             // Run state initialization/migration if provider has [MetaInit] methods
             var newVersion = await _provider.InitializeStateAsync(state.Version);
@@ -221,7 +233,8 @@ namespace SharedMeta.Server.Core.Grains
             {
                 StateBytes = stateBytes,
                 CurrentSequenceNumber = state.EntitySequenceNumber,
-                OptimisticRandomBytes = _provider?.GetOptimisticRandomBytes()
+                OptimisticRandomBytes = _provider?.GetOptimisticRandomBytes(),
+                ConfigVersion = _provider?.ConfigVersion ?? default
             };
         }
 

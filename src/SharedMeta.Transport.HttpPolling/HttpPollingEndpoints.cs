@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using SharedMeta.Core.Transport;
+using SharedMeta.Server.Core;
 
 namespace SharedMeta.Transport.HttpPolling
 {
@@ -32,6 +33,7 @@ namespace SharedMeta.Transport.HttpPolling
             group.MapPost("/rpc", HandleRpcCall);
             group.MapPost("/ack", HandleAcknowledge);
             group.MapPost("/poll", HandlePoll);
+            group.MapPost("/config-url", HandleConfigDownloadUrl);
             group.MapPost("/disconnect", HandleDisconnect);
             group.MapPost("/graceful-disconnect", HandleGracefulDisconnect);
 
@@ -150,6 +152,30 @@ namespace SharedMeta.Transport.HttpPolling
                 ctx.RequestAborted);
 
             return Results.Json(response, MetaJsonContext.Default.PollResponse);
+        }
+
+        private static async Task<IResult> HandleConfigDownloadUrl(
+            HttpContext ctx,
+            HttpPollingConnectionManager mgr,
+            IConfigDownloadUrlResolver? configUrlResolver = null)
+        {
+            var (state, error) = GetExistingConnection(ctx, mgr);
+            if (state == null) return error!;
+
+            var request = await ctx.Request.ReadFromJsonAsync(MetaJsonContext.Default.ConfigDownloadUrlRequest);
+            if (request == null) return Results.BadRequest("Invalid request body");
+
+            try
+            {
+                var url = configUrlResolver?.GetDownloadUrl(request.StateTypeName, new SharedMeta.Core.MetaConfigVersion(request.ConfigMajorVersion, request.ConfigMinorVersion));
+                var response = new ConfigDownloadUrlResponse { Success = true, DownloadUrl = url };
+                return Results.Json(response, MetaJsonContext.Default.ConfigDownloadUrlResponse);
+            }
+            catch (Exception ex)
+            {
+                var response = new ConfigDownloadUrlResponse { Success = false, Error = ex.Message };
+                return Results.Json(response, MetaJsonContext.Default.ConfigDownloadUrlResponse);
+            }
         }
 
         private static async Task<IResult> HandleGracefulDisconnect(

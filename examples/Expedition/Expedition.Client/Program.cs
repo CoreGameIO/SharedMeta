@@ -61,7 +61,10 @@ var client = new MetaClient(
         ModeProvider = modeProvider
     }
 );
-client.Resolver.RegisterAllServices();
+var resolver = (MetaServiceResolver)client.Resolver;
+resolver.ConfigCache = new FileConfigCache("./config-cache", client.Serializer);
+resolver.ConfigDownloader = new HttpConfigDownloader();
+resolver.RegisterAllServices();
 
 // Track connection status for UI
 string connectionStatusMessage = "";

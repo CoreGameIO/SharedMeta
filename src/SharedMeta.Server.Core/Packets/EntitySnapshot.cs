@@ -1,4 +1,5 @@
 using Orleans;
+using SharedMeta.Core;
 
 namespace SharedMeta.Server.Core.Grains
 {
@@ -11,5 +12,6 @@ namespace SharedMeta.Server.Core.Grains
         [Id(0)] public byte[] StateBytes { get; set; } = Array.Empty<byte>();
         [Id(1)] public long CurrentSequenceNumber { get; set; }
         [Id(2)] public byte[]? OptimisticRandomBytes { get; set; }
+        [Id(3)] public MetaConfigVersion ConfigVersion { get; set; }
     }
 }

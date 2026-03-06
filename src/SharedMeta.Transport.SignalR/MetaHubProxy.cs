@@ -32,6 +32,9 @@ namespace SharedMeta.Transport.SignalR
         public Task<AcknowledgeResponse> AcknowledgeSequence(AcknowledgeRequest request)
             => _connection.InvokeAsync<AcknowledgeResponse>(nameof(AcknowledgeSequence), request);
 
+        public Task<ConfigDownloadUrlResponse> GetConfigDownloadUrl(ConfigDownloadUrlRequest request)
+            => _connection.InvokeAsync<ConfigDownloadUrlResponse>(nameof(GetConfigDownloadUrl), request);
+
         public Task GracefulDisconnect()
             => _connection.InvokeAsync(nameof(GracefulDisconnect));
     }

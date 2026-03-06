@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.SignalR.Client;
+using SharedMeta.Core;
 using SharedMeta.Core.Logging;
 using SharedMeta.Core.Transport;
 
@@ -153,7 +154,8 @@ namespace SharedMeta.Transport.SignalR
                 Success = response.Success,
                 Error = response.Error,
                 StateBytes = response.StateBytes,
-                OptimisticRandomBytes = response.OptimisticRandomBytes
+                OptimisticRandomBytes = response.OptimisticRandomBytes,
+                ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion)
             };
         }
 
@@ -193,6 +195,13 @@ namespace SharedMeta.Transport.SignalR
             {
                 SequenceNumber = sequenceNumber
             });
+        }
+
+        public async Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version)
+        {
+            EnsureConnected();
+            var response = await _hub!.GetConfigDownloadUrl(new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor });
+            return response.DownloadUrl;
         }
 
         #region Event Handlers

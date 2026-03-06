@@ -45,6 +45,10 @@ var serializer = new MessagePackMetaSerializer();
 //var serializer = new MemoryPackMetaSerializer();
 builder.Services.AddSingleton<IMetaSerializer>(serializer);
 
+// Config provider (shared between Orleans silo and app-level endpoint)
+var configProvider = new ExpeditionConfigProvider($"http://localhost:{port}");
+builder.Services.AddSingleton<IMetaConfigProvider<ExpeditionConfig>>(configProvider);
+
 // Orleans Silo
 builder.Host.UseOrleans(siloBuilder =>
 {
@@ -73,7 +77,7 @@ builder.Host.UseOrleans(siloBuilder =>
             services.ConfigureMeta(svc =>
             {
                 svc.AddTransient<IRandomService, RandomServiceImpl>();
-                svc.AddSingleton<IMetaConfigProvider<ExpeditionConfig>, ExpeditionConfigProvider>();
+                svc.AddSingleton<IMetaConfigProvider<ExpeditionConfig>>(configProvider);
             });
         });
 });
@@ -128,6 +132,14 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapMetaAuth("/meta/auth");
 
+// Config download endpoint — serves serialized config bytes
+app.MapGet("/meta/config/{major:int}/{minor:int}", (int major, int minor, IMetaSerializer ser, IMetaConfigProvider<ExpeditionConfig> configProvider) =>
+{
+    var config = configProvider.GetConfig(new MetaConfigVersion(major, minor));
+    var bytes = ser.Pack(config);
+    return Results.Bytes(bytes, "application/octet-stream");
+});
+
 #if USE_HTTP_POLLING
 app.MapMetaHttpPolling("/meta");
 app.MapGet("/", () => "Expedition Server (HTTP Polling) is running");
@@ -155,5 +167,14 @@ await app.RunAsync();
 /// </summary>
 public class ExpeditionConfigProvider : IMetaConfigProvider<ExpeditionConfig>
 {
-    public ExpeditionConfig GetConfig(string entityId) => new();
+    private readonly string _baseUrl;
+
+    public ExpeditionConfigProvider(string baseUrl)
+    {
+        _baseUrl = baseUrl.TrimEnd('/');
+    }
+
+    public MetaConfigVersion CurrentVersion => new(1, 1);
+    public ExpeditionConfig GetConfig(MetaConfigVersion version) => new();
+    public string? GetDownloadUrl(MetaConfigVersion version) => $"{_baseUrl}/meta/config/{version.Major}/{version.Minor}";
 }

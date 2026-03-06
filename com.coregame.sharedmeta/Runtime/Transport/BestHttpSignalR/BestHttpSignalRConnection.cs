@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using BestHTTP.SignalRCore;
 using BestHTTP.SignalRCore.Encoders;
+using SharedMeta.Core;
 using SharedMeta.Core.Logging;
 using SharedMeta.Core.Transport;
 
@@ -208,7 +209,8 @@ namespace SharedMeta.Transport.BestHttp
                 Success = response.Success,
                 Error = response.Error,
                 StateBytes = response.StateBytes,
-                OptimisticRandomBytes = response.OptimisticRandomBytes
+                OptimisticRandomBytes = response.OptimisticRandomBytes,
+                ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion)
             };
         }
 
@@ -238,6 +240,13 @@ namespace SharedMeta.Transport.BestHttp
             {
                 SequenceNumber = sequenceNumber
             });
+        }
+
+        public async Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version)
+        {
+            EnsureConnected();
+            var response = await _proxy!.GetConfigDownloadUrl(new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor });
+            return response.DownloadUrl;
         }
 
         #region Event Handlers

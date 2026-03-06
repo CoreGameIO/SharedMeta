@@ -35,6 +35,9 @@ namespace SharedMeta.Transport.BestHttp
         public Task<AcknowledgeResponse> AcknowledgeSequence(AcknowledgeRequest request)
             => InvokeAsync<AcknowledgeResponse>(nameof(AcknowledgeSequence), request);
 
+        public Task<ConfigDownloadUrlResponse> GetConfigDownloadUrl(ConfigDownloadUrlRequest request)
+            => InvokeAsync<ConfigDownloadUrlResponse>(nameof(GetConfigDownloadUrl), request);
+
         public Task GracefulDisconnect()
             => InvokeAsync<object>(nameof(GracefulDisconnect));
 

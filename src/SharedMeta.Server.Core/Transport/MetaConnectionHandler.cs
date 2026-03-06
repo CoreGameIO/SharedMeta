@@ -112,7 +112,9 @@ namespace SharedMeta.Server.Core.Transport
                         EntityId = e.EntityId,
                         StateBytes = e.StateBytes,
                         EntitySequenceNumber = e.EntitySequenceNumber,
-                        OptimisticRandomBytes = e.OptimisticRandomBytes
+                        OptimisticRandomBytes = e.OptimisticRandomBytes,
+                        ConfigMajorVersion = e.ConfigVersion.Major,
+                        ConfigMinorVersion = e.ConfigVersion.Minor
                     }).ToList()
                 };
             }
@@ -150,7 +152,9 @@ namespace SharedMeta.Server.Core.Transport
                     Error = result.Error,
                     StateBytes = result.StateBytes ?? Array.Empty<byte>(),
                     EntitySequenceNumber = result.EntitySequenceNumber,
-                    OptimisticRandomBytes = result.OptimisticRandomBytes
+                    OptimisticRandomBytes = result.OptimisticRandomBytes,
+                    ConfigMajorVersion = result.ConfigVersion.Major,
+                    ConfigMinorVersion = result.ConfigVersion.Minor
                 };
             }
             catch (Exception ex)

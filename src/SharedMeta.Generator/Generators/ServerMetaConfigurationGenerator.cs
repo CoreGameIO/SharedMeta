@@ -334,6 +334,10 @@ namespace SharedMeta.Generator.Generators
             GenerateEntityGrainResolver(sb, byStateType);
             sb.AppendLine();
 
+            // 3b. Generate ConfigDownloadUrlResolver
+            GenerateConfigDownloadUrlResolver(sb, byStateType);
+            sb.AppendLine();
+
             // 4. Generate ConfigureMeta extension method
             GenerateConfigureMetaExtension(sb, byStateType, allServerDeps);
             sb.AppendLine();
@@ -416,6 +420,10 @@ namespace SharedMeta.Generator.Generators
 
             // 3. Generate EntityGrainResolver
             GenerateEntityGrainResolver(sb, byStateType);
+            sb.AppendLine();
+
+            // 3b. Generate ConfigDownloadUrlResolver
+            GenerateConfigDownloadUrlResolver(sb, byStateType);
             sb.AppendLine();
 
             // 4. Generate ConfigureMeta extension method
@@ -535,17 +543,37 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
             sb.AppendLine();
 
-            // Override OnInitialize to resolve config
+            // Override InitializeConfig to resolve config by version
             var configType = services.Select(s => s.ConfigTypeFullName).FirstOrDefault(c => c != null);
             if (configType != null)
             {
+                sb.AppendLine($"        private SharedMeta.Server.Core.IMetaConfigProvider<{configType}>? _configProvider;");
+                sb.AppendLine($"        private SharedMeta.Server.Core.IConfigVersionResolver? _configVersionResolver;");
+                sb.AppendLine();
                 sb.AppendLine("        protected override void OnInitialize()");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (ServiceResolver != null)");
                 sb.AppendLine("            {");
-                sb.AppendLine($"                var configProvider = (SharedMeta.Server.Core.IMetaConfigProvider<{configType}>)ServiceResolver(typeof(SharedMeta.Server.Core.IMetaConfigProvider<{configType}>));");
-                sb.AppendLine($"                MetaContext!.Config = configProvider.GetConfig(Context.EntityId);");
+                sb.AppendLine($"                _configProvider = (SharedMeta.Server.Core.IMetaConfigProvider<{configType}>)ServiceResolver(typeof(SharedMeta.Server.Core.IMetaConfigProvider<{configType}>));");
+                sb.AppendLine($"                try {{ _configVersionResolver = ServiceResolver(typeof(SharedMeta.Server.Core.IConfigVersionResolver)) as SharedMeta.Server.Core.IConfigVersionResolver; }} catch {{ }}");
                 sb.AppendLine("            }");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+                sb.AppendLine("        public override void InitializeConfig(SharedMeta.Core.MetaConfigVersion version)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            if (_configProvider == null) { base.InitializeConfig(version); return; }");
+                sb.AppendLine();
+                sb.AppendLine("            // Resolve version for new entities (persisted version is 0,0)");
+                sb.AppendLine("            if (version.Major == 0 && version.Minor == 0)");
+                sb.AppendLine("            {");
+                sb.AppendLine("                var currentVersion = _configProvider.CurrentVersion;");
+                sb.AppendLine("                version = _configVersionResolver != null");
+                sb.AppendLine($"                    ? _configVersionResolver.ResolveVersion(\"{stateTypeFullName}\", Context.EntityId, currentVersion)");
+                sb.AppendLine("                    : currentVersion;");
+                sb.AppendLine("            }");
+                sb.AppendLine();
+                sb.AppendLine("            base.InitializeConfig(version);");
+                sb.AppendLine("            MetaContext!.Config = _configProvider.GetConfig(version);");
                 sb.AppendLine("        }");
                 sb.AppendLine();
             }
@@ -740,6 +768,9 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            // Register entity grain resolver");
             sb.AppendLine("            services.AddSingleton<SharedMeta.Server.Core.Grains.IEntityGrainResolver>(GeneratedEntityGrainResolver.Instance);");
             sb.AppendLine();
+            sb.AppendLine("            // Register config download URL resolver");
+            sb.AppendLine("            services.AddSingleton<SharedMeta.Server.Core.IConfigDownloadUrlResolver>(sp => new GeneratedConfigDownloadUrlResolver(sp));");
+            sb.AppendLine();
             sb.AppendLine("            // Register MetaConnectionHandlerFactory with signature validator");
             sb.AppendLine("            services.AddSingleton<SharedMeta.Server.Core.Transport.IMetaConnectionHandlerFactory>(sp =>");
             sb.AppendLine("                new SharedMeta.Server.Core.Transport.MetaConnectionHandlerFactory(");
@@ -820,6 +851,81 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                _ => null");
             sb.AppendLine("            };");
             sb.AppendLine("        }");
+            sb.AppendLine("    }");
+        }
+
+        /// <summary>
+        /// Generate IConfigDownloadUrlResolver implementation.
+        /// Resolves config download URLs via IMetaConfigProvider instances from DI.
+        /// </summary>
+        private static void GenerateConfigDownloadUrlResolver(
+            StringBuilder sb,
+            Dictionary<string, List<ServiceImplInfo>> byStateType)
+        {
+            // Find state types that have a config type
+            var statesWithConfig = byStateType
+                .Where(kvp => kvp.Value.Any(s => s.ConfigTypeFullName != null))
+                .Select(kvp => new
+                {
+                    StateTypeFullName = kvp.Key,
+                    StateTypeName = kvp.Value.First().StateTypeName,
+                    ConfigTypeFullName = kvp.Value.Select(s => s.ConfigTypeFullName).First(c => c != null)!
+                })
+                .ToList();
+
+            sb.AppendLine("    /// <summary>");
+            sb.AppendLine("    /// Generated config download URL resolver.");
+            sb.AppendLine("    /// Resolves download URLs via IMetaConfigProvider instances from DI.");
+            sb.AppendLine("    /// </summary>");
+            sb.AppendLine("    public sealed class GeneratedConfigDownloadUrlResolver : SharedMeta.Server.Core.IConfigDownloadUrlResolver");
+            sb.AppendLine("    {");
+
+            if (statesWithConfig.Count > 0)
+            {
+                // Fields for each config provider
+                foreach (var entry in statesWithConfig)
+                {
+                    var fieldName = $"_{char.ToLower(entry.StateTypeName[0])}{entry.StateTypeName.Substring(1)}ConfigProvider";
+                    sb.AppendLine($"        private readonly SharedMeta.Server.Core.IMetaConfigProvider<{entry.ConfigTypeFullName}>? {fieldName};");
+                }
+                sb.AppendLine();
+
+                // Constructor
+                sb.AppendLine("        public GeneratedConfigDownloadUrlResolver(System.IServiceProvider sp)");
+                sb.AppendLine("        {");
+                foreach (var entry in statesWithConfig)
+                {
+                    var fieldName = $"_{char.ToLower(entry.StateTypeName[0])}{entry.StateTypeName.Substring(1)}ConfigProvider";
+                    sb.AppendLine($"            {fieldName} = sp.GetService<SharedMeta.Server.Core.IMetaConfigProvider<{entry.ConfigTypeFullName}>>();");
+                }
+                sb.AppendLine("        }");
+                sb.AppendLine();
+
+                // GetDownloadUrl
+                sb.AppendLine("        public string? GetDownloadUrl(string stateTypeName, SharedMeta.Core.MetaConfigVersion version)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            return stateTypeName switch");
+                sb.AppendLine("            {");
+
+                foreach (var entry in statesWithConfig)
+                {
+                    var fieldName = $"_{char.ToLower(entry.StateTypeName[0])}{entry.StateTypeName.Substring(1)}ConfigProvider";
+                    sb.AppendLine($"                \"{entry.StateTypeName}\" or \"{entry.StateTypeFullName}\"");
+                    sb.AppendLine($"                    => {fieldName}?.GetDownloadUrl(version),");
+                }
+
+                sb.AppendLine("                _ => null");
+                sb.AppendLine("            };");
+                sb.AppendLine("        }");
+            }
+            else
+            {
+                // No config providers — return null always
+                sb.AppendLine("        public GeneratedConfigDownloadUrlResolver(System.IServiceProvider sp) { }");
+                sb.AppendLine();
+                sb.AppendLine("        public string? GetDownloadUrl(string stateTypeName, SharedMeta.Core.MetaConfigVersion version) => null;");
+            }
+
             sb.AppendLine("    }");
         }
 

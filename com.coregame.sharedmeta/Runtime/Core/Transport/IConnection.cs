@@ -65,6 +65,12 @@ namespace SharedMeta.Core.Transport
         Task AcknowledgeSequenceAsync(long sequenceNumber);
 
         /// <summary>
+        /// Request the download URL for a config from the server.
+        /// Returns null if no config or no download URL configured.
+        /// </summary>
+        Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version);
+
+        /// <summary>
         /// Fired when a SessionResponse is received from the server (observer push path).
         /// The response is the atomic unit — one SequenceNumber per response.
         /// </summary>
@@ -115,5 +121,6 @@ namespace SharedMeta.Core.Transport
         public string? Error { get; set; }
         public byte[] StateBytes { get; set; } = Array.Empty<byte>();
         public byte[]? OptimisticRandomBytes { get; set; }
+        public MetaConfigVersion ConfigVersion { get; set; }
     }
 }
