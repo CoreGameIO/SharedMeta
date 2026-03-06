@@ -11,12 +11,6 @@ namespace Expedition.Shared
     public interface IExpeditionProfileService : IMetaService
     {
         /// <summary>
-        /// Initialize profile with player ID and set initial energy timestamp.
-        /// </summary>
-        [MetaMethod(Alias = "InitProfile", Mode = ExecutionMode.Server)]
-        void InitProfile(string playerId);
-
-        /// <summary>
         /// Recalculate energy based on elapsed time. Returns current energy.
         /// </summary>
         [MetaMethod(Alias = "UpdateEnergy")]

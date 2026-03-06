@@ -306,6 +306,11 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         return Context.Serializer.Pack(_optimisticRandom);
     }
 
+    public virtual Task<int> InitializeStateAsync(int currentVersion)
+    {
+        return Task.FromResult(currentVersion);
+    }
+
     public virtual void OnDeactivating() { }
 
     /// <summary>

@@ -11,17 +11,20 @@ namespace Expedition.Shared
     {
         private ProfileState state => Context.State;
 
-        public void InitProfile(string playerId)
+        [MetaInit]
+        public Task<int> InitState(int version)
         {
-            if (state.PlayerId == playerId)
-                return; // Already initialized
-
-            state.PlayerId = playerId;
-            state.Energy = 50;
-            state.MaxEnergy = 50;
-            state.Money = 100;
-            state.EnergyRegenSeconds = 10;
-            state.LastEnergyUpdateTicks = Context.ServerTimeTicks;
+            if (version < 1)
+            {
+                state.PlayerId = Context.EntityId!; // UserOwned: entityId == playerId
+                state.Energy = 50;
+                state.MaxEnergy = 50;
+                state.Money = 100;
+                state.EnergyRegenSeconds = 10;
+                state.LastEnergyUpdateTicks = Context.ServerTimeTicks;
+                return Task.FromResult(1);
+            }
+            return Task.FromResult(version);
         }
 
         public int UpdateEnergy()

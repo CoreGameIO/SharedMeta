@@ -291,6 +291,38 @@ public partial class CardGameServiceImpl : ICardGameService
 }
 ```
 
+### State Initialization (`[MetaInit]`)
+
+Use `[MetaInit]` on a method in your `[MetaServiceImpl]` class to initialize or migrate state when the entity grain activates. Called server-side during `OnActivateAsync` — **not** broadcast to clients (clients receive the already-initialized state via snapshot on subscribe).
+
+```csharp
+[MetaServiceImpl(typeof(IProfileService), typeof(ProfileState))]
+public partial class ProfileServiceImpl : IProfileService
+{
+    [MetaInit]
+    public Task<int> InitState(int version)
+    {
+        if (version < 1)
+        {
+            State.Energy = 50;
+            State.MaxEnergy = 50;
+            State.Money = 100;
+            return Task.FromResult(1);
+        }
+        // Future migrations:
+        // if (version < 2) { State.NewField = ...; return Task.FromResult(2); }
+        return Task.FromResult(version);
+    }
+}
+```
+
+**Key points:**
+- **Signature:** `Task<int> MethodName(int version)` — takes current version, returns new version
+- `EntityGrainState.Version` is persisted alongside entity state
+- Grain is **not** persisted after init alone — only when a player interacts (`_isDirty` guard)
+- `Context.Random` and `Context.ServerRandom` are **not available** during `[MetaInit]`
+- Use for: default state values, schema migration, version-gated field initialization
+
 ### Context Properties
 
 Inside `[MetaServiceImpl]` classes, the source generator injects:
@@ -601,6 +633,7 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `[MetaService]` | Interface | Marks shared service for code generation |
 | `[MetaMethod]` | Method | Configures execution mode, alias, versioning |
 | `[MetaServiceImpl]` | Class | Marks service implementation for context injection |
+| `[MetaInit]` | Method | State initialization/migration on grain activation |
 | `[Trigger]` | Method | Auto-execute after condition on another method |
 | `[ServiceTrigger]` | Method | Trigger on framework service event |
 | `[ServerMetaService]` | Interface | Server-only service (generates replayer) |

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0] - 2026-03-06
+
+### Added
+- `[MetaInit]` attribute for state initialization/migration on grain activation
+- `EntityGrainState.Version` for tracking state migration version
+- `_isDirty` persistence guard — grains not persisted unless players interact
+
+### Changed
+- Unified persistence: `PersistIfNeeded` in `finally` blocks across all `EntityGrain.Handle*` methods
+- Removed force-persist from error catch blocks
+
 ## [0.2.0] - 2026-03-03
 
 ### Added

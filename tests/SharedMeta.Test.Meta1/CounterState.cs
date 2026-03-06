@@ -26,6 +26,11 @@ namespace SharedMeta.Test.Meta1
         /// Used to verify time sync mechanism in tests.
         /// </summary>
         [MemoryPackOrder(2)] public long LastServerTimeTicks { get; set; }
+
+        /// <summary>
+        /// Version set by [MetaInit] during entity activation.
+        /// </summary>
+        [MemoryPackOrder(3)] public int InitializedVersion { get; set; }
     }
 
     /// <summary>

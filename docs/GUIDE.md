@@ -146,6 +146,42 @@ public partial class CardGameServiceImpl : ICardGameService
 }
 ```
 
+### State Initialization (`[MetaInit]`)
+
+Use `[MetaInit]` on a method in your `[MetaServiceImpl]` class to initialize or migrate state when the entity grain activates. The method is called server-side during `OnActivateAsync` — it is **not** broadcast to clients (clients receive the already-initialized state via snapshot on subscribe).
+
+```csharp
+[MetaServiceImpl(typeof(IProfileService), typeof(ProfileState))]
+public partial class ProfileServiceImpl : IProfileService
+{
+    [MetaInit]
+    public Task<int> InitState(int version)
+    {
+        if (version < 1)
+        {
+            state.Energy = 50;
+            state.MaxEnergy = 50;
+            state.Money = 100;
+            return Task.FromResult(1);
+        }
+        // Future migrations:
+        // if (version < 2) { state.NewField = ...; return Task.FromResult(2); }
+        return Task.FromResult(version);
+    }
+}
+```
+
+**How it works:**
+- `EntityGrainState` stores `int Version`, persisted alongside entity state
+- On grain activation, the framework calls `InitializeStateAsync(currentVersion)` on the generated provider
+- The returned version is saved to `EntityGrainState.Version`
+- The grain is **not** persisted after init alone — persistence only happens when a player interacts with the entity (the `_isDirty` flag is not set by init)
+- This prevents creating persistent state for grains that were activated but never used
+
+**Signature:** `Task<int> MethodName(int version)` — takes current version, returns new version.
+
+**Important:** `Context.Random` and `Context.ServerRandom` are not available during `[MetaInit]`. This is a server-only initialization step without replay, so random-dependent logic (like map generation) should use regular `[MetaMethod]` calls instead.
+
 ---
 
 ## 3. Execution Modes & Replay
@@ -1472,6 +1508,7 @@ The server dispatcher receives `MethodVersion` and can route to different implem
 | `[MetaService]` | Interface | Marks shared service for code generation |
 | `[MetaMethod]` | Method | Configures execution mode, alias, versioning |
 | `[MetaServiceImpl]` | Class | Marks service implementation for context injection |
+| `[MetaInit]` | Method | State initialization/migration on grain activation |
 | `[SharedState]` | Class | Marks shared state entity |
 | `[Trigger]` | Method | Auto-execute after condition on another method |
 | `[ServiceTrigger]` | Method | Trigger on framework service event |

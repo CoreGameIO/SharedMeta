@@ -148,6 +148,14 @@ namespace SharedMeta.Server.Core.Grains
             var context = new MetaProviderContext(entityId, _serializer, GrainFactory, _logger);
             _provider.Initialize(context, state.UserState, state.ServerRandomBytes, state.OptimisticRandomBytes);
 
+            // Run state initialization/migration if provider has [MetaInit] methods
+            var newVersion = await _provider.InitializeStateAsync(state.Version);
+            if (newVersion != state.Version)
+            {
+                state.Version = newVersion;
+                _logger.EntityStateInitialized(typeof(TState).Name, entityId, newVersion);
+            }
+
             ResetPersistenceTracking();
 
             await base.OnActivateAsync(cancellationToken);
@@ -160,9 +168,12 @@ namespace SharedMeta.Server.Core.Grains
 
             _provider?.OnDeactivating();
 
-            // Persist final state
-            await _persistentState.WriteStateAsync();
-            _logger.EntityStatePersisted(entityId);
+            // Only persist if there were actual player interactions
+            if (_isDirty)
+            {
+                await _persistentState.WriteStateAsync();
+                _logger.EntityStatePersisted(entityId);
+            }
 
             await base.OnDeactivateAsync(reason, cancellationToken);
         }
@@ -233,6 +244,7 @@ namespace SharedMeta.Server.Core.Grains
 
             var state = _persistentState.State;
             var operationSequence = ++state.EntitySequenceNumber;
+            var forcePersist = false;
 
             // Update caller's last active time
             if (call.CallerId != null && state.Subscribers.TryGetValue(call.CallerId, out var callerSub))
@@ -241,10 +253,9 @@ namespace SharedMeta.Server.Core.Grains
             try
             {
                 var providerResult = await _provider.HandleCallAsync(call);
+                forcePersist = providerResult.ForcePersist;
 
-                // Persist state + sequence number + random state (subject to policy)
                 PersistRandomBytes();
-                await PersistIfNeeded(providerResult.ForcePersist);
 
                 // Distribute broadcasts to ALL EXCEPT caller
                 await DistributeBroadcasts(providerResult.Broadcasts, operationSequence, excludePlayerId: call.CallerId);
@@ -272,17 +283,16 @@ namespace SharedMeta.Server.Core.Grains
             }
             catch (Exception ex)
             {
-                // Always persist on error — sequence number was already incremented
-                _isDirty = true;
-                await _persistentState.WriteStateAsync();
-                ResetPersistenceTracking();
-
                 _logger.ErrorHandlingCall(ex);
                 return new EntityCallResult
                 {
                     EntitySequenceNumber = operationSequence,
                     Error = ex.Message
                 };
+            }
+            finally
+            {
+                await PersistIfNeeded(forcePersist);
             }
         }
 
@@ -295,13 +305,14 @@ namespace SharedMeta.Server.Core.Grains
 
             var state = _persistentState.State;
             var operationSequence = ++state.EntitySequenceNumber;
+            var forcePersist = false;
 
             try
             {
                 var providerResult = await _provider.HandleCallAsync(call);
+                forcePersist = providerResult.ForcePersist;
 
                 PersistRandomBytes();
-                await PersistIfNeeded(providerResult.ForcePersist);
 
                 // Distribute broadcasts to ALL subscribers (no exclusion for cross-entity calls)
                 await DistributeBroadcasts(providerResult.Broadcasts, operationSequence, excludePlayerId: null);
@@ -328,17 +339,16 @@ namespace SharedMeta.Server.Core.Grains
             }
             catch (Exception ex)
             {
-                // Always persist on error — sequence number was already incremented
-                _isDirty = true;
-                await _persistentState.WriteStateAsync();
-                ResetPersistenceTracking();
-
                 _logger.ErrorHandlingCrossEntityCall(ex);
                 return new EntityCallResult
                 {
                     EntitySequenceNumber = operationSequence,
                     Error = ex.Message
                 };
+            }
+            finally
+            {
+                await PersistIfNeeded(forcePersist);
             }
         }
 
@@ -359,8 +369,6 @@ namespace SharedMeta.Server.Core.Grains
             try
             {
                 var providerResult = await _provider.HandleExternalEventAsync(subscriberInterface, methodName, eventData, callerId);
-
-                await PersistIfNeeded(forcePersist: false);
 
                 // Distribute broadcasts to ALL subscribers (no exclusion for external events)
                 await DistributeBroadcasts(providerResult.Broadcasts, operationSequence, excludePlayerId: null);
@@ -383,17 +391,16 @@ namespace SharedMeta.Server.Core.Grains
             }
             catch (Exception ex)
             {
-                // Always persist on error — sequence number was already incremented
-                _isDirty = true;
-                await _persistentState.WriteStateAsync();
-                ResetPersistenceTracking();
-
                 _logger.ErrorHandlingExternalEvent(ex);
                 return new EntityCallResult
                 {
                     EntitySequenceNumber = operationSequence,
                     Error = ex.Message
                 };
+            }
+            finally
+            {
+                await PersistIfNeeded(forcePersist: false);
             }
         }
 

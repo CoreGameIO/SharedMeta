@@ -22,6 +22,7 @@ namespace SharedMeta.Generator.Generators
         public List<MethodSignatureInfo> MethodSignatures { get; set; } = new();
         public int AccessPolicy { get; set; } // 0=Open, 1=Authorized, 2=OwnerOnly
         public bool HasIsAuthorizedMethod { get; set; }
+        public string? MetaInitMethodName { get; set; }
     }
 
     /// <summary>
@@ -104,6 +105,16 @@ namespace SharedMeta.Generator.Generators
                        && m.Parameters[0].Type.SpecialType == SpecialType.System_String
                        && (m.ReturnType.SpecialType == SpecialType.System_Boolean
                            || m.ReturnType.ToDisplayString() == "bool"));
+
+            // Check for [MetaInit] method
+            var metaInitMethod = symbol.GetMembers()
+                .OfType<IMethodSymbol>()
+                .FirstOrDefault(m => m.GetAttributes().Any(a =>
+                    a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaInitAttribute"));
+            if (metaInitMethod != null)
+            {
+                info.MetaInitMethodName = metaInitMethod.Name;
+            }
 
             // Get server dependencies from constructor arguments (params Type[])
             if (attr.ConstructorArguments.Length > 2)
@@ -515,6 +526,31 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            return new {stateTypeFullName}PatchWrapper(State, root, Context.Serializer);");
             sb.AppendLine("        }");
             sb.AppendLine();
+
+            // InitializeStateAsync override (if any service has [MetaInit])
+            var servicesWithInit = services.Where(s => s.MetaInitMethodName != null).ToList();
+            if (servicesWithInit.Count > 0)
+            {
+                sb.AppendLine("        public override async System.Threading.Tasks.Task<int> InitializeStateAsync(int currentVersion)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            SharedMeta.Core.MetaContextAccessor.Current = MetaContext;");
+                sb.AppendLine("            try");
+                sb.AppendLine("            {");
+                sb.AppendLine("                var version = currentVersion;");
+                foreach (var service in servicesWithInit)
+                {
+                    var baseName = GetBaseName(service.InterfaceName);
+                    sb.AppendLine($"                version = await (({service.ImplClassFullName})Get{baseName}()).{service.MetaInitMethodName}(version);");
+                }
+                sb.AppendLine("                return version;");
+                sb.AppendLine("            }");
+                sb.AppendLine("            finally");
+                sb.AppendLine("            {");
+                sb.AppendLine("                SharedMeta.Core.MetaContextAccessor.Current = null;");
+                sb.AppendLine("            }");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+            }
 
             // Service getter methods
             sb.AppendLine("        // Service getters");

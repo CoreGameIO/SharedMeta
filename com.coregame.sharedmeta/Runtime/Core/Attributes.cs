@@ -113,6 +113,17 @@ namespace SharedMeta.Core
         public bool ForcePersist { get; set; }
     }
 
+    /// <summary>
+    /// Marks a method on a [MetaServiceImpl] class as a state initializer.
+    /// Called during EntityGrain activation with the current state version.
+    /// Must have signature: Task&lt;int&gt; MethodName(int version)
+    /// Returns the new version number to persist.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method)]
+    public class MetaInitAttribute : Attribute
+    {
+    }
+
     [AttributeUsage(AttributeTargets.Class)]
     public class MetaServiceImplAttribute : Attribute
     {

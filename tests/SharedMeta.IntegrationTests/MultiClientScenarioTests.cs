@@ -74,6 +74,8 @@ public class MultiClientScenarioTests
         Assert.Equal(300, alicePersonalState.Sum);
         Assert.Equal(2, alicePersonalState.Operations.Count);
         Assert.All(alicePersonalState.Operations, op => Assert.Equal("alice", op.CallerId));
+        // Verify [MetaInit] ran during entity activation
+        Assert.Equal(1, alicePersonalState.InitializedVersion);
 
         // Shared entity should be untouched
         AssertSharedState(new[] { aliceResolver, bobResolver, charlieResolver }, sharedEntityId,

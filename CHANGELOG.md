@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0] - 2026-03-06
+
+### State Initialization (`[MetaInit]`)
+
+- `[MetaInit]` attribute for automatic state initialization and migration during grain activation
+- Signature: `Task<int> Init(int version)` — takes current version, returns new version
+- `EntityGrainState.Version` persisted alongside entity state
+- Server-only: not broadcast to clients (clients receive initialized state via snapshot)
+- Grain not persisted after init alone — only when players interact (`_isDirty` guard)
+
+### Persistence
+
+- `_isDirty` flag in `EntityGrain` — skip persistence for grains activated but never interacted with
+- Unified persistence pattern: `PersistIfNeeded` moved to `finally` blocks in all `Handle*` methods
+- Removed force-persist from error catch blocks — errors set dirty flag naturally via sequence number increment
+
 ## [0.2.0] - 2026-03-05
 
 ### BestHTTP Transports (Unity)

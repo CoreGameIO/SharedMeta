@@ -154,6 +154,9 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Information, Message = "Pruned {Count} expired subscriber(s) from {EntityId}")]
     public static partial void ExpiredSubscribersPruned(this ILogger logger, string entityId, int count);
 
+    [LoggerMessage(Level = LogLevel.Information, Message = "State initialized: {StateType}/{EntityId}, version={Version}")]
+    public static partial void EntityStateInitialized(this ILogger logger, string stateType, string entityId, int version);
+
     [LoggerMessage(Level = LogLevel.Debug, Message = "State persisted: {EntityId}")]
     public static partial void EntityStatePersisted(this ILogger logger, string entityId);
 

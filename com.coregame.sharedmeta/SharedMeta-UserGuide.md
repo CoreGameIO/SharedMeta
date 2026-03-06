@@ -115,6 +115,37 @@ public partial class GameServiceImpl : IGameService
 
 ---
 
+## State Initialization (`[MetaInit]`)
+
+Add a `[MetaInit]` method to your service implementation to initialize or migrate state automatically when the entity grain activates on the server. Clients receive the already-initialized state when they subscribe — no client-side init call needed.
+
+```csharp
+[MetaServiceImpl(typeof(IGameService), typeof(GameState))]
+public partial class GameServiceImpl : IGameService
+{
+    [MetaInit]
+    public Task<int> InitState(int version)
+    {
+        if (version < 1)
+        {
+            State.Score = 0;
+            State.Items = new List<string> { "starter-sword" };
+            return Task.FromResult(1);
+        }
+        // Add new migrations here:
+        // if (version < 2) { State.NewField = ...; return Task.FromResult(2); }
+        return Task.FromResult(version);
+    }
+}
+```
+
+- **Signature:** `Task<int> MethodName(int version)` — takes current version, returns new version
+- Version is persisted per entity — migrations only run once
+- `Context.Random` / `Context.ServerRandom` are not available during init
+- The grain is not persisted after init alone — only after player interactions
+
+---
+
 ## Execution Modes
 
 | Mode | Behavior | Use For |

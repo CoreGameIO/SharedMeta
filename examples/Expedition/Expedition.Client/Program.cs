@@ -158,7 +158,6 @@ async Task<bool> RunGameAsync()
 {
     var profileApi = await client.GetExpeditionProfileServiceAsync();
 
-    await profileApi.InitProfileAsync(client.PlayerId);
     await profileApi.UpdateEnergyAsync();
 
     var expeditionResult = await profileApi.ResumeOrStartExpeditionAsync();

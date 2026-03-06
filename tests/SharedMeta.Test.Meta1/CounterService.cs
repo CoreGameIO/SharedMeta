@@ -46,6 +46,19 @@ namespace SharedMeta.Test.Meta1
             return Context.CallerId ?? "unknown";
         }
 
+        [MetaInit]
+        public Task<int> Init(int version)
+        {
+            if (version < 1)
+            {
+                // First-time initialization
+                var state = GetState();
+                state.InitializedVersion = 1;
+                return Task.FromResult(1);
+            }
+            return Task.FromResult(version);
+        }
+
         public void AddValue(int value, int clientSequence)
         {
             var state = GetState();

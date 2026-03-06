@@ -17,6 +17,7 @@ public partial class EntityGrainState<TState> where TState : class, ISharedState
     [Id(2), Key(2), MemoryPackOrder(2)] public Dictionary<string, PersistedSubscriberInfo> Subscribers { get; set; } = new();
     [Id(3), Key(3), MemoryPackOrder(3)] public byte[]? ServerRandomBytes { get; set; }
     [Id(4), Key(4), MemoryPackOrder(4)] public byte[]? OptimisticRandomBytes { get; set; }
+    [Id(5), Key(5), MemoryPackOrder(5)] public int Version { get; set; }
 }
 
 /// <summary>

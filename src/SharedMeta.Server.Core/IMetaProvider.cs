@@ -116,6 +116,13 @@ namespace SharedMeta.Server.Core
         byte[] GetOptimisticRandomBytes();
 
         /// <summary>
+        /// Run state initialization/migration logic.
+        /// Called during grain activation with the persisted version number.
+        /// Returns the new version to persist (return currentVersion if no migration needed).
+        /// </summary>
+        Task<int> InitializeStateAsync(int currentVersion);
+
+        /// <summary>
         /// Called when the grain is deactivating.
         /// Allows cleanup of resources.
         /// </summary>
