@@ -41,6 +41,9 @@
   - `CoreGame.SharedMeta.Transport.HttpPolling.Client` — HTTP polling with HttpClient (no server deps)
   - `CoreGame.SharedMeta.Transport.SignalR.MessagePack` — optional MessagePack protocol extension
 - `SignalRConnection` `configureBuilder` callback for custom protocol configuration
+- Unity BestHTTP transport adapters:
+  - `BestHttpSignalRConnection` — SignalR transport via BestHTTP plugin
+  - `BestHttpPollingConnection` — HTTP polling transport via BestHTTP plugin
 
 ### Fixed
 - Subscriber broadcast dispatchers now call service methods to update client state (not just fire events)

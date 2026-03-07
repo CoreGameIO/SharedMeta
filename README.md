@@ -24,7 +24,7 @@ Add to `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.coregame.sharedmeta": "https://github.com/CoreGameIO/SharedMeta.git#v0.1.0"
+    "com.coregame.sharedmeta": "https://github.com/CoreGameIO/SharedMeta.git#upm"
   }
 }
 ```
