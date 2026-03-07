@@ -8,27 +8,28 @@ Complete technical reference for the SharedMeta framework. Covers all subsystems
 
 1. [Architecture Overview](#1-architecture-overview)
 2. [Shared State & Services](#2-shared-state--services)
-3. [Execution Modes & Replay](#3-execution-modes--replay)
-4. [Deterministic Random](#4-deterministic-random)
-5. [Cross-Entity Calls](#5-cross-entity-calls)
-6. [Triggers & Subscribers](#6-triggers--subscribers)
-7. [Argument Transformers](#7-argument-transformers)
-8. [Transport Configuration](#8-transport-configuration)
-9. [Serialization](#9-serialization)
-10. [Session Management](#10-session-management)
-11. [Authentication](#11-authentication)
-12. [Persistence Configuration](#12-persistence-configuration)
-13. [Orleans Backend](#13-orleans-backend)
-14. [Server Setup](#14-server-setup)
-15. [Client Setup](#15-client-setup)
-16. [Matchmaking (Lobby)](#16-matchmaking-lobby)
-17. [Desync Diagnostics](#17-desync-diagnostics)
-18. [Code Generation Reference](#18-code-generation-reference)
-19. [Attribute Reference](#19-attribute-reference)
-20. [Testing](#20-testing)
-21. [Capability Overview](#21-capability-overview)
-22. [Tutorial: Building Your First Service](#22-tutorial-building-your-first-service)
-23. [Architecture Decisions](#23-architecture-decisions)
+3. [Static Game Configuration](#3-static-game-configuration)
+4. [Execution Modes & Replay](#4-execution-modes--replay)
+5. [Deterministic Random](#5-deterministic-random)
+6. [Cross-Entity Calls](#6-cross-entity-calls)
+7. [Triggers & Subscribers](#7-triggers--subscribers)
+8. [Argument Transformers](#8-argument-transformers)
+9. [Transport Configuration](#9-transport-configuration)
+10. [Serialization](#10-serialization)
+11. [Session Management](#11-session-management)
+12. [Authentication](#12-authentication)
+13. [Persistence Configuration](#13-persistence-configuration)
+14. [Orleans Backend](#14-orleans-backend)
+15. [Server Setup](#15-server-setup)
+16. [Client Setup](#16-client-setup)
+17. [Matchmaking (Lobby)](#17-matchmaking-lobby)
+18. [Desync Diagnostics](#18-desync-diagnostics)
+19. [Code Generation Reference](#19-code-generation-reference)
+20. [Attribute Reference](#20-attribute-reference)
+21. [Testing](#21-testing)
+22. [Capability Overview](#22-capability-overview)
+23. [Tutorial: Building Your First Service](#23-tutorial-building-your-first-service)
+24. [Architecture Decisions](#24-architecture-decisions)
 
 ---
 
@@ -76,7 +77,7 @@ Client (Unity/.NET)                           Server (.NET + Orleans)
 State classes implement `ISharedState` and need a transport serializer attribute:
 
 ```csharp
-[MemoryPackable]  // or [MessagePackObject], or both
+[MemoryPackable(GenerateType.VersionTolerant)]  // or [MessagePackObject], or both
 public partial class GameState : ISharedState
 {
     [MemoryPackOrder(0)] public int Score { get; set; }
@@ -85,7 +86,7 @@ public partial class GameState : ISharedState
 }
 ```
 
-`[MemoryPackOrder(n)]` (or `[Key(n)]` for MessagePack) provides version tolerance — you can add new fields without breaking existing persisted state. States are persisted and transmitted as bytes via the chosen transport serializer; Orleans `[GenerateSerializer]`/`[Id(n)]` are not needed on game state/DTO classes.
+`[MemoryPackOrder(n)]` (or `[Key(n)]` for MessagePack) provides version tolerance — you can add new fields without breaking existing persisted state. `GenerateType.VersionTolerant` ensures MemoryPack stores field orders explicitly, allowing safe addition/removal of fields in persisted data. States are persisted and transmitted as bytes via the chosen transport serializer; Orleans `[GenerateSerializer]`/`[Id(n)]` are not needed on game state/DTO classes.
 
 ### Service Interface
 
@@ -180,11 +181,184 @@ public partial class ProfileServiceImpl : IProfileService
 
 **Signature:** `Task<int> MethodName(int version)` — takes current version, returns new version.
 
-**Important:** `Context.Random` and `Context.ServerRandom` are not available during `[MetaInit]`. This is a server-only initialization step without replay, so random-dependent logic (like map generation) should use regular `[MetaMethod]` calls instead.
+**Available during `[MetaInit]`:**
+- `Context.Random` and `Context.ServerRandom` — available for deterministic initialization (e.g., map generation)
+- `Config` — available if a config type is configured for the service (config is resolved before init runs)
+- `State` — the entity state to initialize/migrate
+
+**Note:** `[MetaInit]` is a server-only step. Random values used during init are not replayed on the client — the client receives the already-initialized state snapshot.
 
 ---
 
-## 3. Execution Modes & Replay
+## 3. Static Game Configuration
+
+Static game configuration allows defining balance parameters, level data, and other read-only data separately from entity state. Config is provided by the server and available in service methods via `Config` / `Context.Config`.
+
+### Defining a Config Type
+
+Mark a class with `[MetaConfig]`:
+
+```csharp
+[MetaConfig(Default = true)]
+[MemoryPackable, MessagePackObject]
+public partial class GameConfig
+{
+    [Key(0), MemoryPackOrder(0)] public int MaxEnergy { get; set; } = 100;
+    [Key(1), MemoryPackOrder(1)] public int EnergyRegenMinutes { get; set; } = 5;
+    [Key(2), MemoryPackOrder(2)] public int StarterGold { get; set; } = 500;
+}
+```
+
+- `Default = true` — this config is automatically used by services with `DefaultConfig = true`
+- Only one config class should be marked as `Default` per assembly
+
+### Linking Config to a Service
+
+```csharp
+// Option 1: Use the default config (marked with [MetaConfig(Default = true)])
+[MetaService(StateType = typeof(GameState), DefaultConfig = true)]
+public interface IGameService : IMetaService { ... }
+
+// Option 2: Explicit config type
+[MetaService(StateType = typeof(GameState), ConfigType = typeof(GameConfig))]
+public interface IGameService : IMetaService { ... }
+```
+
+### Accessing Config in Service Code
+
+The source generator injects a typed `Config` property:
+
+```csharp
+[MetaServiceImpl(typeof(IGameService), typeof(GameState))]
+public partial class GameServiceImpl : IGameService
+{
+    // Auto-injected by generator:
+    //   protected GameConfig Config => (GameConfig)Context.Config!;
+
+    public bool RegenerateEnergy()
+    {
+        if (State.Energy >= Config.MaxEnergy) return false;
+        State.Energy = Math.Min(State.Energy + 1, Config.MaxEnergy);
+        return true;
+    }
+}
+```
+
+Config is also available during `[MetaInit]`:
+
+```csharp
+[MetaInit]
+public Task<int> InitState(int version)
+{
+    if (version < 1)
+    {
+        State.Gold = Config.StarterGold;
+        return Task.FromResult(1);
+    }
+    return Task.FromResult(version);
+}
+```
+
+### Config Versioning (`MetaConfigVersion`)
+
+Config uses a two-part version: `Major.Minor`.
+
+- **Major** = schema version. Changes when config structure changes (requires client update).
+- **Minor** = data version. Changes when config values change (same schema).
+
+```csharp
+public readonly struct MetaConfigVersion
+{
+    public int Major { get; }
+    public int Minor { get; }
+}
+```
+
+### Server-Side Config Provider
+
+Implement `IMetaConfigProvider<TConfig>` and register in DI:
+
+```csharp
+public class GameConfigProvider : IMetaConfigProvider<GameConfig>
+{
+    public MetaConfigVersion CurrentVersion => new(1, 2);
+
+    public GameConfig GetConfig(MetaConfigVersion version)
+    {
+        // Return config for the requested version
+        // Could load from files, database, etc.
+        return new GameConfig();
+    }
+
+    public string? GetDownloadUrl(MetaConfigVersion version)
+    {
+        // Return URL for client to download this config version
+        // Return null if config is bundled with the client
+        return $"https://example.com/config/{version.Major}/{version.Minor}";
+    }
+}
+
+// In server setup:
+builder.Services.AddSingleton<IMetaConfigProvider<GameConfig>>(new GameConfigProvider());
+
+// Also register inside Orleans ConfigureServices:
+services.ConfigureMeta(svc =>
+{
+    svc.AddSingleton<IMetaConfigProvider<GameConfig>>(configProvider);
+});
+```
+
+### Config Version Pinning
+
+Each entity persists its config version in `EntityGrainState.ConfigVersion`. The version is resolved **once** on first activation and reused on subsequent activations:
+
+1. New entity activates → `ConfigVersion` is `(0,0)` (unset)
+2. Framework calls `IMetaConfigProvider.CurrentVersion` to get the default version
+3. If `IConfigVersionResolver` is registered, it can override the version (for A/B tests)
+4. Resolved version is persisted → all future activations use this version
+5. Entity keeps using pinned version until explicitly upgraded
+
+### Config Version Resolver (A/B Tests, Gradual Rollouts)
+
+Register `IConfigVersionResolver` in DI to customize which config version an entity uses:
+
+```csharp
+public class AbTestConfigResolver : IConfigVersionResolver
+{
+    public MetaConfigVersion ResolveVersion(
+        string stateTypeName, string entityId, MetaConfigVersion currentVersion)
+    {
+        // Example: 10% of entities get the new config version
+        if (entityId.GetHashCode() % 10 == 0)
+            return new MetaConfigVersion(currentVersion.Major, currentVersion.Minor + 1);
+
+        return currentVersion;
+    }
+}
+
+// Register in DI (optional — without it, CurrentVersion is always used):
+services.AddSingleton<IConfigVersionResolver>(new AbTestConfigResolver());
+```
+
+### Client-Side Config Flow
+
+1. Client subscribes to entity → server includes `ConfigVersion` in the response
+2. Client checks local cache (`IMetaConfigCache`) for this version
+3. If not cached, client requests download URL via `GetConfigDownloadUrlAsync(stateTypeName, version)`
+4. Client downloads config bytes via `IMetaConfigDownloader`, deserializes, and caches
+5. If download fails, client falls back to bundled config from shared code
+
+```csharp
+// Optional: set up config cache and downloader on client
+client.Resolver.ConfigCache = new InMemoryConfigCache();
+client.Resolver.ConfigDownloader = new HttpConfigDownloader();
+```
+
+Without cache/downloader configured, the client always uses the bundled config factory from shared code.
+
+---
+
+## 4. Execution Modes & Replay
 
 ### Optimistic Mode (default)
 
@@ -366,7 +540,7 @@ modeProvider.LoadManifest(@"{
 
 ---
 
-## 4. Deterministic Random
+## 5. Deterministic Random
 
 ### Two Random Systems
 
@@ -396,7 +570,7 @@ Optimistic random is seeded from the entity ID string (FNV-1a hash). State is tr
 
 ---
 
-## 5. Cross-Entity Calls
+## 6. Cross-Entity Calls
 
 ### How It Works
 
@@ -423,7 +597,7 @@ When Entity A calls Entity B, players subscribed to both A and B would see Entit
 
 ---
 
-## 6. Triggers & Subscribers
+## 7. Triggers & Subscribers
 
 ### Triggers
 
@@ -488,7 +662,7 @@ sub.Dispose();
 
 ---
 
-## 7. Argument Transformers
+## 8. Argument Transformers
 
 Transform complex game objects into simple serializable types for RPC arguments.
 
@@ -538,7 +712,7 @@ void RawMove([SkipTransform] Vector3 position); // No transformation
 
 ---
 
-## 8. Transport Configuration
+## 9. Transport Configuration
 
 Transport is split into **server** and **client** packages. Server packages include both endpoints and connection classes; client-only packages have no server dependencies (no Orleans, no ASP.NET FrameworkReference) and work with Godot, console apps, and other .NET clients.
 
@@ -689,7 +863,7 @@ server.FailureSimulation = new FailureSimulationSettings
 
 ---
 
-## 9. Serialization
+## 10. Serialization
 
 ### IMetaSerializer Interface
 
@@ -732,10 +906,10 @@ var serializer = new MessagePackMetaSerializer();
 
 State and DTO classes need a transport serializer attribute with explicit field ordering for version tolerance:
 
-**MemoryPack:**
+**MemoryPack (use `VersionTolerant` for persisted state classes):**
 ```csharp
-[MemoryPackable]
-public partial class MyData
+[MemoryPackable(GenerateType.VersionTolerant)]
+public partial class MyState : ISharedState
 {
     [MemoryPackOrder(0)] public string Name { get; set; }
     [MemoryPackOrder(1)] public int Value { get; set; }
@@ -745,7 +919,7 @@ public partial class MyData
 **MessagePack:**
 ```csharp
 [MessagePackObject]
-public partial class MyData
+public partial class MyState : ISharedState
 {
     [Key(0)] public string Name { get; set; }
     [Key(1)] public int Value { get; set; }
@@ -754,8 +928,8 @@ public partial class MyData
 
 **Both (cross-serializer compatibility):**
 ```csharp
-[MemoryPackable, MessagePackObject]
-public partial class MyData
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject]
+public partial class MyState : ISharedState
 {
     [Key(0), MemoryPackOrder(0)] public string Name { get; set; }
     [Key(1), MemoryPackOrder(1)] public int Value { get; set; }
@@ -766,8 +940,10 @@ States are persisted and transmitted as bytes via the chosen transport serialize
 
 ### Version Tolerance Rules
 
-- `[MemoryPackOrder(n)]` — MemoryPack version-tolerant deserialization. Without it, MemoryPack uses source declaration order — reordering or inserting fields breaks deserialization.
-- `[Key(n)]` — MessagePack version-tolerant deserialization. Unknown keys skipped (forward compatible), missing keys get defaults (backward compatible).
+- **MemoryPack**: Use `[MemoryPackable(GenerateType.VersionTolerant)]` on all persisted types (state classes, grain state wrappers). This stores field orders explicitly in the binary format, allowing safe addition/removal of fields. Without `VersionTolerant`, MemoryPack serializes as a fixed-length array — adding fields breaks deserialization of old data.
+- `[MemoryPackOrder(n)]` — required with `VersionTolerant`. Defines the field identity in the binary format.
+- `[Key(n)]` — MessagePack field ordering. MessagePack with integer keys is inherently version-tolerant: unknown keys are skipped (forward compatible), missing keys get defaults (backward compatible).
+- For non-persisted DTOs (transport-only), plain `[MemoryPackable]` without `VersionTolerant` is acceptable since both client and server are always updated together.
 
 ### Adding New Fields (Version Tolerance)
 
@@ -789,7 +965,7 @@ Rules:
 
 ---
 
-## 10. Session Management
+## 11. Session Management
 
 ### Architecture
 
@@ -844,7 +1020,7 @@ Every `RpcCallRequest` includes `LastAcknowledgedSequence`, avoiding a separate 
 
 ---
 
-## 11. Authentication
+## 12. Authentication
 
 ### JWT Configuration
 
@@ -911,7 +1087,7 @@ public bool IsAuthorized(string playerId)
 
 ---
 
-## 12. Persistence Configuration
+## 13. Persistence Configuration
 
 ### FileGrainStorage
 
@@ -983,7 +1159,7 @@ Use for: purchases, currency operations, inventory changes, and any operation wh
 
 ---
 
-## 13. Orleans Backend
+## 14. Orleans Backend
 
 ### Why Orleans
 
@@ -1043,7 +1219,7 @@ siloBuilder
 
 ---
 
-## 14. Server Setup
+## 15. Server Setup
 
 ### Minimal Server
 
@@ -1117,7 +1293,7 @@ builder.Host.UseSerilog((ctx, config) => config
 
 ---
 
-## 15. Client Setup
+## 16. Client Setup
 
 ### NuGet Packages for .NET Clients (Godot, Console, etc.)
 
@@ -1273,7 +1449,7 @@ that calls API methods.
 
 ---
 
-## 16. Matchmaking (Lobby)
+## 17. Matchmaking (Lobby)
 
 ### Lobby Pattern
 
@@ -1318,7 +1494,7 @@ await profileApi.RequestMatchAsync(2);
 
 ---
 
-## 17. Desync Diagnostics
+## 18. Desync Diagnostics
 
 ### IDesyncDiagnostics Interface
 
@@ -1409,7 +1585,7 @@ public void Move(int dx, int dy)
 
 ---
 
-## 18. Code Generation Reference
+## 19. Code Generation Reference
 
 The source generator (`SharedMeta.Generator`) scans assemblies for attributes and generates:
 
@@ -1501,7 +1677,7 @@ The server dispatcher receives `MethodVersion` and can route to different implem
 
 ---
 
-## 19. Attribute Reference
+## 20. Attribute Reference
 
 | Attribute | Target | Description |
 |-----------|--------|-------------|
@@ -1509,6 +1685,7 @@ The server dispatcher receives `MethodVersion` and can route to different implem
 | `[MetaMethod]` | Method | Configures execution mode, alias, versioning |
 | `[MetaServiceImpl]` | Class | Marks service implementation for context injection |
 | `[MetaInit]` | Method | State initialization/migration on grain activation |
+| `[MetaConfig]` | Class | Marks a class as static game configuration |
 | `[SharedState]` | Class | Marks shared state entity |
 | `[Trigger]` | Method | Auto-execute after condition on another method |
 | `[ServiceTrigger]` | Method | Trigger on framework service event |
@@ -1540,12 +1717,14 @@ The server dispatcher receives `MethodVersion` and can route to different implem
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `StateType` | Type | required | State class type |
+| `ConfigType` | Type | null | Explicit config type for this service |
+| `DefaultConfig` | bool | false | Use the config class marked with `[MetaConfig(Default = true)]` |
 | `AccessPolicy` | EntityAccessPolicy | Open | Subscribe access control |
 | `SubscriberInterfaces` | Type[] | empty | Framework event subscriptions |
 
 ---
 
-## 20. Testing
+## 21. Testing
 
 ### In-Process Testing
 
@@ -1615,7 +1794,7 @@ See `tests/SharedMeta.IntegrationTests/` for complete examples.
 
 ---
 
-## 21. Capability Overview
+## 22. Capability Overview
 
 | Category | Capabilities |
 |----------|-------------|
@@ -1639,7 +1818,7 @@ See `tests/SharedMeta.IntegrationTests/` for complete examples.
 
 ---
 
-## 22. Tutorial: Building Your First Service
+## 23. Tutorial: Building Your First Service
 
 Step-by-step guide from empty project to working service.
 
@@ -1765,7 +1944,7 @@ The entire workflow — defining states, service interfaces, implementations, an
 
 ---
 
-## 23. Architecture Decisions
+## 24. Architecture Decisions
 
 Key design decisions and their rationale.
 

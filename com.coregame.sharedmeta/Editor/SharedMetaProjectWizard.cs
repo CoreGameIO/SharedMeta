@@ -1295,7 +1295,9 @@ namespace SharedMeta.Editor
 
         private void AppendSerializerAttr(StringBuilder sb)
         {
-            sb.AppendLine(_serializerIndex == 0 ? "    [MemoryPackable]" : "    [MessagePackObject]");
+            sb.AppendLine(_serializerIndex == 0
+                ? "    [MemoryPackable(GenerateType.VersionTolerant)]"
+                : "    [MessagePackObject]");
         }
 
         private void AppendProp(StringBuilder sb, int id, string type, string name, string? defaultValue = null)
@@ -2546,10 +2548,10 @@ Client (Unity/.NET)                           Server (.NET + Orleans)
 
 All state and DTO classes need a **transport serializer** attribute (choose one based on project setup):
 
-**With MemoryPack:**
+**With MemoryPack (use VersionTolerant for persisted state classes):**
 ```csharp
-[MemoryPackable]
-public partial class MyData
+[MemoryPackable(GenerateType.VersionTolerant)]
+public partial class MyState : ISharedState
 {
     [MemoryPackOrder(0)] public string Name { get; set; }
     [MemoryPackOrder(1)] public int Value { get; set; }
@@ -2559,7 +2561,7 @@ public partial class MyData
 **With MessagePack:**
 ```csharp
 [MessagePackObject]
-public partial class MyData
+public partial class MyState : ISharedState
 {
     [Key(0)] public string Name { get; set; }
     [Key(1)] public int Value { get; set; }
@@ -2568,8 +2570,8 @@ public partial class MyData
 
 **With both (for cross-serializer compatibility):**
 ```csharp
-[MemoryPackable, MessagePackObject]
-public partial class MyData
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject]
+public partial class MyState : ISharedState
 {
     [Key(0), MemoryPackOrder(0)] public string Name { get; set; }
     [Key(1), MemoryPackOrder(1)] public int Value { get; set; }
@@ -2631,7 +2633,7 @@ modeProvider.Clear(); // Reset to attribute defaults
 
 ### State Definition
 ```csharp
-[MemoryPackable]  // or [MessagePackObject], or both
+[MemoryPackable(GenerateType.VersionTolerant)]  // or [MessagePackObject], or both
 public partial class GameState : ISharedState
 {
     [MemoryPackOrder(0)] public int Score { get; set; }

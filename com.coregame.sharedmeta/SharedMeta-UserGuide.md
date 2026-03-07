@@ -48,7 +48,7 @@ Use **SharedMeta > Project Wizard** in Unity to scaffold server/client projects.
 State classes need serialization attributes and must implement `ISharedState`:
 
 ```csharp
-[MemoryPackable, MessagePackObject]
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject]
 public partial class GameState : ISharedState
 {
     [Key(0), MemoryPackOrder(0)] public int Score { get; set; }
@@ -59,6 +59,7 @@ public partial class GameState : ISharedState
 
 Rules:
 - Class must be `partial` (required for code generation)
+- Use `GenerateType.VersionTolerant` for MemoryPack on persisted state classes (allows adding fields without breaking old data)
 - Every property needs ordinal attributes: `[Key(n)]` (MessagePack) and/or `[MemoryPackOrder(n)]` (MemoryPack)
 - All nested types also need serialization attributes
 - `[GenerateSerializer]` / `[Id(n)]` (Orleans) are **not needed** on state classes
@@ -141,8 +142,86 @@ public partial class GameServiceImpl : IGameService
 
 - **Signature:** `Task<int> MethodName(int version)` — takes current version, returns new version
 - Version is persisted per entity — migrations only run once
-- `Context.Random` / `Context.ServerRandom` are not available during init
+- `Context.Random`, `Context.ServerRandom`, and `Config` are all available during init
 - The grain is not persisted after init alone — only after player interactions
+
+---
+
+## Static Game Configuration
+
+Define read-only config data (balance, level design, etc.) separately from entity state.
+
+### 1. Define Config
+
+```csharp
+[MetaConfig(Default = true)]
+[MemoryPackable, MessagePackObject]
+public partial class GameConfig
+{
+    [Key(0), MemoryPackOrder(0)] public int MaxEnergy { get; set; } = 100;
+    [Key(1), MemoryPackOrder(1)] public int StarterGold { get; set; } = 500;
+}
+```
+
+### 2. Link to Service
+
+```csharp
+[MetaService(StateType = typeof(GameState), DefaultConfig = true)]
+public interface IGameService : IMetaService { ... }
+```
+
+Or explicitly: `ConfigType = typeof(GameConfig)`.
+
+### 3. Access in Code
+
+```csharp
+[MetaServiceImpl(typeof(IGameService), typeof(GameState))]
+public partial class GameServiceImpl : IGameService
+{
+    // Auto-injected: protected GameConfig Config
+
+    public bool BuyItem(string itemId, int price)
+    {
+        if (State.Gold < price) return false;
+        State.Gold -= price;
+        return true;
+    }
+
+    [MetaInit]
+    public Task<int> InitState(int version)
+    {
+        if (version < 1)
+        {
+            State.Gold = Config.StarterGold;  // Config available during init
+            return Task.FromResult(1);
+        }
+        return Task.FromResult(version);
+    }
+}
+```
+
+### 4. Server Config Provider
+
+```csharp
+public class GameConfigProvider : IMetaConfigProvider<GameConfig>
+{
+    public MetaConfigVersion CurrentVersion => new(1, 1);
+    public GameConfig GetConfig(MetaConfigVersion version) => new();
+    public string? GetDownloadUrl(MetaConfigVersion version)
+        => $"https://example.com/config/{version.Major}/{version.Minor}";
+}
+
+// Register in DI:
+services.AddSingleton<IMetaConfigProvider<GameConfig>>(new GameConfigProvider());
+```
+
+### Config Version Pinning
+
+Each entity persists its config version on first activation. Subsequent activations reuse the pinned version until explicitly upgraded. This supports gradual rollouts and A/B tests via `IConfigVersionResolver`.
+
+### Client-Side Config
+
+Config is sent to the client on subscribe. The client can cache configs locally (`IMetaConfigCache`) and download new versions via `IMetaConfigDownloader`. Without cache/downloader, the bundled config from shared code is used.
 
 ---
 

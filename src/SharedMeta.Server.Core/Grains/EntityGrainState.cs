@@ -9,7 +9,7 @@ namespace SharedMeta.Server.Core.Grains;
 /// Wrapper state for EntityGrain persistence.
 /// Holds user state, entity sequence number, and subscriber information.
 /// </summary>
-[MemoryPackable, MessagePackObject, GenerateSerializer]
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject, GenerateSerializer]
 public partial class EntityGrainState<TState> where TState : class, ISharedState, new()
 {
     [Id(0), Key(0), MemoryPackOrder(0)] public TState UserState { get; set; } = new();
@@ -30,7 +30,7 @@ public partial class EntityGrainState<TState> where TState : class, ISharedState
 /// Persisted subscriber information.
 /// Grain references are reconstructed from PlayerId on activation.
 /// </summary>
-[MemoryPackable, MessagePackObject, GenerateSerializer]
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject, GenerateSerializer]
 public partial class PersistedSubscriberInfo
 {
     [Id(0), Key(0), MemoryPackOrder(0)] public string PlayerId { get; set; } = "";

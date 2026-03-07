@@ -25,7 +25,7 @@ namespace Expedition.Shared
     /// <summary>
     /// Expedition map state — a maze with fog of war, walls, obstacles, treasures.
     /// </summary>
-    [MemoryPackable, MessagePackObject]
+    [MemoryPackable(GenerateType.VersionTolerant), MessagePackObject]
     [SharedState]
     public partial class ExpeditionState : ISharedState
     {

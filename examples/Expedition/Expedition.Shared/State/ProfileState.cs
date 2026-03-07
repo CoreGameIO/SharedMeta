@@ -9,7 +9,7 @@ namespace Expedition.Shared
     /// Energy regenerates over time up to MaxEnergy cap.
     /// Energy can be purchased with money (bypasses cap).
     /// </summary>
-    [MemoryPackable, MessagePackObject]
+    [MemoryPackable(GenerateType.VersionTolerant), MessagePackObject]
     [SharedState]
     public partial class ProfileState : ISharedState
     {

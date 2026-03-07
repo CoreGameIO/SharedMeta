@@ -46,10 +46,10 @@ Client (Unity/.NET)                           Server (.NET + Orleans)
 
 All state and DTO classes need a **transport serializer** attribute (choose one based on project setup):
 
-**With MemoryPack:**
+**With MemoryPack (use `VersionTolerant` for persisted state classes):**
 ```csharp
-[MemoryPackable]
-public partial class MyData
+[MemoryPackable(GenerateType.VersionTolerant)]
+public partial class MyState : ISharedState
 {
     [MemoryPackOrder(0)] public string Name { get; set; }
     [MemoryPackOrder(1)] public int Value { get; set; }
@@ -59,7 +59,7 @@ public partial class MyData
 **With MessagePack:**
 ```csharp
 [MessagePackObject]
-public partial class MyData
+public partial class MyState : ISharedState
 {
     [Key(0)] public string Name { get; set; }
     [Key(1)] public int Value { get; set; }
@@ -68,8 +68,8 @@ public partial class MyData
 
 **With both (for cross-serializer compatibility):**
 ```csharp
-[MemoryPackable, MessagePackObject]
-public partial class MyData
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject]
+public partial class MyState : ISharedState
 {
     [Key(0), MemoryPackOrder(0)] public string Name { get; set; }
     [Key(1), MemoryPackOrder(1)] public int Value { get; set; }
@@ -77,9 +77,11 @@ public partial class MyData
 ```
 
 **Attribute roles:**
-- `[MemoryPackOrder(n)]` — MemoryPack field ordering. Without it, MemoryPack uses source declaration order — reordering or inserting fields breaks deserialization.
-- `[Key(n)]` — MessagePack field ordering.
+- `[MemoryPackable(GenerateType.VersionTolerant)]` — use on all persisted types. Stores field orders explicitly, allowing safe field addition/removal. Without `VersionTolerant`, adding fields breaks deserialization of old data.
+- `[MemoryPackOrder(n)]` — MemoryPack field ordering. Required with `VersionTolerant`.
+- `[Key(n)]` — MessagePack field ordering. MessagePack with integer keys is inherently version-tolerant.
 - States are persisted and transmitted as bytes via the chosen transport serializer. Orleans `[GenerateSerializer]` / `[Id(n)]` are **not needed** on game state and DTO classes — those are only used internally by the framework.
+- For non-persisted DTOs (transport-only), plain `[MemoryPackable]` without `VersionTolerant` is acceptable.
 
 ### 2. Classes Must Be Partial
 
@@ -222,7 +224,7 @@ modeProvider.Clear();
 ### State Definition
 
 ```csharp
-[MemoryPackable]  // or [MessagePackObject], or both
+[MemoryPackable(GenerateType.VersionTolerant)]  // or [MessagePackObject], or both
 public partial class GameState : ISharedState
 {
     [MemoryPackOrder(0)] public int Score { get; set; }
@@ -320,8 +322,33 @@ public partial class ProfileServiceImpl : IProfileService
 - **Signature:** `Task<int> MethodName(int version)` — takes current version, returns new version
 - `EntityGrainState.Version` is persisted alongside entity state
 - Grain is **not** persisted after init alone — only when a player interacts (`_isDirty` guard)
-- `Context.Random` and `Context.ServerRandom` are **not available** during `[MetaInit]`
+- `Context.Random`, `Context.ServerRandom`, and `Config` are all available during `[MetaInit]`
 - Use for: default state values, schema migration, version-gated field initialization
+
+### Static Game Configuration
+
+Define read-only config data with `[MetaConfig]`:
+
+```csharp
+[MetaConfig(Default = true)]
+[MemoryPackable, MessagePackObject]
+public partial class GameConfig
+{
+    [Key(0), MemoryPackOrder(0)] public int MaxEnergy { get; set; } = 100;
+    [Key(1), MemoryPackOrder(1)] public int StarterGold { get; set; } = 500;
+}
+```
+
+Link to service: `[MetaService(StateType = typeof(GameState), DefaultConfig = true)]` or `ConfigType = typeof(GameConfig)`.
+
+Access in service code via the auto-injected `Config` property (also available during `[MetaInit]`).
+
+Server provides config via `IMetaConfigProvider<TConfig>`:
+- `CurrentVersion` — default `MetaConfigVersion` for new entities
+- `GetConfig(MetaConfigVersion version)` — return config for specific version
+- `GetDownloadUrl(MetaConfigVersion version)` — optional URL for client download
+
+Config version is **pinned per entity** on first activation and persisted in `EntityGrainState.ConfigVersion`. Use `IConfigVersionResolver` for A/B tests and gradual rollouts.
 
 ### Context Properties
 
@@ -331,6 +358,8 @@ Inside `[MetaServiceImpl]` classes, the source generator injects:
 public MetaContext<TState> Context { get; set; }  // Full context
 public TState State => Context.State;              // Shortcut to state
 public string CallerId => Context.CallerId;        // Who called this method
+// If config is configured:
+protected GameConfig Config => (GameConfig)Context.Config!;
 ```
 
 Available via Context:
@@ -340,6 +369,7 @@ Available via Context:
 - `Context.IsServer` / `Context.IsClient` — execution side
 - `Context.ExecutionMode` — current execution mode
 - `Context.EntityId` — current entity ID
+- `Context.Config` — static game config (if configured via `[MetaConfig]`)
 
 ### Async Rules
 
@@ -634,6 +664,7 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `[MetaMethod]` | Method | Configures execution mode, alias, versioning |
 | `[MetaServiceImpl]` | Class | Marks service implementation for context injection |
 | `[MetaInit]` | Method | State initialization/migration on grain activation |
+| `[MetaConfig]` | Class | Marks a class as static game configuration |
 | `[Trigger]` | Method | Auto-execute after condition on another method |
 | `[ServiceTrigger]` | Method | Trigger on framework service event |
 | `[ServerMetaService]` | Interface | Server-only service (generates replayer) |
@@ -663,6 +694,8 @@ bool PlayCardV2(Card card, bool autoDefend);
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `StateType` | Type | required | State class type |
+| `ConfigType` | Type | null | Explicit config type for this service |
+| `DefaultConfig` | bool | false | Use the config class marked with `[MetaConfig(Default = true)]` |
 | `AccessPolicy` | EntityAccessPolicy | Open | Subscribe access control |
 | `SubscriberInterfaces` | Type[] | empty | Framework event subscriptions (e.g. ILobbySubscriber) |
 
@@ -698,7 +731,7 @@ bool PlayCardV2(Card card, bool autoDefend);
 
 ### Adding a New Service
 
-1. Create state class with `[MemoryPackable]`/`[MessagePackObject]`, `ISharedState`, all properties have `[MemoryPackOrder(n)]`/`[Key(n)]`
+1. Create state class with `[MemoryPackable(GenerateType.VersionTolerant)]`/`[MessagePackObject]`, `ISharedState`, all properties have `[MemoryPackOrder(n)]`/`[Key(n)]`
 2. Create interface with `[MetaService(StateType = typeof(TState))]` extending `IMetaService`
 3. Create implementation with `[MetaServiceImpl(typeof(IService), typeof(TState))]` (must be `partial`)
 4. Register on server: `services.ConfigureMeta(svc => svc.AddTransient<IMyService, MyServiceImpl>());`
