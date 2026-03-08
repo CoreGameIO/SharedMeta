@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.2] - 2026-03-08
+
+### Extensibility
+
+- `MetaHub.SessionConnect` — now `virtual` for custom authentication/session logic in subclasses
+- `MetaHub.GetOrCreateHandler()` and `GetHandler()` — now `protected` (was `private`)
+- `BestHttpSignalRConnection.Hub` — protected getter for the underlying BestHTTP `HubConnection` (ext-service adapters)
+- `BestHttpPollingConnection.Options` — protected getter for connection options (ext-service adapters)
+- `BestHttpPollingConnection.PostAsync<T>()` and `PostRawAsync()` — now `protected` for subclass HTTP calls
+
+## [0.3.1] - 2026-03-06
+
+### Static Game Configuration (`[MetaConfig]`)
+
+- `[MetaConfig]` attribute for static game configuration classes
+- `IMetaConfigProvider<TConfig>` — server-side versioned config provider
+- `MetaConfigVersion` struct (Major.Minor) with full serialization support (MemoryPack, MessagePack, Orleans)
+- `IConfigVersionResolver` — optional DI service for A/B tests and gradual config rollouts
+- `IConfigDownloadUrlResolver` — generated resolver for config download URLs
+- Config version pinning per entity in `EntityGrainState.ConfigVersion`
+- `IMetaConfigCache` and `IMetaConfigDownloader` client-side interfaces for config caching/downloading
+- `GetConfigDownloadUrlAsync` RPC for on-demand config URL resolution
+- `EntityGrainState` and `PersistedSubscriberInfo` now use `[MemoryPackable(GenerateType.VersionTolerant)]` for backward-compatible persistence
+
 ## [0.3.0] - 2026-03-06
 
 ### State Initialization (`[MetaInit]`)
