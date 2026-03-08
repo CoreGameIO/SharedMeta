@@ -64,6 +64,9 @@ namespace SharedMeta.Transport.BestHttp
         private bool _isSessionConnected;
         private CancellationTokenSource? _pollCts;
 
+        /// <summary>Access to connection options (URL, auth) for ext-service adapters.</summary>
+        protected BestHttpPollingConnectionOptions Options => _options;
+
         public string ConnectionId => _connectionId;
         public bool IsConnected => _isConnected;
 
@@ -289,13 +292,13 @@ namespace SharedMeta.Transport.BestHttp
 
         #region HTTP Helpers
 
-        private async Task<T> PostAsync<T>(string path, object? body, int timeoutSeconds = 0)
+        protected async Task<T> PostAsync<T>(string path, object? body, int timeoutSeconds = 0)
         {
             var responseText = await PostRawAsync(path, body, timeoutSeconds);
             return JsonConvert.DeserializeObject<T>(responseText, JsonSettings)!;
         }
 
-        private Task<string> PostRawAsync(string path, object? body, int timeoutSeconds = 0)
+        protected Task<string> PostRawAsync(string path, object? body, int timeoutSeconds = 0)
         {
             var url = _options.ServerUrl.TrimEnd('/') + path;
             var tcs = new TaskCompletionSource<string>();

@@ -53,6 +53,9 @@ namespace SharedMeta.Transport.BestHttp
         private readonly BestHttpSignalRConnectionOptions _options;
         private HubConnection? _hub;
         private IMetaHub? _proxy;
+
+        /// <summary>Access to the underlying BestHTTP HubConnection for ext-service adapters.</summary>
+        protected HubConnection? Hub => _hub;
         private string _connectionId = "";
 
         public string ConnectionId => _connectionId;

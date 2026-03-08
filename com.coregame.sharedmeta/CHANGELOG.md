@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.2] - 2026-03-08
+
+### Changed
+- `MetaHub.SessionConnect` — now `virtual` for custom authentication/session logic in subclasses
+- `MetaHub.GetOrCreateHandler()` — now `protected` (was `private`)
+- `MetaHub.GetHandler()` — now `protected` (was `private`)
+- `BestHttpPollingConnection.PostAsync<T>()` and `PostRawAsync()` — now `protected` (was `private`)
+
+### Added
+- `BestHttpSignalRConnection.Hub` — protected getter for the underlying BestHTTP `HubConnection` (ext-service adapters)
+- `BestHttpPollingConnection.Options` — protected getter for connection options (ext-service adapters)
+
 ## [0.3.1] - 2026-03-06
 
 ### Added

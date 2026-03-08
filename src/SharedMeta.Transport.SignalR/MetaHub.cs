@@ -35,7 +35,7 @@ namespace SharedMeta.Transport.SignalR
         /// Get or create handler for this connection.
         /// Stored in Context.Items which persists for the WebSocket lifetime.
         /// </summary>
-        private IMetaConnectionHandler GetOrCreateHandler()
+        protected IMetaConnectionHandler GetOrCreateHandler()
         {
             if (!Context.Items.TryGetValue(HandlerKey, out var handlerObj) || handlerObj is not IMetaConnectionHandler handler)
             {
@@ -49,7 +49,7 @@ namespace SharedMeta.Transport.SignalR
         /// <summary>
         /// Get existing handler or null.
         /// </summary>
-        private IMetaConnectionHandler? GetHandler()
+        protected IMetaConnectionHandler? GetHandler()
         {
             if (Context.Items.TryGetValue(HandlerKey, out var handlerObj) && handlerObj is IMetaConnectionHandler handler)
             {
@@ -63,7 +63,7 @@ namespace SharedMeta.Transport.SignalR
         /// <summary>
         /// Connect to a session. Must be called first.
         /// </summary>
-        public async Task<SessionConnectResponse> SessionConnect(SessionConnectRequest request)
+        public virtual async Task<SessionConnectResponse> SessionConnect(SessionConnectRequest request)
         {
             // If authenticated via JWT, use PlayerId from token claims (trusted)
             if (Context.User?.Identity?.IsAuthenticated == true)
