@@ -26,6 +26,7 @@
     <Project Path="src/SharedMeta.Transport.HttpPolling.Client/SharedMeta.Transport.HttpPolling.Client.csproj" />
     <Project Path="src/SharedMeta.Transport.HttpPolling/SharedMeta.Transport.HttpPolling.csproj" />
     <Project Path="src/SharedMeta.Transport.SignalR.Client/SharedMeta.Transport.SignalR.Client.csproj" />
+    <Project Path="src/SharedMeta.Transport.SignalR.MessagePack/SharedMeta.Transport.SignalR.MessagePack.csproj" />
     <Project Path="src/SharedMeta.Transport.SignalR/SharedMeta.Transport.SignalR.csproj" />
   </Folder>
   <Folder Name="/tests/">
