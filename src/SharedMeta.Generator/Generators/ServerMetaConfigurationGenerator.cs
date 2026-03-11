@@ -668,13 +668,13 @@ namespace SharedMeta.Generator.Generators
             {
                 sb.AppendLine("        protected override async System.Threading.Tasks.Task<int> RunInitAsync(int currentVersion)");
                 sb.AppendLine("        {");
-                sb.AppendLine("            var version = currentVersion;");
+                sb.AppendLine("            var maxVersion = currentVersion;");
                 foreach (var service in servicesWithInit)
                 {
                     var baseName = GetBaseName(service.InterfaceName);
-                    sb.AppendLine($"            version = await (({service.ImplClassFullName})Get{baseName}()).{service.MetaInitMethodName}(version);");
+                    sb.AppendLine($"            maxVersion = System.Math.Max(maxVersion, await (({service.ImplClassFullName})Get{baseName}()).{service.MetaInitMethodName}(currentVersion));");
                 }
-                sb.AppendLine("            return version;");
+                sb.AppendLine("            return maxVersion;");
                 sb.AppendLine("        }");
                 sb.AppendLine();
             }

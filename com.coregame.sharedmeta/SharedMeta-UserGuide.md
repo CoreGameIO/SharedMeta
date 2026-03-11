@@ -265,6 +265,38 @@ Available in all execution modes. Use for time-based mechanics (cooldowns, timer
 
 ---
 
+## Deterministic Math (Fixed-Point)
+
+`float`/`double` arithmetic is **not deterministic** across platforms. For non-integer math in shared logic (Optimistic/CrossOptimistic), use the `Fp` fixed-point type from [CoreGame.FixedPoint](https://github.com/CoreGameIO/SharedLibs/tree/main/FixedPoint):
+
+| Platform | Install |
+|----------|---------|
+| .NET | [`dotnet add package CoreGame.FixedPoint`](https://www.nuget.org/packages/CoreGame.FixedPoint) |
+| Unity | UPM → Add by git URL: `https://github.com/CoreGameIO/SharedLibs.git#upm/fixedpoint` |
+
+```csharp
+using CoreGame.FixedPoint;
+
+// Fp is Q48.16, backed by long — fully deterministic
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject]
+public partial class UnitState : ISharedState
+{
+    [Key(0), MemoryPackOrder(0)] public Fp PositionX { get; set; }
+    [Key(1), MemoryPackOrder(1)] public Fp Speed { get; set; }
+}
+
+// In service
+public void Move(Fp dx)
+{
+    State.PositionX += dx * State.Speed;
+    Fp dist = FpMath.Sqrt(x * x + y * y);
+}
+```
+
+`Fp` has built-in MemoryPack/MessagePack serialization — use it directly in state fields.
+
+---
+
 ## Service Dependencies
 
 Inject other services via the `[MetaServiceImpl]` attribute:

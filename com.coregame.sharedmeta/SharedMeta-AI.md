@@ -133,7 +133,7 @@ long now = Context.ServerTimeTicks;
 - `Math.Sin`, `Math.Sqrt`, `MathF.*`
 - `Context.Random!.NextFloat()` in Optimistic mode (float division differs across platforms)
 
-**Fix:** Use fixed-point arithmetic (`int`-backed scaled numbers) or move to `ExecutionMode.Server`.
+**Fix:** Use the `Fp` fixed-point type from [CoreGame.FixedPoint](https://github.com/CoreGameIO/SharedLibs/tree/main/FixedPoint) ([`CoreGame.FixedPoint`](https://www.nuget.org/packages/CoreGame.FixedPoint) NuGet / Unity UPM git URL: `https://github.com/CoreGameIO/SharedLibs.git#upm/fixedpoint`). `Fp` is a Q48.16 `long`-backed struct with full MemoryPack/MessagePack serialization — use it directly in `ISharedState` fields. See also `FpMath` for `Sqrt`, `Lerp`, `PowInt`, `Log2`. Alternatively, move the logic to `ExecutionMode.Server`.
 
 ---
 

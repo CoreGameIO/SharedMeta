@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.3] - 2026-03-11
+
+### Fixed
+- MetaInit version migration: all services now receive the original entity version instead of cascading updates; the entity version is set to the maximum across all services
+
 ## [0.3.2] - 2026-03-08
 
 ### Changed

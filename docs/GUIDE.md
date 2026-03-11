@@ -1545,40 +1545,56 @@ What is **not** safe in shared logic:
 
 For deterministic math in shared logic, use a **fixed-point** library. Fixed-point types represent numbers as scaled integers — all operations reduce to integer arithmetic, which is deterministic on all platforms.
 
-**Recommended: [FixedPointSharp](https://github.com/sschoener/FixedPointSharp)**
+**Recommended: [CoreGame.FixedPoint](https://github.com/CoreGameIO/SharedLibs/tree/main/FixedPoint)**
+
+`Fp` is a 64-bit fixed-point type (Q48.16 format) backed by `long`. It provides operators (`+`, `-`, `*`, `/`, `%`, comparisons), implicit conversion from `int`, and built-in serialization support for both MemoryPack and MessagePack — no raw-value workarounds needed.
+
+| Platform | Install |
+|----------|---------|
+| .NET (server / Godot) | [`dotnet add package CoreGame.FixedPoint`](https://www.nuget.org/packages/CoreGame.FixedPoint) |
+| Unity | UPM → Add by git URL: `https://github.com/CoreGameIO/SharedLibs.git#upm/fixedpoint` |
 
 ```csharp
-// fp is a 32-bit fixed-point type (16.16 format)
-fp speed = fp._0_50;                   // 0.5
-fp distance = fp._10 * speed;          // 5.0, deterministic
-bool hit = distance < fp._6;           // true, deterministic
+using CoreGame.FixedPoint;
 
-// Convert to/from int
-fp value = fp.FromInt(42);
-int rounded = value.AsInt;
+Fp speed = Fp.Half;                        // 0.5
+Fp distance = 10 * speed;                  // 5.0, deterministic
+bool hit = distance < Fp.FromInt(6);       // true, deterministic
 
-// Math operations
-fp angle = fpmath.Atan2(dy, dx);       // deterministic trig
-fp length = fpmath.Sqrt(x * x + y * y); // deterministic sqrt
+// Conversions
+Fp value = Fp.FromInt(42);
+int rounded = value.RoundToInt();
+Fp precise = Fp.FromDecimal(3.14m);        // exact at compile-time
+
+// Math (all deterministic, integer-only under the hood)
+Fp root  = FpMath.Sqrt(x * x + y * y);
+Fp blend = FpMath.LerpClamped(a, b, t);
+Fp power = FpMath.PowInt(base, 3);
+Fp log   = FpMath.Log2(value);
 ```
 
-**Integration pattern:**
+**Integration with SharedMeta state:**
 ```csharp
-// In state — store as int (scaled) for serialization
-[MemoryPackOrder(0)] public int PositionXRaw { get; set; }  // fp.RawValue
-
-// In service — work with fp
-public void Move(int dx, int dy)
+// Fp is directly serializable — use it in state as-is
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject]
+public partial class UnitState : ISharedState
 {
-    fp px = fp.FromRaw(State.PositionXRaw);
-    px += fp.FromInt(dx) * State.Speed;
-    State.PositionXRaw = px.RawValue;
+    [Key(0), MemoryPackOrder(0)] public Fp PositionX { get; set; }
+    [Key(1), MemoryPackOrder(1)] public Fp PositionY { get; set; }
+    [Key(2), MemoryPackOrder(2)] public Fp Speed { get; set; }
+}
+
+// In service — arithmetic just works
+public void Move(Fp dx, Fp dy)
+{
+    State.PositionX += dx * State.Speed;
+    State.PositionY += dy * State.Speed;
 }
 ```
 
 **Alternatives:**
-- **[FixedMath.Net](https://github.com/asik/FixedMath.Net)** — `Fix64` type (32.32 format), wider range, C#-native
-- **[libfixmath](https://github.com/PetteriAimworlds/libfixmath)** — C library with C# bindings, battle-tested in embedded systems
+- **[FixedPointSharp](https://github.com/sschoener/FixedPointSharp)** — `fp` type (16.16 format, 32-bit), smaller range, includes trig functions
+- **[FixedMath.Net](https://github.com/asik/FixedMath.Net)** — `Fix64` type (32.32 format), wider range
 - **Manual scaling** — use `long` with a fixed scale factor (e.g., `× 1000`) for simple cases
 
 **Rule of thumb:** If a value participates in Optimistic or CrossOptimistic logic and requires non-integer math, use fixed-point. Server-only logic (`ExecutionMode.Server`) can use `float` safely since only the server computes it.
