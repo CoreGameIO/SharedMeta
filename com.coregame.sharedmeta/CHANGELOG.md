@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.5] - 2026-03-12
+
+### Added
+- `MetaAuth` — cross-platform authentication helper with `LoginAsync` and `EnsureAuthenticatedAsync`
+- `ITokenStorage` interface for persisting auth tokens across sessions
+- `PlayerPrefsTokenStorage` (Unity) — `ITokenStorage` implementation using PlayerPrefs
+- `CachedToken` — token data with automatic expiry validation (5-minute safety margin)
+- `UnityMetaAuth` — Unity login via `UnityWebRequest`, auto-registered via `[RuntimeInitializeOnLoadMethod]`
+- `SharedMeta.Auth.Client` asmdef — separate assembly for Unity-dependent auth code (`noEngineReferences: false`)
+- Project Wizard: generated client uses `MetaAuth.EnsureAuthenticatedAsync` with `PlayerPrefsTokenStorage` when auth is enabled
+
 ## [0.3.4] - 2026-03-12
 
 ### Security

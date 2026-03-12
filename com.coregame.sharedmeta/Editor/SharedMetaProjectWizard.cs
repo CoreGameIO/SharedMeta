@@ -1704,6 +1704,11 @@ namespace SharedMeta.Editor
             sb.AppendLine("using System;");
             sb.AppendLine("using UnityEngine;");
             sb.AppendLine("using SharedMeta.Client;");
+            if (_enableAuth)
+            {
+                sb.AppendLine("using SharedMeta.Client.Auth;");
+                sb.AppendLine("using SharedMeta.Core.Auth;");
+            }
             if (IsBestHttpTransport)
             {
                 sb.AppendLine("using SharedMeta.Transport.BestHttp;");
@@ -1744,16 +1749,38 @@ namespace SharedMeta.Editor
             sb.AppendLine("        MetaLog.SetLogger(new UnityMetaLogger());");
             sb.AppendLine();
 
+            // Authentication
+            if (_enableAuth)
+            {
+                sb.AppendLine("        // Authenticate — reuses cached token if still valid");
+                sb.AppendLine("        // Auth URL uses server root (serverUrl points to hub path /meta)");
+                sb.AppendLine("        var baseUrl = serverUrl.EndsWith(\"/meta\") ? serverUrl.Substring(0, serverUrl.Length - 5) : serverUrl;");
+                sb.AppendLine("        var tokenStorage = new PlayerPrefsTokenStorage();");
+                sb.AppendLine("        var login = await MetaAuth.EnsureAuthenticatedAsync(");
+                sb.AppendLine("            baseUrl.TrimEnd('/') + \"/meta/auth\",");
+                sb.AppendLine("            SystemInfo.deviceUniqueIdentifier,");
+                sb.AppendLine("            tokenStorage);");
+                sb.AppendLine("        var accessToken = login.Token;");
+                sb.AppendLine("        var playerId = login.PlayerId;");
+                sb.AppendLine();
+            }
+
             // Create connection
             switch (_transportIndex)
             {
                 case 0: // SignalR
-                    sb.AppendLine("        var connection = new SignalRConnection(serverUrl);");
+                    if (_enableAuth)
+                        sb.AppendLine("        var connection = new SignalRConnection(serverUrl, accessToken);");
+                    else
+                        sb.AppendLine("        var connection = new SignalRConnection(serverUrl);");
                     break;
                 case 1: // HTTP Polling (UnityWebRequest)
                     sb.AppendLine("        var connection = new UnityHttpConnection(new UnityHttpConnectionOptions");
                     sb.AppendLine("        {");
-                    sb.AppendLine("            ServerUrl = serverUrl");
+                    if (_enableAuth)
+                        sb.AppendLine("            ServerUrl = serverUrl, AccessToken = accessToken");
+                    else
+                        sb.AppendLine("            ServerUrl = serverUrl");
                     sb.AppendLine("        });");
                     break;
                 case 2: // BestHttp SignalR
@@ -1761,19 +1788,40 @@ namespace SharedMeta.Editor
                     {
                         sb.AppendLine("        var connection = new BestHttpSignalRConnection(new BestHttpSignalRConnectionOptions");
                         sb.AppendLine("        {");
-                        sb.AppendLine("            ServerUrl = serverUrl,");
+                        if (_enableAuth)
+                        {
+                            sb.AppendLine("            ServerUrl = serverUrl,");
+                            sb.AppendLine("            AccessToken = accessToken,");
+                        }
+                        else
+                        {
+                            sb.AppendLine("            ServerUrl = serverUrl,");
+                        }
                         sb.AppendLine("            Protocol = new MessagePackCSharpProtocol()");
                         sb.AppendLine("        });");
                     }
                     else
                     {
-                        sb.AppendLine("        var connection = new BestHttpSignalRConnection(serverUrl);");
+                        if (_enableAuth)
+                        {
+                            sb.AppendLine("        var connection = new BestHttpSignalRConnection(new BestHttpSignalRConnectionOptions");
+                            sb.AppendLine("        {");
+                            sb.AppendLine("            ServerUrl = serverUrl, AccessToken = accessToken");
+                            sb.AppendLine("        });");
+                        }
+                        else
+                        {
+                            sb.AppendLine("        var connection = new BestHttpSignalRConnection(serverUrl);");
+                        }
                     }
                     break;
                 case 3: // BestHttp HTTP
                     sb.AppendLine("        var connection = new BestHttpPollingConnection(new BestHttpPollingConnectionOptions");
                     sb.AppendLine("        {");
-                    sb.AppendLine("            ServerUrl = serverUrl");
+                    if (_enableAuth)
+                        sb.AppendLine("            ServerUrl = serverUrl, AccessToken = accessToken");
+                    else
+                        sb.AppendLine("            ServerUrl = serverUrl");
                     sb.AppendLine("        });");
                     break;
             }
@@ -1799,7 +1847,10 @@ namespace SharedMeta.Editor
             // Create MetaClient
             sb.AppendLine("        Client = new MetaClient(connection, serializer, new MetaClientOptions");
             sb.AppendLine("        {");
-            sb.AppendLine("            PlayerId = SystemInfo.deviceUniqueIdentifier,");
+            if (_enableAuth)
+                sb.AppendLine("            PlayerId = playerId,");
+            else
+                sb.AppendLine("            PlayerId = SystemInfo.deviceUniqueIdentifier,");
             sb.AppendLine("        });");
             sb.AppendLine();
             sb.AppendLine("        Client.Resolver.RegisterAllServices();");
@@ -1961,8 +2012,16 @@ namespace SharedMeta.Editor
             }
 
             sb.AppendLine(",");
-            sb.AppendLine($"        \"{_sharedProjectName}\"");
+            sb.Append($"        \"{_sharedProjectName}\"");
 
+            // Auth
+            if (_enableAuth)
+            {
+                sb.AppendLine(",");
+                sb.Append("        \"SharedMeta.Auth.Client\"");
+            }
+
+            sb.AppendLine();
             sb.AppendLine("    ],");
             sb.AppendLine("    \"includePlatforms\": [],");
             sb.AppendLine("    \"excludePlatforms\": [],");

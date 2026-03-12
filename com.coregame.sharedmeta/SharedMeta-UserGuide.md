@@ -225,6 +225,52 @@ Config is sent to the client on subscribe. The client can cache configs locally 
 
 ---
 
+## Authentication
+
+### Server Setup
+
+```csharp
+builder.Services.AddMetaAuth(options =>
+{
+    options.SecretKey = "your-secret-key-minimum-32-characters";
+    options.TokenLifetime = TimeSpan.FromDays(7);
+});
+builder.Services.AddSingleton(new MetaTransportOptions { RequireAuthentication = true });
+app.MapMetaAuthEndpoints(); // POST /meta/auth/login
+```
+
+### Client Login
+
+Use `MetaAuth` — works on both Unity and .NET:
+
+```csharp
+// Simple login
+var login = await MetaAuth.LoginAsync($"{serverUrl}/meta/auth", deviceId);
+var connection = new SignalRConnection($"{serverUrl}/meta", accessToken: login.Token);
+var client = new MetaClient(connection, serializer, new MetaClientOptions { PlayerId = login.PlayerId });
+```
+
+### Token Caching
+
+Reuse tokens across app sessions with `ITokenStorage`:
+
+```csharp
+// Unity: PlayerPrefsTokenStorage stores token in PlayerPrefs
+ITokenStorage storage = new PlayerPrefsTokenStorage();
+
+// Returns cached token if still valid, otherwise makes login request
+var login = await MetaAuth.EnsureAuthenticatedAsync($"{serverUrl}/meta/auth", deviceId, storage);
+
+// Logout — clears stored token
+MetaAuth.ClearToken(storage);
+```
+
+For other platforms, implement `ITokenStorage` (3 methods: `Load`, `Save`, `Clear`).
+
+> **Unity note**: `UnityMetaAuth` auto-registers via `[RuntimeInitializeOnLoadMethod]` — no manual setup needed. Unity-dependent auth code (`PlayerPrefsTokenStorage`, `UnityMetaAuth`) lives in the `SharedMeta.Auth.Client` assembly. If your asmdef has explicit references, add `SharedMeta.Auth.Client`.
+
+---
+
 ## Execution Modes
 
 | Mode | Behavior | Use For |

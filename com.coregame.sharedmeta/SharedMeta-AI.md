@@ -579,11 +579,18 @@ builder.Services.AddMetaAuth(options =>
 builder.Services.AddSingleton(new MetaTransportOptions { RequireAuthentication = true });
 app.MapMetaAuthEndpoints();
 
-// Client
-var login = await MetaClient.LoginAsync($"{serverUrl}/meta/auth", deviceId: "unique-device-id");
+// Client (cross-platform — works on Unity and .NET)
+var login = await MetaAuth.LoginAsync($"{serverUrl}/meta/auth", deviceId: "unique-device-id");
 var connection = new SignalRConnection($"{serverUrl}/meta", accessToken: login.Token);
 var client = new MetaClient(connection, serializer, new MetaClientOptions { PlayerId = login.PlayerId });
+
+// With token caching (reuse token across sessions)
+ITokenStorage storage = new PlayerPrefsTokenStorage(); // Unity; implement ITokenStorage for other platforms
+var login = await MetaAuth.EnsureAuthenticatedAsync($"{serverUrl}/meta/auth", deviceId, storage);
+MetaAuth.ClearToken(storage); // logout
 ```
+
+**Unity**: `UnityMetaAuth` auto-registers via `[RuntimeInitializeOnLoadMethod]` — sets `MetaAuth.LoginFunc` to `UnityWebRequest` implementation. Unity-dependent code (`PlayerPrefsTokenStorage`, `UnityMetaAuth`) is in `SharedMeta.Auth.Client` asmdef (`noEngineReferences: false`).
 
 **Enforcing auth:** `MetaTransportOptions.RequireAuthentication = true` rejects anonymous connections at SessionConnect. Additionally, you can add `[Authorize]` on a hub subclass or `.RequireAuthorization()` on endpoint mapping for middleware-level protection.
 

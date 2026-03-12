@@ -1079,6 +1079,45 @@ app.MapMetaHttpPolling("/meta").RequireAuthorization();
 
 Both options can be combined for defense-in-depth. `MetaTransportOptions.RequireAuthentication` is the safety net inside the framework — it works regardless of whether middleware is configured correctly.
 
+### Client-Side Authentication
+
+Use `MetaAuth` — a cross-platform helper that works on both Unity (`UnityWebRequest`) and .NET (`HttpClient`):
+
+```csharp
+// Simple login (always makes a network call)
+var login = await MetaAuth.LoginAsync($"{serverUrl}/meta/auth", deviceId);
+var connection = new SignalRConnection($"{serverUrl}/meta", accessToken: login.Token);
+var client = new MetaClient(connection, serializer, new MetaClientOptions { PlayerId = login.PlayerId });
+```
+
+**Token caching** — reuse tokens across sessions with `ITokenStorage`:
+
+```csharp
+// Unity: use PlayerPrefsTokenStorage
+ITokenStorage storage = new PlayerPrefsTokenStorage();
+
+// Login or reuse cached token (skips network call if token is still valid)
+var login = await MetaAuth.EnsureAuthenticatedAsync($"{serverUrl}/meta/auth", deviceId, storage);
+
+// Logout
+MetaAuth.ClearToken(storage);
+```
+
+`CachedToken.IsValid` checks expiry with a 5-minute safety margin.
+
+**Custom storage**: Implement `ITokenStorage` for platform-specific storage (e.g., `SecureStorage`, file-based, `PlayerPrefs`). The interface has three methods: `Load()`, `Save(CachedToken)`, `Clear()`.
+
+> **Migration from `MetaClient.LoginAsync`**: `MetaClient.LoginAsync` is still available on .NET but `MetaAuth.LoginAsync` is preferred — it works on all platforms and supports cancellation tokens.
+
+**Unity architecture**: Auth code is split into two assemblies due to `noEngineReferences`:
+
+| Assembly | `noEngineReferences` | Contents |
+|---|---|---|
+| `SharedMeta.Runtime` | `true` | `MetaAuth`, `ITokenStorage`, `CachedToken`, `MetaLoginResult` |
+| `SharedMeta.Auth.Client` | `false` | `UnityMetaAuth`, `PlayerPrefsTokenStorage` |
+
+`UnityMetaAuth.Register()` is called automatically via `[RuntimeInitializeOnLoadMethod]` — it sets `MetaAuth.LoginFunc` to the Unity `UnityWebRequest` implementation. No manual registration needed.
+
 ### Entity Access Policy
 
 ```csharp
