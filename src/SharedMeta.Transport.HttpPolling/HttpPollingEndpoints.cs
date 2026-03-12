@@ -1,9 +1,11 @@
+using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using SharedMeta.Core.Transport;
 using SharedMeta.Server.Core;
+using SharedMeta.Server.Core.Transport;
 
 namespace SharedMeta.Transport.HttpPolling
 {
@@ -42,7 +44,8 @@ namespace SharedMeta.Transport.HttpPolling
 
         private static async Task<IResult> HandleSessionConnect(
             HttpContext ctx,
-            HttpPollingConnectionManager mgr)
+            HttpPollingConnectionManager mgr,
+            MetaTransportOptions? transportOptions = null)
         {
             var connectionId = GetConnectionId(ctx);
             if (connectionId == null)
@@ -55,9 +58,15 @@ namespace SharedMeta.Transport.HttpPolling
             // If authenticated via JWT, use PlayerId from token claims (trusted)
             if (ctx.User?.Identity?.IsAuthenticated == true)
             {
-                var claimPlayerId = ctx.User.FindFirst("sub")?.Value;
-                if (!string.IsNullOrEmpty(claimPlayerId))
-                    request.PlayerId = claimPlayerId;
+                var claimPlayerId = ctx.User.FindFirst("sub")?.Value
+                                    ?? ctx.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(claimPlayerId))
+                    return Results.Unauthorized();
+                request.PlayerId = claimPlayerId;
+            }
+            else if (transportOptions?.RequireAuthentication == true)
+            {
+                return Results.Unauthorized();
             }
 
             var state = mgr.GetOrCreateConnection(connectionId);

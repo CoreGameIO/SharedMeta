@@ -576,6 +576,7 @@ builder.Services.AddMetaAuth(options =>
 {
     options.SecretKey = "your-32-char-minimum-secret-key!!";
 });
+builder.Services.AddSingleton(new MetaTransportOptions { RequireAuthentication = true });
 app.MapMetaAuthEndpoints();
 
 // Client
@@ -583,6 +584,8 @@ var login = await MetaClient.LoginAsync($"{serverUrl}/meta/auth", deviceId: "uni
 var connection = new SignalRConnection($"{serverUrl}/meta", accessToken: login.Token);
 var client = new MetaClient(connection, serializer, new MetaClientOptions { PlayerId = login.PlayerId });
 ```
+
+**Enforcing auth:** `MetaTransportOptions.RequireAuthentication = true` rejects anonymous connections at SessionConnect. Additionally, you can add `[Authorize]` on a hub subclass or `.RequireAuthorization()` on endpoint mapping for middleware-level protection.
 
 ---
 

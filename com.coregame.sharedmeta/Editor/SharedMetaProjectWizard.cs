@@ -1592,6 +1592,7 @@ namespace SharedMeta.Editor
                 sb.AppendLine($"    options.SecretKey = \"{_serverProjectName.ToLower()}-secret-key-at-least-32-characters!\";");
                 sb.AppendLine($"    options.Issuer = \"{_serverProjectName.ToLower()}-server\";");
                 sb.AppendLine("});");
+                sb.AppendLine("builder.Services.AddSingleton(new MetaTransportOptions { RequireAuthentication = true });");
                 sb.AppendLine();
             }
 

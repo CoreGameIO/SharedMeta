@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.4] - 2026-03-12
+
+### Security
+
+- SessionConnect claim resolution: now checks both `sub` and `ClaimTypes.NameIdentifier` (covers ASP.NET Identity and OIDC providers that remap standard JWT claims)
+- SessionConnect no longer falls back to client-supplied PlayerId when user is authenticated but no identity claim found — returns an error instead
+- `MetaTransportOptions.RequireAuthentication` — rejects anonymous connections at SessionConnect for both SignalR and HTTP Polling transports
+- Project Wizard now registers `MetaTransportOptions { RequireAuthentication = true }` when auth is enabled
+
 ## [0.3.3] - 2026-03-11
 
 ### Fixed

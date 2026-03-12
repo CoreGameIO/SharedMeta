@@ -1055,7 +1055,29 @@ Response: { "token": "jwt...", "playerId": "abc123_20260226", "isNewPlayer": tru
 
 - **SignalR**: Token via query string `?access_token=jwt_token`
 - **HTTP Polling**: Token via `Authorization: Bearer jwt_token` header
-- Server extracts PlayerId from JWT claims, overrides request PlayerId
+- Server extracts PlayerId from JWT claims (`sub` or `ClaimTypes.NameIdentifier`), overrides request PlayerId
+
+### Enforcing Authentication
+
+By default, unauthenticated clients can connect with any PlayerId. To require authentication:
+
+**Option 1: `MetaTransportOptions` (recommended — enforced inside the framework for both transports):**
+```csharp
+builder.Services.AddSingleton(new MetaTransportOptions { RequireAuthentication = true });
+```
+
+**Option 2: ASP.NET `[Authorize]` attribute (additional layer — rejects unauthenticated at middleware level):**
+```csharp
+// On a custom hub subclass:
+[Authorize]
+public class MyHub : MetaHub { }
+
+// Or at endpoint mapping:
+app.MapHub<MetaHub>("/meta").RequireAuthorization();
+app.MapMetaHttpPolling("/meta").RequireAuthorization();
+```
+
+Both options can be combined for defense-in-depth. `MetaTransportOptions.RequireAuthentication` is the safety net inside the framework — it works regardless of whether middleware is configured correctly.
 
 ### Entity Access Policy
 

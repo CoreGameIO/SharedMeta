@@ -1,4 +1,5 @@
 using System;
+using System.Security.Claims;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
@@ -22,13 +23,19 @@ namespace SharedMeta.Transport.SignalR
 
         private readonly IMetaConnectionHandlerFactory _handlerFactory;
         private readonly IConfigDownloadUrlResolver? _configUrlResolver;
+        private readonly MetaTransportOptions? _transportOptions;
         private readonly ILogger<MetaHub> _logger;
 
-        public MetaHub(IMetaConnectionHandlerFactory handlerFactory, ILogger<MetaHub> logger, IConfigDownloadUrlResolver? configUrlResolver = null)
+        public MetaHub(
+            IMetaConnectionHandlerFactory handlerFactory,
+            ILogger<MetaHub> logger,
+            IConfigDownloadUrlResolver? configUrlResolver = null,
+            MetaTransportOptions? transportOptions = null)
         {
             _handlerFactory = handlerFactory ?? throw new ArgumentNullException(nameof(handlerFactory));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _configUrlResolver = configUrlResolver;
+            _transportOptions = transportOptions;
         }
 
         /// <summary>
@@ -68,9 +75,15 @@ namespace SharedMeta.Transport.SignalR
             // If authenticated via JWT, use PlayerId from token claims (trusted)
             if (Context.User?.Identity?.IsAuthenticated == true)
             {
-                var claimPlayerId = Context.User.FindFirst("sub")?.Value;
-                if (!string.IsNullOrEmpty(claimPlayerId))
-                    request.PlayerId = claimPlayerId;
+                var claimPlayerId = Context.User.FindFirst("sub")?.Value
+                                    ?? Context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(claimPlayerId))
+                    throw new HubException("Authenticated user has no 'sub' or NameIdentifier claim");
+                request.PlayerId = claimPlayerId;
+            }
+            else if (_transportOptions?.RequireAuthentication == true)
+            {
+                throw new HubException("Authentication is required");
             }
 
             _logger.SessionConnectStart(Context.ConnectionId, request.PlayerId);
