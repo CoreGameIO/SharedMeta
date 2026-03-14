@@ -1,6 +1,29 @@
-# SharedMeta
+<p align="center">
+  <img src="docs/images/banner.jpg" alt="SharedMeta Banner" width="800"/>
+</p>
 
-Framework for shared game meta-logic between Client and Server with deterministic replay.
+<p align="center">
+  <strong>Unified Game Logic Engine — write once, run on client and server with deterministic replay</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/CoreGameIO/SharedMeta/releases"><img src="https://img.shields.io/github/v/release/CoreGameIO/SharedMeta?style=flat-square" alt="Release"></a>
+  <a href="https://github.com/CoreGameIO/SharedMeta/blob/main/LICENSE"><img src="https://img.shields.io/github/license/CoreGameIO/SharedMeta?style=flat-square" alt="License"></a>
+  <a href="https://unity.com"><img src="https://img.shields.io/badge/Unity-6+-black?style=flat-square&logo=unity" alt="Unity 6+"></a>
+  <a href="https://dotnet.microsoft.com"><img src="https://img.shields.io/badge/.NET-8%20%7C%2010-512BD4?style=flat-square&logo=dotnet" alt=".NET"></a>
+  <a href="https://learn.microsoft.com/dotnet/orleans/"><img src="https://img.shields.io/badge/Orleans-9-orange?style=flat-square" alt="Orleans"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start-unity">Quick Start</a> &bull;
+  <a href="#what-you-can-build">Features</a> &bull;
+  <a href="#architecture">Architecture</a> &bull;
+  <a href="#key-concepts">Key Concepts</a> &bull;
+  <a href="#examples">Examples</a> &bull;
+  <a href="docs/GUIDE.md">Documentation</a>
+</p>
+
+---
 
 Write game logic **once** in C# — it runs on the server (Orleans grains) and replays on the client (Unity / .NET) with optimistic execution, automatic rollback, and desync detection.
 
