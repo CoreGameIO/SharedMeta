@@ -271,6 +271,59 @@ For other platforms, implement `ITokenStorage` (3 methods: `Load`, `Save`, `Clea
 
 ---
 
+## Push-Based Change Tracking
+
+Track state field changes for reactive UI binding. Client-only — zero server overhead.
+
+### 1. Mark fields with `[Tracked]`
+
+```csharp
+[MemoryPackable, MessagePackObject]
+public partial class GameState : ISharedState
+{
+    [Key(0), MemoryPackOrder(0), MemoryPackInclude, Tracked] private int _gold;
+    [Key(1), MemoryPackOrder(1), MemoryPackInclude, Tracked] private int _health = 100;
+    [Key(2), MemoryPackOrder(2)] public string Name { get; set; } = "";  // not tracked
+}
+```
+
+Rules: field must be **private**, underscore-prefixed, with serialization attribute. Add `[MemoryPackInclude]` for MemoryPack. Generator creates public property (`_gold` → `Gold`) with tracking setter.
+
+### 2. Subscribe to changes
+
+```csharp
+// Register once at startup
+TrackedGameState.Register();
+TrackedGameState.OnChanged += args =>
+{
+    if (args.HasChange((int)TrackingProperty.GameState_Gold))
+    {
+        var leaf = args.FindLeaf((int)TrackingProperty.GameState_Gold);
+        if (leaf != null)
+            goldText.text = $"Gold: {leaf.Value.NewValue.IntValue}";
+    }
+};
+
+// Cleanup
+TrackedGameState.Unregister();
+```
+
+Changes fire automatically after method execution (optimistic replay, server broadcast, reconnect). Multiple field changes in one method call are batched into a single notification.
+
+Generated API clients also fire `OnStateMutated` after any state change — use it when you don't need per-field granularity:
+```csharp
+api.OnStateMutated += () => UpdateUI(api.State);
+```
+
+### 3. Access config from client
+
+```csharp
+// After subscribing to an entity, get its resolved config
+var config = client.GetEntityConfig<GameConfig>(entityId);
+```
+
+---
+
 ## Execution Modes
 
 | Mode | Behavior | Use For |

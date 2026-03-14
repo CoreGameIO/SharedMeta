@@ -28,6 +28,8 @@ namespace SharedMeta.Generator.Generators
         // Sub-wrappable
         public string? SubTypeName { get; set; }
         public string? SubTypeFullName { get; set; }
+        // Tracked (backing-field approach)
+        public bool IsTracked { get; set; }
     }
 
     public class PatchTypeInfo
@@ -98,6 +100,36 @@ namespace SharedMeta.Generator.Generators
                 var fieldId = rawValue is uint u ? (int)u : (int)rawValue;
                 var fieldInfo = AnalyzeField(member, fieldId, subTypes, visited);
                 info.Fields.Add(fieldInfo);
+            }
+
+            // Also check private fields with [Tracked] attribute — these have generated public properties
+            foreach (var member in typeSymbol.GetMembers().OfType<IFieldSymbol>())
+            {
+                if (member.IsStatic) continue;
+                if (member.DeclaredAccessibility != Accessibility.Private) continue;
+                if (!member.GetAttributes().Any(a =>
+                    a.AttributeClass?.Name == "TrackedAttribute" &&
+                    a.AttributeClass.ContainingNamespace.ToDisplayString() == "SharedMeta.Core"))
+                    continue;
+                if (!member.Name.StartsWith("_") || member.Name.Length < 2) continue;
+
+                var idAttr = FindIdAttribute(member);
+                if (idAttr == null) continue;
+
+                var rawValue = idAttr.ConstructorArguments[0].Value!;
+                var fieldId = rawValue is uint u2 ? (int)u2 : (int)rawValue;
+
+                // Derive generated property name: _health → Health
+                var propName = char.ToUpperInvariant(member.Name[1]) + member.Name.Substring(2);
+
+                info.Fields.Add(new PatchFieldInfo
+                {
+                    Name = propName,
+                    FieldId = fieldId,
+                    TypeFullName = member.Type.ToDisplayString(),
+                    Kind = PatchFieldKind.Terminal,
+                    IsTracked = true // marks for ChangeTracker integration in PatchApplier
+                });
             }
 
             return info;
@@ -211,9 +243,9 @@ namespace SharedMeta.Generator.Generators
         /// Checks (in order): Orleans [Id(n)], MessagePack [Key(n)], MemoryPack [MemoryPackOrder(n)].
         /// All use the same int constructor pattern for the ordinal.
         /// </summary>
-        private static AttributeData? FindIdAttribute(IPropertySymbol prop)
+        private static AttributeData? FindIdAttribute(ISymbol symbol)
         {
-            foreach (var attr in prop.GetAttributes())
+            foreach (var attr in symbol.GetAttributes())
             {
                 var name = attr.AttributeClass?.Name;
                 var ns = attr.AttributeClass?.ContainingNamespace.ToDisplayString();
@@ -373,12 +405,14 @@ namespace SharedMeta.Generator.Generators
 
         private static void GenerateTerminalProp(StringBuilder sb, PatchFieldInfo field, string ii)
         {
-            sb.AppendLine($"{ii}/// <summary>[Id({field.FieldId})] {field.Name}</summary>");
-            sb.AppendLine($"{ii}public {field.TypeFullName} {field.Name}");
-            sb.AppendLine($"{ii}{{");
-            sb.AppendLine($"{ii}    get => _state.{field.Name};");
-            sb.AppendLine($"{ii}    set {{ _state.{field.Name} = value; _node?.MarkChildTerminal({field.FieldId}, _serializer.Pack(value)); }}");
-            sb.AppendLine($"{ii}}}");
+            {
+                sb.AppendLine($"{ii}/// <summary>[Id({field.FieldId})] {field.Name}</summary>");
+                sb.AppendLine($"{ii}public {field.TypeFullName} {field.Name}");
+                sb.AppendLine($"{ii}{{");
+                sb.AppendLine($"{ii}    get => _state.{field.Name};");
+                sb.AppendLine($"{ii}    set {{ _state.{field.Name} = value; _node?.MarkChildTerminal({field.FieldId}, _serializer.Pack(value)); }}");
+                sb.AppendLine($"{ii}}}");
+            }
         }
 
         private static void GenerateCollectionProp(StringBuilder sb, PatchFieldInfo field, string ii)
@@ -455,6 +489,46 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{ii}}}");
         }
 
+        private static bool HasAnyTrackedFields(PatchGenerationInfo info)
+        {
+            if (info.RootType.Fields.Any(f => f.IsTracked)) return true;
+            return info.SubTypes.Any(st => st.Fields.Any(f => f.IsTracked));
+        }
+
+        private static int GetStableHash(string s)
+        {
+            unchecked
+            {
+                int hash = (int)2166136261;
+                foreach (var c in s)
+                    hash = (hash ^ c) * 16777619;
+                return hash;
+            }
+        }
+
+        private static string GetChangeValueExpr(string typeFullName, string varExpr)
+        {
+            switch (typeFullName)
+            {
+                case "int":
+                case "System.Int32":
+                case "long":
+                case "System.Int64":
+                case "float":
+                case "System.Single":
+                case "double":
+                case "System.Double":
+                case "bool":
+                case "System.Boolean":
+                case "string":
+                case "System.String":
+                case "string?":
+                    return $"ChangeValue.From({varExpr})";
+                default:
+                    return $"ChangeValue.FromObject({varExpr})";
+            }
+        }
+
         // ---- Applier Generation ----
 
         private static void GenerateApplier(
@@ -474,6 +548,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{ii}public static void Apply({stateType} state, PatchNode patch, IMetaSerializer serializer)");
             sb.AppendLine($"{ii}{{");
             sb.AppendLine($"{ii}    if (patch.Children == null) return;");
+
             sb.AppendLine($"{ii}    foreach (var child in patch.Children)");
             sb.AppendLine($"{ii}    {{");
             sb.AppendLine($"{ii}        switch (child.FieldId)");
@@ -483,7 +558,13 @@ namespace SharedMeta.Generator.Generators
             {
                 sb.AppendLine($"{ii}            case {field.FieldId}: // {field.Name}");
 
-                if (field.Kind == PatchFieldKind.SubWrappable)
+                if (field.IsTracked)
+                {
+                    // [Tracked] backing field — use generated property setter which handles change tracking
+                    sb.AppendLine($"{ii}                if (child.IsTerminal)");
+                    sb.AppendLine($"{ii}                    state.{field.Name} = serializer.Unpack<{field.TypeFullName}>(child.Value!);");
+                }
+                else if (field.Kind == PatchFieldKind.SubWrappable)
                 {
                     sb.AppendLine($"{ii}                if (child.IsTerminal)");
                     sb.AppendLine($"{ii}                    state.{field.Name} = serializer.Unpack<{field.TypeFullName}>(child.Value!);");

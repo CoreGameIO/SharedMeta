@@ -9,6 +9,7 @@ Framework for shared game meta-logic between Client and Server with deterministi
 - **Code generation** — compile-time dispatchers, typed API clients, context injection
 - **Multiple execution modes** — Optimistic, Server, Local, CrossOptimistic, ServerPatch
 - **Deterministic random** — `Context.Random` (optimistic) and `Context.ServerRandom` (server-only with replay)
+- **Push-based change tracking** — `[Tracked]` fields for reactive UI binding (client-only, zero server overhead)
 - **Cross-entity calls** — call methods on other entities from server-side logic
 - **State patching** — ServerPatch mode for efficient partial state updates
 - **Pluggable transport** — SignalR, HTTP polling, in-process (testing)

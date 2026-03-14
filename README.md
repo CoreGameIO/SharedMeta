@@ -14,6 +14,8 @@ Write game logic **once** in C# — it runs on the server (Orleans grains) and r
 
 **Economy and resource systems** — crafting, shops, timers, regeneration. Server-only random for loot drops and rewards (client can't predict or cheat). ServerPatch mode for bandwidth-efficient state diffs.
 
+**Reactive UI with change tracking** — mark state fields with `[Tracked]`, subscribe to typed change notifications. Push-based — no polling or snapshot diffs. Client-only, zero server overhead.
+
 **Live-ops and admin tools** — server-side triggers push events to clients. Subscribers react to state changes. Hot-swappable transport (WebSocket or HTTP polling) and serializer (MemoryPack or MessagePack).
 
 ## Quick Start (Unity)

@@ -4,6 +4,7 @@ using Orleans.TestingHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using MemoryPack;
 using SharedMeta.Core;
 using SharedMeta.Core.Network;
 using SharedMeta.Serialization.MemoryPack;

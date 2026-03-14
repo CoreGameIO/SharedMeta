@@ -214,6 +214,19 @@ namespace SharedMeta.Client
             throw new InvalidOperationException($"Not connected to entity '{entityId}'");
         }
 
+        public TConfig? GetEntityConfig<TConfig>(string entityId) where TConfig : class
+        {
+            lock (_lock)
+            {
+                if (_connections.TryGetValue(entityId, out var connection))
+                {
+                    return connection.Config as TConfig;
+                }
+            }
+
+            return null;
+        }
+
         /// <summary>
         /// Subscribe to a method being replayed from server broadcast.
         /// </summary>

@@ -97,7 +97,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("/// Composes source-generated resolvers from all referenced assemblies");
             sb.AppendLine("/// containing [MessagePackObject] types into a CompositeResolver.");
             sb.AppendLine("/// </summary>");
-            sb.AppendLine("public static class GeneratedMetaMessagePackConfiguration");
+            sb.AppendLine("internal static class GeneratedMetaMessagePackConfiguration");
             sb.AppendLine("{");
             sb.AppendLine("    /// <summary>");
             sb.AppendLine("    /// Configure MetaMessagePackOptions with CompositeResolver.");

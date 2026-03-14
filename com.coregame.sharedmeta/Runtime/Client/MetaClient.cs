@@ -168,6 +168,15 @@ namespace SharedMeta.Client
             return _resolver.GetState<TState>(entityId);
         }
 
+        /// <summary>
+        /// Get the resolved config for a connected entity.
+        /// Returns null if the entity is not connected or has no config.
+        /// </summary>
+        public TConfig? GetEntityConfig<TConfig>(string entityId) where TConfig : class
+        {
+            return _resolver.GetEntityConfig<TConfig>(entityId);
+        }
+
         public async ValueTask DisposeAsync()
         {
             _resolver.Dispose();

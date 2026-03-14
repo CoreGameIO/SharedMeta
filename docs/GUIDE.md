@@ -13,23 +13,24 @@ Complete technical reference for the SharedMeta framework. Covers all subsystems
 5. [Deterministic Random](#5-deterministic-random)
 6. [Cross-Entity Calls](#6-cross-entity-calls)
 7. [Triggers & Subscribers](#7-triggers--subscribers)
-8. [Argument Transformers](#8-argument-transformers)
-9. [Transport Configuration](#9-transport-configuration)
-10. [Serialization](#10-serialization)
-11. [Session Management](#11-session-management)
-12. [Authentication](#12-authentication)
-13. [Persistence Configuration](#13-persistence-configuration)
-14. [Orleans Backend](#14-orleans-backend)
-15. [Server Setup](#15-server-setup)
-16. [Client Setup](#16-client-setup)
-17. [Matchmaking (Lobby)](#17-matchmaking-lobby)
-18. [Desync Diagnostics](#18-desync-diagnostics)
-19. [Code Generation Reference](#19-code-generation-reference)
-20. [Attribute Reference](#20-attribute-reference)
-21. [Testing](#21-testing)
-22. [Capability Overview](#22-capability-overview)
-23. [Tutorial: Building Your First Service](#23-tutorial-building-your-first-service)
-24. [Architecture Decisions](#24-architecture-decisions)
+8. [Push-Based Change Tracking](#8-push-based-change-tracking)
+9. [Argument Transformers](#9-argument-transformers)
+10. [Transport Configuration](#10-transport-configuration)
+11. [Serialization](#11-serialization)
+12. [Session Management](#12-session-management)
+13. [Authentication](#13-authentication)
+14. [Persistence Configuration](#14-persistence-configuration)
+15. [Orleans Backend](#15-orleans-backend)
+16. [Server Setup](#16-server-setup)
+17. [Client Setup](#17-client-setup)
+18. [Matchmaking (Lobby)](#18-matchmaking-lobby)
+19. [Desync Diagnostics](#19-desync-diagnostics)
+20. [Code Generation Reference](#20-code-generation-reference)
+21. [Attribute Reference](#21-attribute-reference)
+22. [Testing](#22-testing)
+23. [Capability Overview](#23-capability-overview)
+24. [Tutorial: Building Your First Service](#24-tutorial-building-your-first-service)
+25. [Architecture Decisions](#25-architecture-decisions)
 
 ---
 
@@ -356,6 +357,15 @@ client.Resolver.ConfigDownloader = new HttpConfigDownloader();
 
 Without cache/downloader configured, the client always uses the bundled config factory from shared code.
 
+### Accessing Config from Client Code
+
+After subscribing to an entity, retrieve its resolved config:
+
+```csharp
+var config = client.GetEntityConfig<GameConfig>(entityId);
+// Returns null if entity not connected or no config configured
+```
+
 ---
 
 ## 4. Execution Modes & Replay
@@ -662,7 +672,144 @@ sub.Dispose();
 
 ---
 
-## 8. Argument Transformers
+## 8. Push-Based Change Tracking
+
+Push-based change tracking for client-side UI binding. Zero server overhead — `ChangeTracker` is `null` on server. Changes are recorded as a tree of struct nodes in a pooled list, batched and flushed after method completes.
+
+### Architecture
+
+```
+MetaMethod executes on CLIENT
+  │  ChangeTracker.Current is set (AsyncLocal)
+  │
+  │  state.Health = 100
+  │    → generated setter writes value + ChangeTracker.Current?.RecordFieldChange(...)
+  │
+MetaMethod ends → ChangeTracker.FlushAndNotify()
+  │  → walk tree, notify type-level subscribers, return pool
+
+SERVER: ChangeTracker.Current == null → zero overhead
+```
+
+### Marking fields with [Tracked]
+
+Add `[Tracked]` to private backing fields. The generator produces public properties with tracking setters:
+
+```csharp
+[MemoryPackable]
+public partial class GameState : ISharedState
+{
+    [Key(0), MemoryPackOrder(0), MemoryPackInclude, Tracked] private int _gold;
+    [Key(1), MemoryPackOrder(1), MemoryPackInclude, Tracked] private int _health = 100;
+    [Key(2), MemoryPackOrder(2)] public List<Character> Characters { get; set; } = new();
+}
+```
+
+Rules:
+- Field must be **private** with underscore prefix (e.g. `_gold`)
+- Field must have a serialization attribute (`[Key(n)]` or `[MemoryPackOrder(n)]`)
+- Add `[MemoryPackInclude]` for MemoryPack (required for private fields)
+- Generator creates public property: `_gold` → `public int Gold { get; set; }` with tracking setter
+- No formatter registration needed — the backing field is serialized directly as `T`
+
+### Generated code
+
+The generator produces (in a single `ChangeTracking.g.cs`):
+
+**1. Unified `TrackingProperty` enum** — one enum for all `[Tracked]` types:
+```csharp
+public enum TrackingProperty
+{
+    GameState_Gold = 0,
+    GameState_Health = 1,
+}
+```
+
+**2. Partial class with tracking properties:**
+```csharp
+public partial class GameState
+{
+    public const int TrackedTypeId = 0;
+
+    [MemoryPackIgnore, IgnoreMember]
+    public int Gold
+    {
+        get => _gold;
+        set
+        {
+            if (EqualityComparer<int>.Default.Equals(_gold, value)) return;
+            var _tracker = ChangeTracker.Current;
+            if (_tracker != null)
+                _tracker.RecordFieldChange(this, TrackedTypeId,
+                    (int)TrackingProperty.GameState_Gold,
+                    ChangeValue.From(_gold), ChangeValue.From(value));
+            _gold = value;
+        }
+    }
+}
+```
+
+**3. Static subscription classes:**
+```csharp
+public static class TrackedGameState
+{
+    public static event Action<ChangeTreeArgs>? OnChanged;
+    public static void Register();
+    public static void Unregister();
+}
+```
+
+### Subscribing to changes
+
+```csharp
+// Register once at startup
+TrackedGameState.Register();
+
+// Subscribe to type-level changes
+TrackedGameState.OnChanged += args =>
+{
+    var leaf = args.FindLeaf((int)TrackingProperty.GameState_Health);
+    if (leaf != null)
+        healthBar.value = leaf.Value.NewValue.IntValue;
+};
+```
+
+### Change tree structure
+
+Changes are stored as `ChangeNode` structs in a pooled flat list, forming a tree via child indices:
+
+| Field | Description |
+|-------|-------------|
+| `Field` | `TrackingProperty` enum value |
+| `CollectionIndex` | -1 or index in collection |
+| `OldValue` / `NewValue` | `ChangeValue` (no boxing for int/long/float/double/bool/string) |
+| `ChildStartIndex` / `ChildCount` | Children in the same list (0 = leaf) |
+
+### Core runtime types
+
+| Type | Purpose |
+|------|---------|
+| `ChangeTracker` | AsyncLocal change buffer. `Activate()` / `FlushAndNotify()` / `Discard()`. |
+| `ChangeNode` | Struct node in pooled list (tree via indices). |
+| `ChangeValue` | Discriminated union — no boxing for common types. |
+| `ChangeTreeArgs` | Passed to subscribers. `HasChange(field)`, `FindLeaf(field)`. |
+| `ListPool<T>` | Pool for `List<T>` (rent/return with Clear). |
+| `ObjectPool<T>` | Pool for wrapper view classes. |
+
+### OnStateMutated event
+
+Generated API clients fire `OnStateMutated` after any state mutation — broadcast replay, subscriber event, or reconnect. Use it as a general-purpose "state changed" signal when you don't need per-field granularity:
+
+```csharp
+var api = await client.GetServiceAsync<GameServiceApiClient>(entityId);
+api.OnStateMutated += () => UpdateUI(api.State);
+```
+
+This fires in addition to `Tracked{State}.OnChanged` — use whichever granularity fits your UI pattern.
+
+---
+
+## 9. Argument Transformers
 
 Transform complex game objects into simple serializable types for RPC arguments.
 
@@ -712,7 +859,7 @@ void RawMove([SkipTransform] Vector3 position); // No transformation
 
 ---
 
-## 9. Transport Configuration
+## 11. Transport Configuration
 
 Transport is split into **server** and **client** packages. Server packages include both endpoints and connection classes; client-only packages have no server dependencies (no Orleans, no ASP.NET FrameworkReference) and work with Godot, console apps, and other .NET clients.
 
@@ -965,7 +1112,7 @@ Rules:
 
 ---
 
-## 11. Session Management
+## 12. Session Management
 
 ### Architecture
 
@@ -1020,7 +1167,7 @@ Every `RpcCallRequest` includes `LastAcknowledgedSequence`, avoiding a separate 
 
 ---
 
-## 12. Authentication
+## 13. Authentication
 
 ### JWT Configuration
 
@@ -1148,7 +1295,7 @@ public bool IsAuthorized(string playerId)
 
 ---
 
-## 13. Persistence Configuration
+## 14. Persistence Configuration
 
 ### FileGrainStorage
 
@@ -1220,7 +1367,7 @@ Use for: purchases, currency operations, inventory changes, and any operation wh
 
 ---
 
-## 14. Orleans Backend
+## 15. Orleans Backend
 
 ### Why Orleans
 
@@ -1280,7 +1427,7 @@ siloBuilder
 
 ---
 
-## 15. Server Setup
+## 16. Server Setup
 
 ### Minimal Server
 
@@ -1354,7 +1501,7 @@ builder.Host.UseSerilog((ctx, config) => config
 
 ---
 
-## 16. Client Setup
+## 17. Client Setup
 
 ### NuGet Packages for .NET Clients (Godot, Console, etc.)
 
@@ -1510,7 +1657,7 @@ that calls API methods.
 
 ---
 
-## 17. Matchmaking (Lobby)
+## 18. Matchmaking (Lobby)
 
 ### Lobby Pattern
 
@@ -1555,7 +1702,7 @@ await profileApi.RequestMatchAsync(2);
 
 ---
 
-## 18. Desync Diagnostics
+## 19. Desync Diagnostics
 
 ### IDesyncDiagnostics Interface
 
@@ -1662,7 +1809,7 @@ public void Move(Fp dx, Fp dy)
 
 ---
 
-## 19. Code Generation Reference
+## 20. Code Generation Reference
 
 The source generator (`SharedMeta.Generator`) scans assemblies for attributes and generates:
 
@@ -1674,6 +1821,7 @@ The source generator (`SharedMeta.Generator`) scans assemblies for attributes an
 | `[MetaServiceImpl]` class | `*.Context.g.cs` | Context injection (State, CallerId, dependencies) |
 | Assembly with `[MetaService]` | `ServerMetaConfiguration.g.cs` | MetaProvider generation, service wiring |
 | `[Transformer]` class | `TransformerRegistrations.g.cs` | Auto-registration of all transformers |
+| `[Tracked]` field | `ChangeTracking.g.cs` | Push-based change tracking properties for UI binding (client-only) |
 
 ### Dispatcher Pattern (generated)
 
@@ -1754,7 +1902,7 @@ The server dispatcher receives `MethodVersion` and can route to different implem
 
 ---
 
-## 20. Attribute Reference
+## 21. Attribute Reference
 
 | Attribute | Target | Description |
 |-----------|--------|-------------|
@@ -1764,6 +1912,7 @@ The server dispatcher receives `MethodVersion` and can route to different implem
 | `[MetaInit]` | Method | State initialization/migration on grain activation |
 | `[MetaConfig]` | Class | Marks a class as static game configuration |
 | `[SharedState]` | Class | Marks shared state entity |
+| `[Tracked]` | Field | Push-based change tracking property for UI binding (client-only) |
 | `[Trigger]` | Method | Auto-execute after condition on another method |
 | `[ServiceTrigger]` | Method | Trigger on framework service event |
 | `[Subscribe]` | Event | Declare method subscription |
@@ -1801,7 +1950,7 @@ The server dispatcher receives `MethodVersion` and can route to different implem
 
 ---
 
-## 21. Testing
+## 22. Testing
 
 ### In-Process Testing
 
@@ -1871,7 +2020,7 @@ See `tests/SharedMeta.IntegrationTests/` for complete examples.
 
 ---
 
-## 22. Capability Overview
+## 23. Capability Overview
 
 | Category | Capabilities |
 |----------|-------------|
@@ -1895,7 +2044,7 @@ See `tests/SharedMeta.IntegrationTests/` for complete examples.
 
 ---
 
-## 23. Tutorial: Building Your First Service
+## 24. Tutorial: Building Your First Service
 
 Step-by-step guide from empty project to working service.
 
@@ -2021,7 +2170,7 @@ The entire workflow — defining states, service interfaces, implementations, an
 
 ---
 
-## 24. Architecture Decisions
+## 25. Architecture Decisions
 
 Key design decisions and their rationale.
 

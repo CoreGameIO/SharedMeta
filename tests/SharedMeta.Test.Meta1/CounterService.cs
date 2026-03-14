@@ -79,6 +79,12 @@ namespace SharedMeta.Test.Meta1
             Console.WriteLine($"[Counter] {callerId} added {value} (seq={clientSequence}), sum={state.Sum}, ops={state.Operations.Count}, timeTicks={serverTimeTicks}");
         }
 
+        public void AddReactive(int value)
+        {
+            var state = GetState();
+            state.ReactiveCounter += value;
+        }
+
         public void Reset()
         {
             var state = GetState();

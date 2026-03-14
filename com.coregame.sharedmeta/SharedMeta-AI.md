@@ -350,6 +350,8 @@ Server provides config via `IMetaConfigProvider<TConfig>`:
 
 Config version is **pinned per entity** on first activation and persisted in `EntityGrainState.ConfigVersion`. Use `IConfigVersionResolver` for A/B tests and gradual rollouts.
 
+Client access: `client.GetEntityConfig<GameConfig>(entityId)` — returns resolved config after subscribing.
+
 ### Context Properties
 
 Inside `[MetaServiceImpl]` classes, the source generator injects:
@@ -458,6 +460,40 @@ var sub = resolver.OnMethodReplayed<MatchFoundArgs>(
 // Later:
 sub.Dispose();
 ```
+
+---
+
+## Push-Based Change Tracking
+
+Push-based change tracking for UI binding. Client-only — `ChangeTracker` is null on server (zero overhead).
+
+**Tracked fields** — add `[Tracked]` to private backing fields:
+```csharp
+[MemoryPackable]
+public partial class GameState : ISharedState
+{
+    [Key(0), MemoryPackOrder(0), MemoryPackInclude, Tracked] private int _gold;
+    [Key(1), MemoryPackOrder(1), MemoryPackInclude, Tracked] private int _health = 100;
+}
+// Generator creates: public int Gold { get; set; } with tracking setter
+// No formatter registration needed — backing field serializes directly as T
+```
+
+Generated: `TrackingProperty` enum, `TrackedGameState` static subscription class, partial class with tracking properties.
+
+**Subscribing to changes:**
+```csharp
+TrackedGameState.Register();  // once at startup
+TrackedGameState.OnChanged += args =>
+{
+    var leaf = args.FindLeaf((int)TrackingProperty.GameState_Health);
+    if (leaf != null) healthBar.value = leaf.Value.NewValue.IntValue;
+};
+```
+
+**How it works:** `ChangeTracker.Activate()` → generated property setters call `RecordFieldChange` → `FlushAndNotify()` walks tree, notifies subscribers, returns pooled list. Changes stored as `ChangeNode` structs in pooled flat list (tree via indices). `ChangeValue` avoids boxing for int/long/float/double/bool/string.
+
+**OnStateMutated event:** Generated API clients fire `OnStateMutated` after any state mutation (broadcast replay, subscriber event, reconnect). Use as a general "state changed" signal: `api.OnStateMutated += () => UpdateUI(api.State);`
 
 ---
 
@@ -675,6 +711,7 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `[MetaServiceImpl]` | Class | Marks service implementation for context injection |
 | `[MetaInit]` | Method | State initialization/migration on grain activation |
 | `[MetaConfig]` | Class | Marks a class as static game configuration |
+| `[Tracked]` | Field | Push-based change tracking — generates property with tracking setter |
 | `[Trigger]` | Method | Auto-execute after condition on another method |
 | `[ServiceTrigger]` | Method | Trigger on framework service event |
 | `[ServerMetaService]` | Interface | Server-only service (generates replayer) |

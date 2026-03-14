@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.0] - 2026-03-14
+
+### Added
+- **Push-based change tracking** — `[Tracked]` attribute on private backing fields generates public properties with tracking setters
+  - `ChangeTracker` — `AsyncLocal` change buffer, activated per method call, pooled for zero allocation
+  - `ChangeNode` struct — flat-list tree of field changes with parent/child indices
+  - `ChangeValue` — discriminated union avoiding boxing for int/long/float/double/bool/string
+  - `ListPool<T>` and `ObjectPool<T>` — simple pools for change node lists and wrapper views
+  - Client-only: `ChangeTracker.Current` is null on server (zero overhead)
+- `ReactiveStateGenerator` — generates `TrackingProperty` enum, tracking property setters, and `Tracked{State}` static subscription classes per project
+- Generated API clients now wrap method execution in `ChangeTracker.Activate()`/`FlushAndNotify()` — broadcasts, optimistic replay, and ServerPatch replay all fire tracked field subscriptions
+- `OnStateMutated` event on generated API clients — fires after any state mutation (broadcast replay, subscriber event, reconnect)
+- `GetEntityConfig<TConfig>(entityId)` on `MetaClient` and `IMetaServiceResolver` — access resolved server config from client code
+- Push-Based Change Tracking section in GUIDE.md and SharedMeta-AI.md
+
+### Changed
+- Generated broadcast deserialization always uses `CreateReader` for correct length-prefixed format (fixes edge case with single-param broadcasts)
+
 ## [0.3.5] - 2026-03-12
 
 ### Added

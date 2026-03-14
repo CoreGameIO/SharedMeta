@@ -3,6 +3,7 @@ using SharedMeta.Core.Network;
 using SharedMeta.Core.Diagnostics;
 using SharedMeta.Core.Logging;
 using SharedMeta.Core.Transport;
+using SharedMeta.Core.Reactive;
 using SharedMeta.Client;
 using SharedMeta.Serialization.MemoryPack;
 using Expedition.Shared;
@@ -100,6 +101,20 @@ client.OnSessionSuperseded += reason =>
     connectionStatusMessage = $"Session taken over: {reason}";
 };
 
+// Register reactive subscriptions for push-based UI updates
+TrackedProfileState.Register();
+bool reactiveNeedsRender = false;
+TrackedProfileState.OnChanged += args =>
+{
+    reactiveNeedsRender = true;
+    if (args.HasChange((int)TrackingProperty.ProfileState_Energy))
+    {
+        var leaf = args.FindLeaf((int)TrackingProperty.ProfileState_Energy);
+        if (leaf != null)
+            Console.Title = $"Energy: {leaf.Value.OldValue.IntValue} -> {leaf.Value.NewValue.IntValue}";
+    }
+};
+
 Console.WriteLine("Connecting to server...");
 await client.ConnectAsync();
 Console.WriteLine($"Connected! PlayerId: {client.PlayerId}");
@@ -184,6 +199,13 @@ async Task<bool> RunGameAsync()
         // --- Frame start: process pending server broadcasts ---
         if (client.Dispatcher.ProcessPendingBroadcasts() > 0)
             needsRender = true;
+
+        // Reactive subscriptions may have triggered re-render
+        if (reactiveNeedsRender)
+        {
+            needsRender = true;
+            reactiveNeedsRender = false;
+        }
 
         // Session superseded — only accept R (restart) or Q (quit)
         if (sessionSuperseded)

@@ -326,6 +326,31 @@ namespace SharedMeta.Generator
                 }
             });
 
+            // Push-Based Change Tracking (classes with [Tracked] private fields → generated property setters)
+            var trackedPipeline = context.SyntaxProvider.CreateSyntaxProvider(
+                predicate: static (node, _) =>
+                    node is ClassDeclarationSyntax cds &&
+                    cds.Members.Any(m => m is FieldDeclarationSyntax fds &&
+                        fds.AttributeLists.Any(al => al.Attributes.Any(a =>
+                            a.Name.ToString().Contains("Tracked")))),
+                transform: static (ctx, _) =>
+                {
+                    var symbol = ctx.SemanticModel.GetDeclaredSymbol(ctx.Node) as INamedTypeSymbol;
+                    if (symbol == null) return null;
+                    return TrackedStateGenerator.AnalyzeSingle(symbol);
+                }
+            ).Where(static info => info != null).Collect();
+
+            context.RegisterSourceOutput(trackedPipeline, (spc, allInfos) =>
+            {
+                var allTypes = TrackedStateGenerator.CollectAllTypes(allInfos);
+                var source = TrackedStateGenerator.Generate(allTypes);
+                if (source != null)
+                {
+                    spc.AddSource("ChangeTracking.g.cs", source);
+                }
+            });
+
             // Transformer Registration Generation
             // Scans for classes implementing IArgumentTransformer or IStateArgumentTransformer
             var transformerPipeline = context.SyntaxProvider.CreateSyntaxProvider(

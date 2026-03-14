@@ -31,6 +31,11 @@ namespace SharedMeta.Test.Meta1
         /// Version set by [MetaInit] during entity activation.
         /// </summary>
         [MemoryPackOrder(3)] public int InitializedVersion { get; set; }
+
+        /// <summary>
+        /// Tracked counter for testing push-based change tracking.
+        /// </summary>
+        [MemoryPackOrder(4), MemoryPackInclude, Tracked] private int _reactiveCounter;
     }
 
     /// <summary>

@@ -42,6 +42,12 @@ namespace SharedMeta.Core
         void RegisterService<TApiClient>(MetaServiceConfig config);
 
         /// <summary>
+        /// Get the resolved config for a connected entity.
+        /// Returns null if the entity is not connected or has no config.
+        /// </summary>
+        TConfig? GetEntityConfig<TConfig>(string entityId) where TConfig : class;
+
+        /// <summary>
         /// Subscribe to a method being replayed from server broadcast.
         /// Use this to react to service events (e.g., OnMatchFound from LobbySubscriber).
         /// </summary>

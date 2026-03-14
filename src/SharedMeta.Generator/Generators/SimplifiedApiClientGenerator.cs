@@ -30,9 +30,11 @@ namespace SharedMeta.Generator.Generators
             // Get state type from attribute
             var stateTypeArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "StateType");
             string? stateTypeName = null;
+            string? stateTypeShortName = null;
             if (!stateTypeArg.Value.IsNull && stateTypeArg.Value.Value is INamedTypeSymbol stateType)
             {
                 stateTypeName = stateType.ToDisplayString();
+                stateTypeShortName = stateType.Name;
             }
 
             if (stateTypeName == null)
@@ -182,6 +184,9 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        /// <summary>Fired after state is replaced on reconnect. Use to update Views.</summary>");
             sb.AppendLine($"        public event Action<{stateTypeName}>? OnStateRefreshed;");
             sb.AppendLine();
+            sb.AppendLine($"        /// <summary>Fired after any state mutation (broadcast replay, subscriber event, reconnect).</summary>");
+            sb.AppendLine($"        public event Action? OnStateMutated;");
+            sb.AppendLine();
 
             // Properties
             sb.AppendLine($"        /// <summary>Current state.</summary>");
@@ -240,6 +245,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            _state = newState;");
             sb.AppendLine("            _optimisticRandom = newRandom;");
             sb.AppendLine("            OnStateRefreshed?.Invoke(newState);");
+            sb.AppendLine("            OnStateMutated?.Invoke();");
             sb.AppendLine("        }");
             sb.AppendLine();
 
@@ -394,6 +400,9 @@ namespace SharedMeta.Generator.Generators
 
             // Set context and execute locally (we are the caller)
             // Use the server time from the response (may differ from captured time)
+            sb.AppendLine("                var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
+            sb.AppendLine("                try");
+            sb.AppendLine("                {");
             sb.AppendLine("                SetContext(response.ReplayContext, _network.PlayerId, response.ServerTimeTicks);");
             if (isVoidReturn)
             {
@@ -407,7 +416,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
             sb.AppendLine("                ReplayTriggerOperations(response.TriggerOperations, _network.PlayerId, response.ServerTimeTicks);");
 
-            // Validate and return
+            // Validate and return (inside tracker scope so localResult is accessible)
             if (!isVoidReturn)
             {
                 sb.AppendLine();
@@ -417,9 +426,20 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                    _diagnostics?.OnResultMismatch(ServiceName, \"{methodAlias}\", serverResult, localResult);");
                 sb.AppendLine($"                    throw new DesyncException(ServiceName, \"{methodAlias}\", serverResult, localResult);");
                 sb.AppendLine("                }");
+            }
+
+            if (!isVoidReturn)
+            {
                 sb.AppendLine();
+                sb.AppendLine("                _tracker.FlushAndNotify();");
                 sb.AppendLine("                return localResult;");
             }
+            else
+            {
+                sb.AppendLine("                _tracker.FlushAndNotify();");
+            }
+            sb.AppendLine("                }");
+            sb.AppendLine("                catch { _tracker.Discard(); throw; }");
 
             sb.AppendLine("            }");
             sb.AppendLine("            finally");
@@ -543,6 +563,7 @@ namespace SharedMeta.Generator.Generators
 
             // Capture scrollId before local execution for desync detection
             sb.AppendLine("            var scrollIdBefore = _optimisticRandom?.ScrollId ?? 0;");
+            sb.AppendLine("            var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
 
             sb.AppendLine("            try");
             sb.AppendLine("            {");
@@ -558,10 +579,9 @@ namespace SharedMeta.Generator.Generators
             }
 
             sb.AppendLine("            }");
-            sb.AppendLine("            finally");
-            sb.AppendLine("            {");
-            sb.AppendLine("                MetaContextAccessor.Current = null;");
-            sb.AppendLine("            }");
+            sb.AppendLine("            catch { MetaContextAccessor.Current = null; _tracker.Discard(); throw; }");
+            sb.AppendLine("            MetaContextAccessor.Current = null;");
+            sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine();
 
             // Serialize arguments based on serializer
@@ -640,6 +660,7 @@ namespace SharedMeta.Generator.Generators
 
             // Capture scrollId before local execution for desync detection
             sb.AppendLine("            var scrollIdBefore = _optimisticRandom?.ScrollId ?? 0;");
+            sb.AppendLine("            var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
 
             sb.AppendLine("            try");
             sb.AppendLine("            {");
@@ -652,10 +673,9 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                localResult = {awaitPrefix}_service.{methodName}({callArgs});");
             }
             sb.AppendLine("            }");
-            sb.AppendLine("            finally");
-            sb.AppendLine("            {");
-            sb.AppendLine("                MetaContextAccessor.Current = null;");
-            sb.AppendLine("            }");
+            sb.AppendLine("            catch { MetaContextAccessor.Current = null; _tracker.Discard(); throw; }");
+            sb.AppendLine("            MetaContextAccessor.Current = null;");
+            sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            localCrossResults = _crossEntityResolver?.TakeRecordedResults() ?? new();");
             sb.AppendLine();
 
@@ -760,6 +780,9 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
 
             // Apply patch or fallback to replay
+            sb.AppendLine("                var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
+            sb.AppendLine("                try");
+            sb.AppendLine("                {");
             sb.AppendLine("                if (response.PatchBytes is { Length: > 0 } patchData)");
             sb.AppendLine("                {");
             sb.AppendLine($"                    var patch = _serializer.Unpack<PatchNode>(patchData);");
@@ -784,6 +807,9 @@ namespace SharedMeta.Generator.Generators
 
             // Replay trigger operations (may also have patches)
             sb.AppendLine($"                ReplayTriggerOperations(response.TriggerOperations, _network.PlayerId, response.ServerTimeTicks);");
+            sb.AppendLine("                _tracker.FlushAndNotify();");
+            sb.AppendLine("                }");
+            sb.AppendLine("                catch { _tracker.Discard(); throw; }");
 
             // Return server result
             if (!isVoidReturn)
@@ -886,9 +912,11 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
             sb.AppendLine();
 
-            // Service dispatch
             sb.AppendLine("        private void DispatchServiceBroadcast(NetworkBroadcast broadcast)");
             sb.AppendLine("        {");
+            sb.AppendLine("            var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
+            sb.AppendLine("            try");
+            sb.AppendLine("            {");
             sb.AppendLine("            switch (broadcast.MethodName)");
             sb.AppendLine("            {");
 
@@ -977,6 +1005,10 @@ namespace SharedMeta.Generator.Generators
             }
 
             sb.AppendLine("            }");
+            sb.AppendLine("            _tracker.FlushAndNotify();");
+            sb.AppendLine("            OnStateMutated?.Invoke();");
+            sb.AppendLine("            }");
+            sb.AppendLine("            catch { _tracker.Discard(); throw; }");
             sb.AppendLine("        }");
             sb.AppendLine();
 
@@ -986,6 +1018,9 @@ namespace SharedMeta.Generator.Generators
             {
                 sb.AppendLine($"        private void Dispatch{subscriber.Name}Broadcast(NetworkBroadcast broadcast)");
                 sb.AppendLine("        {");
+                sb.AppendLine("            var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
+                sb.AppendLine("            try");
+                sb.AppendLine("            {");
                 sb.AppendLine("            switch (broadcast.MethodName)");
                 sb.AppendLine("            {");
 
@@ -1033,6 +1068,10 @@ namespace SharedMeta.Generator.Generators
                 }
 
                 sb.AppendLine("            }");
+                sb.AppendLine("            _tracker.FlushAndNotify();");
+                sb.AppendLine("            OnStateMutated?.Invoke();");
+                sb.AppendLine("            }");
+                sb.AppendLine("            catch { _tracker.Discard(); throw; }");
                 sb.AppendLine("        }");
                 sb.AppendLine();
             }
@@ -1126,14 +1165,7 @@ namespace SharedMeta.Generator.Generators
             }
             else
             {
-                // Generic serializer
-                if (paramCount == 1)
-                {
-                    var paramType = method.ParameterList.Parameters[0].Type!.ToString();
-                    var paramName = method.ParameterList.Parameters[0].Identifier.Text;
-                    sb.AppendLine($"                    var {paramName} = _serializer.Unpack<{paramType}>(broadcast.ArgsBytes)!;");
-                }
-                else
+                // Generic serializer — always use CreateReader for correct length-prefixed format
                 {
                     sb.AppendLine("                    using var reader = _serializer.CreateReader(broadcast.ArgsBytes);");
                     foreach (var param in method.ParameterList.Parameters)

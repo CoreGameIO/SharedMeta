@@ -19,6 +19,13 @@ namespace SharedMeta.Test.Meta1
         void AddValue(int value, int clientSequence);
 
         /// <summary>
+        /// Add a value to the tracked counter field.
+        /// Tests push-based change tracking.
+        /// </summary>
+        [MetaMethod(Alias = "AddReactive", Mode = ExecutionMode.Server)]
+        void AddReactive(int value);
+
+        /// <summary>
         /// Reset the counter to initial state.
         /// </summary>
         [MetaMethod(Alias = "Reset", Mode = ExecutionMode.Server)]

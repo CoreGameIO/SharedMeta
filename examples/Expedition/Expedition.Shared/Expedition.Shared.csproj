@@ -12,6 +12,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\SharedMeta.Core\SharedMeta.Core.csproj" />
     <ProjectReference Include="..\..\..\src\SharedMeta.Client\SharedMeta.Client.csproj" />
+    <ProjectReference Include="..\..\..\src\SharedMeta.Serialization.MessagePack\SharedMeta.Serialization.MessagePack.csproj" />
     <ProjectReference Include="..\..\..\src\SharedMeta.Generator\SharedMeta.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 

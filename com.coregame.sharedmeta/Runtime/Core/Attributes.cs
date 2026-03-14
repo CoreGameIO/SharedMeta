@@ -35,6 +35,18 @@ namespace SharedMeta.Core
     }
 
     /// <summary>
+    /// Marks a private backing field for push-based change tracking.
+    /// The source generator produces a public property with a tracking setter that
+    /// records changes into ChangeTracker during method execution (client-only, zero server overhead).
+    /// Field must be private, named with underscore prefix (e.g. _health),
+    /// and have a serialization attribute ([Key(n)] or [MemoryPackOrder(n)]).
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Field)]
+    public class TrackedAttribute : Attribute
+    {
+    }
+
+    /// <summary>
     /// Marks a class as static game configuration data.
     /// Config is provided by IMetaConfigProvider on the server and sent to clients on subscribe.
     /// Access via Context.Config in service methods and [MetaInit].
