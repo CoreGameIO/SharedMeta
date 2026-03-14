@@ -228,6 +228,19 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
+        /// Get the config for a subscribed entity (untyped). ICrossEntityResolver implementation.
+        /// </summary>
+        object? ICrossEntityResolver.GetEntityConfig(string entityId)
+        {
+            lock (_lock)
+            {
+                if (_connections.TryGetValue(entityId, out var connection))
+                    return connection.Config;
+            }
+            return null;
+        }
+
+        /// <summary>
         /// Subscribe to a method being replayed from server broadcast.
         /// </summary>
         public IMethodSubscription OnMethodReplayed(string entityId, string serviceName, string methodName, Action<MethodReplayedContext> handler)

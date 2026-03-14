@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.2] - 2026-03-14
+
+### Fixed
+- CrossOptimistic cross-entity calls: `LocalEntityCaller` now propagates entity `Config` to the `CrossOptimisticMetaContext`, fixing `NullReferenceException` when cross-entity service methods access `Config` properties (e.g. energy regen, limits)
+
+### Added
+- `ICrossEntityResolver.GetEntityConfig(entityId)` — config resolution for cross-entity calls during client-side optimistic execution
+
 ## [0.4.1] - 2026-03-14
 
 ### Changed

@@ -41,6 +41,12 @@ namespace SharedMeta.Core
         object GetEntityState(string entityId);
 
         /// <summary>
+        /// Get the config object for a subscribed entity. Returns null if no config.
+        /// Used by generated LocalEntityCaller to propagate Config to cross-entity context.
+        /// </summary>
+        object? GetEntityConfig(string entityId);
+
+        /// <summary>
         /// Serializer for creating client MetaContext.
         /// </summary>
         IMetaSerializer Serializer { get; }

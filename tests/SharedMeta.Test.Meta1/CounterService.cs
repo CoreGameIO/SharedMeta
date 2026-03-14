@@ -1,3 +1,5 @@
+using System;
+using System.Threading.Tasks;
 using SharedMeta.Core;
 
 namespace SharedMeta.Test.Meta1
@@ -15,7 +17,7 @@ namespace SharedMeta.Test.Meta1
     /// Implementation of the test counter service.
     /// Can be used with generated context or manual context.
     /// </summary>
-    [MetaServiceImpl(typeof(ICounterService), typeof(CounterState))]
+    [MetaServiceImpl(typeof(ICounterService), typeof(CounterState), typeof(ICounterService))]
     public partial class CounterService : ICounterService
     {
         // Manual context for testing without generated code
@@ -92,6 +94,24 @@ namespace SharedMeta.Test.Meta1
             state.Sum = 0;
 
             Console.WriteLine("[Counter] Reset");
+        }
+
+        public async Task<int> AddCrossEntity(string targetEntityId, int value)
+        {
+            var targetService = GetICounterService(targetEntityId);
+            int clamped = await targetService.AddClampedAsync(value);
+            Console.WriteLine($"[Counter] AddCrossEntity: target={targetEntityId}, value={value}, clamped={clamped}");
+            return clamped;
+        }
+
+        public int AddClamped(int value)
+        {
+            var config = (CounterConfig)Context.Config!;
+            int clamped = Math.Min(value, config.MaxValue);
+            var state = GetState();
+            state.Sum += clamped;
+            Console.WriteLine($"[Counter] AddClamped: value={value}, max={config.MaxValue}, clamped={clamped}, sum={state.Sum}");
+            return clamped;
         }
     }
 }

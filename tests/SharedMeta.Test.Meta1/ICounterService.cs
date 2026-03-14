@@ -6,7 +6,7 @@ namespace SharedMeta.Test.Meta1
     /// Simple meta service for testing packet delivery and ordering.
     /// Each AddRandom call adds a value to the state and broadcasts it to all subscribers.
     /// </summary>
-    [MetaService(StateType = typeof(CounterState))]
+    [MetaService(StateType = typeof(CounterState), DefaultConfig = true)]
     public interface ICounterService : IMetaService
     {
         /// <summary>
@@ -30,5 +30,20 @@ namespace SharedMeta.Test.Meta1
         /// </summary>
         [MetaMethod(Alias = "Reset", Mode = ExecutionMode.Server)]
         void Reset();
+
+        /// <summary>
+        /// CrossOptimistic method that calls another counter entity cross-entity.
+        /// The target entity's method accesses Config — tests that Config is propagated
+        /// to CrossOptimisticMetaContext during LocalEntityCaller execution.
+        /// </summary>
+        [MetaMethod(Alias = "AddCrossEntity", Mode = ExecutionMode.CrossOptimistic)]
+        Task<int> AddCrossEntity(string targetEntityId, int value);
+
+        /// <summary>
+        /// Adds value clamped by Config.MaxValue. Called cross-entity from AddCrossEntity.
+        /// Accesses Context.Config — will NRE if Config is not propagated.
+        /// </summary>
+        [MetaMethod(Alias = "AddClamped", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+        int AddClamped(int value);
     }
 }

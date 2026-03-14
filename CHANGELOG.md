@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.2] - 2026-03-14
+
+### Fixed
+
+- CrossOptimistic cross-entity calls: `LocalEntityCaller` now propagates entity `Config` to `CrossOptimisticMetaContext`, fixing `NullReferenceException` when cross-entity service methods access `Config` properties (e.g. energy regen, game limits)
+- Added `ICrossEntityResolver.GetEntityConfig(entityId)` for config resolution during client-side cross-entity execution
+
+## [0.4.1] - 2026-03-14
+
+### Changed
+
+- `PlayerPrefsTokenStorage` — keys now isolated by `Application.identifier` (bundle ID), preventing token conflicts between multiple SharedMeta projects on the same device
+
 ## [0.4.0] - 2026-03-14
 
 ### Push-Based Change Tracking

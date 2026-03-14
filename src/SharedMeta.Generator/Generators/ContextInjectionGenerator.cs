@@ -699,6 +699,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            ctx.CrossEntityResolver = _resolver;");
             sb.AppendLine("            ctx.ServerTimeTicks = prevCtx?.ServerTimeTicks ?? 0;");
             sb.AppendLine("            ctx.Log = prevCtx?.Log ?? SharedMeta.Core.Logging.NullMetaLogger.Instance;");
+            sb.AppendLine("            ctx.Config = _resolver.GetEntityConfig(_entityId);");
             sb.AppendLine("            MetaContextAccessor.Current = ctx;");
             sb.AppendLine("            try");
             sb.AppendLine("            {");
