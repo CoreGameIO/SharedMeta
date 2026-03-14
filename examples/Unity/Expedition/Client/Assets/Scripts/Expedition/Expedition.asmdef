@@ -1,0 +1,21 @@
+{
+    "name": "Expedition",
+    "rootNamespace": "",
+    "references": [
+        "SharedMeta.Runtime",
+        "SharedMeta.Transport.SignalR.Client",
+        "SharedMeta.Serialization.MemoryPack",
+        "SharedMeta.Auth.Client",
+        "Expedition.Shared",
+        "Unity.InputSystem"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

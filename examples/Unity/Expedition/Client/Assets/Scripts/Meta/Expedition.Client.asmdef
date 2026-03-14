@@ -1,0 +1,20 @@
+{
+    "name": "Expedition.Client",
+    "rootNamespace": "",
+    "references": [
+        "SharedMeta.Runtime",
+        "SharedMeta.Transport.SignalR.Client",
+        "SharedMeta.Serialization.MemoryPack",
+        "Expedition.Shared",
+        "SharedMeta.Auth.Client"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

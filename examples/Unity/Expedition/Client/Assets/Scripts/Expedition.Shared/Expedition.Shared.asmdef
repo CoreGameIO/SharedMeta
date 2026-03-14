@@ -1,0 +1,14 @@
+{
+    "name": "Expedition.Shared",
+    "rootNamespace": "Expedition.Shared",
+    "references": ["SharedMeta.Runtime"],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": true
+}

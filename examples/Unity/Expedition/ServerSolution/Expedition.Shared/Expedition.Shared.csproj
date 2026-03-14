@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)Generated</CompilerGeneratedFilesOutputPath>
+    <IsPackable>false</IsPackable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../Client/Assets/Scripts/Expedition.Shared/**/*.cs" Link="%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="TrackedPolyfill.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CoreGame.SharedMeta.Core" />
+    <PackageReference Include="CoreGame.SharedMeta.Client" />
+    <PackageReference Include="CoreGame.SharedMeta.Generator" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <PackageReference Include="MemoryPack" />
+  </ItemGroup>
+
+</Project>
