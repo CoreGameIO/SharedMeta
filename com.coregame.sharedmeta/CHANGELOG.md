@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.4.1] - 2026-03-14
+
+### Changed
+- `PlayerPrefsTokenStorage` — keys now isolated by `Application.identifier` (bundle ID), preventing token conflicts between multiple SharedMeta projects on the same device
+
 ## [0.4.0] - 2026-03-14
 
 ### Added

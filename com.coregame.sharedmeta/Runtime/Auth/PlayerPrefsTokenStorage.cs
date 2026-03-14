@@ -14,18 +14,30 @@ namespace SharedMeta.Client.Auth
     /// </summary>
     public class PlayerPrefsTokenStorage : ITokenStorage
     {
-        private const string TokenKey = "SharedMeta_Auth_Token";
-        private const string PlayerIdKey = "SharedMeta_Auth_PlayerId";
-        private const string ExpiryKey = "SharedMeta_Auth_Expiry";
+        private readonly string _tokenKey;
+        private readonly string _playerIdKey;
+        private readonly string _expiryKey;
+
+        /// <summary>
+        /// Create token storage isolated by Application.identifier (bundle ID).
+        /// Each Unity project gets its own cached token automatically.
+        /// </summary>
+        public PlayerPrefsTokenStorage()
+        {
+            var prefix = Application.identifier;
+            _tokenKey = $"{prefix}_Auth_Token";
+            _playerIdKey = $"{prefix}_Auth_PlayerId";
+            _expiryKey = $"{prefix}_Auth_Expiry";
+        }
 
         public CachedToken? Load()
         {
-            if (!PlayerPrefs.HasKey(TokenKey))
+            if (!PlayerPrefs.HasKey(_tokenKey))
                 return null;
 
-            var token = PlayerPrefs.GetString(TokenKey);
-            var playerId = PlayerPrefs.GetString(PlayerIdKey, "");
-            var expiryStr = PlayerPrefs.GetString(ExpiryKey, "");
+            var token = PlayerPrefs.GetString(_tokenKey);
+            var playerId = PlayerPrefs.GetString(_playerIdKey, "");
+            var expiryStr = PlayerPrefs.GetString(_expiryKey, "");
 
             if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(playerId))
                 return null;
@@ -40,17 +52,17 @@ namespace SharedMeta.Client.Auth
 
         public void Save(CachedToken token)
         {
-            PlayerPrefs.SetString(TokenKey, token.Token);
-            PlayerPrefs.SetString(PlayerIdKey, token.PlayerId);
-            PlayerPrefs.SetString(ExpiryKey, token.ExpiresAt.ToString("O", CultureInfo.InvariantCulture));
+            PlayerPrefs.SetString(_tokenKey, token.Token);
+            PlayerPrefs.SetString(_playerIdKey, token.PlayerId);
+            PlayerPrefs.SetString(_expiryKey, token.ExpiresAt.ToString("O", CultureInfo.InvariantCulture));
             PlayerPrefs.Save();
         }
 
         public void Clear()
         {
-            PlayerPrefs.DeleteKey(TokenKey);
-            PlayerPrefs.DeleteKey(PlayerIdKey);
-            PlayerPrefs.DeleteKey(ExpiryKey);
+            PlayerPrefs.DeleteKey(_tokenKey);
+            PlayerPrefs.DeleteKey(_playerIdKey);
+            PlayerPrefs.DeleteKey(_expiryKey);
             PlayerPrefs.Save();
         }
     }
