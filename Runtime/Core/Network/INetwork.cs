@@ -1,0 +1,108 @@
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using SharedMeta.Core.Packets;
+
+namespace SharedMeta.Core.Network
+{
+    /// <summary>
+    /// Network layer for RPC calls.
+    /// Handles transport, packet matching, timeouts.
+    /// Does NOT know about meta-logic.
+    /// </summary>
+    public interface INetwork
+    {
+        /// <summary>
+        /// Unique client identifier.
+        /// </summary>
+        string ClientId { get; }
+
+        /// <summary>
+        /// Player ID for this client (used as CallerId for RPC calls).
+        /// </summary>
+        string? PlayerId { get; }
+
+        /// <summary>
+        /// Currently connected entity ID.
+        /// </summary>
+        string? EntityId { get; }
+
+        /// <summary>
+        /// Approximate current server time (UTC ticks).
+        /// Computed from last received server time + local elapsed delta.
+        /// Used by generated code to capture time at method start.
+        /// </summary>
+        long ServerTimeTicks { get; }
+
+        /// <summary>
+        /// Call a method that returns a value.
+        /// </summary>
+        Task<CallResponse<T>> CallAsync<T>(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
+
+        /// <summary>
+        /// Call a void method.
+        /// </summary>
+        Task<VoidCallResponse> CallVoidAsync(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
+
+        /// <summary>
+        /// Call a method and get raw bytes result (for serializer-specific deserialization).
+        /// </summary>
+        Task<ByteCallResponse> CallBytesAsync(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
+
+        /// <summary>
+        /// Suppress broadcast processing. Must be paired with ResumeBroadcasts().
+        /// Used to prevent broadcasts from modifying state between receiving an RPC response
+        /// and completing the local replay (which would cause desyncs).
+        /// </summary>
+        void SuppressBroadcasts();
+
+        /// <summary>
+        /// Resume broadcast processing after SuppressBroadcasts().
+        /// When the last suppress is released, pending broadcasts are drained.
+        /// </summary>
+        void ResumeBroadcasts();
+
+        /// <summary>
+        /// Broadcasts from server (other players' actions).
+        /// </summary>
+        event Action<NetworkBroadcast>? OnBroadcast;
+
+        /// <summary>
+        /// Connection lost.
+        /// </summary>
+        event Action<string>? OnDisconnected;
+    }
+
+    /// <summary>
+    /// Broadcast message from server.
+    /// </summary>
+    public class NetworkBroadcast
+    {
+        /// <summary>Service name (e.g., "IProfileService").</summary>
+        public string ServiceName { get; set; } = "";
+
+        /// <summary>Method name (e.g., "SetName").</summary>
+        public string MethodName { get; set; } = "";
+
+        /// <summary>Caller who initiated this action.</summary>
+        public string? CallerId { get; set; }
+
+        /// <summary>Serialized arguments.</summary>
+        public byte[] ArgsBytes { get; set; } = Array.Empty<byte>();
+
+        /// <summary>Server-side replay context for deterministic local execution.</summary>
+        public byte[] ReplayContext { get; set; } = Array.Empty<byte>();
+
+        /// <summary>Triggered operations executed after the main call (if any).</summary>
+        public List<OperationResult>? TriggerOperations { get; set; }
+
+        /// <summary>Server time (UTC ticks) for deterministic replay.</summary>
+        public long ServerTimeTicks { get; set; }
+
+        /// <summary>Delta of optimistic random ScrollId during this call (for desync detection).</summary>
+        public long RandomScrollDelta { get; set; }
+
+        /// <summary>Serialized state diff patch for ServerPatch mode.</summary>
+        public byte[]? PatchBytes { get; set; }
+    }
+}
