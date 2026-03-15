@@ -1,0 +1,271 @@
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.SignalR.Client;
+using SharedMeta.Core;
+using SharedMeta.Core.Logging;
+using SharedMeta.Core.Transport;
+
+namespace SharedMeta.Client.Network
+{
+    /// <summary>
+    /// SignalR implementation of <see cref="IConnection"/>.
+    /// Connects to a MetaHub on the server for bidirectional communication.
+    /// Uses typed proxy (<see cref="MetaHubProxy"/>) for Hub method calls.
+    ///
+    /// Uses JSON protocol by default (no extra dependencies).
+    /// Server supports both JSON and MessagePack protocols simultaneously.
+    /// </summary>
+    public class SignalRConnection : IConnection
+    {
+        private readonly string _serverUrl;
+        private readonly string? _accessToken;
+        private HubConnection? _hubConnection;
+        private IMetaHub? _hub;
+        private string _connectionId = "";
+
+        public string ConnectionId => _connectionId;
+        public bool IsConnected => _hubConnection?.State == HubConnectionState.Connected;
+
+        public event Action<SessionResponse>? OnBatch;
+        public event Action<string>? OnSessionTerminated;
+        public event Action<TransportDisconnectReason>? OnDisconnected;
+        public event Action? OnReconnecting;
+        public event Action? OnReconnected;
+
+        /// <param name="serverUrl">SignalR hub URL.</param>
+        /// <param name="accessToken">Optional JWT access token for authentication.</param>
+        public SignalRConnection(string serverUrl, string? accessToken = null)
+        {
+            _serverUrl = serverUrl ?? throw new ArgumentNullException(nameof(serverUrl));
+            _accessToken = accessToken;
+        }
+
+        public async Task ConnectAsync()
+        {
+            var builder = new HubConnectionBuilder()
+                .WithUrl(_serverUrl, options =>
+                {
+                    if (_accessToken != null)
+                    {
+                        options.AccessTokenProvider = () => Task.FromResult<string?>(_accessToken);
+                    }
+                })
+                .WithAutomaticReconnect(new SignalRRetryPolicy());
+
+            _hubConnection = builder.Build();
+
+            // Register for typed broadcast events from server
+            _hubConnection.On<SessionResponse>(nameof(IMetaHubClient.ReceiveBroadcast), OnReceiveBroadcast);
+            _hubConnection.On<string>(nameof(IMetaHubClient.SessionTerminated), msg => OnSessionTerminated?.Invoke(msg));
+            _hubConnection.On<string>(nameof(IMetaHubClient.EntityDeactivating), OnEntityDeactivating);
+
+            // Connection lifecycle events
+            _hubConnection.Closed += OnConnectionClosed;
+            _hubConnection.Reconnecting += HandleReconnecting;
+            _hubConnection.Reconnected += HandleReconnected;
+
+#if DEBUG || UNITY_EDITOR
+            _hubConnection.ServerTimeout = TimeSpan.FromMinutes(30);
+            _hubConnection.KeepAliveInterval = TimeSpan.FromMinutes(15);
+#endif
+
+            await _hubConnection.StartAsync();
+            _connectionId = _hubConnection.ConnectionId ?? Guid.NewGuid().ToString("N").Substring(0, 8);
+
+            _hub = new MetaHubProxy(_hubConnection);
+
+            MetaLog.Info($"[SignalR] Connected with ID: {_connectionId}");
+        }
+
+        public async Task DisconnectAsync()
+        {
+            MetaLog.Debug("[SignalR] DisconnectAsync called");
+            if (_hubConnection != null)
+            {
+                await _hubConnection.StopAsync();
+                await _hubConnection.DisposeAsync();
+                _hubConnection = null;
+                _hub = null;
+            }
+        }
+
+        public async Task GracefulDisconnectAsync()
+        {
+            MetaLog.Debug("[SignalR] GracefulDisconnectAsync called");
+            if (_hub != null && IsConnected)
+            {
+                try
+                {
+                    await _hub.GracefulDisconnect();
+                }
+                catch (Exception ex)
+                {
+                    MetaLog.Debug($"[SignalR] GracefulDisconnect failed (ok): {ex.Message}");
+                }
+            }
+        }
+
+        public async Task<ConnectionSessionConnectResult> SessionConnectAsync(
+            string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0)
+        {
+            EnsureConnected();
+
+            var response = await _hub!.SessionConnect(new SessionConnectRequest
+            {
+                PlayerId = playerId,
+                SessionId = sessionId,
+                LastAcknowledgedSequence = lastAcknowledgedSequence
+            });
+
+            return new ConnectionSessionConnectResult
+            {
+                Success = response.Success,
+                Error = response.Error,
+                SessionId = response.SessionId,
+                IsNewSession = response.IsNewSession,
+                MissedPackets = response.MissedPackets ?? new List<SessionResponse>(),
+                ServerTimeTicks = response.ServerTimeTicks,
+                ResubscribedEntities = response.ResubscribedEntities
+            };
+        }
+
+        public async Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, string stateTypeName)
+        {
+            EnsureConnected();
+
+            var response = await _hub!.Subscribe(new SubscribeRequest
+            {
+                EntityId = entityId,
+                StateTypeName = stateTypeName
+            });
+
+            return new ConnectionSubscribeResult
+            {
+                Success = response.Success,
+                Error = response.Error,
+                StateBytes = response.StateBytes,
+                OptimisticRandomBytes = response.OptimisticRandomBytes,
+                ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion)
+            };
+        }
+
+        public async Task<bool> UnsubscribeAsync(string entityId)
+        {
+            EnsureConnected();
+
+            var response = await _hub!.Unsubscribe(new UnsubscribeRequest
+            {
+                EntityId = entityId
+            });
+
+            return response.Success;
+        }
+
+        public async Task<SessionResponse> RpcCallAsync(RpcCallRequest request)
+        {
+            EnsureConnected();
+            return await _hub!.RpcCall(request);
+        }
+
+        public async Task AcknowledgeSequenceAsync(long sequenceNumber)
+        {
+            EnsureConnected();
+
+            await _hub!.AcknowledgeSequence(new AcknowledgeRequest
+            {
+                SequenceNumber = sequenceNumber
+            });
+        }
+
+        public async Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version)
+        {
+            EnsureConnected();
+            var response = await _hub!.GetConfigDownloadUrl(new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor });
+            return response.DownloadUrl;
+        }
+
+        #region Event Handlers
+
+        private void OnReceiveBroadcast(SessionResponse message)
+        {
+            if (message.Operations != null && message.Operations.Count > 0)
+            {
+                OnBatch?.Invoke(message);
+            }
+        }
+
+        private void OnEntityDeactivating(string entityId)
+        {
+            MetaLog.Info($"[SignalR] Entity deactivating: {entityId}");
+        }
+
+        private Task OnConnectionClosed(Exception? exception)
+        {
+            var reason = exception != null
+                ? TransportDisconnectReason.NetworkError
+                : TransportDisconnectReason.ClientRequested;
+
+            if (exception != null)
+                MetaLog.Error($"[SignalR] Connection closed: {reason}", exception);
+            else
+                MetaLog.Info($"[SignalR] Connection closed: {reason}");
+
+            OnDisconnected?.Invoke(reason);
+            return Task.CompletedTask;
+        }
+
+        private Task HandleReconnecting(Exception? exception)
+        {
+            MetaLog.Info($"[SignalR] Reconnecting... ({exception?.Message})");
+            OnReconnecting?.Invoke();
+            return Task.CompletedTask;
+        }
+
+        private Task HandleReconnected(string? connectionId)
+        {
+            _connectionId = connectionId ?? _connectionId;
+            MetaLog.Info($"[SignalR] Reconnected with ID: {_connectionId}");
+            OnReconnected?.Invoke();
+            return Task.CompletedTask;
+        }
+
+        #endregion
+
+        private void EnsureConnected()
+        {
+            if (_hubConnection == null || !IsConnected || _hub == null)
+                throw new InvalidOperationException("Not connected");
+        }
+
+        public void Dispose()
+        {
+            if (_hubConnection != null)
+            {
+                _hubConnection.DisposeAsync().AsTask().Wait();
+                _hubConnection = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Retry policy for automatic reconnection with exponential backoff.
+    /// </summary>
+    internal class SignalRRetryPolicy : IRetryPolicy
+    {
+        private static readonly TimeSpan[] Delays =
+        {
+            TimeSpan.Zero,
+            TimeSpan.FromSeconds(2),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromSeconds(30)
+        };
+
+        public TimeSpan? NextRetryDelay(RetryContext retryContext)
+        {
+            var index = Math.Min((int)retryContext.PreviousRetryCount, Delays.Length - 1);
+            return Delays[index];
+        }
+    }
+}

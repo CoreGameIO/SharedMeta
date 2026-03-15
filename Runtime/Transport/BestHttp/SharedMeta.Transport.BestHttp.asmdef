@@ -1,0 +1,26 @@
+{
+    "name": "SharedMeta.Transport.BestHttp",
+    "rootNamespace": "SharedMeta.Transport.BestHttp",
+    "references": [
+        "SharedMeta.Runtime",
+        "BestHTTP"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "HAS_BESTHTTP",
+        "HAS_NEWTONSOFT_JSON"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.nuget.newtonsoft-json",
+            "expression": "0.0.0",
+            "define": "HAS_NEWTONSOFT_JSON"
+        }
+    ],
+    "noEngineReferences": false
+}
