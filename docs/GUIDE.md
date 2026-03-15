@@ -6,6 +6,7 @@ Complete technical reference for the SharedMeta framework. Covers all subsystems
 
 ## Table of Contents
 
+0. [Quick Start (5 Minutes)](#0-quick-start-5-minutes)
 1. [Architecture Overview](#1-architecture-overview)
 2. [Shared State & Services](#2-shared-state--services)
 3. [Static Game Configuration](#3-static-game-configuration)
@@ -24,13 +25,96 @@ Complete technical reference for the SharedMeta framework. Covers all subsystems
 16. [Server Setup](#16-server-setup)
 17. [Client Setup](#17-client-setup)
 18. [Matchmaking (Lobby)](#18-matchmaking-lobby)
-19. [Desync Diagnostics](#19-desync-diagnostics)
+19. [Desync Diagnostics & Common Pitfalls](#19-desync-diagnostics--common-pitfalls)
 20. [Code Generation Reference](#20-code-generation-reference)
 21. [Attribute Reference](#21-attribute-reference)
 22. [Testing](#22-testing)
 23. [Capability Overview](#23-capability-overview)
 24. [Tutorial: Building Your First Service](#24-tutorial-building-your-first-service)
-25. [Architecture Decisions](#25-architecture-decisions)
+25. [Example: Expedition (Cross-Entity Economy)](#25-example-expedition-cross-entity-economy)
+26. [Architecture Decisions](#26-architecture-decisions)
+
+---
+
+## 0. Quick Start (5 Minutes)
+
+A minimal "Hello World" service in 5 steps — from zero to a working client-server call.
+
+### Step 1: Define State
+
+```csharp
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject]
+public partial class GameState : ISharedState
+{
+    [Key(0), MemoryPackOrder(0)] public int Counter { get; set; }
+}
+```
+
+### Step 2: Define Service Interface
+
+```csharp
+[MetaService(StateType = typeof(GameState))]
+public interface IGameService : IMetaService
+{
+    [MetaMethod(Mode = ExecutionMode.Optimistic)]
+    int Increment(int amount);
+}
+```
+
+### Step 3: Implement
+
+```csharp
+[MetaServiceImpl(typeof(IGameService), typeof(GameState))]
+public partial class GameServiceImpl : IGameService
+{
+    // State is auto-injected by the source generator
+    public int Increment(int amount)
+    {
+        State.Counter += amount;
+        return State.Counter;
+    }
+}
+```
+
+Build the project — the source generator produces `GameServiceDispatcher`, `GameServiceApiClient`, and DI extensions automatically.
+
+### Step 4: Server (Program.cs)
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+builder.Host.UseOrleans(silo =>
+{
+    silo.UseLocalhostClustering();
+    silo.AddFileGrainStorage("Default", o => o.RootDirectory = "./data");
+    silo.ConfigureServices(services =>
+    {
+        services.AddSingleton<IMetaSerializer>(new MemoryPackMetaSerializer());
+        services.ConfigureMeta(); // Generated: registers providers and factories
+    });
+});
+builder.Services.AddSignalR();
+var app = builder.Build();
+app.MapMetaHub("/meta");
+app.Run();
+```
+
+### Step 5: Client
+
+```csharp
+var client = new MetaClient(
+    new SignalRConnection("http://localhost:5000/meta"),
+    new MemoryPackMetaSerializer()
+);
+var resolver = (MetaServiceResolver)client.Resolver;
+resolver.RegisterAllServices(); // Generated
+await client.ConnectAsync();
+
+var api = await client.GetGameServiceAsync(); // Generated extension
+var result = await api.IncrementAsync(5);     // Executes locally + sends to server
+Console.WriteLine($"Counter: {result}");      // Counter: 5
+```
+
+**Unity?** Use **SharedMeta > Project Wizard** — it generates all of the above in one click. See [Tutorial](#24-tutorial-building-your-first-service) for a detailed walkthrough.
 
 ---
 
@@ -551,6 +635,8 @@ modeProvider.LoadManifest(@"{
 ---
 
 ## 5. Deterministic Random
+
+> **Need non-integer math?** `float`/`double` are not deterministic across platforms and will cause desyncs in Optimistic/CrossOptimistic methods. Use [CoreGame.FixedPoint](https://github.com/CoreGameIO/SharedLibs/tree/main/FixedPoint) (`Fp` type, Q48.16 backed by `long`) — see [Fixed-Point Arithmetic](#fixed-point-arithmetic) below.
 
 ### Two Random Systems
 
@@ -1751,7 +1837,7 @@ await profileApi.RequestMatchAsync(2);
 
 ---
 
-## 19. Desync Diagnostics
+## 19. Desync Diagnostics & Common Pitfalls
 
 ### IDesyncDiagnostics Interface
 
@@ -1855,6 +1941,78 @@ public void Move(Fp dx, Fp dy)
 - **Manual scaling** — use `long` with a fixed scale factor (e.g., `× 1000`) for simple cases
 
 **Rule of thumb:** If a value participates in Optimistic or CrossOptimistic logic and requires non-integer math, use fixed-point. Server-only logic (`ExecutionMode.Server`) can use `float` safely since only the server computes it.
+
+### Common Pitfalls
+
+Beyond desyncs, these are frequent mistakes when working with SharedMeta services:
+
+**1. Static mutable state in service implementations**
+
+Orleans grains are long-lived objects. A `static` field in your service class persists across all calls on that silo node, leaks between entities, and behaves differently across clustered nodes:
+
+```csharp
+// BAD — shared across all entities on this silo, invisible to other silos
+[MetaServiceImpl(typeof(IGameService), typeof(GameState))]
+public partial class GameServiceImpl : IGameService
+{
+    static int _globalCounter = 0; // shared between all players on this node!
+
+    public void DoSomething()
+    {
+        _globalCounter++; // different value on different Orleans nodes
+    }
+}
+```
+
+Use `State` properties for per-entity data. For truly global data, use an Orleans grain or `[MetaConfig]`.
+
+**2. Non-deterministic collection iteration**
+
+`Dictionary<TKey, TValue>` and `HashSet<T>` do not guarantee iteration order. If iteration order affects the result, the client and server may diverge:
+
+```csharp
+// BAD — iteration order may differ between client and server
+var firstItem = state.Inventory.First(); // Dictionary<string, int>
+
+// GOOD — sort or use a deterministic collection
+var firstItem = state.Inventory.OrderBy(kv => kv.Key).First();
+```
+
+Use `List<T>`, `PatchableList<T>`, or sort before iterating.
+
+**3. Captured closures and lambdas in shared logic**
+
+Avoid LINQ closures that capture local variables in Optimistic methods — compiler-generated closure classes may have different memory layouts, and any `float` arithmetic inside them is non-deterministic:
+
+```csharp
+// Risky in Optimistic mode — closure captures 'threshold'
+float threshold = CalculateThreshold(); // float!
+var items = state.Items.Where(i => i.Value > threshold).ToList();
+```
+
+**4. DateTime.Now / DateTime.UtcNow in shared logic**
+
+Client and server clocks differ. Use `Context.ServerTimeTicks` instead:
+
+```csharp
+// BAD — different on client and server
+var elapsed = DateTime.UtcNow - state.LastActionTime;
+
+// GOOD — synchronized server time
+var elapsed = Context.ServerTimeTicks - state.LastActionTicks;
+```
+
+**5. Forgetting `partial` on state and implementation classes**
+
+Both MemoryPack and the SharedMeta source generator require `partial`. If you forget it, you'll get cryptic compilation errors about missing generated members:
+
+```csharp
+// BAD — won't compile (MemoryPack and SharedMeta generators need partial)
+[MemoryPackable] public class GameState : ISharedState { }
+
+// GOOD
+[MemoryPackable] public partial class GameState : ISharedState { }
+```
 
 ---
 
@@ -2219,7 +2377,452 @@ The entire workflow — defining states, service interfaces, implementations, an
 
 ---
 
-## 25. Architecture Decisions
+## 25. Example: Expedition (Cross-Entity Economy)
+
+A complete example demonstrating cross-entity calls, energy/money economy, procedural map generation, push-based change tracking, and static game configuration.
+
+**Source code:** `examples/Expedition/`
+
+### Overview
+
+Expedition is a maze exploration game with fog of war. The player navigates a procedurally generated map, collecting treasures and spending energy. Two entities work together:
+
+| Entity | State | Access Policy | ID Pattern |
+|--------|-------|---------------|------------|
+| **Profile** | `ProfileState` — energy, money, expedition counter | `UserOwned` (entityId == playerId) | `playerId` |
+| **Expedition** | `ExpeditionState` — maze cells, fog, player position | `Authorized` (owner-checked) | `expedition-{playerId}-{counter}` |
+
+Cross-entity calls connect them: Expedition spends energy and awards money on Profile; Profile creates and checks Expedition status.
+
+```
+┌──────────────────────┐         ┌──────────────────────────┐
+│ ProfileState         │         │ ExpeditionState           │
+│  Energy, Money       │◄────────│  Map, PlayerXY, Fog       │
+│  ExpeditionCounter   │ Spend   │  TreasuresCollected       │
+│                      │ Energy  │                           │
+│                      │ Add     │                           │
+│ ResumeOrStart ──────►│ Money   │  Move (CrossOptimistic)   │
+│ Expedition           │         │  RemoveObstacle (CrossOpt)│
+└──────────────────────┘         └──────────────────────────┘
+```
+
+### State Classes
+
+```csharp
+// Player profile — energy regenerates over time, money earned from treasures
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject(AllowPrivate = true)]
+[SharedState]
+public partial class ProfileState : ISharedState
+{
+    [Key(0), MemoryPackOrder(0)] public string PlayerId { get; set; } = "";
+    [Key(1), MemoryPackOrder(1), MemoryPackInclude, Tracked] private int _energy = 50;
+    [Key(2), MemoryPackOrder(2)] public int MaxEnergy { get; set; } = 50;
+    [Key(3), MemoryPackOrder(3), MemoryPackInclude, Tracked] private int _money = 100;
+    [Key(4), MemoryPackOrder(4)] public long LastEnergyUpdateTicks { get; set; }
+    [Key(5), MemoryPackOrder(5)] public int EnergyRegenSeconds { get; set; } = 10;
+    [Key(6), MemoryPackOrder(6)] public string? CurrentExpeditionEntityId { get; set; }
+    [Key(7), MemoryPackOrder(7)] public int ExpeditionCounter { get; set; }
+}
+```
+
+Key points:
+- `_energy` and `_money` are `[Tracked]` — generator creates `Energy`/`Money` public properties with change tracking setters
+- `LastEnergyUpdateTicks` uses `Context.ServerTimeTicks` for deterministic regen across client and server
+
+```csharp
+// Expedition map — cells, fog of war, player position
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject]
+[SharedState]
+public partial class ExpeditionState : ISharedState
+{
+    [Key(0), MemoryPackOrder(0)] public int Width { get; set; }
+    [Key(1), MemoryPackOrder(1)] public int Height { get; set; }
+    [Key(2), MemoryPackOrder(2)] public List<byte> Cells { get; set; } = new();      // CellType enum
+    [Key(3), MemoryPackOrder(3)] public List<bool> Revealed { get; set; } = new();    // fog of war
+    [Key(4), MemoryPackOrder(4)] public int PlayerX { get; set; }
+    [Key(5), MemoryPackOrder(5)] public int PlayerY { get; set; }
+    [Key(6), MemoryPackOrder(6)] public bool IsGenerated { get; set; }
+    [Key(7), MemoryPackOrder(7)] public string? ProfileEntityId { get; set; }
+    [Key(8), MemoryPackOrder(8)] public int TreasuresCollected { get; set; }
+    [Key(9), MemoryPackOrder(9)] public int TotalTreasures { get; set; }
+    [Key(10), MemoryPackOrder(10)] public bool IsComplete { get; set; }
+    [Key(11), MemoryPackOrder(11)] public string? OwnerPlayerId { get; set; }
+}
+```
+
+### Static Configuration
+
+```csharp
+[MetaConfig(Default = true)]
+[MemoryPackable, MessagePackObject]
+public partial class ExpeditionConfig
+{
+    [Key(0), MemoryPackOrder(0)] public int MapWidth { get; set; } = 15;
+    [Key(1), MemoryPackOrder(1)] public int MapHeight { get; set; } = 10;
+    [Key(2), MemoryPackOrder(2)] public int WallPercent { get; set; } = 20;
+    [Key(3), MemoryPackOrder(3)] public int ObstaclePercent { get; set; } = 10;
+    [Key(4), MemoryPackOrder(4)] public int TreasurePercent { get; set; } = 8;
+    [Key(5), MemoryPackOrder(5)] public int MoveCost { get; set; } = 1;
+    [Key(6), MemoryPackOrder(6)] public int ObstacleCost { get; set; } = 5;
+    [Key(7), MemoryPackOrder(7)] public int TreasureReward { get; set; } = 25;
+}
+```
+
+Balance parameters are served by `IMetaConfigProvider<ExpeditionConfig>` on the server, downloaded and cached by clients.
+
+### Service Interfaces
+
+```csharp
+[MetaService(StateType = typeof(ExpeditionState), AccessPolicy = EntityAccessPolicy.Authorized, DefaultConfig = true)]
+public interface IExpeditionService : IMetaService
+{
+    // Called cross-entity from ProfileService to set ownership
+    [MetaMethod(Alias = "Init", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+    void Init(string ownerPlayerId);
+
+    // Move player — reveals fog, collects treasures, spends energy via cross-entity call
+    [MetaMethod(Alias = "Move", Mode = ExecutionMode.CrossOptimistic)]
+    Task<MoveResult> Move(int dx, int dy);
+
+    // Remove obstacle at adjacent cell — costs more energy
+    [MetaMethod(Alias = "RemoveObstacle", Mode = ExecutionMode.CrossOptimistic)]
+    Task<bool> RemoveObstacle(int dx, int dy);
+
+    // Check if expedition is still active (cross-entity query)
+    [MetaMethod(Alias = "IsActive", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+    bool IsActive();
+}
+```
+
+```csharp
+[MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned)]
+public interface IExpeditionProfileService : IMetaService
+{
+    // Recalculate energy based on elapsed server time
+    [MetaMethod(Alias = "UpdateEnergy")]
+    int UpdateEnergy();
+
+    // Buy energy with money (bypasses MaxEnergy cap)
+    [MetaMethod(Alias = "BuyEnergy")]
+    bool BuyEnergy(int energyAmount, int moneyCost);
+
+    // Cross-entity only: spend energy (called by ExpeditionService.Move)
+    [MetaMethod(Alias = "SpendEnergy", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+    bool SpendEnergy(int amount);
+
+    // Cross-entity only: award money (called by ExpeditionService on treasure)
+    [MetaMethod(Alias = "AddMoney", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+    void AddMoney(int amount);
+
+    // Resume current expedition or start a new one
+    [MetaMethod(Alias = "ResumeOrStartExpedition", Mode = ExecutionMode.Server)]
+    Task<ResumeExpeditionResult> ResumeOrStartExpedition();
+}
+```
+
+Key patterns:
+- `GenerateClientApi = false` — methods only called cross-entity (server-to-server), no client API generated
+- `CrossOptimistic` — client executes Move locally for instant response, server validates
+- `ExecutionMode.Server` for `ResumeOrStartExpedition` — makes cross-entity calls that can't run on client
+
+### Cross-Entity Call Pattern
+
+The `[MetaServiceImpl]` declares dependencies to get cross-entity callers:
+
+```csharp
+// ExpeditionService depends on IExpeditionProfileService (for energy/money)
+[MetaServiceImpl(typeof(IExpeditionService), typeof(ExpeditionState), typeof(IExpeditionProfileService))]
+public partial class ExpeditionService : IExpeditionService
+{
+    // Generator injects: GetIExpeditionProfileService(entityId) method
+
+    public async Task<MoveResult> Move(int dx, int dy)
+    {
+        // ... validate move ...
+
+        // Cross-entity call: spend energy on the profile entity
+        if (!state.Revealed[idx])
+        {
+            var profileCaller = GetIExpeditionProfileService(state.ProfileEntityId!);
+            bool spent = await profileCaller.SpendEnergyAsync(Config.MoveCost);
+            if (!spent) return MoveResult.NoEnergy;
+        }
+
+        // ... move player, reveal fog ...
+
+        // Cross-entity call: award money for treasure
+        if (cellType == CellType.Treasure)
+        {
+            var profileCaller = GetIExpeditionProfileService(state.ProfileEntityId!);
+            await profileCaller.AddMoneyAsync(Config.TreasureReward);
+        }
+
+        return MoveResult.Ok;
+    }
+}
+```
+
+```csharp
+// ProfileService depends on IExpeditionService (for status checks and init)
+[MetaServiceImpl(typeof(IExpeditionProfileService), typeof(ProfileState), typeof(IExpeditionService))]
+public partial class ExpeditionProfileService : IExpeditionProfileService
+{
+    // Generator injects: GetIExpeditionService(entityId) method
+
+    public async Task<ResumeExpeditionResult> ResumeOrStartExpedition()
+    {
+        // Check if current expedition is still active
+        if (!string.IsNullOrEmpty(state.CurrentExpeditionEntityId))
+        {
+            var expService = GetIExpeditionService(state.CurrentExpeditionEntityId);
+            bool active = await expService.IsActiveAsync();
+            if (active)
+                return new ResumeExpeditionResult { EntityId = state.CurrentExpeditionEntityId };
+        }
+
+        // Create new expedition
+        state.ExpeditionCounter++;
+        var entityId = $"expedition-{state.PlayerId}-{state.ExpeditionCounter}";
+        state.CurrentExpeditionEntityId = entityId;
+
+        // Initialize expedition (cross-entity call to new grain)
+        var newExpService = GetIExpeditionService(entityId);
+        await newExpService.InitAsync(state.PlayerId);
+
+        return new ResumeExpeditionResult { EntityId = entityId, IsNew = true };
+    }
+}
+```
+
+### Map Generation with [MetaInit]
+
+```csharp
+[MetaInit]
+public Task<int> GenerateMap(int version)
+{
+    if (version < 1)
+    {
+        var width = Config.MapWidth;    // from ExpeditionConfig
+        var height = Config.MapHeight;
+
+        // ... initialize cells list ...
+
+        // Deterministic random — identical results on client and server
+        for (int i = 0; i < totalCells; i++)
+        {
+            if (Context.Random!.Next(100) < Config.WallPercent)
+                state.Cells[i] = (byte)CellType.Wall;
+        }
+
+        // ... place obstacles, treasures, reveal starting area ...
+
+        state.IsGenerated = true;
+        return Task.FromResult(1);
+    }
+    return Task.FromResult(version);
+}
+```
+
+### Energy Regeneration with ServerTimeTicks
+
+```csharp
+public int UpdateEnergy()
+{
+    if (state.Energy >= state.MaxEnergy)
+    {
+        state.LastEnergyUpdateTicks = Context.ServerTimeTicks;
+        return state.Energy;
+    }
+
+    var elapsed = Context.ServerTimeTicks - state.LastEnergyUpdateTicks;
+    var secondsElapsed = elapsed / TimeSpan.TicksPerSecond;
+    var regenAmount = (int)(secondsElapsed / state.EnergyRegenSeconds);
+
+    if (regenAmount > 0)
+    {
+        state.Energy = Math.Min(state.Energy + regenAmount, state.MaxEnergy);
+        // Advance by consumed ticks only (preserves fractional regen progress)
+        state.LastEnergyUpdateTicks += regenAmount * state.EnergyRegenSeconds * TimeSpan.TicksPerSecond;
+    }
+    return state.Energy;
+}
+```
+
+`Context.ServerTimeTicks` is synchronized — both client and server compute the same regen result.
+
+### Unity Client
+
+A minimal Unity MonoBehaviour that connects to the Expedition server and drives gameplay:
+
+```csharp
+using UnityEngine;
+using UnityEngine.UI;
+using SharedMeta.Client;
+using SharedMeta.Core;
+using SharedMeta.Core.Network;
+using SharedMeta.Core.Reactive;
+using SharedMeta.Serialization.MessagePack;
+using Expedition.Shared;
+using Expedition.Shared.Client;
+
+public class ExpeditionGameClient : MonoBehaviour
+{
+    [SerializeField] string serverUrl = "http://localhost:5100";
+    [SerializeField] Text energyText;
+    [SerializeField] Text moneyText;
+    [SerializeField] Text statusText;
+
+    MetaClient client;
+    ExpeditionProfileServiceApiClient profileApi;
+    ExpeditionServiceApiClient expApi;
+    string expeditionEntityId;
+
+    async void Start()
+    {
+        // Configure MessagePack resolvers (generated)
+        GeneratedMetaMessagePackConfiguration.Configure();
+
+        // Authenticate
+        var deviceId = SystemInfo.deviceUniqueIdentifier;
+        var login = await MetaClient.LoginAsync($"{serverUrl}/meta/auth", deviceId);
+
+        // Connect
+        client = new MetaClient(
+            new BestHttpSignalRConnection($"{serverUrl}/meta", login.Token),
+            new MessagePackMetaSerializer(),
+            new MetaClientOptions { PlayerId = login.PlayerId }
+        );
+        var resolver = (MetaServiceResolver)client.Resolver;
+        resolver.RegisterAllServices();
+        await client.ConnectAsync();
+
+        // Subscribe to profile
+        profileApi = await client.GetExpeditionProfileServiceAsync();
+        await profileApi.UpdateEnergyAsync();
+
+        // Register reactive change tracking
+        TrackedProfileState.Register();
+        TrackedProfileState.OnChanged += OnProfileChanged;
+
+        // Start or resume expedition
+        var result = await profileApi.ResumeOrStartExpeditionAsync();
+        expeditionEntityId = result.EntityId;
+        expApi = await client.GetServiceAsync<ExpeditionServiceApiClient>(expeditionEntityId);
+
+        statusText.text = result.IsNew ? "New expedition!" : "Expedition resumed";
+        UpdateUI();
+    }
+
+    void Update()
+    {
+        if (client == null) return;
+
+        // Process server broadcasts on the main thread
+        client.Dispatcher.ProcessPendingBroadcasts();
+    }
+
+    // Push-based UI updates — fires when Energy or Money changes
+    void OnProfileChanged(ChangeArgs args)
+    {
+        if (args.HasChange((int)TrackingProperty.ProfileState_Energy))
+        {
+            var leaf = args.FindLeaf((int)TrackingProperty.ProfileState_Energy);
+            if (leaf != null)
+                energyText.text = $"Energy: {leaf.Value.NewValue.IntValue}";
+        }
+        if (args.HasChange((int)TrackingProperty.ProfileState_Money))
+        {
+            var leaf = args.FindLeaf((int)TrackingProperty.ProfileState_Money);
+            if (leaf != null)
+                moneyText.text = $"Money: {leaf.Value.NewValue.IntValue}";
+        }
+    }
+
+    // Called from UI buttons or input
+    public async void MovePlayer(int dx, int dy)
+    {
+        var result = await expApi.MoveAsync(dx, dy);
+        statusText.text = result switch
+        {
+            MoveResult.Ok => "",
+            MoveResult.Treasure => $"Treasure! +{25} money",
+            MoveResult.NoEnergy => "Not enough energy!",
+            MoveResult.Blocked => "Blocked!",
+            MoveResult.Complete => "All treasures found!",
+            _ => ""
+        };
+        UpdateUI();
+    }
+
+    public async void RemoveObstacle(int dx, int dy)
+    {
+        bool removed = await expApi.RemoveObstacleAsync(dx, dy);
+        statusText.text = removed ? "Obstacle removed!" : "Cannot remove";
+        UpdateUI();
+    }
+
+    public async void BuyEnergy()
+    {
+        bool bought = await profileApi.BuyEnergyAsync(10, 50);
+        statusText.text = bought ? "Bought 10 energy!" : "Not enough money";
+    }
+
+    public async void StartNewExpedition()
+    {
+        var result = await profileApi.ResumeOrStartExpeditionAsync();
+        expeditionEntityId = result.EntityId;
+        expApi = await client.GetServiceAsync<ExpeditionServiceApiClient>(expeditionEntityId);
+        statusText.text = "New expedition started!";
+        UpdateUI();
+    }
+
+    void UpdateUI()
+    {
+        var profile = client.GetProfileState();
+        energyText.text = $"Energy: {profile.Energy}/{profile.MaxEnergy}";
+        moneyText.text = $"Money: {profile.Money}";
+
+        // Read expedition state for map rendering
+        var exp = client.GetState<ExpeditionState>(expeditionEntityId);
+        // ... render map tiles based on exp.Cells, exp.Revealed, exp.PlayerX/Y ...
+    }
+
+    void OnDestroy()
+    {
+        TrackedProfileState.OnChanged -= OnProfileChanged;
+        TrackedProfileState.Unregister();
+        client?.DisposeAsync();
+    }
+}
+```
+
+Key Unity patterns:
+- **`ProcessPendingBroadcasts()`** in `Update()` — drains server broadcasts on the main thread, ensuring state mutations and UI updates don't race
+- **`TrackedProfileState.OnChanged`** — push-based UI binding, no polling needed
+- **`BestHttpSignalRConnection`** — Unity transport adapter (works on WebGL, mobile, desktop)
+- **`async void`** for fire-and-forget button handlers — exceptions logged by Unity
+
+### Running the Example
+
+**Console client** (included in the repo):
+```bash
+# Terminal 1: start server
+dotnet run --project examples/Expedition/Expedition.Server
+
+# Terminal 2: start client
+dotnet run --project examples/Expedition/Expedition.Client
+```
+
+**Unity client** (using the MonoBehaviour above):
+1. Install SharedMeta UPM package
+2. Add `Expedition.Shared` as linked project in your `.asmdef` or copy the shared code
+3. Create a scene with the `ExpeditionGameClient` MonoBehaviour
+4. Start the server (`dotnet run --project examples/Expedition/Expedition.Server`)
+5. Press Play in Unity
+
+---
+
+## 26. Architecture Decisions
 
 Key design decisions and their rationale.
 

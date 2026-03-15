@@ -26,6 +26,32 @@ namespace SharedMeta.Transport.BestHttp
         /// Defaults to JsonProtocol with LitJsonEncoder if null.
         /// </summary>
         public IProtocol? Protocol { get; set; }
+
+        /// <summary>
+        /// How often the client sends ping messages to the server.
+        /// Must be less than the server's ClientTimeoutInterval (default 30s).
+        /// Set to match the server's KeepAliveInterval.
+        /// </summary>
+        public TimeSpan PingInterval { get; set; } = TimeSpan.FromSeconds(15);
+
+        /// <summary>
+        /// Maximum number of automatic reconnect attempts. 0 = no reconnect.
+        /// </summary>
+        public int MaxReconnectAttempts { get; set; } = 5;
+
+        /// <summary>
+        /// Delays between reconnect attempts. BestHTTP cycles through this array.
+        /// A null entry stops reconnecting (used as the final element).
+        /// </summary>
+        public TimeSpan?[] ReconnectDelays { get; set; } = new TimeSpan?[]
+        {
+            TimeSpan.FromSeconds(0),
+            TimeSpan.FromSeconds(1),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromSeconds(30),
+            null
+        };
     }
 
     /// <summary>
@@ -83,12 +109,19 @@ namespace SharedMeta.Transport.BestHttp
 
             var hubOptions = new HubOptions
             {
-                SkipNegotiation = false
+                SkipNegotiation = false,
+                PingInterval = _options.PingInterval
             };
 
             var protocol = _options.Protocol ?? new JsonProtocol(new LitJsonEncoder());
 
             _hub = new HubConnection(new Uri(_options.ServerUrl), protocol, hubOptions);
+
+            // Configure automatic reconnect with delays
+            if (_options.MaxReconnectAttempts > 0)
+            {
+                _hub.ReconnectPolicy = new DefaultRetryPolicy(_options.ReconnectDelays);
+            }
 
             if (!string.IsNullOrEmpty(_options.AccessToken))
             {

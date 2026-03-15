@@ -128,7 +128,7 @@ dotnet run --project examples/CardGame_TheFool/CardGame.Client
 ┌─────────────────────────────────────────────────────────────────┐
 │  Middleware Layer (SharedMeta.Client, SharedMeta.Server)        │
 │  MetaContext, replay mechanism, execution modes                 │
-│  (Optimistic / Server / Local / CrossOptimistic / ServerPatch)   │
+│  (Optimistic / Server / Local / CrossOptimistic / ServerPatch)  │
 └─────────────────────────────────────────────────────────────────┘
                               ↕
 ┌─────────────────────────────────────────────────────────────────┐
@@ -279,7 +279,7 @@ Multiplayer turn-based card game with matchmaking lobby. Two players, attack/def
 
 ### Expedition
 
-Single-player dungeon exploration with procedural map generation. Demonstrates: `CrossOptimistic` calls between expedition and profile entities, energy/money economy, `ServerPatch` mode (optional), deterministic random for map generation, session reconnection.
+Single-player dungeon exploration with procedural map generation. Two entities (Profile + Expedition) connected via cross-entity calls for energy/money economy. Demonstrates: `CrossOptimistic` for responsive movement, cross-entity `SpendEnergy`/`AddMoney` calls, `[MetaInit]` for procedural map generation with `Context.Random`, `[Tracked]` fields for push-based UI updates, `[MetaConfig]` for game balance, `ServerPatch` mode (optional). Includes console client; see [GUIDE.md § Expedition](docs/GUIDE.md#25-example-expedition-cross-entity-economy) for Unity client example.
 
 ## Project Structure
 

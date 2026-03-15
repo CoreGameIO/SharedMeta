@@ -252,6 +252,9 @@ namespace SharedMeta.Editor
             if (GUILayout.Button("Clear", GUILayout.Height(26), GUILayout.Width(60)))
                 ClearLog();
 
+            if (GUILayout.Button("Copy", GUILayout.Height(26), GUILayout.Width(50)))
+                CopyVisibleLog();
+
             GUILayout.FlexibleSpace();
             _autoScroll = GUILayout.Toggle(_autoScroll, "Auto-scroll", GUILayout.Width(85));
 
@@ -367,6 +370,9 @@ namespace SharedMeta.Editor
                 richText = false,
                 wordWrap = false,
                 font = EditorStyles.label.font,
+                normal = { textColor = EditorGUIUtility.isProSkin
+                    ? new Color(0.85f, 0.85f, 0.85f)
+                    : new Color(0.15f, 0.15f, 0.15f) },
             };
 
             _logStyleError = new GUIStyle(_logStyle)
@@ -960,6 +966,17 @@ namespace SharedMeta.Editor
             }
 
             _needsRepaint = true;
+        }
+
+        void CopyVisibleLog()
+        {
+            var sb = new StringBuilder();
+            for (int i = 0; i < _displayedEntries.Count; i++)
+            {
+                var entry = _displayedEntries[i];
+                sb.AppendLine($"[{entry.Timestamp:HH:mm:ss}] {entry.Text}");
+            }
+            EditorGUIUtility.systemCopyBuffer = sb.ToString();
         }
 
         static void ClearLog()

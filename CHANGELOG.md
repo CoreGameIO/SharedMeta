@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.5] - 2026-03-15
+
+### Fixed
+
+- `EnsureSessionConnected` guard: now checks `IsSessionConnected` instead of null, preventing `ArgumentException` on empty grain key
+- SignalR connection stability: server-side timeouts (`ClientTimeoutInterval=30min`, `KeepAliveInterval=15min`) now apply in all environments, not just Development mode
+
+### Added
+
+- BestHTTP SignalR: `PingInterval`, `ReconnectDelays`, `MaxReconnectAttempts` options; automatic reconnect via `DefaultRetryPolicy`
+- Server Runner: explicit text color for dark theme readability, Copy button for log
+- GUIDE.md: Quick Start section, Expedition Unity example, Common Pitfalls
+
 ## [0.4.3] - 2026-03-15
 
 ### Added

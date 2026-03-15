@@ -326,7 +326,7 @@ namespace SharedMeta.Server.Core.Transport
 
         private void EnsureSessionConnected()
         {
-            if (PlayerId == null)
+            if (!IsSessionConnected)
             {
                 throw new InvalidOperationException("Session not connected. Call SessionConnect first.");
             }

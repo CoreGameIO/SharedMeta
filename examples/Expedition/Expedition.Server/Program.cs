@@ -89,15 +89,12 @@ builder.Services.AddSingleton<HttpPollingConnectionManager>(sp =>
         sp.GetRequiredService<IMetaConnectionHandlerFactory>(),
         sp.GetRequiredService<ILoggerFactory>()));
 #else
-// SignalR with MessagePack binary protocol
+// SignalR — extended timeouts for game connections
 builder.Services.AddSignalR(hubOptions =>
 {
-    if (builder.Environment.IsDevelopment())
-    {
-        hubOptions.EnableDetailedErrors = true;
-        hubOptions.ClientTimeoutInterval = TimeSpan.FromMinutes(30);
-        hubOptions.KeepAliveInterval = TimeSpan.FromMinutes(15);
-    }
+    hubOptions.EnableDetailedErrors = true;
+    hubOptions.ClientTimeoutInterval = TimeSpan.FromMinutes(30);
+    hubOptions.KeepAliveInterval = TimeSpan.FromMinutes(15);
 }).AddMetaMessagePackProtocol();
 #endif
 
