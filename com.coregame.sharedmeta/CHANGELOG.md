@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.3] - 2026-03-15
+
+### Added
+- **Service error state** — generated API clients catch exceptions during shared method execution at the framework level:
+  - `HasError` / `ErrorException` — check if the service is in error state
+  - `OnServiceError` event — fires with `(serviceName, exception)` on any service method failure
+  - `ClearError()` — manually clear error state to resume normal operation
+  - `ServiceErrorStateException` — thrown when calling methods on an error-state service
+  - Errors auto-logged via `MetaLog.Error` before re-throwing
+  - Error state auto-cleared on reconnect (`RefreshState`)
+
 ## [0.4.2] - 2026-03-14
 
 ### Fixed

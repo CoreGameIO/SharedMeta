@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.3] - 2026-03-15
+
+### Added
+
+- **Service error state** — generated API clients catch exceptions during shared method execution at the framework level: log via `MetaLog.Error`, set error state (`HasError`/`ErrorException`), fire `OnServiceError` event, block further calls until `ClearError()` or reconnect
+- `ServiceErrorStateException` — thrown when calling methods on an error-state service
+- Service Error Handling section in GUIDE.md and SharedMeta-AI.md
+
 ## [0.4.2] - 2026-03-14
 
 ### Fixed

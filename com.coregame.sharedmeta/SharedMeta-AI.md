@@ -495,6 +495,8 @@ TrackedGameState.OnChanged += args =>
 
 **OnStateMutated event:** Generated API clients fire `OnStateMutated` after any state mutation (broadcast replay, subscriber event, reconnect). Use as a general "state changed" signal: `api.OnStateMutated += () => UpdateUI(api.State);`
 
+**Service error handling:** Generated API clients catch exceptions during shared method execution at the framework level. On exception: (1) log via `MetaLog.Error`, (2) set `HasError = true` / `ErrorException`, (3) fire `OnServiceError` event, (4) re-throw. Subsequent calls throw `ServiceErrorStateException` until `ClearError()` or reconnect. Subscribe: `api.OnServiceError += (svc, ex) => Debug.LogError(ex);`
+
 ---
 
 ## Argument Transformers

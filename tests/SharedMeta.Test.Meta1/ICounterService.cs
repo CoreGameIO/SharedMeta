@@ -45,5 +45,12 @@ namespace SharedMeta.Test.Meta1
         /// </summary>
         [MetaMethod(Alias = "AddClamped", Mode = ExecutionMode.Server, GenerateClientApi = false)]
         int AddClamped(int value);
+
+        /// <summary>
+        /// Throws if value is negative. Used to test framework-level error handling.
+        /// Uses Optimistic mode so the exception fires during local execution (where SetError is).
+        /// </summary>
+        [MetaMethod(Alias = "ThrowIfNegative", Mode = ExecutionMode.Optimistic)]
+        void ThrowIfNegative(int value);
     }
 }

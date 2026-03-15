@@ -108,6 +108,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("using SharedMeta.Core.Random;");
             sb.AppendLine("using SharedMeta.Core.Patch;");
             sb.AppendLine("using SharedMeta.Client;");
+            sb.AppendLine("using SharedMeta.Core.Logging;");
             sb.AppendLine("using ExecutionMode = SharedMeta.Core.ExecutionMode;");
             if (serializer == DetectedSerializer.MemoryPack)
             {
@@ -135,6 +136,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        private MetaRandom? _optimisticRandom;");
             sb.AppendLine("        private readonly object? _config;");
             sb.AppendLine($"        private const string ServiceName = \"{interfaceName}\";");
+            sb.AppendLine($"        private Exception? _errorException;");
             sb.AppendLine();
 
             // Events
@@ -187,6 +189,9 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        /// <summary>Fired after any state mutation (broadcast replay, subscriber event, reconnect).</summary>");
             sb.AppendLine($"        public event Action? OnStateMutated;");
             sb.AppendLine();
+            sb.AppendLine($"        /// <summary>Fired when a service method throws. Parameters: serviceName, exception.</summary>");
+            sb.AppendLine($"        public event Action<string, Exception>? OnServiceError;");
+            sb.AppendLine();
 
             // Properties
             sb.AppendLine($"        /// <summary>Current state.</summary>");
@@ -194,6 +199,15 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
             sb.AppendLine($"        /// <summary>Client ID.</summary>");
             sb.AppendLine($"        public string ClientId => _network.ClientId;");
+            sb.AppendLine();
+            sb.AppendLine($"        /// <summary>True if the service is in error state due to a previous exception.</summary>");
+            sb.AppendLine($"        public bool HasError => _errorException != null;");
+            sb.AppendLine();
+            sb.AppendLine($"        /// <summary>The exception that put the service in error state, or null.</summary>");
+            sb.AppendLine($"        public Exception? ErrorException => _errorException;");
+            sb.AppendLine();
+            sb.AppendLine($"        /// <summary>Clear the error state, allowing further method calls.</summary>");
+            sb.AppendLine($"        public void ClearError() => _errorException = null;");
             sb.AppendLine();
 
             // Constructor
@@ -220,6 +234,13 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            _network.OnBroadcast += HandleBroadcast;");
             sb.AppendLine("        }");
             sb.AppendLine();
+            sb.AppendLine("        private void SetError(Exception ex, string methodName)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            MetaLog.Error($\"[{ServiceName}.{methodName}] Service error\", ex);");
+            sb.AppendLine("            _errorException = ex;");
+            sb.AppendLine("            OnServiceError?.Invoke(ServiceName, ex);");
+            sb.AppendLine("        }");
+            sb.AppendLine();
 
             // Generate methods
             foreach (var method in methods)
@@ -244,6 +265,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        {");
             sb.AppendLine("            _state = newState;");
             sb.AppendLine("            _optimisticRandom = newRandom;");
+            sb.AppendLine("            _errorException = null;");
             sb.AppendLine("            OnStateRefreshed?.Invoke(newState);");
             sb.AppendLine("            OnStateMutated?.Invoke();");
             sb.AppendLine("        }");
@@ -305,6 +327,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        /// </summary>");
             sb.AppendLine($"        public {asyncReturnType} {methodName}Async({parameters})");
             sb.AppendLine("        {");
+            sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
             sb.AppendLine($"            var mode = _modeProvider.GetMode(ServiceName, \"{methodAlias}\", ExecutionMode.{defaultMode});");
             sb.AppendLine($"            if (mode == ExecutionMode.ServerPatch)");
             sb.AppendLine($"                return {methodName}Async_ServerPatch({callArgs});");
@@ -439,7 +462,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                _tracker.FlushAndNotify();");
             }
             sb.AppendLine("                }");
-            sb.AppendLine("                catch { _tracker.Discard(); throw; }");
+            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
 
             sb.AppendLine("            }");
             sb.AppendLine("            finally");
@@ -579,7 +602,7 @@ namespace SharedMeta.Generator.Generators
             }
 
             sb.AppendLine("            }");
-            sb.AppendLine("            catch { MetaContextAccessor.Current = null; _tracker.Discard(); throw; }");
+            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine();
@@ -673,7 +696,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                localResult = {awaitPrefix}_service.{methodName}({callArgs});");
             }
             sb.AppendLine("            }");
-            sb.AppendLine("            catch { MetaContextAccessor.Current = null; _tracker.Discard(); throw; }");
+            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            localCrossResults = _crossEntityResolver?.TakeRecordedResults() ?? new();");
@@ -809,7 +832,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                ReplayTriggerOperations(response.TriggerOperations, _network.PlayerId, response.ServerTimeTicks);");
             sb.AppendLine("                _tracker.FlushAndNotify();");
             sb.AppendLine("                }");
-            sb.AppendLine("                catch { _tracker.Discard(); throw; }");
+            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
 
             // Return server result
             if (!isVoidReturn)
@@ -1008,7 +1031,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            OnStateMutated?.Invoke();");
             sb.AppendLine("            }");
-            sb.AppendLine("            catch { _tracker.Discard(); throw; }");
+            sb.AppendLine("            catch (Exception ex) { _tracker.Discard(); SetError(ex, broadcast.MethodName); throw; }");
             sb.AppendLine("        }");
             sb.AppendLine();
 
@@ -1071,7 +1094,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("            _tracker.FlushAndNotify();");
                 sb.AppendLine("            OnStateMutated?.Invoke();");
                 sb.AppendLine("            }");
-                sb.AppendLine("            catch { _tracker.Discard(); throw; }");
+                sb.AppendLine("            catch (Exception ex) { _tracker.Discard(); SetError(ex, broadcast.MethodName); throw; }");
                 sb.AppendLine("        }");
                 sb.AppendLine();
             }

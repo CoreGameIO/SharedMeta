@@ -113,5 +113,13 @@ namespace SharedMeta.Test.Meta1
             Console.WriteLine($"[Counter] AddClamped: value={value}, max={config.MaxValue}, clamped={clamped}, sum={state.Sum}");
             return clamped;
         }
+
+        public void ThrowIfNegative(int value)
+        {
+            if (value < 0)
+                throw new InvalidOperationException($"Negative value not allowed: {value}");
+            var state = GetState();
+            state.Sum += value;
+        }
     }
 }

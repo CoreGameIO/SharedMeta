@@ -807,6 +807,55 @@ api.OnStateMutated += () => UpdateUI(api.State);
 
 This fires in addition to `Tracked{State}.OnChanged` — use whichever granularity fits your UI pattern.
 
+### Service Error Handling
+
+Generated API clients catch exceptions during shared method execution (optimistic, server replay, broadcast replay) at the framework level. When a service method throws:
+
+1. **Logged** via `MetaLog.Error` with service and method name
+2. **Error state set** — `HasError` becomes `true`, `ErrorException` holds the exception
+3. **Event fired** — `OnServiceError?.Invoke(serviceName, exception)`
+4. **Re-thrown** — the original exception propagates to the caller
+
+Once in error state, all subsequent method calls throw `ServiceErrorStateException` until the error is cleared.
+
+```csharp
+var api = await client.GetServiceAsync<GameServiceApiClient>(entityId);
+
+// Subscribe to error events
+api.OnServiceError += (service, ex) =>
+{
+    Debug.LogError($"Service error in {service}: {ex.Message}");
+    ShowErrorDialog(ex);
+};
+
+try
+{
+    await api.MoveAsync(dx, dy);
+}
+catch (Exception ex)
+{
+    // Exception is already logged by the framework — no silent failures
+    // api.HasError is now true
+}
+
+// Option 1: Clear error manually
+api.ClearError();
+await api.MoveAsync(0, 0); // works again
+
+// Option 2: Error auto-clears on reconnect (RefreshState)
+```
+
+**Key properties and methods:**
+
+| Member | Description |
+|--------|-------------|
+| `HasError` | `true` if the service is in error state |
+| `ErrorException` | The exception that caused the error state, or `null` |
+| `OnServiceError` | `Action<string, Exception>` — fires on error with (serviceName, exception) |
+| `ClearError()` | Clear error state, allowing further method calls |
+
+**Design rationale:** Game code that catches and swallows exceptions (e.g., `catch { return MoveResult.Blocked; }`) can silently hide bugs. Framework-level error handling ensures exceptions are always logged and the service enters a visible error state, making issues immediately diagnosable.
+
 ---
 
 ## 9. Argument Transformers
