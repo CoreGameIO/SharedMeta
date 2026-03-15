@@ -31,7 +31,7 @@ MonoBehaviour:
   templateIndex: 0
   wizardMode: 1
   currentStep: 5
-  serverCsprojPath: ../ServerSolution/MyGame.Server/MyGame.Server.csproj
+  serverCsprojPath: ../ServerSolution/Expedition.Server/Expedition.Server.csproj
   serverDotnetArgs: 
   serverUrl: http://localhost:5000
   serverAutoScroll: 1

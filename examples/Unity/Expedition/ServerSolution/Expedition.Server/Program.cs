@@ -58,15 +58,13 @@ builder.Host.UseOrleans(siloBuilder =>
         });
 });
 
-// SignalR with MessagePack binary protocol
+// SignalR — extended timeouts for game connections (server sends pings every 15 min,
+// disconnects after 30 min of no response; defaults are 15s/30s which cause spurious drops)
 builder.Services.AddSignalR(hubOptions =>
 {
-    if (builder.Environment.IsDevelopment())
-    {
-        hubOptions.EnableDetailedErrors = true;
-        hubOptions.ClientTimeoutInterval = TimeSpan.FromMinutes(30);
-        hubOptions.KeepAliveInterval = TimeSpan.FromMinutes(15);
-    }
+    hubOptions.EnableDetailedErrors = true;
+    hubOptions.ClientTimeoutInterval = TimeSpan.FromMinutes(30);
+    hubOptions.KeepAliveInterval = TimeSpan.FromMinutes(15);
 }).AddMetaMessagePackProtocol();
 
 // MetaConnectionHandler factory
