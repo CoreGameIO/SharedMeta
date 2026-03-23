@@ -333,6 +333,31 @@ var config = client.GetEntityConfig<GameConfig>(entityId);
 | **Local** | Client-only, no RPC sent. | UI state, local previews, client-side filtering |
 | **CrossOptimistic** | Like Optimistic but targets a different entity. | Cross-entity interactions (trading, attacking) |
 | **ServerPatch** | Server sends state diffs instead of full state. | Large state optimization, bandwidth savings |
+| **ServerReplace** | Server sends full serialized state. Client replaces state wholesale. | Full state regeneration (map gen, full reset) |
+
+### Query Calls (No Subscription)
+
+Call any entity method without subscribing — lightweight read-only RPC:
+
+```csharp
+// In service interface:
+[MetaMethod(Query = true)]
+Task<PlayerBriefInfo> GetBriefInfo();
+
+[MetaMethod(Query = true, OpenAccess = true)]  // bypasses access policy
+Task<PlayerBriefInfo> GetPublicInfo();
+
+// Client usage (generated QueryApi):
+// Create once
+var profileQuery = new ProfileServiceQueryApi(connection, serializer);
+// Per-entity proxy
+var api = profileQuery.EntityApi("player-123");
+var info = await api.GetBriefInfoAsync();
+```
+
+- No state sync, broadcasts, replay, or persistence
+- `OpenAccess = true` bypasses EntityAccessPolicy for public data
+- Query methods must return a value (not void)
 
 ---
 
@@ -418,6 +443,15 @@ Task<bool> TradeWith(string targetEntityId, Item item);
 ```
 
 The framework automatically routes the call to the target entity's grain on the server. The first parameter with type `string` is extracted as the target entity ID.
+
+### Read-Only State Access
+
+```csharp
+// Read another entity's state (no method call, no mutation)
+var otherState = await Context.GetState<ShardState>("shard_north");
+```
+
+System method on `MetaContext`. Server reads via `[AlwaysInterleave]` grain method (deadlock-safe). Result recorded for deterministic client replay. Returns `null` if entity type is unknown.
 
 ---
 

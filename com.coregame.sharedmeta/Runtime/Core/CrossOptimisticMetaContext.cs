@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 
 #pragma warning disable CS8603 // Possible null reference return
 
@@ -24,6 +25,13 @@ namespace SharedMeta.Core
         public override object StateObject => _state;
 
         public override IMetaSerializer MetaSerializer => null!;
+
+        public override Task<TEntityState?> GetState<TEntityState>(string entityId) where TEntityState : class
+        {
+            throw new NotSupportedException(
+                "GetState is not supported in CrossOptimistic context. " +
+                "Use Server or Optimistic mode for cross-entity state reading.");
+        }
 
         public override TInterface GetEntityApi<TInterface>(string id)
         {

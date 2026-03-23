@@ -60,7 +60,8 @@ namespace SharedMeta.Client.Network
                 TriggerOperations = op.TriggerOperations,
                 ServerTimeTicks = op.MainOperation.Call.ServerTimeTicks,
                 RandomScrollDelta = op.MainOperation.Response.RandomScrollDelta,
-                PatchBytes = op.MainOperation.Response.PatchBytes
+                PatchBytes = op.MainOperation.Response.PatchBytes,
+                StateBytes = op.MainOperation.Response.StateBytes
             });
         }
 
@@ -103,7 +104,8 @@ namespace SharedMeta.Client.Network
                 CrossEntityOperations = rpcOp.CrossEntityOperations,
                 ServerTimeTicks = rpcOp.MainOperation.Call.ServerTimeTicks,
                 RandomScrollDelta = rpcOp.MainOperation.Response.RandomScrollDelta,
-                PatchBytes = rpcOp.MainOperation.Response.PatchBytes
+                PatchBytes = rpcOp.MainOperation.Response.PatchBytes,
+                StateBytes = rpcOp.MainOperation.Response.StateBytes
             };
         }
 
@@ -133,7 +135,8 @@ namespace SharedMeta.Client.Network
                 CrossEntityOperations = rpcOp.CrossEntityOperations,
                 ServerTimeTicks = rpcOp.MainOperation.Call.ServerTimeTicks,
                 RandomScrollDelta = rpcOp.MainOperation.Response.RandomScrollDelta,
-                PatchBytes = rpcOp.MainOperation.Response.PatchBytes
+                PatchBytes = rpcOp.MainOperation.Response.PatchBytes,
+                StateBytes = rpcOp.MainOperation.Response.StateBytes
             };
         }
 
@@ -164,7 +167,8 @@ namespace SharedMeta.Client.Network
                 CrossEntityOperations = rpcOp.CrossEntityOperations,
                 ServerTimeTicks = rpcOp.MainOperation.Call.ServerTimeTicks,
                 RandomScrollDelta = rpcOp.MainOperation.Response.RandomScrollDelta,
-                PatchBytes = rpcOp.MainOperation.Response.PatchBytes
+                PatchBytes = rpcOp.MainOperation.Response.PatchBytes,
+                StateBytes = rpcOp.MainOperation.Response.StateBytes
             };
         }
 

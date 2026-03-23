@@ -37,6 +37,9 @@ namespace SharedMeta.Core.Network
 
         /// <summary>Serialized state diff patch for ServerPatch mode.</summary>
         public byte[]? PatchBytes { get; set; }
+
+        /// <summary>Full serialized state for ServerReplace mode.</summary>
+        public byte[]? StateBytes { get; set; }
     }
 
     /// <summary>
@@ -67,6 +70,9 @@ namespace SharedMeta.Core.Network
 
         /// <summary>Serialized state diff patch for ServerPatch mode.</summary>
         public byte[]? PatchBytes { get; set; }
+
+        /// <summary>Full serialized state for ServerReplace mode.</summary>
+        public byte[]? StateBytes { get; set; }
     }
 
     /// <summary>
@@ -102,5 +108,8 @@ namespace SharedMeta.Core.Network
 
         /// <summary>Serialized state diff patch for ServerPatch mode.</summary>
         public byte[]? PatchBytes { get; set; }
+
+        /// <summary>Full serialized state for ServerReplace mode.</summary>
+        public byte[]? StateBytes { get; set; }
     }
 }

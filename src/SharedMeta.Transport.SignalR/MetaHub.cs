@@ -130,6 +130,15 @@ namespace SharedMeta.Transport.SignalR
         }
 
         /// <summary>
+        /// Execute a query call on an entity without subscribing.
+        /// </summary>
+        public Task<QueryCallResponse> QueryCall(QueryCallRequest request)
+        {
+            var handler = GetOrCreateHandler();
+            return handler.QueryCallAsync(request);
+        }
+
+        /// <summary>
         /// Acknowledge received broadcasts up to a sequence number.
         /// </summary>
         public Task<AcknowledgeResponse> AcknowledgeSequence(AcknowledgeRequest request)

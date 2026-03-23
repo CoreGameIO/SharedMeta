@@ -56,6 +56,7 @@ public class TestClusterFixture : IAsyncLifetime
     {
         return new MetaConnectionHandlerFactory(
             GrainFactory,
+            new GeneratedEntityGrainResolver(),
             NullLoggerFactory.Instance,
             MetaMethodSignatureValidator.ValidateClientSignatures);
     }

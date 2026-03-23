@@ -39,6 +39,13 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     public Func<string, string, string, byte[], long, Task<CrossEntityCallInfo>>? EntityCallHandler { get; set; }
 
     /// <summary>
+    /// Handler for read-only cross-entity state access.
+    /// Returns serialized state bytes of the target entity, or null if not found.
+    /// Set via constructor or before Initialize is called.
+    /// </summary>
+    public Func<string, string, Task<byte[]?>>? EntityStateHandler { get; set; }
+
+    /// <summary>
     /// Server-side execution mode provider. Determines per-method execution mode.
     /// Set via DI to enable runtime mode switching (e.g., switching to ServerPatch).
     /// </summary>
@@ -57,6 +64,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             : NullMetaLogger.Instance;
         MetaContext.ServiceResolver = ServiceResolver;
         MetaContext.EntityCallHandler = EntityCallHandler;
+        MetaContext.EntityStateHandler = EntityStateHandler;
 
         // Initialize deterministic randoms
         _serverRandom = DeserializeOrCreateRandom(context.Serializer, serverRandomBytes, context.EntityId + ":server");
@@ -120,6 +128,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
 
             // Set up patch tracking for ServerPatch mode
             PatchNode? patchRoot = null;
+            bool isServerReplace = executionMode == ExecutionMode.ServerReplace;
             if (executionMode == ExecutionMode.ServerPatch)
             {
                 patchRoot = new PatchNode(-1);
@@ -226,6 +235,17 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                 }
             }
 
+            // ServerReplace: serialize full state AFTER all triggers, capturing final state
+            byte[]? stateBytes = null;
+            if (isServerReplace)
+            {
+                stateBytes = GetStateBytes();
+                response.Response.StateBytes = stateBytes;
+                response.Response.ReplayPayload = null; // no replay needed
+                mainBroadcast.StateBytes = stateBytes;
+                mainBroadcast.ReplayPayload = null;
+            }
+
             response.Broadcasts.Add(mainBroadcast);
 
             return response;
@@ -287,6 +307,48 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContextAccessor.Current = null;
         }
     }
+
+    public async Task<QueryCallResponse> HandleQueryAsync(RpcCall call)
+    {
+        if (MetaContext == null || Context == null)
+            return new QueryCallResponse { Error = "Provider not initialized" };
+
+        try
+        {
+            // Set up minimal context for the query (read-only)
+            MetaContext.CallerId = call.CallerId;
+            MetaContext.ServerTimeTicks = DateTime.UtcNow.Ticks;
+            MetaContextAccessor.Current = MetaContext;
+
+            // Dispatch the call — same dispatcher, but no replay/random/broadcast machinery
+            var result = await DispatchCall(call.ServiceName, call.MethodName, call.Payload);
+
+            return new QueryCallResponse
+            {
+                Success = true,
+                ResultBytes = result.ResultBytes
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.ProviderCallError(ex, call.ServiceName, call.MethodName);
+            return new QueryCallResponse { Error = ex.Message };
+        }
+        finally
+        {
+            MetaContextAccessor.Current = null;
+        }
+    }
+
+    /// <summary>
+    /// Check if a method is a query method. Generated code overrides.
+    /// </summary>
+    public virtual bool IsQueryMethod(string serviceName, string methodName) => false;
+
+    /// <summary>
+    /// Check if a query method has OpenAccess. Generated code overrides.
+    /// </summary>
+    public virtual bool IsOpenAccessQuery(string serviceName, string methodName) => false;
 
     public byte[] GetStateBytes()
     {

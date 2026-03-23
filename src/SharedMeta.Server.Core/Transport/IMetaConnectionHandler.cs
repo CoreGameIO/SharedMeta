@@ -80,6 +80,12 @@ namespace SharedMeta.Server.Core.Transport
         Task<SessionResponse> RpcCallAsync(RpcCallRequest request);
 
         /// <summary>
+        /// Execute a query call on an entity without subscribing.
+        /// Bypasses SessionManager — calls EntityGrain directly.
+        /// </summary>
+        Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request);
+
+        /// <summary>
         /// Acknowledge received broadcasts up to a sequence number.
         /// </summary>
         Task<AcknowledgeResponse> AcknowledgeSequenceAsync(AcknowledgeRequest request);

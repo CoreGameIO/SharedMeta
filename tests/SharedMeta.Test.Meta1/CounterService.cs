@@ -121,5 +121,22 @@ namespace SharedMeta.Test.Meta1
             var state = GetState();
             state.Sum += value;
         }
+
+        public int ReplaceReset(int newValue)
+        {
+            var state = GetState();
+            state.Operations.Clear();
+            state.Sum = newValue;
+            Console.WriteLine($"[Counter] ReplaceReset to {newValue}");
+            return newValue;
+        }
+
+        public async Task<long> ReadOtherEntityState(string targetEntityId)
+        {
+            var otherState = await Context.GetState<CounterState>(targetEntityId);
+            if (otherState == null)
+                return -1;
+            return otherState.Sum;
+        }
     }
 }

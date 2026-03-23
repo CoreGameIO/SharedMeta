@@ -123,6 +123,12 @@ namespace SharedMeta.Debug.InProcess
             return await _server.RpcCallAsync(_connectionId, request);
         }
 
+        public async Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request)
+        {
+            EnsureConnected();
+            return await _server.QueryCallAsync(_connectionId, request);
+        }
+
         public async Task AcknowledgeSequenceAsync(long sequenceNumber)
         {
             EnsureConnected();

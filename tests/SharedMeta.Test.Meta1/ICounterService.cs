@@ -52,5 +52,19 @@ namespace SharedMeta.Test.Meta1
         /// </summary>
         [MetaMethod(Alias = "ThrowIfNegative", Mode = ExecutionMode.Optimistic)]
         void ThrowIfNegative(int value);
+
+        /// <summary>
+        /// ServerReplace mode: server executes and sends full state to client.
+        /// Client replaces state wholesale. Used when full state is smaller than patch.
+        /// </summary>
+        [MetaMethod(Alias = "ReplaceReset", Mode = ExecutionMode.ServerReplace)]
+        int ReplaceReset(int newValue);
+
+        /// <summary>
+        /// Server mode method that reads another entity's state via Context.GetState.
+        /// Returns the Sum from the target entity, or -1 if not found.
+        /// </summary>
+        [MetaMethod(Alias = "ReadOtherState", Mode = ExecutionMode.Server)]
+        Task<long> ReadOtherEntityState(string targetEntityId);
     }
 }

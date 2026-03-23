@@ -114,7 +114,8 @@ builder.Services.AddSingleton<IMetaConnectionHandlerFactory>(sp =>
 {
     var grainFactory = sp.GetRequiredService<IGrainFactory>();
     var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-    return new MetaConnectionHandlerFactory(grainFactory, loggerFactory);
+    var entityGrainResolver = sp.GetRequiredService<IEntityGrainResolver>();
+    return new MetaConnectionHandlerFactory(grainFactory, entityGrainResolver, loggerFactory);
 });
 
 // CORS for development

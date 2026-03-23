@@ -809,7 +809,7 @@ namespace SharedMeta.Server.Core.Session
                         CallerId = broadcast.ExcludePlayerId,
                         ServerTimeTicks = broadcast.ServerTimeTicks
                     },
-                    Response = new RpcResponse { ReplayPayload = broadcast.ReplayPayload, RandomScrollDelta = broadcast.RandomScrollDelta, PatchBytes = broadcast.PatchBytes }
+                    Response = new RpcResponse { ReplayPayload = broadcast.ReplayPayload, RandomScrollDelta = broadcast.RandomScrollDelta, PatchBytes = broadcast.PatchBytes, StateBytes = broadcast.StateBytes }
                 },
                 TriggerOperations = broadcast.TriggerBroadcasts?.Select(t => new OperationResult
                 {
@@ -820,7 +820,7 @@ namespace SharedMeta.Server.Core.Session
                         Payload = t.Payload ?? Array.Empty<byte>(),
                         ServerTimeTicks = t.ServerTimeTicks
                     },
-                    Response = new RpcResponse { ReplayPayload = t.ReplayPayload, RandomScrollDelta = t.RandomScrollDelta, PatchBytes = t.PatchBytes }
+                    Response = new RpcResponse { ReplayPayload = t.ReplayPayload, RandomScrollDelta = t.RandomScrollDelta, PatchBytes = t.PatchBytes, StateBytes = t.StateBytes }
                 }).ToList()
             };
         }
@@ -874,6 +874,22 @@ namespace SharedMeta.Server.Core.Session
                 _observerManager.Notify(o => o.OnEntityDeactivating(entityId));
             }
             return Task.CompletedTask;
+        }
+
+        #endregion
+
+        #region Query
+
+        public async Task<QueryCallResponse> QueryEntityAsync(string entityId, string serviceName, RpcCall call)
+        {
+            // Resolve entity grain directly — no subscription required
+            var entityGrain = _entityGrainResolver.GetEntityGrainByService(
+                GrainFactory, serviceName, entityId);
+
+            if (entityGrain == null)
+                return new QueryCallResponse { Error = $"Cannot resolve entity for service '{serviceName}'" };
+
+            return await entityGrain.HandleQueryAsync(call);
         }
 
         #endregion

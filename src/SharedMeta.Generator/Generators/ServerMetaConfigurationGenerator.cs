@@ -183,6 +183,17 @@ namespace SharedMeta.Generator.Generators
                     }
                 }
 
+                // Read Query and OpenAccess properties
+                bool isQuery = false;
+                bool isOpenAccess = false;
+                if (metaMethodAttr != null)
+                {
+                    var queryArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Query");
+                    isQuery = !queryArg.Value.IsNull && queryArg.Value.Value is true;
+                    var openAccessArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "OpenAccess");
+                    isOpenAccess = !openAccessArg.Value.IsNull && openAccessArg.Value.Value is true;
+                }
+
                 var signatureString = SignatureHashGenerator.BuildSignatureString(info.InterfaceName, methodAlias, member);
                 var signatureHash = SignatureHashGenerator.ComputeFnv1aHash(signatureString);
 
@@ -191,7 +202,9 @@ namespace SharedMeta.Generator.Generators
                     ServiceName = info.InterfaceName,
                     MethodAlias = methodAlias,
                     SignatureString = signatureString,
-                    SignatureHash = signatureHash
+                    SignatureHash = signatureHash,
+                    IsQuery = isQuery,
+                    IsOpenAccess = isOpenAccess
                 });
             }
 
@@ -662,6 +675,40 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
             sb.AppendLine();
 
+            // IsQueryMethod / IsOpenAccessQuery overrides
+            var allQueryMethods = services
+                .SelectMany(s => s.MethodSignatures)
+                .Where(m => m.IsQuery)
+                .ToList();
+            if (allQueryMethods.Count > 0)
+            {
+                sb.AppendLine("        public override bool IsQueryMethod(string serviceName, string methodName)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            return (serviceName, methodName) switch");
+                sb.AppendLine("            {");
+                foreach (var m in allQueryMethods)
+                    sb.AppendLine($"                (\"{m.ServiceName}\", \"{m.MethodAlias}\") => true,");
+                sb.AppendLine("                _ => false");
+                sb.AppendLine("            };");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+
+                var openAccessMethods = allQueryMethods.Where(m => m.IsOpenAccess).ToList();
+                if (openAccessMethods.Count > 0)
+                {
+                    sb.AppendLine("        public override bool IsOpenAccessQuery(string serviceName, string methodName)");
+                    sb.AppendLine("        {");
+                    sb.AppendLine("            return (serviceName, methodName) switch");
+                    sb.AppendLine("            {");
+                    foreach (var m in openAccessMethods)
+                        sb.AppendLine($"                (\"{m.ServiceName}\", \"{m.MethodAlias}\") => true,");
+                    sb.AppendLine("                _ => false");
+                    sb.AppendLine("            };");
+                    sb.AppendLine("        }");
+                    sb.AppendLine();
+                }
+            }
+
             // InitializeStateAsync override (if any service has [MetaInit])
             var servicesWithInit = services.Where(s => s.MetaInitMethodName != null).ToList();
             if (servicesWithInit.Count > 0)
@@ -775,6 +822,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            services.AddSingleton<SharedMeta.Server.Core.Transport.IMetaConnectionHandlerFactory>(sp =>");
             sb.AppendLine("                new SharedMeta.Server.Core.Transport.MetaConnectionHandlerFactory(");
             sb.AppendLine("                    sp.GetRequiredService<Orleans.IGrainFactory>(),");
+            sb.AppendLine("                    sp.GetRequiredService<SharedMeta.Server.Core.Grains.IEntityGrainResolver>(),");
             sb.AppendLine("                    sp.GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>(),");
             sb.AppendLine("                    MetaMethodSignatureValidator.ValidateClientSignatures));");
             sb.AppendLine();

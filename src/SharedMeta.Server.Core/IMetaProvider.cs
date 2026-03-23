@@ -142,6 +142,23 @@ namespace SharedMeta.Server.Core
         Task<bool> CheckAccessAsync(string playerId);
 
         /// <summary>
+        /// Handle a query call. Read-only: dispatches the method but skips
+        /// replay recording, broadcast creation, random state, and persistence.
+        /// </summary>
+        Task<QueryCallResponse> HandleQueryAsync(RpcCall call);
+
+        /// <summary>
+        /// Check if a method is a query method. Generated code implements this.
+        /// </summary>
+        bool IsQueryMethod(string serviceName, string methodName) => false;
+
+        /// <summary>
+        /// Check if a query method has OpenAccess (bypasses access policy).
+        /// Generated code implements this.
+        /// </summary>
+        bool IsOpenAccessQuery(string serviceName, string methodName) => false;
+
+        /// <summary>
         /// Config version for this entity. Returns (0,0) if no config.
         /// Used by EntityGrain to include in subscribe/snapshot responses.
         /// </summary>

@@ -79,6 +79,26 @@ namespace SharedMeta.Server
             _debug?.PayloadItemInfo.Add(info);
         }
 
+        public override async Task<TEntityState?> GetState<TEntityState>(string entityId) where TEntityState : class
+        {
+            if (EntityStateHandler == null)
+            {
+                throw new InvalidOperationException(
+                    $"EntityStateHandler not set. Cannot read state of entity {entityId}. " +
+                    "The MetaProvider must set EntityStateHandler to enable cross-entity state reading.");
+            }
+
+            var stateBytes = await EntityStateHandler(entityId, typeof(TEntityState).Name);
+
+            // Record for client replay (nullable byte array)
+            Writer.Write(stateBytes);
+
+            if (stateBytes == null || stateBytes.Length == 0)
+                return null;
+
+            return _serializer.Unpack<TEntityState>(stateBytes);
+        }
+
         public override TInterface GetEntityApi<TInterface>(string id)
         {
             throw new NotImplementedException("GetEntityApi requires generated recorder.");
@@ -100,6 +120,13 @@ namespace SharedMeta.Server
         /// Returns CrossEntityCallInfo with EntitySequenceNumber and ResultBytes.
         /// </summary>
         public Func<string, string, string, byte[], long, Task<CrossEntityCallInfo>>? EntityCallHandler { get; set; }
+
+        /// <summary>
+        /// Handler for read-only cross-entity state access.
+        /// Returns serialized state bytes, or null if entity doesn't exist.
+        /// Set by the MetaProvider to enable cross-entity state reading.
+        /// </summary>
+        public Func<string, string, Task<byte[]?>>? EntityStateHandler { get; set; }
 
         private List<CrossEntityCallInfo>? _crossEntityCalls;
 

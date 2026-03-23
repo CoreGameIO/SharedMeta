@@ -52,6 +52,12 @@ namespace SharedMeta.Core
         /// </summary>
         [Id(5), Key(5)] public byte[]? PatchBytes { get; set; }
 
+        /// <summary>
+        /// Full serialized state for ServerReplace mode.
+        /// When present, client replaces its entire state with this instead of replaying or patching.
+        /// </summary>
+        [Id(6), Key(6)] public byte[]? StateBytes { get; set; }
+
         /// <summary>True if the call failed (Error is not null).</summary>
         [IgnoreMember] public bool HasError => Error != null;
 

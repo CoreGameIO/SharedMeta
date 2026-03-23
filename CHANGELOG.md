@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.0] - 2026-03-22
+
+### Added
+
+- **Query Calls** — lightweight read-only RPC to any entity without subscribing. `[MetaMethod(Query = true)]` marks methods as queryable; `[MetaMethod(Query = true, OpenAccess = true)]` bypasses EntityAccessPolicy. Client uses generated `{Service}QueryApi` with `entityId` per-proxy. Server routes through `SessionManager.QueryEntityAsync` → `EntityGrain.HandleQueryAsync`. No broadcasts, no replay, no persistence, no sequence numbers.
+- `QueryCallRequest` / `QueryCallResponse` transport packets — supported across SignalR, HttpPolling, and InProcess transports
+- `MetaProviderBase.HandleQueryAsync` — dispatches query call without replay/random/broadcast machinery
+- `QueryClientGenerator` — generates `{Service}QueryApi` classes with typed query methods
+- **`ExecutionMode.ServerReplace`** — server executes method and sends full serialized state; client replaces state wholesale. Use when full state < patch diff (map generation, full reset). `OnStateRefreshed` event fires on client.
+- **`Context.GetState<TEntityState>(entityId)`** — read-only cross-entity state access from shared code via `MetaContext`. `[AlwaysInterleave]` grain method prevents deadlocks. Recorded to replay payload for deterministic client replay. Returns `null` if unknown entity type.
+- `IEntityGrainBase.GetEntityStateAsync()` — read-only state serialization at grain level
+- `RpcResponse.StateBytes` / `EntityBroadcast.StateBytes` — full state transport pipeline
+- Generator: `ServerReplace` mode dispatch and `GenerateServerReplaceMethod` in API client
+- StateBytes handling in broadcast, subscriber, and trigger replay handlers
+- Integration tests: `ServerReplaceTests` (3) and `GetStateTests` (3)
+- GUIDE.md: ServerReplace mode section (Section 4), GetState section (Section 6)
+
 ## [0.4.5] - 2026-03-15
 
 ### Fixed

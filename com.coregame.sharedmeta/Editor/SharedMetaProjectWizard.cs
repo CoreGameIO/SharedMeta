@@ -1578,8 +1578,9 @@ namespace SharedMeta.Editor
             sb.AppendLine("builder.Services.AddSingleton<IMetaConnectionHandlerFactory>(sp =>");
             sb.AppendLine("{");
             sb.AppendLine("    var grainFactory = sp.GetRequiredService<IGrainFactory>();");
+            sb.AppendLine("    var entityGrainResolver = sp.GetRequiredService<IEntityGrainResolver>();");
             sb.AppendLine("    var loggerFactory = sp.GetRequiredService<ILoggerFactory>();");
-            sb.AppendLine("    return new MetaConnectionHandlerFactory(grainFactory, loggerFactory);");
+            sb.AppendLine("    return new MetaConnectionHandlerFactory(grainFactory, entityGrainResolver, loggerFactory);");
             sb.AppendLine("});");
             sb.AppendLine();
 

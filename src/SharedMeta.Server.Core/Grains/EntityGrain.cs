@@ -2,6 +2,7 @@ using System.Linq;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Orleans;
+using Orleans.Concurrency;
 using Orleans.Runtime;
 using SharedMeta.Core;
 using SharedMeta.Core.Network;
@@ -145,6 +146,16 @@ namespace SharedMeta.Server.Core.Grains
                         ServiceName = serviceName,
                         MethodName = methodName
                     };
+                };
+
+                providerBase.EntityStateHandler = async (targetEntityId, stateTypeName) =>
+                {
+                    var targetGrain = _entityGrainResolver.GetEntityGrain(
+                        GrainFactory, stateTypeName, targetEntityId);
+                    if (targetGrain == null)
+                        return null;
+
+                    return await targetGrain.GetEntityStateAsync();
                 };
             }
 
@@ -363,6 +374,49 @@ namespace SharedMeta.Server.Core.Grains
             {
                 await PersistIfNeeded(forcePersist);
             }
+        }
+
+        public async Task<QueryCallResponse> HandleQueryAsync(RpcCall call)
+        {
+            if (_provider == null)
+                return new QueryCallResponse { Error = "Provider not initialized" };
+
+            // Verify this is a registered query method
+            if (!_provider.IsQueryMethod(call.ServiceName, call.MethodName))
+                return new QueryCallResponse { Error = $"Method '{call.ServiceName}.{call.MethodName}' is not a query method" };
+
+            // Access policy check (unless OpenAccess)
+            if (!_provider.IsOpenAccessQuery(call.ServiceName, call.MethodName))
+            {
+                var policy = _provider.AccessPolicy;
+                if (policy != EntityAccessPolicy.Open)
+                {
+                    bool allowed;
+                    if (policy is EntityAccessPolicy.OwnerOnly or EntityAccessPolicy.UserOwned)
+                        allowed = this.GetPrimaryKeyString() == call.CallerId;
+                    else // Authorized
+                        allowed = await _provider.CheckAccessAsync(call.CallerId ?? "");
+
+                    if (!allowed)
+                        return new QueryCallResponse { Error = $"Access denied for query on entity '{this.GetPrimaryKeyString()}'" };
+                }
+            }
+
+            try
+            {
+                return await _provider.HandleQueryAsync(call);
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorHandlingCall(ex);
+                return new QueryCallResponse { Error = ex.Message };
+            }
+        }
+
+        public Task<byte[]?> GetEntityStateAsync()
+        {
+            var userState = _persistentState.State.UserState;
+            return Task.FromResult<byte[]?>(_serializer.Pack(userState));
         }
 
         public async Task<EntityCallResult> HandleExternalEventAsync(

@@ -71,8 +71,9 @@ builder.Services.AddSignalR(hubOptions =>
 builder.Services.AddSingleton<IMetaConnectionHandlerFactory>(sp =>
 {
     var grainFactory = sp.GetRequiredService<IGrainFactory>();
+    var entityGrainResolver = sp.GetRequiredService<IEntityGrainResolver>();
     var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-    return new MetaConnectionHandlerFactory(grainFactory, loggerFactory);
+    return new MetaConnectionHandlerFactory(grainFactory, entityGrainResolver, loggerFactory);
 });
 
 // Authentication

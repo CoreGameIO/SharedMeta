@@ -295,6 +295,7 @@ namespace SharedMeta.Generator.Generators
             // Parse MetaMethod attribute for default mode
             var methodAlias = GetMethodAlias(method, methodName);
             var defaultMode = "Server";
+            bool isQueryMethod = false;
 
             var attributes = method.AttributeLists.SelectMany(a => a.Attributes);
             var metaMethod = attributes.FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
@@ -307,9 +308,15 @@ namespace SharedMeta.Generator.Generators
                         var name = arg.NameEquals.Name.Identifier.Text;
                         if (name == "Mode" && arg.Expression is MemberAccessExpressionSyntax modeAccess)
                             defaultMode = modeAccess.Name.Identifier.Text;
+                        if (name == "Query" && arg.Expression is LiteralExpressionSyntax queryLit
+                            && queryLit.Token.Text == "true")
+                            isQueryMethod = true;
                     }
                 }
             }
+
+            // Skip query methods — they are generated in QueryClientGenerator
+            if (isQueryMethod) return;
 
             // Check if the method is async (returns Task or Task<T>)
             bool isAsync = returnType.StartsWith("Task") || returnType.StartsWith("System.Threading.Tasks.Task");
@@ -331,6 +338,8 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            var mode = _modeProvider.GetMode(ServiceName, \"{methodAlias}\", ExecutionMode.{defaultMode});");
             sb.AppendLine($"            if (mode == ExecutionMode.ServerPatch)");
             sb.AppendLine($"                return {methodName}Async_ServerPatch({callArgs});");
+            sb.AppendLine($"            if (mode == ExecutionMode.ServerReplace)");
+            sb.AppendLine($"                return {methodName}Async_ServerReplace({callArgs});");
             sb.AppendLine($"            if (mode == ExecutionMode.Server)");
             sb.AppendLine($"                return {methodName}Async_Server({callArgs});");
             sb.AppendLine($"            if (mode == ExecutionMode.CrossOptimistic)");
@@ -350,6 +359,9 @@ namespace SharedMeta.Generator.Generators
 
             // ServerPatch mode implementation
             GenerateServerPatchMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName);
+
+            // ServerReplace mode implementation
+            GenerateServerReplaceMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName);
         }
 
         /// <summary>
@@ -851,6 +863,83 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
         }
 
+        private static void GenerateServerReplaceMethod(StringBuilder sb, MethodDeclarationSyntax method,
+            string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
+            DetectedSerializer serializer, string? stateTypeName)
+        {
+            var methodName = method.Identifier.Text;
+            var parameters = string.Join(", ", method.ParameterList.Parameters);
+            string asyncReturnType = isVoidReturn ? "Task" : $"Task<{returnType}>";
+            string awaitPrefix = isAsyncServiceMethod ? "await " : "";
+
+            sb.AppendLine($"        private async {asyncReturnType} {methodName}Async_ServerReplace({parameters})");
+            sb.AppendLine("        {");
+
+            // Capture server time before the call
+            sb.AppendLine("            var serverTimeTicks = _network.ServerTimeTicks;");
+
+            // Serialize arguments
+            GenerateArgumentSerialization(sb, method, paramCount, serializer);
+            sb.AppendLine();
+
+            // Suppress broadcasts during RPC + state replacement
+            sb.AppendLine("            _network.SuppressBroadcasts();");
+            sb.AppendLine("            try");
+            sb.AppendLine("            {");
+
+            // Call server
+            if (isVoidReturn)
+            {
+                sb.AppendLine($"                var response = await _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks);");
+            }
+            else
+            {
+                sb.AppendLine($"                var response = await _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks);");
+            }
+            sb.AppendLine();
+
+            // Replace state or fallback to replay
+            sb.AppendLine("                var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
+            sb.AppendLine("                try");
+            sb.AppendLine("                {");
+            sb.AppendLine("                if (response.StateBytes is { Length: > 0 } stateData)");
+            sb.AppendLine("                {");
+            sb.AppendLine($"                    _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
+            sb.AppendLine("                    _optimisticRandom?.Skip(response.RandomScrollDelta);");
+            sb.AppendLine("                }");
+            sb.AppendLine("                else");
+            sb.AppendLine("                {");
+            sb.AppendLine("                    // Fallback: server didn't send StateBytes, replay normally");
+            sb.AppendLine("                    SetContext(response.ReplayContext, _network.PlayerId, response.ServerTimeTicks);");
+            sb.AppendLine($"                    {awaitPrefix}_service.{methodName}({callArgs});");
+            sb.AppendLine("                    ClearContext();");
+            sb.AppendLine($"                    ReplayTriggerOperations(response.TriggerOperations, _network.PlayerId, response.ServerTimeTicks);");
+            sb.AppendLine("                }");
+            sb.AppendLine();
+
+            sb.AppendLine("                _tracker.FlushAndNotify();");
+            sb.AppendLine($"                OnStateRefreshed?.Invoke(_state);");
+            sb.AppendLine($"                OnStateMutated?.Invoke();");
+            sb.AppendLine("                }");
+            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
+
+            // Return server result
+            if (!isVoidReturn)
+            {
+                sb.AppendLine();
+                GenerateResultDeserializationIndented(sb, returnType, serializer);
+                sb.AppendLine("                return serverResult;");
+            }
+
+            sb.AppendLine("            }");
+            sb.AppendLine("            finally");
+            sb.AppendLine("            {");
+            sb.AppendLine("                _network.ResumeBroadcasts();");
+            sb.AppendLine("            }");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+        }
+
         private static void GenerateOptimisticResultDeserialization(StringBuilder sb, string returnType,
             string methodAlias, DetectedSerializer serializer)
         {
@@ -948,6 +1037,9 @@ namespace SharedMeta.Generator.Generators
 
             foreach (var method in methods)
             {
+                // Skip query methods — they don't produce broadcasts
+                if (IsQueryMethod(method)) continue;
+
                 var methodName = method.Identifier.Text;
                 var methodAlias = GetMethodAlias(method, methodName);
                 var eventName = GetEventName(methodName);
@@ -969,8 +1061,14 @@ namespace SharedMeta.Generator.Generators
                     : new List<string>();
                 var callArgsStr = string.Join(", ", argNames);
 
+                // StateBytes check (ServerReplace): replace state wholesale
+                sb.AppendLine("                    if (broadcast.StateBytes is { Length: > 0 } stateData)");
+                sb.AppendLine("                    {");
+                sb.AppendLine($"                        _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
+                sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
+                sb.AppendLine("                    }");
                 // PatchBytes check: apply patch or replay normally
-                sb.AppendLine("                    if (broadcast.PatchBytes is { Length: > 0 } patchData)");
+                sb.AppendLine("                    else if (broadcast.PatchBytes is { Length: > 0 } patchData)");
                 sb.AppendLine("                    {");
                 sb.AppendLine($"                        var patch = _serializer.Unpack<PatchNode>(patchData);");
                 sb.AppendLine($"                        {applierName}.Apply(_state, patch, _serializer);");
@@ -1061,8 +1159,14 @@ namespace SharedMeta.Generator.Generators
                         sb.AppendLine($"                    var @event = _serializer.Unpack<{method.EventTypeName}>(broadcast.ArgsBytes)!;");
                     }
 
+                    // StateBytes check (ServerReplace): replace state wholesale
+                    sb.AppendLine("                    if (broadcast.StateBytes is { Length: > 0 } stateData)");
+                    sb.AppendLine("                    {");
+                    sb.AppendLine($"                        _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
+                    sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
+                    sb.AppendLine("                    }");
                     // Replay the service method to update state
-                    sb.AppendLine("                    if (broadcast.PatchBytes is { Length: > 0 } patchData)");
+                    sb.AppendLine("                    else if (broadcast.PatchBytes is { Length: > 0 } patchData)");
                     sb.AppendLine("                    {");
                     sb.AppendLine($"                        var patch = _serializer.Unpack<PatchNode>(patchData);");
                     sb.AppendLine($"                        {subscriberApplierName}.Apply(_state, patch, _serializer);");
@@ -1110,7 +1214,12 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            if (triggerOperations == null) return;");
             sb.AppendLine("            foreach (var triggerOp in triggerOperations)");
             sb.AppendLine("            {");
-            sb.AppendLine("                if (triggerOp.Response.PatchBytes is { Length: > 0 } patchData)");
+            sb.AppendLine("                if (triggerOp.Response.StateBytes is { Length: > 0 } stateData)");
+            sb.AppendLine("                {");
+            sb.AppendLine($"                    _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
+            sb.AppendLine("                    _optimisticRandom?.Skip(triggerOp.Response.RandomScrollDelta);");
+            sb.AppendLine("                }");
+            sb.AppendLine("                else if (triggerOp.Response.PatchBytes is { Length: > 0 } patchData)");
             sb.AppendLine("                {");
             sb.AppendLine($"                    var patch = _serializer.Unpack<PatchNode>(patchData);");
             sb.AppendLine($"                    {applierName}.Apply(_state, patch, _serializer);");
@@ -1215,6 +1324,24 @@ namespace SharedMeta.Generator.Generators
                 }
             }
             return defaultName;
+        }
+
+        private static bool IsQueryMethod(MethodDeclarationSyntax method)
+        {
+            var attributes = method.AttributeLists.SelectMany(a => a.Attributes);
+            var metaMethod = attributes.FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
+            if (metaMethod != null)
+            {
+                foreach (var arg in metaMethod.ArgumentList?.Arguments ?? Enumerable.Empty<AttributeArgumentSyntax>())
+                {
+                    if (arg.NameEquals != null
+                        && arg.NameEquals.Name.Identifier.Text == "Query"
+                        && arg.Expression is LiteralExpressionSyntax lit
+                        && lit.Token.Text == "true")
+                        return true;
+                }
+            }
+            return false;
         }
 
         private static string GetEventName(string methodName)

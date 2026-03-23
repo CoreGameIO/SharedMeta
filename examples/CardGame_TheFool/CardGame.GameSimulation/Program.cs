@@ -86,8 +86,9 @@ Console.WriteLine("Silo started.");
 
 // --- Create InProcessServer ---
 var grainFactory = host.Services.GetRequiredService<IGrainFactory>();
+var entityGrainResolver = host.Services.GetRequiredService<IEntityGrainResolver>();
 var loggerFactory = host.Services.GetRequiredService<ILoggerFactory>();
-var handlerFactory = new MetaConnectionHandlerFactory(grainFactory, loggerFactory);
+var handlerFactory = new MetaConnectionHandlerFactory(grainFactory, entityGrainResolver, loggerFactory);
 var inProcessServer = new InProcessServer(handlerFactory);
 
 // --- Create 3 clients ---

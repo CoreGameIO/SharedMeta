@@ -41,6 +41,7 @@ public static class TestServerConfiguration
         services.AddSingleton<IMetaConnectionHandlerFactory>(sp =>
             new MetaConnectionHandlerFactory(
                 sp.GetRequiredService<Orleans.IGrainFactory>(),
+                sp.GetRequiredService<IEntityGrainResolver>(),
                 sp.GetRequiredService<ILoggerFactory>(),
                 MetaMethodSignatureValidator.ValidateClientSignatures));
 

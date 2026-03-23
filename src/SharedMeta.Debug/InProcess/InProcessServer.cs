@@ -108,6 +108,15 @@ namespace SharedMeta.Debug.InProcess
         }
 
         /// <summary>
+        /// Internal: Handle query call request (no subscription required).
+        /// </summary>
+        internal Task<QueryCallResponse> QueryCallAsync(string connectionId, QueryCallRequest request)
+        {
+            var handler = GetHandler(connectionId);
+            return handler.QueryCallAsync(request);
+        }
+
+        /// <summary>
         /// Internal: Handle graceful disconnect request.
         /// </summary>
         internal async Task GracefulDisconnectAsync(string connectionId)

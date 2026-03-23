@@ -124,7 +124,13 @@ namespace SharedMeta.Core
         /// Client applies patch directly without executing the method.
         /// Used for hotfixing server-side bugs when clients can't be updated.
         /// </summary>
-        ServerPatch
+        ServerPatch,
+        /// <summary>
+        /// Execute only on server, send full serialized state.
+        /// Client replaces its entire state without executing the method or applying patches.
+        /// Efficient when state is fully regenerated (e.g., generating a game map).
+        /// </summary>
+        ServerReplace
     }
 
     [AttributeUsage(AttributeTargets.Method)]
@@ -153,6 +159,20 @@ namespace SharedMeta.Core
         /// Use for critical operations: purchases, currency changes, etc.
         /// </summary>
         public bool ForcePersist { get; set; }
+
+        /// <summary>
+        /// If true, this method can be called without subscribing to the entity.
+        /// Query methods are lightweight read-only request/response with no state sync,
+        /// broadcasts, replay, or persistence. Must return a value (void not allowed).
+        /// </summary>
+        public bool Query { get; set; }
+
+        /// <summary>
+        /// If true AND Query is true, skip EntityAccessPolicy checks for this query method.
+        /// Allows reading public info from entities the caller cannot subscribe to.
+        /// Ignored if Query is false.
+        /// </summary>
+        public bool OpenAccess { get; set; }
     }
 
     /// <summary>

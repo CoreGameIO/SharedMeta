@@ -18,6 +18,12 @@ namespace SharedMeta.Core.Transport
         /// </summary>
         Task<SessionResponse> RpcCall(RpcCallRequest request);
 
+        /// <summary>
+        /// Execute a query call on an entity without subscribing.
+        /// Lightweight read-only request/response — no state sync, no broadcasts.
+        /// </summary>
+        Task<QueryCallResponse> QueryCall(QueryCallRequest request);
+
         Task<AcknowledgeResponse> AcknowledgeSequence(AcknowledgeRequest request);
 
         /// <summary>

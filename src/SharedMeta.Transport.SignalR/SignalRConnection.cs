@@ -184,6 +184,12 @@ namespace SharedMeta.Transport.SignalR
             return await _hub!.RpcCall(request);
         }
 
+        public async Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request)
+        {
+            EnsureConnected();
+            return await _hub!.QueryCall(request);
+        }
+
         /// <summary>
         /// Acknowledge received broadcasts.
         /// </summary>

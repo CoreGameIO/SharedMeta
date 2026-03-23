@@ -15,6 +15,8 @@ namespace SharedMeta.Generator.Generators
         public string MethodAlias { get; set; } = "";
         public string SignatureString { get; set; } = "";
         public ulong SignatureHash { get; set; }
+        public bool IsQuery { get; set; }
+        public bool IsOpenAccess { get; set; }
     }
 
     /// <summary>

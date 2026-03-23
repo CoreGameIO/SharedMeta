@@ -1,5 +1,7 @@
 using Orleans;
+using Orleans.Concurrency;
 using SharedMeta.Core;
+using SharedMeta.Core.Transport;
 using SharedMeta.Server.Core.Session;
 
 namespace SharedMeta.Server.Core.Grains
@@ -42,6 +44,20 @@ namespace SharedMeta.Server.Core.Grains
             string methodName,
             byte[] eventData,
             string? callerId = null);
+
+        /// <summary>
+        /// Execute a query call (no subscription required).
+        /// Read-only: no state sync, no broadcasts, no replay, no sequence number changes.
+        /// </summary>
+        Task<QueryCallResponse> HandleQueryAsync(RpcCall call);
+
+        /// <summary>
+        /// Get the current serialized state of this entity (read-only).
+        /// Returns null if the entity hasn't been activated or has no state.
+        /// Marked [AlwaysInterleave] to prevent deadlocks in mutual cross-entity reads.
+        /// </summary>
+        [AlwaysInterleave]
+        Task<byte[]?> GetEntityStateAsync();
 
     }
 

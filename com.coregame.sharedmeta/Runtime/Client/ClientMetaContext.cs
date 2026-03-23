@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using SharedMeta.Core;
 using SharedMeta.Core.Logging;
 
@@ -51,6 +52,14 @@ namespace SharedMeta.Client
         {
             _reader?.Dispose();
             _reader = null;
+        }
+
+        public override Task<TEntityState?> GetState<TEntityState>(string entityId) where TEntityState : class
+        {
+            var stateBytes = Reader.Read<byte[]?>();
+            if (stateBytes == null || stateBytes.Length == 0)
+                return Task.FromResult<TEntityState?>(null);
+            return Task.FromResult<TEntityState?>(_serializer.Unpack<TEntityState>(stateBytes));
         }
 
         public override TInterface GetEntityApi<TInterface>(string id)

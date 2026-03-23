@@ -33,6 +33,7 @@ namespace SharedMeta.Transport.HttpPolling
             group.MapPost("/subscribe", HandleSubscribe);
             group.MapPost("/unsubscribe", HandleUnsubscribe);
             group.MapPost("/rpc", HandleRpcCall);
+            group.MapPost("/query", HandleQueryCall);
             group.MapPost("/ack", HandleAcknowledge);
             group.MapPost("/poll", HandlePoll);
             group.MapPost("/config-url", HandleConfigDownloadUrl);
@@ -116,6 +117,20 @@ namespace SharedMeta.Transport.HttpPolling
 
             var response = await state.Handler.RpcCallAsync(request);
             return Results.Json(response, MetaJsonContext.Default.SessionResponse);
+        }
+
+        private static async Task<IResult> HandleQueryCall(
+            HttpContext ctx,
+            HttpPollingConnectionManager mgr)
+        {
+            var (state, error) = GetExistingConnection(ctx, mgr);
+            if (state == null) return error!;
+
+            var request = await ctx.Request.ReadFromJsonAsync(MetaJsonContext.Default.QueryCallRequest);
+            if (request == null) return Results.BadRequest("Invalid request body");
+
+            var response = await state.Handler.QueryCallAsync(request);
+            return Results.Json(response, MetaJsonContext.Default.QueryCallResponse);
         }
 
         private static async Task<IResult> HandleAcknowledge(

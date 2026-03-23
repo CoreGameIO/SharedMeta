@@ -28,6 +28,16 @@ namespace SharedMeta.Core
         public abstract TInterface GetEntityApi<TInterface>(string id) where TInterface : class, IMetaService;
 
         /// <summary>
+        /// Read-only access to another entity's state.
+        /// On Server: calls target entity grain ([AlwaysInterleave]), records bytes for replay.
+        /// On Client (replay): reads pre-recorded bytes from replay payload.
+        /// Returns null if entity doesn't exist or isn't activated.
+        /// </summary>
+        /// <typeparam name="TEntityState">The state type of the target entity.</typeparam>
+        /// <param name="entityId">The target entity's ID.</param>
+        public abstract Task<TEntityState?> GetState<TEntityState>(string entityId) where TEntityState : class, ISharedState;
+
+        /// <summary>
         /// Subscribe to updates from a remote entity (Reactive Sync).
         /// </summary>
         /// <typeparam name="TInterface">The service interface.</typeparam>

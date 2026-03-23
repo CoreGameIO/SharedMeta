@@ -77,6 +77,13 @@ namespace SharedMeta.Server.Core.Session
         Task<SessionResponse> SendToEntityAsync(string entityId, long requestId, RpcCall call, long lastAcknowledgedSequence, Guid sessionId);
 
         /// <summary>
+        /// Execute a query call on an entity without subscribing.
+        /// Resolves the entity grain and forwards the call. No subscription check,
+        /// no sequence numbers, no broadcasts.
+        /// </summary>
+        Task<QueryCallResponse> QueryEntityAsync(string entityId, string serviceName, RpcCall call);
+
+        /// <summary>
         /// Acknowledge that all packets up to and including this sequence have been received.
         /// Allows SessionManager to clean up stored packets.
         /// </summary>

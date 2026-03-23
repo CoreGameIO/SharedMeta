@@ -16,6 +16,8 @@ namespace SharedMeta.Transport.HttpPolling
     [JsonSerializable(typeof(UnsubscribeRequest))]
     [JsonSerializable(typeof(UnsubscribeResponse))]
     [JsonSerializable(typeof(RpcCallRequest))]
+    [JsonSerializable(typeof(QueryCallRequest))]
+    [JsonSerializable(typeof(QueryCallResponse))]
     [JsonSerializable(typeof(SessionResponse))]
     [JsonSerializable(typeof(AcknowledgeRequest))]
     [JsonSerializable(typeof(AcknowledgeResponse))]

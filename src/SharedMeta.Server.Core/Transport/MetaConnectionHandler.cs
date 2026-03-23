@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Orleans;
 using SharedMeta.Core;
 using SharedMeta.Core.Transport;
+using SharedMeta.Server.Core.Grains;
 using SharedMeta.Server.Core.Session;
 
 namespace SharedMeta.Server.Core.Transport
@@ -20,6 +21,7 @@ namespace SharedMeta.Server.Core.Transport
     {
         private readonly string _connectionId;
         private readonly IGrainFactory _grainFactory;
+        private readonly IEntityGrainResolver _entityGrainResolver;
         private readonly IBroadcastSender _broadcastSender;
         private readonly SignatureValidator? _signatureValidator;
         private readonly ILogger _logger;
@@ -34,12 +36,14 @@ namespace SharedMeta.Server.Core.Transport
         public MetaConnectionHandler(
             string connectionId,
             IGrainFactory grainFactory,
+            IEntityGrainResolver entityGrainResolver,
             IBroadcastSender broadcastSender,
             ILogger logger,
             SignatureValidator? signatureValidator = null)
         {
             _connectionId = connectionId ?? throw new ArgumentNullException(nameof(connectionId));
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
+            _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
             _broadcastSender = broadcastSender ?? throw new ArgumentNullException(nameof(broadcastSender));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _signatureValidator = signatureValidator;
@@ -224,6 +228,37 @@ namespace SharedMeta.Server.Core.Transport
             }
         }
 
+        public async Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request)
+        {
+            try
+            {
+                EnsureSessionConnected();
+
+                if (string.IsNullOrEmpty(request.EntityId))
+                    return new QueryCallResponse { Error = "EntityId is required" };
+
+                if (string.IsNullOrEmpty(request.ServiceName))
+                    return new QueryCallResponse { Error = "ServiceName is required" };
+
+                var call = new RpcCall
+                {
+                    ServiceName = request.ServiceName,
+                    MethodName = request.MethodName,
+                    CallerId = PlayerId,
+                    Payload = request.Payload,
+                    ServerTimeTicks = DateTime.UtcNow.Ticks
+                };
+
+                var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                return await grain.QueryEntityAsync(request.EntityId, request.ServiceName, call);
+            }
+            catch (Exception ex)
+            {
+                _logger.HandlerRpcCallError(ex);
+                return new QueryCallResponse { Error = ex.Message };
+            }
+        }
+
         public async Task<AcknowledgeResponse> AcknowledgeSequenceAsync(AcknowledgeRequest request)
         {
             try
@@ -346,15 +381,18 @@ namespace SharedMeta.Server.Core.Transport
     public class MetaConnectionHandlerFactory : IMetaConnectionHandlerFactory
     {
         private readonly IGrainFactory _grainFactory;
+        private readonly IEntityGrainResolver _entityGrainResolver;
         private readonly ILoggerFactory _loggerFactory;
         private readonly SignatureValidator? _signatureValidator;
 
         public MetaConnectionHandlerFactory(
             IGrainFactory grainFactory,
+            IEntityGrainResolver entityGrainResolver,
             ILoggerFactory loggerFactory,
             SignatureValidator? signatureValidator = null)
         {
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
+            _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
             _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
             _signatureValidator = signatureValidator;
         }
@@ -362,7 +400,7 @@ namespace SharedMeta.Server.Core.Transport
         public IMetaConnectionHandler Create(string connectionId, IBroadcastSender broadcastSender)
         {
             var logger = _loggerFactory.CreateLogger<MetaConnectionHandler>();
-            return new MetaConnectionHandler(connectionId, _grainFactory, broadcastSender, logger, _signatureValidator);
+            return new MetaConnectionHandler(connectionId, _grainFactory, _entityGrainResolver, broadcastSender, logger, _signatureValidator);
         }
     }
 }

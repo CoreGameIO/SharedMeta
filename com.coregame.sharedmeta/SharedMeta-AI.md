@@ -198,6 +198,44 @@ Server-only execution. Instead of replay payload, server sends a state diff patc
 
 **Use case:** Hotfixing server logic when clients can't be updated.
 
+### ServerReplace
+
+Server-only execution. Server sends the full serialized state. Client replaces state wholesale.
+
+**Use case:** When state is fully regenerated (map generation, full reset) and full state is smaller than a patch diff. `OnStateRefreshed` event fires on client.
+
+```csharp
+[MetaMethod(Mode = ExecutionMode.ServerReplace)]
+void GenerateMap(int seed);
+```
+
+### Query Calls (No Subscription)
+
+Lightweight read-only RPC to any entity without subscribing. No state sync, broadcasts, replay, or persistence.
+
+```csharp
+[MetaMethod(Query = true)]
+Task<PlayerBriefInfo> GetBriefInfo();
+
+[MetaMethod(Query = true, OpenAccess = true)]  // bypasses EntityAccessPolicy
+Task<PlayerBriefInfo> GetPublicInfo();
+```
+
+**Client:** Generated `{Service}QueryApi` class with `entityId` bound at creation:
+```csharp
+// Create once
+var profileQuery = new ProfileServiceQueryApi(connection, serializer);
+// Per-entity proxy
+var api = profileQuery.EntityApi("player-123");
+var info = await api.GetBriefInfoAsync();
+```
+
+**Server route:** `SessionManager.QueryEntityAsync` → `EntityGrain.HandleQueryAsync` → `DispatchCall` (read-only).
+
+- `Query = true` — callable without subscription, must return a value
+- `OpenAccess = true` — skip EntityAccessPolicy check for public data
+- Query methods are not generated in the regular ApiClient
+
 ### Runtime Execution Mode Override
 
 Override the `[MetaMethod]` default at runtime without recompilation:
@@ -395,6 +433,24 @@ var result = await Context.GetEntityApi<ITargetService>(targetEntityId).MethodAs
 **On client (CrossOptimistic):** Uses `CrossOptimisticMetaContext<TState>` for local execution on cached target state.
 
 **Broadcast Suppression:** When Entity A calls Entity B, SessionManager prevents duplicate broadcasts for players subscribed to both.
+
+### Read-Only State Access
+
+Read another entity's state without calling a method on it:
+
+```csharp
+var otherState = await Context.GetState<ShardState>("shard_north");
+if (otherState != null)
+{
+    var borderTiles = otherState.SouthBorder;
+}
+```
+
+- System method on `MetaContext` — no dependency injection needed
+- Server: calls `[AlwaysInterleave]` grain method (deadlock-safe), records bytes for replay
+- Client: reads pre-recorded bytes from replay payload (deterministic)
+- Returns `null` if entity type is unknown
+- Not supported in `CrossOptimistic` mode
 
 ---
 

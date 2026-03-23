@@ -53,6 +53,16 @@ namespace SharedMeta.Generator
                     spc.AddSource($"{baseName}ApiClient.g.cs", simplifiedSource);
                 }
 
+                // QueryClient Generation (for [MetaMethod(Query = true)] methods)
+                var querySource = QueryClientGenerator.Generate(node, symbol, ctx.SemanticModel.Compilation);
+                if (querySource != null)
+                {
+                    var baseName = interfaceName.StartsWith("I") && interfaceName.Length > 1 && char.IsUpper(interfaceName[1])
+                        ? interfaceName.Substring(1)
+                        : interfaceName;
+                    spc.AddSource($"{baseName}QueryApi.g.cs", querySource);
+                }
+
                 // Service Registration Extensions (DI registration)
                 var registrationSource = ServiceRegistrationGenerator.Generate(node, symbol, ctx.SemanticModel.Compilation);
                 if (registrationSource != null)

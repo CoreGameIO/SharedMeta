@@ -40,5 +40,11 @@ namespace SharedMeta.Server.Core.Grains
         /// When present, subscribers apply this instead of replaying.
         /// </summary>
         [Id(8)] public byte[]? PatchBytes { get; set; }
+
+        /// <summary>
+        /// Full serialized state for ServerReplace mode.
+        /// When present, subscribers replace their entire state with this.
+        /// </summary>
+        [Id(9)] public byte[]? StateBytes { get; set; }
     }
 }

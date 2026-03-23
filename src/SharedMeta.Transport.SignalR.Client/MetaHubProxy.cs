@@ -28,6 +28,9 @@ namespace SharedMeta.Transport.SignalR
         public Task<SessionResponse> RpcCall(RpcCallRequest request)
             => _connection.InvokeAsync<SessionResponse>(nameof(RpcCall), request);
 
+        public Task<QueryCallResponse> QueryCall(QueryCallRequest request)
+            => _connection.InvokeAsync<QueryCallResponse>(nameof(QueryCall), request);
+
         public Task<AcknowledgeResponse> AcknowledgeSequence(AcknowledgeRequest request)
             => _connection.InvokeAsync<AcknowledgeResponse>(nameof(AcknowledgeSequence), request);
 

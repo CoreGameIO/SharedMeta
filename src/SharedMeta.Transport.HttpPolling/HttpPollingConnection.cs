@@ -170,6 +170,12 @@ namespace SharedMeta.Transport.HttpPolling
             return await PostAsync<SessionResponse>("/rpc", request, MetaJsonContext.Default.RpcCallRequest);
         }
 
+        public async Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request)
+        {
+            EnsureSessionConnected();
+            return await PostAsync<QueryCallResponse>("/query", request, MetaJsonContext.Default.QueryCallRequest);
+        }
+
         public async Task AcknowledgeSequenceAsync(long sequenceNumber)
         {
             EnsureSessionConnected();

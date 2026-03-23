@@ -632,6 +632,98 @@ modeProvider.LoadManifest(@"{
 - Collection mutations are auto-tracked, but the entire collection is serialized as a terminal node (full replacement). Fine-grained collection diff (individual insert/remove) is planned for v2+.
 - PatchNode uses only MemoryPack serialization (not Orleans `[GenerateSerializer]`).
 
+### ServerReplace Mode
+
+Method executes **only on the server**. Instead of sending a replay payload or a patch, the server serializes the **entire state** and sends it to the client, which replaces its state wholesale.
+
+```
+Client                          Server
+  │                                │
+  ├─ Send RPC ─────────────────►   │
+  │  (waiting...)                  ├─ Execute method
+  │                                ├─ Execute triggers (if any)
+  │                                ├─ Serialize full state
+  │  ◄──── Return result+state ────┤
+  ├─ Replace _state entirely       │
+  ├─ Fire OnStateRefreshed         │
+  ├─ Return result to game code    │
+```
+
+**Use case:** When the method fully regenerates state (e.g., generating a game map, resetting game board), sending the full state is more efficient than computing a patch diff that enumerates every new field.
+
+**Declaration:**
+```csharp
+[MetaMethod(Mode = ExecutionMode.ServerReplace)]
+void GenerateMap(int seed);
+
+[MetaMethod(Mode = ExecutionMode.ServerReplace)]
+int ReplaceReset(int newValue);
+```
+
+**Key differences from ServerPatch:**
+- **ServerPatch** sends a diff of changed fields — efficient for small mutations on large state
+- **ServerReplace** sends the full state — efficient when state is fully regenerated (patch would be larger than full state)
+- Both are server-only: client never executes the method locally
+- Both support `IExecutionModeProvider` for runtime switching
+
+**Client-side:** The generated API client checks for `StateBytes` in the response. If present, it deserializes and replaces `_state` entirely, fires `OnStateRefreshed` and `OnStateMutated`. Broadcasts to other subscribers also carry `StateBytes` for the same wholesale replacement.
+
+**Fallback:** If `StateBytes` is not present in the response (e.g., mode was switched at runtime), the client falls back to normal replay.
+
+### Query Calls (No Subscription)
+
+Lightweight read-only RPC to any entity without subscribing. Use for getting brief info about other players, checking entity state in lobbies, etc.
+
+```
+Client                          Server
+  │                                │
+  ├─ QueryCall(entityId) ──────►   │
+  │  (waiting...)                  ├─ SessionManager.QueryEntityAsync
+  │                                ├─ EntityGrain.HandleQueryAsync
+  │                                ├─ DispatchCall (read-only)
+  │  ◄──── QueryCallResponse ─────┤
+  ├─ Deserialize result            │
+```
+
+**No** state sync, broadcasts, replay, persistence, or sequence numbers.
+
+**Declaration:**
+```csharp
+[MetaService(StateType = typeof(ProfileState))]
+public interface IProfileService
+{
+    [MetaMethod(Query = true)]
+    Task<PlayerBriefInfo> GetBriefInfo();
+
+    [MetaMethod(Query = true, OpenAccess = true)]  // bypasses EntityAccessPolicy
+    Task<PlayerBriefInfo> GetPublicInfo();
+
+    [MetaMethod(Mode = ExecutionMode.Optimistic)]
+    void SetName(string name);
+}
+```
+
+- `Query = true` — method can be called without subscribing, strictly read-only
+- `OpenAccess = true` — skip EntityAccessPolicy check (for public data readable by anyone)
+- Query methods **must** return a value (void not allowed)
+- Query methods are **not** generated in the regular `ApiClient` — they appear in the separate `QueryApi`
+
+**Client usage:**
+```csharp
+// Generated: ProfileServiceQueryApi
+// Create once
+var profileQuery = new ProfileServiceQueryApi(connection, serializer);
+
+// Per-entity proxy
+var api = profileQuery.EntityApi("player-123");
+var info = await api.GetBriefInfoAsync();
+var pub = await api.GetPublicInfoAsync();
+```
+
+**Server routing:** `MetaConnectionHandler` → `SessionManager.QueryEntityAsync` → `EntityGrain.HandleQueryAsync` → `MetaProviderBase.HandleQueryAsync` → `DispatchCall`. Same path as regular RPC but without the subscription/broadcast/sequence machinery.
+
+**Access control:** By default, query calls respect the entity's `EntityAccessPolicy`. Use `OpenAccess = true` to bypass this for public read-only data.
+
 ---
 
 ## 5. Deterministic Random
@@ -690,6 +782,36 @@ Client uses `CrossOptimisticMetaContext<TState>` for local execution on cached t
 ### Broadcast Suppression
 
 When Entity A calls Entity B, players subscribed to both A and B would see Entity B's operation twice (once in A's RPC response, once as B's broadcast). SessionManager prevents this by advancing `KnownEntitySequence` for Entity B when processing Entity A's cross-entity call.
+
+### Read-Only State Access (Context.GetState)
+
+Read another entity's state without calling a method on it. Available as a system method on `MetaContext` — no explicit dependency injection required.
+
+```csharp
+// Read a neighbor shard's state (returns null if entity doesn't exist)
+var neighborState = await Context.GetState<ShardState>("shard_north");
+if (neighborState != null)
+{
+    // Use neighbor data for map generation, validation, etc.
+    var borderTiles = neighborState.SouthBorder;
+}
+```
+
+**How it works:**
+- **Server:** Calls target grain via `[AlwaysInterleave]` method (read-only, no sequence increment, no broadcasts). Records state bytes to replay payload.
+- **Client (replay):** Reads pre-recorded bytes from replay payload — deterministic, no network call.
+- **`[AlwaysInterleave]`:** Prevents deadlocks when two entities read each other's state simultaneously.
+- **Result is nullable:** Returns `null` if the target entity type is unknown. Note: if the entity exists but has never been used, Orleans activates it with default state (not null).
+
+**Use cases:**
+- Map generation split into shards where each shard reads neighbors
+- Validation against another entity's state before mutation
+- Aggregation of data from multiple entities
+
+**Limitations:**
+- Not supported in `CrossOptimistic` mode (throws `NotSupportedException`)
+- Read-only — you get a deserialized copy, mutations don't affect the target entity
+- Each call is a grain-to-grain hop on the server — for high-frequency reads, consider caching
 
 ---
 
@@ -1600,6 +1722,7 @@ builder.Services.AddSignalR().AddMetaMessagePackProtocol();
 builder.Services.AddSingleton<IMetaConnectionHandlerFactory>(sp =>
     new MetaConnectionHandlerFactory(
         sp.GetRequiredService<IGrainFactory>(),
+        sp.GetRequiredService<IEntityGrainResolver>(),
         sp.GetRequiredService<ILoggerFactory>()));
 
 var app = builder.Build();
@@ -2144,6 +2267,8 @@ The server dispatcher receives `MethodVersion` and can route to different implem
 | `GenerateClientApi` | bool | true | Generate API client method |
 | `SkipServerOnFalse` | bool | false | Skip server if local returns false/default |
 | `ForcePersist` | bool | false | Always persist after execution |
+| `Query` | bool | false | Callable without subscribing (read-only, no broadcast/replay) |
+| `OpenAccess` | bool | false | Bypass EntityAccessPolicy for query methods |
 
 ### MetaService Properties
 
