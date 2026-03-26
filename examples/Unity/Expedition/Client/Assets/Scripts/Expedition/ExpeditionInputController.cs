@@ -72,14 +72,13 @@ public class ExpeditionInputController : MonoBehaviour
             return;
         }
 
-        // N = New expedition (when complete)
+        // N = New expedition (when complete) — shows generation mode choice
         if (_kb.nKey.wasPressedThisFrame)
         {
             var state = gameManager.ExpeditionState;
             if (state != null && state.IsComplete)
             {
-                _processing = true;
-                DoNewExpedition();
+                ui.ShowGenerationModeChoice();
             }
         }
 
@@ -143,15 +142,4 @@ public class ExpeditionInputController : MonoBehaviour
         }
     }
 
-    private async void DoNewExpedition()
-    {
-        try
-        {
-            await gameManager.StartNewExpedition();
-        }
-        finally
-        {
-            _processing = false;
-        }
-    }
 }

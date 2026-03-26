@@ -26,6 +26,11 @@ public class ExpeditionUIGenerator : MonoBehaviour
     private Button _newExpeditionButton;
     private GameObject _completeBanner;
 
+    // Generation mode choice
+    private GameObject _generationChoicePanel;
+    private Button _serverReplaceButton;
+    private Button _optimisticButton;
+
     // D-Pad buttons
     private Button _btnUp;
     private Button _btnDown;
@@ -108,18 +113,58 @@ public class ExpeditionUIGenerator : MonoBehaviour
             new Vector2(0.5f, 0), new Vector2(0.95f, 1), new Color(0.2f, 0.4f, 0.7f));
         _updateEnergyButton.onClick.AddListener(() => _ = gameManager.UpdateEnergy());
 
-        // New expedition button (hidden until complete)
+        // New expedition button (hidden until complete) — shows generation mode choice
         _newExpeditionButton = CreateButton(btnPanel.transform, "NewExpBtn", "New Expedition",
             new Vector2(0, 0), new Vector2(0.95f, 1), new Color(0.7f, 0.5f, 0.1f));
-        _newExpeditionButton.onClick.AddListener(() => _ = gameManager.StartNewExpedition());
+        _newExpeditionButton.onClick.AddListener(ShowGenerationModeChoice);
         _newExpeditionButton.gameObject.SetActive(false);
 
         // Completion banner (hidden)
         _completeBanner = CreateCompletionBanner(canvasGo.transform);
         _completeBanner.SetActive(false);
 
+        // Generation mode choice panel (hidden until needed)
+        _generationChoicePanel = CreatePanel(canvasGo.transform, "GenerationChoicePanel",
+            new Vector2(0.2f, 0.35f), new Vector2(0.8f, 0.65f), Vector2.zero, Vector2.zero);
+        _generationChoicePanel.GetComponent<Image>().color = new Color(0.1f, 0.15f, 0.3f, 0.95f);
+
+        var choiceTitle = CreateText(_generationChoicePanel.transform, "ChoiceTitle",
+            "Choose map generation mode:",
+            new Vector2(0, 0.6f), new Vector2(1, 1), Color.white);
+        choiceTitle.alignment = TextAnchor.MiddleCenter;
+        choiceTitle.fontSize = 20;
+
+        var choiceDesc = CreateText(_generationChoicePanel.transform, "ChoiceDesc",
+            "ServerReplace: server generates, client receives full state\n" +
+            "Optimistic: client predicts with same deterministic random seed",
+            new Vector2(0.05f, 0.35f), new Vector2(0.95f, 0.65f), new Color(0.8f, 0.8f, 0.8f));
+        choiceDesc.alignment = TextAnchor.MiddleCenter;
+        choiceDesc.fontSize = 14;
+
+        _serverReplaceButton = CreateButton(_generationChoicePanel.transform, "ServerReplaceBtn",
+            "ServerReplace", new Vector2(0.05f, 0.05f), new Vector2(0.48f, 0.35f), new Color(0.6f, 0.3f, 0.1f));
+        _serverReplaceButton.onClick.AddListener(() => OnGenerationModeChosen(true));
+
+        _optimisticButton = CreateButton(_generationChoicePanel.transform, "OptimisticBtn",
+            "Optimistic", new Vector2(0.52f, 0.05f), new Vector2(0.95f, 0.35f), new Color(0.1f, 0.5f, 0.6f));
+        _optimisticButton.onClick.AddListener(() => OnGenerationModeChosen(false));
+
+        _generationChoicePanel.SetActive(false);
+
         // D-Pad for touch/click control (right side)
         CreateDPad(canvasGo.transform);
+    }
+
+    /// <summary>Show the generation mode choice panel (ServerReplace vs Optimistic).</summary>
+    public void ShowGenerationModeChoice()
+    {
+        _generationChoicePanel.SetActive(true);
+    }
+
+    private async void OnGenerationModeChosen(bool useServerReplace)
+    {
+        _generationChoicePanel.SetActive(false);
+        await gameManager.StartNewExpedition(useServerReplace);
     }
 
     private void CreateDPad(Transform parent)

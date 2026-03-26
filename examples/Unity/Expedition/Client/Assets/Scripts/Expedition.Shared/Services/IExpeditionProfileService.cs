@@ -21,7 +21,8 @@ namespace Expedition.Shared
         [MetaMethod(Alias = "AddMoney", Mode = ExecutionMode.Server, GenerateClientApi = false)]
         void AddMoney(int amount);
 
-        [MetaMethod(Alias = "ResumeOrStartExpedition", Mode = ExecutionMode.Server)]
-        Task<ResumeExpeditionResult> ResumeOrStartExpedition();
+        /// <summary>Create a new expedition entity and return its ID.</summary>
+        [MetaMethod(Alias = "StartNewExpedition", Mode = ExecutionMode.Server)]
+        Task<string> StartNewExpedition();
     }
 }

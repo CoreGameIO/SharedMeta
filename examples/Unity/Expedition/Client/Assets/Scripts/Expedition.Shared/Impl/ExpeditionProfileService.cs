@@ -93,20 +93,8 @@ namespace Expedition.Shared
             state.Money += amount;
         }
 
-        public async Task<ResumeExpeditionResult> ResumeOrStartExpedition()
+        public async Task<string> StartNewExpedition()
         {
-            if (!string.IsNullOrEmpty(state.CurrentExpeditionEntityId))
-            {
-                var expService = GetIExpeditionService(state.CurrentExpeditionEntityId);
-                bool active = await expService.IsActiveAsync();
-                if (active)
-                    return new ResumeExpeditionResult
-                    {
-                        EntityId = state.CurrentExpeditionEntityId,
-                        IsNew = false
-                    };
-            }
-
             state.ExpeditionCounter++;
             var entityId = $"expedition-{state.PlayerId}-{state.ExpeditionCounter}";
             state.CurrentExpeditionEntityId = entityId;
@@ -114,11 +102,7 @@ namespace Expedition.Shared
             var newExpService = GetIExpeditionService(entityId);
             await newExpService.InitAsync(state.PlayerId);
 
-            return new ResumeExpeditionResult
-            {
-                EntityId = entityId,
-                IsNew = true
-            };
+            return entityId;
         }
     }
 }

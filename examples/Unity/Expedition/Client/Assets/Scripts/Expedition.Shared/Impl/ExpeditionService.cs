@@ -177,6 +177,67 @@ namespace Expedition.Shared
             return state.IsGenerated && !state.IsComplete;
         }
 
+        public void GenerateNewMap()
+        {
+            RegenerateMap();
+        }
+
+        public void GenerateNewMapOptimistic()
+        {
+            RegenerateMap();
+        }
+
+        private void RegenerateMap()
+        {
+            var width = Config.MapWidth;
+            var height = Config.MapHeight;
+            var totalCells = width * height;
+
+            state.Width = width;
+            state.Height = height;
+            state.PlayerX = 0;
+            state.PlayerY = 0;
+            state.TreasuresCollected = 0;
+            state.IsComplete = false;
+
+            state.Cells = new List<byte>(totalCells);
+            state.Revealed = new List<bool>(totalCells);
+
+            for (int i = 0; i < totalCells; i++)
+            {
+                state.Cells.Add((byte)CellType.Empty);
+                state.Revealed.Add(false);
+            }
+
+            for (int i = 1; i < totalCells; i++)
+            {
+                if (Context.Random.Next(100) < Config.WallPercent)
+                    state.Cells[i] = (byte)CellType.Wall;
+            }
+
+            for (int i = 1; i < totalCells; i++)
+            {
+                if (state.Cells[i] != (byte)CellType.Empty) continue;
+                if (Context.Random.Next(100) < Config.ObstaclePercent)
+                    state.Cells[i] = (byte)CellType.Obstacle;
+            }
+
+            int treasureCount = 0;
+            for (int i = 1; i < totalCells; i++)
+            {
+                if (state.Cells[i] != (byte)CellType.Empty) continue;
+                if (Context.Random.Next(100) < Config.TreasurePercent)
+                {
+                    state.Cells[i] = (byte)CellType.Treasure;
+                    treasureCount++;
+                }
+            }
+            state.TotalTreasures = treasureCount;
+
+            RevealArea(0, 0);
+            state.IsGenerated = true;
+        }
+
         private int CountNewRevealed(int cx, int cy)
         {
             int count = 0;

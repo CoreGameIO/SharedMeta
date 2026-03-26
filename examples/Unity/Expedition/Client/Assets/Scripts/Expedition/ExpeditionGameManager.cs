@@ -14,7 +14,9 @@ using Expedition.Shared.Client;
 
 /// <summary>
 /// Main game manager: authenticates, connects to server, manages expedition lifecycle.
-/// UI updates are driven by [Tracked] field subscriptions — no manual refresh calls.
+/// Demonstrates Query calls (check expedition without subscribing) and generation mode choice
+/// (ServerReplace vs Optimistic).
+/// UI updates are driven by [Tracked] field subscriptions.
 /// </summary>
 public class ExpeditionGameManager : MonoBehaviour
 {
@@ -38,6 +40,7 @@ public class ExpeditionGameManager : MonoBehaviour
     private string _expeditionEntityId;
     private ExpeditionProfileServiceApiClient _profileApi;
     private ExpeditionServiceApiClient _expApi;
+    private ExpeditionServiceQueryApi _expeditionQuery;
     private bool _pendingRender;
 
     public ExpeditionProfileServiceApiClient ProfileApi => _profileApi;
@@ -86,13 +89,18 @@ public class ExpeditionGameManager : MonoBehaviour
             ui.SetStatus($"Authenticated: {login.PlayerId}");
 
             var metaUrl = $"{serverUrl}/meta";
+            var serializer = new MemoryPackMetaSerializer();
+            var connection = new SignalRConnection(metaUrl, login.Token);
+
             Client = new MetaClient(
-                new SignalRConnection(metaUrl, login.Token),
-                new MemoryPackMetaSerializer(),
+                connection, serializer,
                 new MetaClientOptions { PlayerId = login.PlayerId }
             );
 
             Client.Resolver.RegisterAllServices();
+
+            // Create query API (no subscription needed)
+            _expeditionQuery = new ExpeditionServiceQueryApi(connection, serializer);
 
             // Register tracked field subscriptions BEFORE connecting
             TrackedProfileState.Register();
@@ -105,17 +113,36 @@ public class ExpeditionGameManager : MonoBehaviour
 
             ui.SetStatus("Connecting...");
             await Client.ConnectAsync();
-            ui.SetStatus("Connected! Starting expedition...");
+            ui.SetStatus("Connected! Loading profile...");
 
             _profileApi = await Client.GetExpeditionProfileServiceAsync();
             await _profileApi.UpdateEnergyAsync();
 
-            var result = await _profileApi.ResumeOrStartExpeditionAsync();
-            _expeditionEntityId = result.EntityId;
-            _expApi = await Client.GetServiceAsync<ExpeditionServiceApiClient>(_expeditionEntityId);
+            // Check if there's an existing expedition via Query (no subscription)
+            var currentExpId = ProfileState?.CurrentExpeditionEntityId;
+            if (!string.IsNullOrEmpty(currentExpId))
+            {
+                ui.SetStatus("Checking expedition status...");
+                var active = await _expeditionQuery
+                    .EntityApi(currentExpId)
+                    .IsActiveAsync();
 
-            ui.SetStatus(result.IsNew ? "New expedition started!" : "Expedition resumed!");
-            _pendingRender = true;
+                if (active) {
+                    // Resume — subscribe to existing expedition
+                    _expeditionEntityId = currentExpId;
+                    _expApi = await Client.GetServiceAsync<ExpeditionServiceApiClient>(_expeditionEntityId);
+                    ui.SetStatus("Expedition resumed!");
+                    _pendingRender = true;
+                    return;
+                }
+
+                // Expedition is complete — prompt for new one
+                ui.ShowGenerationModeChoice();
+                return;
+            }
+
+            // No expedition yet — prompt for generation mode
+            ui.ShowGenerationModeChoice();
         }
         catch (Exception ex)
         {
@@ -182,19 +209,42 @@ public class ExpeditionGameManager : MonoBehaviour
         }
     }
 
-    public async Task StartNewExpedition()
+    /// <summary>
+    /// Create a new expedition with the chosen generation mode.
+    /// ServerReplace: server generates map, client receives full state.
+    /// Optimistic: client predicts generation with same deterministic random seed.
+    /// </summary>
+    public async Task StartNewExpedition(bool useServerReplace)
     {
         try
         {
-            var result = await _profileApi.ResumeOrStartExpeditionAsync();
-            _expeditionEntityId = result.EntityId;
+            ui.SetStatus("Creating expedition...");
+
+            // 1. Create expedition entity on server (via profile service)
+            var entityId = await _profileApi.StartNewExpeditionAsync();
+            _expeditionEntityId = entityId;
+
+            // 2. Subscribe to the new expedition
             _expApi = await Client.GetServiceAsync<ExpeditionServiceApiClient>(_expeditionEntityId);
-            ui.SetStatus("New expedition started!");
+
+            // 3. Generate map with chosen mode
+            if (useServerReplace)
+            {
+                await _expApi.GenerateNewMapAsync();
+                ui.SetStatus("New expedition (ServerReplace) — server generated map!");
+            }
+            else
+            {
+                await _expApi.GenerateNewMapOptimisticAsync();
+                ui.SetStatus("New expedition (Optimistic) — client predicted map!");
+            }
+
             _pendingRender = true;
         }
         catch (Exception ex)
         {
             ui.SetStatus($"Error: {ex.Message}");
+            Debug.LogException(ex);
         }
     }
 

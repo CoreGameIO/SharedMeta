@@ -45,11 +45,4 @@ namespace Expedition.Shared
         [Key(11), MemoryPackOrder(11)] public string OwnerPlayerId { get; set; }
     }
 
-    [MemoryPackable]
-    [MessagePackObject]
-    public partial class ResumeExpeditionResult
-    {
-        [Key(0), MemoryPackOrder(0)] public string EntityId { get; set; } = "";
-        [Key(1), MemoryPackOrder(1)] public bool IsNew { get; set; }
-    }
 }
