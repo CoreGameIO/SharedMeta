@@ -19,3 +19,4 @@ nul
 /.claude/
 CLAUDE.md
 /CLAUDE.md.meta
+*.code-workspace

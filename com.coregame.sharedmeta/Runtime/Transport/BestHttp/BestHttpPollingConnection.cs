@@ -180,6 +180,12 @@ namespace SharedMeta.Transport.BestHttp
             return await PostAsync<SessionResponse>("/rpc", request);
         }
 
+        public async Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request)
+        {
+            EnsureSessionConnected();
+            return await PostAsync<QueryCallResponse>("/query", request);
+        }
+
         public async Task AcknowledgeSequenceAsync(long sequenceNumber)
         {
             EnsureSessionConnected();

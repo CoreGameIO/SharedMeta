@@ -32,6 +32,9 @@ namespace SharedMeta.Transport.BestHttp
         public Task<SessionResponse> RpcCall(RpcCallRequest request)
             => InvokeAsync<SessionResponse>(nameof(RpcCall), request);
 
+        public Task<QueryCallResponse> QueryCall(QueryCallRequest request)
+            => InvokeAsync<QueryCallResponse>(nameof(QueryCall), request);
+
         public Task<AcknowledgeResponse> AcknowledgeSequence(AcknowledgeRequest request)
             => InvokeAsync<AcknowledgeResponse>(nameof(AcknowledgeSequence), request);
 

@@ -268,6 +268,12 @@ namespace SharedMeta.Transport.BestHttp
             return await _proxy!.RpcCall(request);
         }
 
+        public async Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request)
+        {
+            EnsureConnected();
+            return await _proxy!.QueryCall(request);
+        }
+
         public async Task AcknowledgeSequenceAsync(long sequenceNumber)
         {
             EnsureConnected();
