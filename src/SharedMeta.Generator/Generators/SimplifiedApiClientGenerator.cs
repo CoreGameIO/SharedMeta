@@ -143,6 +143,9 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        // Events fired when methods are replayed from broadcasts");
             foreach (var method in methods)
             {
+                // Skip query methods — they don't produce broadcasts or replays
+                if (IsQueryMethod(method)) continue;
+
                 var methodName = method.Identifier.Text;
                 var eventName = GetEventName(methodName);
                 var paramCount = method.ParameterList.Parameters.Count;
@@ -315,8 +318,12 @@ namespace SharedMeta.Generator.Generators
                 }
             }
 
-            // Skip query methods — they are generated in QueryClientGenerator
-            if (isQueryMethod) return;
+            // Query methods — execute locally on client state, no network call
+            if (isQueryMethod)
+            {
+                GenerateLocalQueryMethod(sb, method);
+                return;
+            }
 
             // Check if the method is async (returns Task or Task<T>)
             bool isAsync = returnType.StartsWith("Task") || returnType.StartsWith("System.Threading.Tasks.Task");
@@ -1324,6 +1331,43 @@ namespace SharedMeta.Generator.Generators
                 }
             }
             return defaultName;
+        }
+
+        /// <summary>
+        /// Generates a local-only query method that executes on the client's local state.
+        /// No network call — just a direct call to the service instance.
+        /// </summary>
+        private static void GenerateLocalQueryMethod(StringBuilder sb, MethodDeclarationSyntax method)
+        {
+            var methodName = method.Identifier.Text;
+            var returnType = method.ReturnType.ToString();
+            var parameters = string.Join(", ", method.ParameterList.Parameters);
+            var argNames = method.ParameterList.Parameters.Select(p => p.Identifier.Text);
+            var callArgs = string.Join(", ", argNames);
+
+            // Unwrap Task<T> -> T if needed
+            bool isAsync = returnType.StartsWith("Task");
+            string syncReturnType;
+            if (returnType == "void" || returnType == "Task")
+                syncReturnType = "void";
+            else if (returnType.StartsWith("Task<"))
+                syncReturnType = returnType.Substring("Task<".Length, returnType.Length - "Task<".Length - 1);
+            else
+                syncReturnType = returnType;
+
+            bool isVoid = syncReturnType == "void";
+
+            sb.AppendLine();
+            sb.AppendLine($"        /// <summary>");
+            sb.AppendLine($"        /// Query: executes locally on client state, no network call.");
+            sb.AppendLine($"        /// </summary>");
+            sb.AppendLine($"        public {syncReturnType} {methodName}({parameters})");
+            sb.AppendLine("        {");
+            if (isVoid)
+                sb.AppendLine($"            _service.{methodName}({callArgs});");
+            else
+                sb.AppendLine($"            return _service.{methodName}({callArgs});");
+            sb.AppendLine("        }");
         }
 
         private static bool IsQueryMethod(MethodDeclarationSyntax method)

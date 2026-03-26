@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.1] - 2026-03-26
+
+### Fixed
+
+- Generator: Query methods no longer emit unused `On{Method}_Replayed` events in API client
+- Unity transport: `QueryCallAsync` implemented in `BestHttpSignalRConnection`, `BestHttpPollingConnection`, `SignalRConnection`, `UnityHttpConnection`
+
+### Added
+
+- Query methods in `ApiClient` as synchronous local calls — executes on client state without network roundtrip when entity is already subscribed
+- Expedition example: client-side Query flow with generation mode choice (ServerReplace vs Optimistic)
+
 ## [0.5.0] - 2026-03-22
 
 ### Added
