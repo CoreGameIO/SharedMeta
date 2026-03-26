@@ -41,6 +41,8 @@ Write game logic **once** in C# — it runs on the server (Orleans grains) and r
 
 **Live-ops and admin tools** — server-side triggers push events to clients. Subscribers react to state changes. Hot-swappable transport (WebSocket or HTTP polling) and serializer (MemoryPack or MessagePack).
 
+**Query and inspection** — check any entity's status without subscribing. Get brief info about other players, check if a game session is active, preview inventory — all via lightweight read-only calls with optional open access.
+
 ## Quick Start (Unity)
 
 ### 1. Install the Package
@@ -93,11 +95,11 @@ Press Play in Unity — `MetaGameClient` connects automatically.
 Add NuGet packages to your `.csproj`:
 ```xml
 <ItemGroup>
-  <PackageReference Include="CoreGame.SharedMeta.Core" Version="0.2.0" />
-  <PackageReference Include="CoreGame.SharedMeta.Client" Version="0.2.0" />
-  <PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.2.0" />
-  <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.Client" Version="0.2.0" />
-  <PackageReference Include="CoreGame.SharedMeta.Generator" Version="0.2.0"
+  <PackageReference Include="CoreGame.SharedMeta.Core" Version="0.5.1" />
+  <PackageReference Include="CoreGame.SharedMeta.Client" Version="0.5.1" />
+  <PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.5.1" />
+  <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.Client" Version="0.5.1" />
+  <PackageReference Include="CoreGame.SharedMeta.Generator" Version="0.5.1"
                     PrivateAssets="all" OutputItemType="analyzer" />
 </ItemGroup>
 ```
@@ -106,7 +108,7 @@ Client transport packages have no server dependencies (no Orleans, no ASP.NET). 
 
 For MessagePack SignalR protocol (optional, better performance):
 ```xml
-<PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.MessagePack" Version="0.2.0" />
+<PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.MessagePack" Version="0.5.1" />
 ```
 
 ### Quick Start (examples)
@@ -125,11 +127,11 @@ dotnet run --project examples/CardGame_TheFool/CardGame.Client
 │  Code generation: dispatchers, API clients, context injection   │
 └─────────────────────────────────────────────────────────────────┘
                               ↕
-┌─────────────────────────────────────────────────────────────────┐
-│  Middleware Layer (SharedMeta.Client, SharedMeta.Server)        │
-│  MetaContext, replay mechanism, execution modes                 │
-│  (Optimistic / Server / Local / CrossOptimistic / ServerPatch)  │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Middleware Layer (SharedMeta.Client, SharedMeta.Server)                     │
+│  MetaContext, replay mechanism, execution modes                              │
+│  Optimistic / Server / Local / CrossOptimistic / ServerPatch / ServerReplace │
+└──────────────────────────────────────────────────────────────────────────────┘
                               ↕
 ┌─────────────────────────────────────────────────────────────────┐
 │  Serialization Layer (SharedMeta.Serialization.*)               │
@@ -154,20 +156,18 @@ Each layer depends only on the layers above it. Swap serializers, transports, or
 ### Define Shared State
 
 ```csharp
-[MemoryPackable, MessagePackObject]  // transport serialization (pick one or both)
-[GenerateSerializer]                  // Orleans grain persistence
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject]  // pick one or both
 public partial class GameState : ISharedState
 {
-    [Id(0), Key(0), MemoryPackOrder(0)] public int Score { get; set; }
-    [Id(1), Key(1), MemoryPackOrder(1)] public List<string> Items { get; set; } = new();
+    [Key(0), MemoryPackOrder(0)] public int Score { get; set; }
+    [Key(1), MemoryPackOrder(1)] public List<string> Items { get; set; } = new();
 }
 ```
 
-- `[MemoryPackable]` — MemoryPack serializer (default, zero-copy)
-- `[MessagePackObject]` + `[Key(n)]` — MessagePack serializer (cross-platform, schema-flexible)
-- `[GenerateSerializer]` + `[Id(n)]` — Orleans grain state persistence
+- `[MemoryPackable(GenerateType.VersionTolerant)]` + `[MemoryPackOrder(n)]` — MemoryPack (default, zero-copy, safe field evolution)
+- `[MessagePackObject]` + `[Key(n)]` — MessagePack (cross-platform, schema-flexible)
 
-Choose one serializer or use both. The wizard configures this automatically.
+Choose one serializer or use both. Orleans `[GenerateSerializer]`/`[Id(n)]` are **not needed** on game state — they're only used internally by the framework. The wizard configures this automatically.
 
 ### Define a Service
 
@@ -213,6 +213,7 @@ public partial class GameServiceImpl : IGameService
 | **Local** | Local-only, no RPC | — | UI state, client-side filtering |
 | **CrossOptimistic** | Executes on own state | Routes to target entity's grain | Cross-entity interactions |
 | **ServerPatch** | Receives state diff from server | Sends patch instead of full state | Large state, bandwidth optimization |
+| **ServerReplace** | Receives full state from server | Executes and sends complete state | Map generation, full reset, bulk state changes |
 
 ### Deterministic Random
 
@@ -223,6 +224,45 @@ int roll = Context.Random!.Next(6) + 1;
 // Server random — generated on server, replayed on client
 int loot = Context.ServerRandom!.Next(100);
 ```
+
+### Query Calls
+
+Read-only calls to any entity without subscribing — useful for checking status, fetching brief info in multiplayer.
+
+```csharp
+[MetaService(StateType = typeof(GameState))]
+public interface IGameService : IMetaService
+{
+    [MetaMethod(Query = true)]              // queryable, respects access policy
+    bool IsActive();
+
+    [MetaMethod(Query = true, OpenAccess = true)]  // queryable, anyone can call
+    string GetPublicInfo();
+}
+```
+
+Client usage:
+```csharp
+// No subscription — one-off network call
+var queryApi = new GameServiceQueryApi(connection, serializer);
+var info = await queryApi.EntityApi("entity-123").GetPublicInfoAsync();
+
+// Already subscribed — executes locally, no network call
+var gameApi = client.GetService<GameServiceApiClient>();
+bool active = gameApi.IsActive();  // synchronous, reads local state
+```
+
+### Cross-Entity State Access
+
+Read another entity's state from shared code — no explicit dependency injection needed:
+
+```csharp
+var otherState = Context.GetState<PlayerProfile>("other-player-id");
+if (otherState != null)
+    // use otherState.Level, otherState.Name, etc.
+```
+
+Recorded to replay payload for deterministic client replay.
 
 ### Client Usage
 
@@ -279,7 +319,7 @@ Multiplayer turn-based card game with matchmaking lobby. Two players, attack/def
 
 ### Expedition
 
-Single-player dungeon exploration with procedural map generation. Two entities (Profile + Expedition) connected via cross-entity calls for energy/money economy. Demonstrates: `CrossOptimistic` for responsive movement, cross-entity `SpendEnergy`/`AddMoney` calls, `[MetaInit]` for procedural map generation with `Context.Random`, `[Tracked]` fields for push-based UI updates, `[MetaConfig]` for game balance, `ServerPatch` mode (optional). Includes console client; see [GUIDE.md § Expedition](docs/GUIDE.md#25-example-expedition-cross-entity-economy) for Unity client example.
+Single-player dungeon exploration with procedural map generation. Two entities (Profile + Expedition) connected via cross-entity calls for energy/money economy. Demonstrates: `CrossOptimistic` for responsive movement, cross-entity `SpendEnergy`/`AddMoney` calls, `[MetaInit]` for procedural map generation with `Context.Random`, `[Tracked]` fields for push-based UI updates, `[MetaConfig]` for game balance, **Query Calls** to check expedition status without subscribing, **generation mode choice** (ServerReplace vs Optimistic) showing the difference between server-authoritative and client-predicted state. Full Unity client with runtime-generated UI.
 
 ## Project Structure
 
