@@ -14,6 +14,12 @@
     "defineConstraints": [
         "HAS_BESTHTTP"
     ],
-    "versionDefines": [],
+    "versionDefines": [
+        {
+            "name": "com.tivadar.besthttp",
+            "expression": "0.0.0",
+            "define": "HAS_BESTHTTP"
+        }
+    ],
     "noEngineReferences": false
 }

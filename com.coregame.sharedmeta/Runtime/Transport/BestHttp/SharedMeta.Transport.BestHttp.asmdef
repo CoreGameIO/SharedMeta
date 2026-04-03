@@ -17,6 +17,11 @@
     ],
     "versionDefines": [
         {
+            "name": "com.tivadar.besthttp",
+            "expression": "0.0.0",
+            "define": "HAS_BESTHTTP"
+        },
+        {
             "name": "com.unity.nuget.newtonsoft-json",
             "expression": "0.0.0",
             "define": "HAS_NEWTONSOFT_JSON"

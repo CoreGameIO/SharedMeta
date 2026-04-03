@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.2] - 2026-03-28
+
+### Fixed
+
+- BestHTTP transport asmdef: `HAS_BESTHTTP` auto-defined via `versionDefines` when `com.tivadar.besthttp` is installed — no manual scripting define needed
+
 ## [0.5.1] - 2026-03-26
 
 ### Fixed
