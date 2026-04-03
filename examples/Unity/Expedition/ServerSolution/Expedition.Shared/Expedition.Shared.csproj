@@ -12,7 +12,6 @@
 
   <ItemGroup>
     <Compile Include="../../Client/Assets/Scripts/Expedition.Shared/**/*.cs" Link="%(RecursiveDir)%(Filename)%(Extension)" />
-    <Compile Include="TrackedPolyfill.cs" />
   </ItemGroup>
 
   <ItemGroup>

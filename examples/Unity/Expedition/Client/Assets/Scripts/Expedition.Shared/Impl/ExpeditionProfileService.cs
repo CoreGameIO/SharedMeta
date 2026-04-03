@@ -14,7 +14,7 @@ namespace Expedition.Shared
         {
             if (version < 1)
             {
-                state.PlayerId = Context.EntityId;
+                state.PlayerId = Context.EntityId!;
                 state.Energy = Config.StartEnergy;
                 state.Money = Config.StartMoney;
                 state.EnergyRegenSeconds = Config.EnergyRegenSeconds;

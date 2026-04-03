@@ -25,7 +25,7 @@ namespace Expedition.Shared
     }
 
     [MemoryPackable(GenerateType.VersionTolerant)]
-    [MessagePackObject]
+    [MessagePackObject(true)]
     [SharedState]
     public partial class ExpeditionState : ISharedState
     {
@@ -38,11 +38,11 @@ namespace Expedition.Shared
         [Key(4), MemoryPackOrder(4)] public int PlayerX { get; set; }
         [Key(5), MemoryPackOrder(5)] public int PlayerY { get; set; }
         [Key(6), MemoryPackOrder(6)] public bool IsGenerated { get; set; }
-        [Key(7), MemoryPackOrder(7)] public string ProfileEntityId { get; set; }
+        [Key(7), MemoryPackOrder(7)] public string ProfileEntityId { get; set; } = "";
         [Key(8), MemoryPackOrder(8), MemoryPackInclude, Tracked] private int _treasuresCollected;
         [Key(9), MemoryPackOrder(9)] public int TotalTreasures { get; set; }
         [Key(10), MemoryPackOrder(10), MemoryPackInclude, Tracked] private bool _isComplete;
-        [Key(11), MemoryPackOrder(11)] public string OwnerPlayerId { get; set; }
+        [Key(11), MemoryPackOrder(11)] public string OwnerPlayerId { get; set; } = "";
     }
 
 }

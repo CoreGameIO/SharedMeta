@@ -10,7 +10,7 @@ namespace Expedition.Shared
     /// Energy and Money are [Tracked] for push-based UI change notifications.
     /// </summary>
     [MemoryPackable(GenerateType.VersionTolerant)]
-    [MessagePackObject]
+    [MessagePackObject(true)]
     [SharedState]
     public partial class ProfileState : ISharedState
     {
@@ -19,7 +19,7 @@ namespace Expedition.Shared
         [Key(3), MemoryPackOrder(3), MemoryPackInclude, Tracked] private int _money = 100;
         [Key(4), MemoryPackOrder(4)] public long LastEnergyUpdateTicks { get; set; }
         [Key(5), MemoryPackOrder(5)] public int EnergyRegenSeconds { get; set; } = 10;
-        [Key(6), MemoryPackOrder(6)] public string CurrentExpeditionEntityId { get; set; }
+        [Key(6), MemoryPackOrder(6)] public string CurrentExpeditionEntityId { get; set; } = "";
         [Key(7), MemoryPackOrder(7)] public int ExpeditionCounter { get; set; }
     }
 }
