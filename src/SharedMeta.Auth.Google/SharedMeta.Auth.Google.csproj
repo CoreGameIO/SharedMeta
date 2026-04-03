@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <PackageId>CoreGame.SharedMeta.Auth.Google</PackageId>
+    <IsPackable>true</IsPackable>
+    <Description>Google Play Games authentication validator for SharedMeta. Exchanges server auth code for identity via Google OAuth2 API. No client SDK dependencies.</Description>
+    <PackageTags>gamedev;multiplayer;auth;google;google-play;oauth</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharedMeta.Auth\SharedMeta.Auth.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.0] - 2026-04-03
+
+### Added
+- **Platform authentication** — `IExternalAuthValidator` interface for pluggable platform token validation. Server validates tokens via platform APIs, returns stable platform user ID. Three validator packages:
+  - `CoreGame.SharedMeta.Auth.Google` — Google Play Games (server auth code → OAuth2 token exchange)
+  - `CoreGame.SharedMeta.Auth.Apple` — Sign in with Apple (JWT identity token → JWKS verification)
+  - `CoreGame.SharedMeta.Auth.Steam` — Steam (session ticket → Steam Web API validation)
+- **Account linking** — `POST /meta/auth/link` [Authorize] associates a platform with the current player. `POST /meta/auth/unlink` [Authorize] removes an auth key (device or platform). Safety: cannot unlink the last key. Conflict detection: link fails if platform already bound to a different player
+- **Platform login** — `POST /meta/auth/login-platform` authenticates via platform token without device ID. Same flow as device login but keyed on `{platform}:{platformUserId}`
+- `GET /meta/auth/keys` [Authorize] — list all auth keys linked to the current player
+- `IAuthIndexGrain` — per-player index of linked auth keys (device IDs + platform keys)
+- `AuthGrain.LinkAsync`, `UnlinkAsync`, `GetPlayerIdAsync` — grain-level link/unlink operations
+- Client: `MetaAuth.LoginWithPlatformAsync`, `MetaAuth.LinkAccountAsync`, `MetaAuth.UnlinkAsync` — cross-platform client methods (Unity + .NET)
+- DI extensions: `AddMetaAuthGoogle()`, `AddMetaAuthApple()`, `AddMetaAuthSteam()`
+- Integration tests: 12 auth tests covering device login, platform login, link, unlink, conflict detection, index tracking, full migration flow
+
 ## [0.5.2] - 2026-03-28
 
 ### Fixed

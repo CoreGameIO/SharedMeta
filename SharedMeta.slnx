@@ -18,6 +18,9 @@
     <Project Path="src/Orleans.Stubs/Orleans.Stubs.csproj" />
     <Project Path="src/SharedMeta.Generator/SharedMeta.Generator.csproj" />
     <Project Path="src/SharedMeta.Auth/SharedMeta.Auth.csproj" />
+    <Project Path="src/SharedMeta.Auth.Google/SharedMeta.Auth.Google.csproj" />
+    <Project Path="src/SharedMeta.Auth.Apple/SharedMeta.Auth.Apple.csproj" />
+    <Project Path="src/SharedMeta.Auth.Steam/SharedMeta.Auth.Steam.csproj" />
     <Project Path="src/SharedMeta.Debug/SharedMeta.Debug.csproj" />
     <Project Path="src/SharedMeta.Orleans/SharedMeta.Orleans.csproj" />
     <Project Path="src/SharedMeta.Serialization.MessagePack/SharedMeta.Serialization.MessagePack.csproj" />

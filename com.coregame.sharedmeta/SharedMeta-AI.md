@@ -533,6 +533,7 @@ public partial class GameState : ISharedState
 }
 // Generator creates: public int Gold { get; set; } with tracking setter
 // No formatter registration needed — backing field serializes directly as T
+// MessagePack: use [MessagePackObject(true)] (AllowPrivate) when class has [Tracked] fields
 ```
 
 Generated: `TrackingProperty` enum, `TrackedGameState` static subscription class, partial class with tracking properties.

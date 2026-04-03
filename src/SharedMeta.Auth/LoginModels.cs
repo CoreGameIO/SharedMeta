@@ -3,12 +3,45 @@ using System;
 namespace SharedMeta.Auth
 {
     /// <summary>
-    /// Login request from client.
+    /// Device login request from client.
     /// </summary>
     public class LoginRequest
     {
         /// <summary>Unique device identifier.</summary>
         public string DeviceId { get; set; } = "";
+    }
+
+    /// <summary>
+    /// Platform login request from client.
+    /// </summary>
+    public class PlatformLoginRequest
+    {
+        /// <summary>Platform identifier: "google", "apple", "steam".</summary>
+        public string Platform { get; set; } = "";
+
+        /// <summary>Platform token/ticket to validate.</summary>
+        public string PlatformToken { get; set; } = "";
+    }
+
+    /// <summary>
+    /// Link platform account to current player (requires authentication).
+    /// </summary>
+    public class LinkAccountRequest
+    {
+        /// <summary>Platform identifier: "google", "apple", "steam".</summary>
+        public string Platform { get; set; } = "";
+
+        /// <summary>Platform token/ticket to validate.</summary>
+        public string PlatformToken { get; set; } = "";
+    }
+
+    /// <summary>
+    /// Unlink an auth key from current player (requires authentication).
+    /// </summary>
+    public class UnlinkRequest
+    {
+        /// <summary>Auth key to unlink, e.g. "google:123456" or a device ID.</summary>
+        public string AuthKey { get; set; } = "";
     }
 
     /// <summary>
@@ -27,5 +60,14 @@ namespace SharedMeta.Auth
 
         /// <summary>Token expiration time (UTC).</summary>
         public DateTime ExpiresAt { get; set; }
+    }
+
+    /// <summary>
+    /// Response for link/unlink operations.
+    /// </summary>
+    public class AuthOperationResponse
+    {
+        public bool Success { get; set; }
+        public string? Error { get; set; }
     }
 }

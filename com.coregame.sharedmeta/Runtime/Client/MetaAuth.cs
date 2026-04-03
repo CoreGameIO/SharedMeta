@@ -87,6 +87,96 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
+        /// Login via platform (Google, Apple, Steam) instead of device ID.
+        /// Validates platform token server-side and returns JWT.
+        /// </summary>
+        /// <param name="authUrl">Auth endpoint URL (e.g., "http://localhost:5100/meta/auth").</param>
+        /// <param name="platform">Platform name: "google", "apple", "steam".</param>
+        /// <param name="platformToken">Token/ticket from the platform SDK.</param>
+        /// <param name="tokenStorage">Optional: cache the resulting token.</param>
+        /// <param name="cancellation">Cancellation token.</param>
+        public static async Task<MetaLoginResult> LoginWithPlatformAsync(
+            string authUrl,
+            string platform,
+            string platformToken,
+            ITokenStorage? tokenStorage = null,
+            CancellationToken cancellation = default)
+        {
+            var url = authUrl.TrimEnd('/') + "/login-platform";
+            MetaLog.Debug("[MetaAuth] Platform login at: " + url + " platform: " + platform);
+
+            MetaLoginResult result;
+            if (PlatformLoginFunc != null)
+                result = await PlatformLoginFunc(url, platform, platformToken, cancellation);
+            else
+            {
+#if !NETSTANDARD2_1 && !UNITY_5_3_OR_NEWER
+                result = await PlatformLoginHttpClientAsync(url, platform, platformToken, cancellation);
+#else
+                throw new PlatformNotSupportedException(
+                    "MetaAuth.LoginWithPlatformAsync requires UnityMetaAuth or net8.0+.");
+#endif
+            }
+
+            if (tokenStorage != null)
+            {
+                tokenStorage.Save(new CachedToken(result.Token, result.PlayerId, result.ExpiresAt));
+                MetaLog.Debug("[MetaAuth] Platform token cached for player: " + result.PlayerId);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Link a platform account to the currently authenticated player.
+        /// Requires a valid JWT token (from prior device or platform login).
+        /// </summary>
+        public static async Task<bool> LinkAccountAsync(
+            string authUrl,
+            string platform,
+            string platformToken,
+            string accessToken,
+            CancellationToken cancellation = default)
+        {
+            var url = authUrl.TrimEnd('/') + "/link";
+            MetaLog.Debug("[MetaAuth] Linking " + platform + " at: " + url);
+
+            if (AuthActionFunc != null)
+                return await AuthActionFunc(url, platform, platformToken, accessToken, cancellation);
+
+#if !NETSTANDARD2_1 && !UNITY_5_3_OR_NEWER
+            return await LinkHttpClientAsync(url, platform, platformToken, accessToken, cancellation);
+#else
+            throw new PlatformNotSupportedException(
+                "MetaAuth.LinkAccountAsync requires UnityMetaAuth or net8.0+.");
+#endif
+        }
+
+        /// <summary>
+        /// Unlink an auth key from the currently authenticated player.
+        /// Cannot unlink the last key.
+        /// </summary>
+        public static async Task<bool> UnlinkAsync(
+            string authUrl,
+            string authKey,
+            string accessToken,
+            CancellationToken cancellation = default)
+        {
+            var url = authUrl.TrimEnd('/') + "/unlink";
+            MetaLog.Debug("[MetaAuth] Unlinking " + authKey + " at: " + url);
+
+            if (UnlinkFunc != null)
+                return await UnlinkFunc(url, authKey, accessToken, cancellation);
+
+#if !NETSTANDARD2_1 && !UNITY_5_3_OR_NEWER
+            return await UnlinkHttpClientAsync(url, authKey, accessToken, cancellation);
+#else
+            throw new PlatformNotSupportedException(
+                "MetaAuth.UnlinkAsync requires UnityMetaAuth or net8.0+.");
+#endif
+        }
+
+        /// <summary>
         /// Clear cached token (logout).
         /// </summary>
         public static void ClearToken(ITokenStorage tokenStorage)
@@ -94,6 +184,15 @@ namespace SharedMeta.Client
             tokenStorage.Clear();
             MetaLog.Debug("[MetaAuth] Token cleared");
         }
+
+        /// <summary>Platform-specific platform login function (set by UnityMetaAuth).</summary>
+        public static Func<string, string, string, CancellationToken, Task<MetaLoginResult>>? PlatformLoginFunc { get; set; }
+
+        /// <summary>Platform-specific link function (set by UnityMetaAuth).</summary>
+        public static Func<string, string, string, string, CancellationToken, Task<bool>>? AuthActionFunc { get; set; }
+
+        /// <summary>Platform-specific unlink function (set by UnityMetaAuth).</summary>
+        public static Func<string, string, string, CancellationToken, Task<bool>>? UnlinkFunc { get; set; }
 
 #if !NETSTANDARD2_1 && !UNITY_5_3_OR_NEWER
         private static async Task<MetaLoginResult> LoginHttpClientAsync(
@@ -105,6 +204,39 @@ namespace SharedMeta.Client
 
             var result = await response.Content.ReadFromJsonAsync<MetaLoginResult>(cancellationToken: cancellation);
             return result ?? throw new InvalidOperationException("Login returned null response");
+        }
+
+        private static async Task<MetaLoginResult> PlatformLoginHttpClientAsync(
+            string url, string platform, string platformToken, CancellationToken cancellation)
+        {
+            using var http = new HttpClient();
+            var response = await http.PostAsJsonAsync(url,
+                new { Platform = platform, PlatformToken = platformToken }, cancellation);
+            response.EnsureSuccessStatusCode();
+
+            var result = await response.Content.ReadFromJsonAsync<MetaLoginResult>(cancellationToken: cancellation);
+            return result ?? throw new InvalidOperationException("Platform login returned null response");
+        }
+
+        private static async Task<bool> LinkHttpClientAsync(
+            string url, string platform, string platformToken, string accessToken, CancellationToken cancellation)
+        {
+            using var http = new HttpClient();
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+            var response = await http.PostAsJsonAsync(url,
+                new { Platform = platform, PlatformToken = platformToken }, cancellation);
+            return response.IsSuccessStatusCode;
+        }
+
+        private static async Task<bool> UnlinkHttpClientAsync(
+            string url, string authKey, string accessToken, CancellationToken cancellation)
+        {
+            using var http = new HttpClient();
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+            var response = await http.PostAsJsonAsync(url, new { AuthKey = authKey }, cancellation);
+            return response.IsSuccessStatusCode;
         }
 #endif
     }

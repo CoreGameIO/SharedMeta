@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0] - 2026-04-03
+
+### Added
+
+- **Platform authentication** — pluggable `IExternalAuthValidator` for Google Play Games, Sign in with Apple, and Steam. Separate NuGet packages: `Auth.Google`, `Auth.Apple`, `Auth.Steam`
+- **Account linking** — `POST /link` [Authorize] binds platform to current player; `POST /unlink` [Authorize] removes any auth key (cannot unlink last key)
+- **Platform login** — `POST /login-platform` authenticates via platform token, keyed as `{platform}:{platformUserId}`
+- `GET /keys` [Authorize] — list linked auth keys for current player
+- `IAuthIndexGrain` — per-player auth key index
+- `AuthGrain.LinkAsync`, `UnlinkAsync`, `GetPlayerIdAsync`
+- Client: `MetaAuth.LoginWithPlatformAsync`, `LinkAccountAsync`, `UnlinkAsync`
+- DI: `AddMetaAuthGoogle()`, `AddMetaAuthApple()`, `AddMetaAuthSteam()`
+- 12 auth integration tests
+
 ## [0.5.2] - 2026-03-28
 
 ### Fixed

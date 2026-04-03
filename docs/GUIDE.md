@@ -917,6 +917,7 @@ Rules:
 - Field must be **private** with underscore prefix (e.g. `_gold`)
 - Field must have a serialization attribute (`[Key(n)]` or `[MemoryPackOrder(n)]`)
 - Add `[MemoryPackInclude]` for MemoryPack (required for private fields)
+- **MessagePack**: use `[MessagePackObject(true)]` (AllowPrivate) on the state class — required because `[Tracked]` fields are private
 - Generator creates public property: `_gold` → `public int Gold { get; set; }` with tracking setter
 - No formatter registration needed — the backing field is serialized directly as `T`
 

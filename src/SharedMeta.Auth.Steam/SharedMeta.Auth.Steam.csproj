@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <PackageId>CoreGame.SharedMeta.Auth.Steam</PackageId>
+    <IsPackable>true</IsPackable>
+    <Description>Steam authentication validator for SharedMeta. Validates session tickets via Steam Web API (ISteamUserAuth). No Steamworks SDK dependency on server.</Description>
+    <PackageTags>gamedev;multiplayer;auth;steam;steamworks;valve</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharedMeta.Auth\SharedMeta.Auth.csproj" />
+  </ItemGroup>
+
+</Project>

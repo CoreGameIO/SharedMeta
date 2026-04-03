@@ -24,6 +24,8 @@ namespace MessagePack
     public sealed class MessagePackObjectAttribute : Attribute
     {
         public bool KeyAsPropertyName { get; set; }
+        public MessagePackObjectAttribute() { }
+        public MessagePackObjectAttribute(bool keyAsPropertyName) { KeyAsPropertyName = keyAsPropertyName; }
     }
 
     [AttributeUsage(AttributeTargets.Property | AttributeTargets.Field)]

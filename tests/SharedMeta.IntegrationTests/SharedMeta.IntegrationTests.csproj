@@ -28,6 +28,8 @@
     <!-- Core framework -->
     <ProjectReference Include="..\..\src\SharedMeta.Client\SharedMeta.Client.csproj" />
     <ProjectReference Include="..\..\src\SharedMeta.Debug\SharedMeta.Debug.csproj" />
+    <!-- Auth -->
+    <ProjectReference Include="..\..\src\SharedMeta.Auth\SharedMeta.Auth.csproj" />
   </ItemGroup>
 
 </Project>
