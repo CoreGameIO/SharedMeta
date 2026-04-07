@@ -84,8 +84,15 @@ public class TestClusterFixture : IAsyncLifetime
                     // Register serializer
                     services.AddSingleton<IMetaSerializer>(new MemoryPackMetaSerializer());
 
-                    // Entity grain options
-                    services.Configure<EntityGrainOptions>(o => o.SubscriberTtl = TimeSpan.FromMinutes(5));
+                    // Entity grain options. Force-enable deep desync globally so the
+                    // DeepDesyncTests / DesyncReportingTests don't need a per-test toggle —
+                    // the runtime opt-in logic is covered separately by the toggle in
+                    // production code paths.
+                    services.Configure<EntityGrainOptions>(o =>
+                    {
+                        o.SubscriberTtl = TimeSpan.FromMinutes(5);
+                        o.DeepDesyncEnabled = true;
+                    });
 
                     // Register execution mode provider (shared with tests)
                     services.AddSingleton<IExecutionModeProvider>(SharedModeProvider);
