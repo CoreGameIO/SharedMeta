@@ -24,6 +24,7 @@ public class ExpeditionUIGenerator : MonoBehaviour
     private Button _buyEnergyButton;
     private Button _updateEnergyButton;
     private Button _newExpeditionButton;
+    private Button _abandonButton;
     private GameObject _completeBanner;
 
     // Generation mode choice
@@ -93,6 +94,23 @@ public class ExpeditionUIGenerator : MonoBehaviour
         _statusText.alignment = TextAnchor.MiddleCenter;
         _statusText.fontSize = 18;
 
+        // Deep desync toggle (top-right)
+        var desyncToggleBtn = CreateButton(canvasGo.transform, "DesyncToggle", "Desync: OFF",
+            new Vector2(0.85f, 1), new Vector2(1, 1), new Color(0.3f, 0.3f, 0.3f));
+        var desyncToggleBtnRt = desyncToggleBtn.GetComponent<RectTransform>();
+        desyncToggleBtnRt.offsetMin = new Vector2(-10, -35);
+        desyncToggleBtnRt.offsetMax = new Vector2(-10, -5);
+        var desyncToggleText = desyncToggleBtn.GetComponentInChildren<Text>();
+        bool desyncOn = false;
+        desyncToggleBtn.onClick.AddListener(() =>
+        {
+            desyncOn = !desyncOn;
+            desyncToggleText.text = desyncOn ? "Desync: ON" : "Desync: OFF";
+            desyncToggleBtn.GetComponent<Image>().color = desyncOn
+                ? new Color(0.7f, 0.2f, 0.2f) : new Color(0.3f, 0.3f, 0.3f);
+            _ = ToggleDeepDesync(desyncOn);
+        });
+
         // Controls hint (bottom-left)
         var hintPanel = CreatePanel(canvasGo.transform, "HintPanel",
             new Vector2(0, 0), new Vector2(0.5f, 0), new Vector2(10, 10), new Vector2(0, 60));
@@ -101,21 +119,25 @@ public class ExpeditionUIGenerator : MonoBehaviour
             new Vector2(0, 0), new Vector2(1, 1), new Color(0.7f, 0.7f, 0.7f));
         _controlsHintText.fontSize = 13;
 
-        // Action buttons (bottom-right)
+        // Action buttons (bottom-right) — three columns: Buy / Regen / Abandon
         var btnPanel = CreatePanel(canvasGo.transform, "ButtonPanel",
-            new Vector2(1, 0), new Vector2(1, 0), new Vector2(-320, 10), new Vector2(-10, 50));
+            new Vector2(1, 0), new Vector2(1, 0), new Vector2(-460, 10), new Vector2(-10, 50));
 
         _buyEnergyButton = CreateButton(btnPanel.transform, "BuyEnergyBtn", "Buy Energy",
-            new Vector2(0, 0), new Vector2(0.45f, 1), new Color(0.2f, 0.6f, 0.2f));
+            new Vector2(0, 0), new Vector2(0.32f, 1), new Color(0.2f, 0.6f, 0.2f));
         _buyEnergyButton.onClick.AddListener(() => _ = gameManager.BuyEnergy());
 
         _updateEnergyButton = CreateButton(btnPanel.transform, "UpdateEnergyBtn", "Regen Energy",
-            new Vector2(0.5f, 0), new Vector2(0.95f, 1), new Color(0.2f, 0.4f, 0.7f));
+            new Vector2(0.34f, 0), new Vector2(0.66f, 1), new Color(0.2f, 0.4f, 0.7f));
         _updateEnergyButton.onClick.AddListener(() => _ = gameManager.UpdateEnergy());
 
-        // New expedition button (hidden until complete) — shows generation mode choice
+        _abandonButton = CreateButton(btnPanel.transform, "AbandonBtn", "Abandon",
+            new Vector2(0.68f, 0), new Vector2(1f, 1), new Color(0.6f, 0.2f, 0.2f));
+        _abandonButton.onClick.AddListener(() => _ = gameManager.AbandonExpedition());
+
+        // New expedition button (hidden until complete) — overlays the row, shows generation mode choice
         _newExpeditionButton = CreateButton(btnPanel.transform, "NewExpBtn", "New Expedition",
-            new Vector2(0, 0), new Vector2(0.95f, 1), new Color(0.7f, 0.5f, 0.1f));
+            new Vector2(0, 0), new Vector2(1f, 1), new Color(0.7f, 0.5f, 0.1f));
         _newExpeditionButton.onClick.AddListener(ShowGenerationModeChoice);
         _newExpeditionButton.gameObject.SetActive(false);
 
@@ -136,18 +158,23 @@ public class ExpeditionUIGenerator : MonoBehaviour
 
         var choiceDesc = CreateText(_generationChoicePanel.transform, "ChoiceDesc",
             "ServerReplace: server generates, client receives full state\n" +
-            "Optimistic: client predicts with same deterministic random seed",
-            new Vector2(0.05f, 0.35f), new Vector2(0.95f, 0.65f), new Color(0.8f, 0.8f, 0.8f));
+            "Optimistic: client predicts with deterministic random seed\n" +
+            "Broken: uses System.Random — will desync! (run server with --desync to detect)",
+            new Vector2(0.05f, 0.25f), new Vector2(0.95f, 0.6f), new Color(0.8f, 0.8f, 0.8f));
         choiceDesc.alignment = TextAnchor.MiddleCenter;
-        choiceDesc.fontSize = 14;
+        choiceDesc.fontSize = 13;
 
         _serverReplaceButton = CreateButton(_generationChoicePanel.transform, "ServerReplaceBtn",
-            "ServerReplace", new Vector2(0.05f, 0.05f), new Vector2(0.48f, 0.35f), new Color(0.6f, 0.3f, 0.1f));
-        _serverReplaceButton.onClick.AddListener(() => OnGenerationModeChosen(true));
+            "ServerReplace", new Vector2(0.03f, 0.03f), new Vector2(0.33f, 0.25f), new Color(0.6f, 0.3f, 0.1f));
+        _serverReplaceButton.onClick.AddListener(() => OnGenerationModeChosen(ExpeditionGameManager.GenerationMode.ServerReplace));
 
         _optimisticButton = CreateButton(_generationChoicePanel.transform, "OptimisticBtn",
-            "Optimistic", new Vector2(0.52f, 0.05f), new Vector2(0.95f, 0.35f), new Color(0.1f, 0.5f, 0.6f));
-        _optimisticButton.onClick.AddListener(() => OnGenerationModeChosen(false));
+            "Optimistic", new Vector2(0.35f, 0.03f), new Vector2(0.65f, 0.25f), new Color(0.1f, 0.5f, 0.6f));
+        _optimisticButton.onClick.AddListener(() => OnGenerationModeChosen(ExpeditionGameManager.GenerationMode.Optimistic));
+
+        var brokenButton = CreateButton(_generationChoicePanel.transform, "BrokenBtn",
+            "Broken (desync)", new Vector2(0.67f, 0.03f), new Vector2(0.97f, 0.25f), new Color(0.7f, 0.1f, 0.1f));
+        brokenButton.onClick.AddListener(() => OnGenerationModeChosen(ExpeditionGameManager.GenerationMode.Broken));
 
         _generationChoicePanel.SetActive(false);
 
@@ -155,16 +182,24 @@ public class ExpeditionUIGenerator : MonoBehaviour
         CreateDPad(canvasGo.transform);
     }
 
-    /// <summary>Show the generation mode choice panel (ServerReplace vs Optimistic).</summary>
+    private async System.Threading.Tasks.Task ToggleDeepDesync(bool enabled)
+    {
+        var result = await gameManager.Client.SetDeepDesyncAsync(enabled);
+        SetStatus(result
+            ? $"Deep desync {(enabled ? "ENABLED" : "DISABLED")}"
+            : "Deep desync toggle failed (server may have AllowDebugApi=false)");
+    }
+
+    /// <summary>Show the generation mode choice panel.</summary>
     public void ShowGenerationModeChoice()
     {
         _generationChoicePanel.SetActive(true);
     }
 
-    private async void OnGenerationModeChosen(bool useServerReplace)
+    private async void OnGenerationModeChosen(ExpeditionGameManager.GenerationMode mode)
     {
         _generationChoicePanel.SetActive(false);
-        await gameManager.StartNewExpedition(useServerReplace);
+        await gameManager.StartNewExpedition(mode);
     }
 
     private void CreateDPad(Transform parent)
@@ -256,6 +291,7 @@ public class ExpeditionUIGenerator : MonoBehaviour
             _newExpeditionButton.gameObject.SetActive(isComplete);
             _buyEnergyButton.gameObject.SetActive(!isComplete);
             _updateEnergyButton.gameObject.SetActive(!isComplete);
+            _abandonButton.gameObject.SetActive(!isComplete);
 
             // Update map
             if (mapView != null)

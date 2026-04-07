@@ -30,6 +30,6 @@ namespace Expedition.Shared
 
         // Buy energy
         [Key(12), MemoryPackOrder(12)] public int BuyEnergyAmount { get; set; } = 10;
-        [Key(13), MemoryPackOrder(13)] public int BuyEnergyCost { get; set; } = 50;
+        [Key(13), MemoryPackOrder(13)] public int BuyEnergyCost { get; set; } = 20;
     }
 }

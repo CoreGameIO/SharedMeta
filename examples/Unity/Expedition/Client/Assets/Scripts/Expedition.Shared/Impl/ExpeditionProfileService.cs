@@ -104,5 +104,18 @@ namespace Expedition.Shared
 
             return entityId;
         }
+
+        public async Task<bool> AbandonExpedition()
+        {
+            var current = state.CurrentExpeditionEntityId;
+            if (string.IsNullOrEmpty(current))
+                return false;
+
+            var expCaller = GetIExpeditionService(current);
+            await expCaller.MarkAbandonedAsync();
+
+            state.CurrentExpeditionEntityId = "";
+            return true;
+        }
     }
 }

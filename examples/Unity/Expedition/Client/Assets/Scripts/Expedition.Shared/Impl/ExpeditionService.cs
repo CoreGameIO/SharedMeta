@@ -16,6 +16,13 @@ namespace Expedition.Shared
             state.ProfileEntityId = ownerPlayerId;
         }
 
+        public void MarkAbandoned()
+        {
+            // Reuse the standard "complete" flow — UI listens to IsComplete to show
+            // the new-expedition prompt. No reward is given.
+            state.IsComplete = true;
+        }
+
         public bool IsAuthorized(string playerId)
         {
             return state.OwnerPlayerId == playerId;
@@ -196,57 +203,27 @@ namespace Expedition.Shared
             RegenerateMapBroken();
         }
 
-        /// <summary>Non-deterministic map generation using System.Random (for desync demo).</summary>
+        /// <summary>
+        /// Mostly deterministic map generation, but corrupts 5-15 random cells using
+        /// <see cref="System.Random"/>. This produces a small, focused desync that the
+        /// patch diff can show clearly (instead of a fully different 12x12 map).
+        /// </summary>
         private void RegenerateMapBroken()
         {
+            // Generate the map deterministically first — same on client and server.
+            RegenerateMap();
+
+            // Then corrupt a handful of cells with System.Random — different sequence
+            // on each side, so the resulting Cells lists diverge in 5-15 positions.
             var rng = new Random(); // BAD: non-deterministic!
-            var width = Config.MapWidth;
-            var height = Config.MapHeight;
-            var totalCells = width * height;
+            var totalCells = state.Cells.Count;
+            int corruptCount = 5 + rng.Next(11); // 5..15 inclusive
 
-            state.Width = width;
-            state.Height = height;
-            state.PlayerX = 0;
-            state.PlayerY = 0;
-            state.TreasuresCollected = 0;
-            state.IsComplete = false;
-
-            state.Cells = new List<byte>(totalCells);
-            state.Revealed = new List<bool>(totalCells);
-
-            for (int i = 0; i < totalCells; i++)
+            for (int n = 0; n < corruptCount; n++)
             {
-                state.Cells.Add((byte)CellType.Empty);
-                state.Revealed.Add(false);
+                int idx = rng.Next(1, totalCells); // skip [0] — player spawn
+                state.Cells[idx] = (byte)(rng.Next(4)); // any CellType
             }
-
-            for (int i = 1; i < totalCells; i++)
-            {
-                if (rng.Next(100) < Config.WallPercent)
-                    state.Cells[i] = (byte)CellType.Wall;
-            }
-
-            for (int i = 1; i < totalCells; i++)
-            {
-                if (state.Cells[i] != (byte)CellType.Empty) continue;
-                if (rng.Next(100) < Config.ObstaclePercent)
-                    state.Cells[i] = (byte)CellType.Obstacle;
-            }
-
-            int treasureCount = 0;
-            for (int i = 1; i < totalCells; i++)
-            {
-                if (state.Cells[i] != (byte)CellType.Empty) continue;
-                if (rng.Next(100) < Config.TreasurePercent)
-                {
-                    state.Cells[i] = (byte)CellType.Treasure;
-                    treasureCount++;
-                }
-            }
-            state.TotalTreasures = treasureCount;
-
-            RevealArea(0, 0);
-            state.IsGenerated = true;
         }
 
         private void RegenerateMap()

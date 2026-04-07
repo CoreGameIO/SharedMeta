@@ -42,6 +42,7 @@ public class ExpeditionGameManager : MonoBehaviour
     private ExpeditionServiceApiClient _expApi;
     private ExpeditionServiceQueryApi _expeditionQuery;
     private bool _pendingRender;
+    private ExpeditionDesyncDiagnostics _diagnostics;
 
     public ExpeditionProfileServiceApiClient ProfileApi => _profileApi;
     public ExpeditionServiceApiClient ExpeditionApi => _expApi;
@@ -68,6 +69,11 @@ public class ExpeditionGameManager : MonoBehaviour
             _pendingRender = false;
             OnStateUpdated?.Invoke();
         }
+
+        // Drain pending desync messages from background threads
+        var desyncMsg = _diagnostics?.DrainPendingMessage();
+        if (!string.IsNullOrEmpty(desyncMsg))
+            ui?.SetStatus(desyncMsg);
     }
 
     void OnDestroy()
@@ -92,9 +98,14 @@ public class ExpeditionGameManager : MonoBehaviour
             var serializer = new MemoryPackMetaSerializer();
             var connection = new SignalRConnection(metaUrl, login.Token);
 
+            _diagnostics = new ExpeditionDesyncDiagnostics(ui);
             Client = new MetaClient(
                 connection, serializer,
-                new MetaClientOptions { PlayerId = login.PlayerId }
+                new MetaClientOptions
+                {
+                    PlayerId = login.PlayerId,
+                    Diagnostics = _diagnostics
+                }
             );
 
             Client.Resolver.RegisterAllServices();
@@ -209,34 +220,35 @@ public class ExpeditionGameManager : MonoBehaviour
         }
     }
 
+    public enum GenerationMode { ServerReplace, Optimistic, Broken }
+
     /// <summary>
     /// Create a new expedition with the chosen generation mode.
-    /// ServerReplace: server generates map, client receives full state.
-    /// Optimistic: client predicts generation with same deterministic random seed.
     /// </summary>
-    public async Task StartNewExpedition(bool useServerReplace)
+    public async Task StartNewExpedition(GenerationMode mode)
     {
         try
         {
             ui.SetStatus("Creating expedition...");
 
-            // 1. Create expedition entity on server (via profile service)
             var entityId = await _profileApi.StartNewExpeditionAsync();
             _expeditionEntityId = entityId;
-
-            // 2. Subscribe to the new expedition
             _expApi = await Client.GetServiceAsync<ExpeditionServiceApiClient>(_expeditionEntityId);
 
-            // 3. Generate map with chosen mode
-            if (useServerReplace)
+            switch (mode)
             {
-                await _expApi.GenerateNewMapAsync();
-                ui.SetStatus("New expedition (ServerReplace) — server generated map!");
-            }
-            else
-            {
-                await _expApi.GenerateNewMapOptimisticAsync();
-                ui.SetStatus("New expedition (Optimistic) — client predicted map!");
+                case GenerationMode.ServerReplace:
+                    await _expApi.GenerateNewMapAsync();
+                    ui.SetStatus("New expedition (ServerReplace) — server generated map!");
+                    break;
+                case GenerationMode.Optimistic:
+                    await _expApi.GenerateNewMapOptimisticAsync();
+                    ui.SetStatus("New expedition (Optimistic) — client predicted map!");
+                    break;
+                case GenerationMode.Broken:
+                    await _expApi.GenerateNewMapBrokenAsync();
+                    ui.SetStatus("New expedition (Broken) — System.Random, desync expected!");
+                    break;
             }
 
             _pendingRender = true;
@@ -278,6 +290,38 @@ public class ExpeditionGameManager : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Abandon the current expedition (e.g. stuck in a dead end). Server marks it complete
+    /// and clears the profile reference; the UI returns to the new-expedition prompt.
+    /// </summary>
+    public async Task AbandonExpedition()
+    {
+        if (_expApi == null)
+            return;
+
+        try
+        {
+            ui.SetStatus("Abandoning expedition...");
+            bool abandoned = await _profileApi.AbandonExpeditionAsync();
+            if (!abandoned)
+            {
+                ui.SetStatus("No active expedition to abandon.");
+                return;
+            }
+
+            _expeditionEntityId = null;
+            _expApi = null;
+            _pendingRender = true;
+            ui.SetStatus("Expedition abandoned.");
+            ui.ShowGenerationModeChoice();
+        }
+        catch (Exception ex)
+        {
+            ui.SetStatus($"Error: {ex.Message}");
+            Debug.LogException(ex);
+        }
+    }
+
     public async Task BuyEnergy()
     {
         try
@@ -305,4 +349,52 @@ public class ExpeditionGameManager : MonoBehaviour
             ui.SetStatus($"Error: {ex.Message}");
         }
     }
+}
+
+/// <summary>
+/// Diagnostics handler for the Expedition client.
+/// Logs desyncs to console and shows them in the UI status.
+/// </summary>
+internal class ExpeditionDesyncDiagnostics : SharedMeta.Core.Diagnostics.IDesyncDiagnostics
+{
+    private readonly ExpeditionUIGenerator _ui;
+    // Pending desync message from background thread (ContinueWith); drained on main thread.
+    private string _pendingMessage;
+    public string DrainPendingMessage()
+    {
+        var m = _pendingMessage;
+        _pendingMessage = null;
+        return m;
+    }
+
+    public ExpeditionDesyncDiagnostics(ExpeditionUIGenerator ui)
+    {
+        _ui = ui;
+    }
+
+    public void OnResultMismatch<T>(string serviceName, string methodName, T serverResult, T localResult)
+    {
+        var msg = $"[DESYNC] {serviceName}.{methodName}: server={serverResult}, local={localResult}";
+        Debug.LogError(msg);
+        _pendingMessage = msg;
+    }
+
+    public void OnCrossEntityResult(string entityId, string serviceName, string methodName, byte[] resultBytes) { }
+
+    public void OnRandomDesync(string serviceName, string methodName, long serverDelta, long localDelta)
+    {
+        var msg = $"[RANDOM DESYNC] {serviceName}.{methodName}: server={serverDelta}, local={localDelta}";
+        Debug.LogError(msg);
+        _pendingMessage = msg;
+    }
+
+    public void OnPatchDesync(string serviceName, string methodName, uint serverCrc, uint localCrc)
+    {
+        var msg = $"[PATCH DESYNC] {serviceName}.{methodName}: serverCrc=0x{serverCrc:X8}, localCrc=0x{localCrc:X8}";
+        Debug.LogError(msg);
+        _pendingMessage = msg;
+    }
+
+    public Task<SharedMeta.Core.Diagnostics.StateComparisonResult> CompareFullStateAsync(string entityId)
+        => Task.FromResult(new SharedMeta.Core.Diagnostics.StateComparisonResult { IsMatch = true });
 }

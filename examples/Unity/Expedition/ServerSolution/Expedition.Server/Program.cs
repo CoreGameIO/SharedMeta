@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -49,7 +50,11 @@ builder.Host.UseOrleans(siloBuilder =>
         .ConfigureServices(services =>
         {
             services.AddSingleton<IMetaSerializer>(serializer);
-            services.Configure<EntityGrainOptions>(o => o.SubscriberTtl = TimeSpan.FromMinutes(10));
+            services.Configure<EntityGrainOptions>(o =>
+            {
+                o.SubscriberTtl = TimeSpan.FromMinutes(10);
+                // DeepDesyncEnabled left null — controlled per-session via client SetDebugOptions
+            });
 
             services.ConfigureMeta(svc =>
             {
@@ -69,14 +74,8 @@ builder.Services.AddSignalR(hubOptions =>
     hubOptions.KeepAliveInterval = TimeSpan.FromMinutes(15);
 }).AddMetaMessagePackProtocol();
 
-// MetaConnectionHandler factory
-builder.Services.AddSingleton<IMetaConnectionHandlerFactory>(sp =>
-{
-    var grainFactory = sp.GetRequiredService<IGrainFactory>();
-    var entityGrainResolver = sp.GetRequiredService<IEntityGrainResolver>();
-    var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-    return new MetaConnectionHandlerFactory(grainFactory, entityGrainResolver, loggerFactory);
-});
+// MetaConnectionHandlerFactory is registered by the generated ConfigureMeta()
+// (passes MetaTransportOptions + IMetaSerializer for desync reporting)
 
 // Authentication
 builder.Services.AddMetaAuth(options =>
@@ -84,7 +83,13 @@ builder.Services.AddMetaAuth(options =>
     options.SecretKey = "expedition-secret-key-at-least-32-characters!!";
     options.Issuer = "expedition-server";
 });
-builder.Services.AddSingleton(new MetaTransportOptions { RequireAuthentication = true });
+builder.Services.AddSingleton(new MetaTransportOptions
+{
+    RequireAuthentication = true,
+    AllowDebugApi = true,             // example project — debug API always available
+    DesyncReportingEnabled = true,    // accept client follow-up reports
+    DesyncLogLevel = DesyncLogLevel.Debug  // log full text diff for inspection
+});
 
 // CORS
 builder.Services.AddCors(options =>
@@ -114,6 +119,7 @@ app.MapGet("/meta/config/{major:int}/{minor:int}", (int major, int minor, IMetaS
 
 app.Logger.LogInformation("=== Expedition.Server ===");
 app.Logger.LogInformation("Listening on http://localhost:{Port}", port);
+app.Logger.LogInformation("Debug API enabled — clients can toggle deep desync detection at runtime");
 
 await app.RunAsync();
 
