@@ -53,13 +53,15 @@ public class TestClusterFixture : IAsyncLifetime
     /// <summary>
     /// Create a MetaConnectionHandlerFactory that can be used with InProcessServer.
     /// </summary>
-    public IMetaConnectionHandlerFactory CreateHandlerFactory()
+    public IMetaConnectionHandlerFactory CreateHandlerFactory(MetaTransportOptions? transportOptions = null)
     {
         return new MetaConnectionHandlerFactory(
             GrainFactory,
             new GeneratedEntityGrainResolver(),
             NullLoggerFactory.Instance,
-            MetaMethodSignatureValidator.ValidateClientSignatures);
+            MetaMethodSignatureValidator.ValidateClientSignatures,
+            transportOptions,
+            transportOptions != null ? Serializer : null);
     }
 
     /// <summary>

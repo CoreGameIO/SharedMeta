@@ -129,8 +129,18 @@ namespace SharedMeta.Debug.InProcess
             return await _server.QueryCallAsync(_connectionId, request);
         }
 
-        public Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request)
-            => Task.FromResult(false);
+        public async Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request)
+        {
+            EnsureConnected();
+            var response = await _server.SetDebugOptionsAsync(_connectionId, request);
+            return response.Success;
+        }
+
+        public async Task<DesyncReportResponse> SendDesyncReportAsync(DesyncReportRequest request)
+        {
+            EnsureConnected();
+            return await _server.SendDesyncReportAsync(_connectionId, request);
+        }
 
         public async Task AcknowledgeSequenceAsync(long sequenceNumber)
         {

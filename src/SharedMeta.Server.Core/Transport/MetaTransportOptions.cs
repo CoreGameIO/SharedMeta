@@ -21,5 +21,38 @@ namespace SharedMeta.Server.Core.Transport
         /// Default: false (production safe). Enable during development/testing.
         /// </summary>
         public bool AllowDebugApi { get; set; }
+
+        /// <summary>
+        /// When true, server caches recent server-side patches per connection and accepts
+        /// client desync reports via /meta/desync-report. Reports are stored in DesyncReportGrain.
+        /// Default: false (production safe).
+        /// </summary>
+        public bool DesyncReportingEnabled { get; set; }
+
+        /// <summary>
+        /// Size of the per-connection ring buffer that caches server patches for desync reporting.
+        /// Older entries are evicted. Default: 16.
+        /// </summary>
+        public int DesyncReportPatchCacheSize { get; set; } = 16;
+
+        /// <summary>
+        /// Logging verbosity for desync reports. Default: Warning.
+        /// - None: do not log
+        /// - Warning: one-line summary per report
+        /// - Information: summary + field count
+        /// - Debug: full text diff with field paths and values
+        /// </summary>
+        public DesyncLogLevel DesyncLogLevel { get; set; } = DesyncLogLevel.Warning;
+    }
+
+    /// <summary>
+    /// Verbosity levels for server-side desync logging.
+    /// </summary>
+    public enum DesyncLogLevel
+    {
+        None = 0,
+        Warning = 1,
+        Information = 2,
+        Debug = 3
     }
 }

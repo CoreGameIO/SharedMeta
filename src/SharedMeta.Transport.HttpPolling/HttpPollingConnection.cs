@@ -183,6 +183,12 @@ namespace SharedMeta.Transport.HttpPolling
             return response.Success;
         }
 
+        public async Task<DesyncReportResponse> SendDesyncReportAsync(DesyncReportRequest request)
+        {
+            EnsureSessionConnected();
+            return await PostAsync<DesyncReportResponse>("/desync-report", request, MetaJsonContext.Default.DesyncReportRequest);
+        }
+
         public async Task AcknowledgeSequenceAsync(long sequenceNumber)
         {
             EnsureSessionConnected();

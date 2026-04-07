@@ -397,7 +397,7 @@ namespace SharedMeta.Generator.Generators
             GenerateOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync);
 
             // CrossOptimistic mode implementation
-            GenerateCrossOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName);
+            GenerateCrossOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync);
 
             // ServerPatch mode implementation
             GenerateServerPatchMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName);
@@ -498,6 +498,15 @@ namespace SharedMeta.Generator.Generators
             }
             if (hasDeepDesync)
             {
+                // Capture local patch bytes before clearing PatchWrapper
+                sb.AppendLine("                byte[] _ddLocalPatchBytes = System.Array.Empty<byte>();");
+                sb.AppendLine("                uint _ddLocalCrc = 0;");
+                sb.AppendLine("                _ddRoot.Prune();");
+                sb.AppendLine("                if (_ddRoot.HasChanges)");
+                sb.AppendLine("                {");
+                sb.AppendLine("                    _ddLocalPatchBytes = _serializer.Pack(_ddRoot);");
+                sb.AppendLine("                    _ddLocalCrc = SharedMeta.Core.Patch.PatchCrc.Compute(_ddLocalPatchBytes);");
+                sb.AppendLine("                }");
                 sb.AppendLine("                MetaContextAccessor.Current!.PatchWrapper = null;");
             }
             sb.AppendLine("                ClearContext();");
@@ -512,12 +521,13 @@ namespace SharedMeta.Generator.Generators
                 GenerateResultByteComparison(sb, returnType, serializer, "response.ResultBytes", "                ");
                 sb.AppendLine("                {");
                 sb.AppendLine($"                    _diagnostics?.OnResultMismatch(ServiceName, \"{methodAlias}\", serverResult, localResult);");
+                GenerateResultMismatchReport(sb, methodAlias, "response.ResultBytes", "localResultBytes", "                    ");
                 sb.AppendLine($"                    throw new DesyncException(ServiceName, \"{methodAlias}\", serverResult, localResult);");
                 sb.AppendLine("                }");
             }
 
-            // Deep desync: compare patch CRC after execution
-            GenerateDeepDesyncCheck(sb, methodAlias, "response", "                ");
+            // Deep desync: compare patch CRC after execution (uses precomputed _ddLocalCrc/_ddLocalPatchBytes)
+            GenerateDeepDesyncCheck(sb, methodAlias, "response", "                ", hasDeepDesync);
 
             if (!isVoidReturn)
             {
@@ -683,11 +693,15 @@ namespace SharedMeta.Generator.Generators
             if (hasDeepDesync)
             {
                 sb.AppendLine("            uint _ddLocalCrc = 0;");
+                sb.AppendLine("            byte[] _ddLocalPatchBytes = System.Array.Empty<byte>();");
                 sb.AppendLine("            if (ctx.PatchWrapper is SharedMeta.Core.Patch.IPatchWrapper _ddPw && _ddPw.Node != null)");
                 sb.AppendLine("            {");
                 sb.AppendLine("                _ddPw.Node.Prune();");
                 sb.AppendLine("                if (_ddPw.Node.HasChanges)");
-                sb.AppendLine("                    _ddLocalCrc = SharedMeta.Core.Patch.PatchCrc.Compute(_serializer.Pack(_ddPw.Node));");
+                sb.AppendLine("                {");
+                sb.AppendLine("                    _ddLocalPatchBytes = _serializer.Pack(_ddPw.Node);");
+                sb.AppendLine("                    _ddLocalCrc = SharedMeta.Core.Patch.PatchCrc.Compute(_ddLocalPatchBytes);");
+                sb.AppendLine("                }");
                 sb.AppendLine("            }");
             }
             sb.AppendLine();
@@ -702,15 +716,20 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"            _ = _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks)");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
+                sb.AppendLine("                    try");
+                sb.AppendLine("                    {");
                 sb.AppendLine("                    if (t.IsCompletedSuccessfully)");
                 sb.AppendLine("                    {");
                 sb.AppendLine("                        var localScrollDelta = (_optimisticRandom?.ScrollId ?? 0) - scrollIdBefore;");
                 sb.AppendLine("                        if (t.Result.RandomScrollDelta != localScrollDelta)");
                 sb.AppendLine("                        {");
                 sb.AppendLine($"                            _diagnostics?.OnRandomDesync(ServiceName, \"{methodAlias}\", t.Result.RandomScrollDelta, localScrollDelta);");
+                GenerateRandomMismatchReport(sb, methodAlias, "t.Result.RandomScrollDelta", "localScrollDelta", "                            ");
                 sb.AppendLine("                        }");
-                GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", usePrecomputed: hasDeepDesync);
+                GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", hasDeepDesync);
                 sb.AppendLine("                    }");
+                sb.AppendLine("                    }");
+                sb.AppendLine($"                    catch (Exception _ddEx) {{ SharedMeta.Core.Logging.MetaLog.Error(\"[Optimistic-Continuation] {methodAlias}: \" + _ddEx, _ddEx); }}");
                 sb.AppendLine("                });");
             }
             else
@@ -718,6 +737,8 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"            _ = _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks)");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
+                sb.AppendLine("                    try");
+                sb.AppendLine("                    {");
                 sb.AppendLine("                    if (t.IsCompletedSuccessfully)");
                 sb.AppendLine("                    {");
                 GenerateOptimisticResultDeserialization(sb, returnType, methodAlias, serializer);
@@ -726,9 +747,12 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                        if (t.Result.RandomScrollDelta != localScrollDelta)");
                 sb.AppendLine("                        {");
                 sb.AppendLine($"                            _diagnostics?.OnRandomDesync(ServiceName, \"{methodAlias}\", t.Result.RandomScrollDelta, localScrollDelta);");
+                GenerateRandomMismatchReport(sb, methodAlias, "t.Result.RandomScrollDelta", "localScrollDelta", "                            ");
                 sb.AppendLine("                        }");
-                GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", usePrecomputed: hasDeepDesync);
+                GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", hasDeepDesync);
                 sb.AppendLine("                    }");
+                sb.AppendLine("                    }");
+                sb.AppendLine($"                    catch (Exception _ddEx) {{ SharedMeta.Core.Logging.MetaLog.Error(\"[Optimistic-Continuation] {methodAlias}: \" + _ddEx, _ddEx); }}");
                 sb.AppendLine("                });");
                 sb.AppendLine();
                 sb.AppendLine("            return localResult;");
@@ -740,7 +764,7 @@ namespace SharedMeta.Generator.Generators
 
         private static void GenerateCrossOptimisticMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
-            DetectedSerializer serializer, string? stateTypeName)
+            DetectedSerializer serializer, string? stateTypeName, bool hasDeepDesync = false)
         {
             var methodName = method.Identifier.Text;
             var parameters = string.Join(", ", method.ParameterList.Parameters);
@@ -774,19 +798,40 @@ namespace SharedMeta.Generator.Generators
 
             sb.AppendLine("            try");
             sb.AppendLine("            {");
+            if (hasDeepDesync)
+            {
+                sb.AppendLine("                var _ddRoot = new SharedMeta.Core.Patch.PatchNode(-1);");
+                sb.AppendLine($"                ctx.PatchWrapper = new {stateTypeName}PatchWrapper(_state, _ddRoot, _serializer);");
+            }
+            var coServiceRef = hasDeepDesync ? "_patchTrackedService" : "_service";
             if (isVoidReturn)
             {
-                sb.AppendLine($"                {awaitPrefix}_service.{methodName}({callArgs});");
+                sb.AppendLine($"                {awaitPrefix}{coServiceRef}.{methodName}({callArgs});");
             }
             else
             {
-                sb.AppendLine($"                localResult = {awaitPrefix}_service.{methodName}({callArgs});");
+                sb.AppendLine($"                localResult = {awaitPrefix}{coServiceRef}.{methodName}({callArgs});");
             }
             sb.AppendLine("            }");
             sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            localCrossResults = _crossEntityResolver?.TakeRecordedResults() ?? new();");
+            // Deep desync: capture local CRC + patch bytes before fire-and-forget
+            if (hasDeepDesync)
+            {
+                sb.AppendLine("            uint _ddLocalCrc = 0;");
+                sb.AppendLine("            byte[] _ddLocalPatchBytes = System.Array.Empty<byte>();");
+                sb.AppendLine("            if (ctx.PatchWrapper is SharedMeta.Core.Patch.IPatchWrapper _ddPw && _ddPw.Node != null)");
+                sb.AppendLine("            {");
+                sb.AppendLine("                _ddPw.Node.Prune();");
+                sb.AppendLine("                if (_ddPw.Node.HasChanges)");
+                sb.AppendLine("                {");
+                sb.AppendLine("                    _ddLocalPatchBytes = _serializer.Pack(_ddPw.Node);");
+                sb.AppendLine("                    _ddLocalCrc = SharedMeta.Core.Patch.PatchCrc.Compute(_ddLocalPatchBytes);");
+                sb.AppendLine("                }");
+                sb.AppendLine("            }");
+            }
             sb.AppendLine();
 
             // Serialize arguments
@@ -799,12 +844,15 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"            _ = _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, isCrossOptimistic: true, serverTimeTicks: serverTimeTicks)");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
+                sb.AppendLine("                    try");
+                sb.AppendLine("                    {");
                 sb.AppendLine("                    if (t.IsCompletedSuccessfully)");
                 sb.AppendLine("                    {");
                 sb.AppendLine("                        var localScrollDelta = (_optimisticRandom?.ScrollId ?? 0) - scrollIdBefore;");
                 sb.AppendLine("                        if (t.Result.RandomScrollDelta != localScrollDelta)");
                 sb.AppendLine("                        {");
                 sb.AppendLine($"                            _diagnostics?.OnRandomDesync(ServiceName, \"{methodAlias}\", t.Result.RandomScrollDelta, localScrollDelta);");
+                GenerateRandomMismatchReport(sb, methodAlias, "t.Result.RandomScrollDelta", "localScrollDelta", "                            ");
                 sb.AppendLine("                        }");
                 sb.AppendLine("                        if (t.Result.CrossEntityOperations is { Count: > 0 } serverCrossOps)");
                 sb.AppendLine("                        {");
@@ -813,7 +861,10 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                                // Cross-entity desync comparison is logged but not thrown for void methods");
                 sb.AppendLine("                            }");
                 sb.AppendLine("                        }");
+                GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", hasDeepDesync);
                 sb.AppendLine("                    }");
+                sb.AppendLine("                    }");
+                sb.AppendLine($"                    catch (Exception _ddEx) {{ SharedMeta.Core.Logging.MetaLog.Error(\"[CrossOptimistic-Continuation] {methodAlias}: \" + _ddEx, _ddEx); }}");
                 sb.AppendLine("                });");
             }
             else
@@ -821,6 +872,8 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"            _ = _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, isCrossOptimistic: true, serverTimeTicks: serverTimeTicks)");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
+                sb.AppendLine("                    try");
+                sb.AppendLine("                    {");
                 sb.AppendLine("                    if (t.IsCompletedSuccessfully)");
                 sb.AppendLine("                    {");
                 // Compare main result
@@ -840,8 +893,12 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                        if (t.Result.RandomScrollDelta != localScrollDelta)");
                 sb.AppendLine("                        {");
                 sb.AppendLine($"                            _diagnostics?.OnRandomDesync(ServiceName, \"{methodAlias}\", t.Result.RandomScrollDelta, localScrollDelta);");
+                GenerateRandomMismatchReport(sb, methodAlias, "t.Result.RandomScrollDelta", "localScrollDelta", "                            ");
                 sb.AppendLine("                        }");
+                GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", hasDeepDesync);
                 sb.AppendLine("                    }");
+                sb.AppendLine("                    }");
+                sb.AppendLine($"                    catch (Exception _ddEx) {{ SharedMeta.Core.Logging.MetaLog.Error(\"[CrossOptimistic-Continuation] {methodAlias}: \" + _ddEx, _ddEx); }}");
                 sb.AppendLine("                });");
                 sb.AppendLine();
                 sb.AppendLine("            return localResult;");
@@ -1040,6 +1097,8 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                            {");
             sb.AppendLine($"                                _diagnostics?.OnResultMismatch(ServiceName, \"{methodAlias}\", default({returnType})!, localResult);");
             sb.AppendLine("                            }");
+            // Fire-and-forget desync follow-up report (server gates by DesyncReportingEnabled)
+            GenerateResultMismatchReport(sb, methodAlias, "t.Result.ResultBytes", "localResultBytes", "                            ");
             sb.AppendLine("                        }");
         }
 
@@ -1463,34 +1522,64 @@ namespace SharedMeta.Generator.Generators
         /// and compares CRC to detect state-level divergence.
         /// </summary>
         /// <summary>
-        /// Generate deep desync CRC check.
-        /// For Server mode: computes CRC from PatchWrapper on Context (still active).
-        /// For Optimistic mode: uses pre-computed _ddLocalCrc (Context already cleared).
+        /// Generate deep desync CRC check (only when service has DeepDesync = true).
+        /// Uses precomputed _ddLocalCrc and _ddLocalPatchBytes from the calling context.
+        /// On mismatch: fires OnPatchDesync diagnostic + sends DesyncReport to server.
         /// </summary>
-        private static void GenerateDeepDesyncCheck(StringBuilder sb, string methodAlias, string responseVar, string indent, bool usePrecomputed = false)
+        private static void GenerateDeepDesyncCheck(StringBuilder sb, string methodAlias, string responseVar, string indent, bool hasDeepDesync)
         {
-            sb.AppendLine($"{indent}if ({responseVar}.DeepDesyncCrc.HasValue)");
+            if (!hasDeepDesync) return; // No-op for services without DeepDesync = true
+
+            sb.AppendLine($"{indent}if ({responseVar}.DeepDesyncCrc.HasValue && {responseVar}.DeepDesyncCrc.Value != _ddLocalCrc)");
             sb.AppendLine($"{indent}{{");
-            if (usePrecomputed)
-            {
-                // Optimistic: _ddLocalCrc computed before fire-and-forget, captured in closure
-                sb.AppendLine($"{indent}    if ({responseVar}.DeepDesyncCrc.Value != _ddLocalCrc)");
-                sb.AppendLine($"{indent}        _diagnostics?.OnPatchDesync(ServiceName, \"{methodAlias}\", {responseVar}.DeepDesyncCrc.Value, _ddLocalCrc);");
-            }
-            else
-            {
-                // Server: PatchWrapper still on Context
-                sb.AppendLine($"{indent}    uint localPatchCrc = 0;");
-                sb.AppendLine($"{indent}    if (MetaContextAccessor.Current?.PatchWrapper is SharedMeta.Core.Patch.IPatchWrapper _ipw && _ipw.Node != null)");
-                sb.AppendLine($"{indent}    {{");
-                sb.AppendLine($"{indent}        _ipw.Node.Prune();");
-                sb.AppendLine($"{indent}        if (_ipw.Node.HasChanges)");
-                sb.AppendLine($"{indent}            localPatchCrc = SharedMeta.Core.Patch.PatchCrc.Compute(_serializer.Pack(_ipw.Node));");
-                sb.AppendLine($"{indent}    }}");
-                sb.AppendLine($"{indent}    if ({responseVar}.DeepDesyncCrc.Value != localPatchCrc)");
-                sb.AppendLine($"{indent}        _diagnostics?.OnPatchDesync(ServiceName, \"{methodAlias}\", {responseVar}.DeepDesyncCrc.Value, localPatchCrc);");
-            }
+            sb.AppendLine($"{indent}    _diagnostics?.OnPatchDesync(ServiceName, \"{methodAlias}\", {responseVar}.DeepDesyncCrc.Value, _ddLocalCrc);");
+            sb.AppendLine($"{indent}    // Fire-and-forget desync follow-up report to server");
+            sb.AppendLine($"{indent}    _ = _network.SendDesyncReportAsync(new SharedMeta.Core.Transport.DesyncReportRequest");
+            sb.AppendLine($"{indent}    {{");
+            sb.AppendLine($"{indent}        EntityId = _network.EntityId ?? string.Empty,");
+            sb.AppendLine($"{indent}        ServiceName = ServiceName,");
+            sb.AppendLine($"{indent}        MethodName = \"{methodAlias}\",");
+            sb.AppendLine($"{indent}        ArgsBytes = argsBytes,");
+            sb.AppendLine($"{indent}        ClientPatchBytes = _ddLocalPatchBytes,");
+            sb.AppendLine($"{indent}        MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Patch");
+            sb.AppendLine($"{indent}    }});");
             sb.AppendLine($"{indent}}}");
+        }
+
+        /// <summary>
+        /// Emit a fire-and-forget desync follow-up report for a Result mismatch.
+        /// Server gates by DesyncReportingEnabled and returns "disabled" cheaply when off.
+        /// Both server and local result bytes are included so no server cache is needed.
+        /// </summary>
+        private static void GenerateResultMismatchReport(StringBuilder sb, string methodAlias, string serverBytesExpr, string localBytesExpr, string indent)
+        {
+            sb.AppendLine($"{indent}_ = _network.SendDesyncReportAsync(new SharedMeta.Core.Transport.DesyncReportRequest");
+            sb.AppendLine($"{indent}{{");
+            sb.AppendLine($"{indent}    EntityId = _network.EntityId ?? string.Empty,");
+            sb.AppendLine($"{indent}    ServiceName = ServiceName,");
+            sb.AppendLine($"{indent}    MethodName = \"{methodAlias}\",");
+            sb.AppendLine($"{indent}    ArgsBytes = argsBytes,");
+            sb.AppendLine($"{indent}    ServerResultBytes = {serverBytesExpr} ?? System.Array.Empty<byte>(),");
+            sb.AppendLine($"{indent}    LocalResultBytes = {localBytesExpr} ?? System.Array.Empty<byte>(),");
+            sb.AppendLine($"{indent}    MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Result");
+            sb.AppendLine($"{indent}}});");
+        }
+
+        /// <summary>
+        /// Emit a fire-and-forget desync follow-up report for a Random mismatch.
+        /// </summary>
+        private static void GenerateRandomMismatchReport(StringBuilder sb, string methodAlias, string serverDeltaExpr, string localDeltaExpr, string indent)
+        {
+            sb.AppendLine($"{indent}_ = _network.SendDesyncReportAsync(new SharedMeta.Core.Transport.DesyncReportRequest");
+            sb.AppendLine($"{indent}{{");
+            sb.AppendLine($"{indent}    EntityId = _network.EntityId ?? string.Empty,");
+            sb.AppendLine($"{indent}    ServiceName = ServiceName,");
+            sb.AppendLine($"{indent}    MethodName = \"{methodAlias}\",");
+            sb.AppendLine($"{indent}    ArgsBytes = argsBytes,");
+            sb.AppendLine($"{indent}    ServerRandomDelta = {serverDeltaExpr},");
+            sb.AppendLine($"{indent}    LocalRandomDelta = {localDeltaExpr},");
+            sb.AppendLine($"{indent}    MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Random");
+            sb.AppendLine($"{indent}}});");
         }
 
         private static string GetEventName(string methodName)

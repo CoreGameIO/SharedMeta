@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.7.0] - 2026-04-04
+
+### Added
+
+- **Deep desync detection** — field-level state mutation tracking via patch CRC comparison. `[MetaServiceImpl(DeepDesync = true)]` generates a `_PatchTracked` copy of the service class where `State` routes through `PatchWrapper`. Server computes FNV-1a CRC of serialized PatchNode after each call; client compares its local CRC. Detects state divergence even when return values match. `IDesyncDiagnostics.OnPatchDesync` fires on mismatch
+- `PatchTrackedClassGenerator` — Roslyn generator that copies full service class with `State` → `PatchWrapper` substitution. Skips `[MetaInit]` and `GenerateClientApi = false` methods
+- `PatchCrc` — FNV-1a hash utility for patch byte comparison
+- `PatchNodeDiffer` — field-by-field diff of two PatchNode trees for detailed desync reports
+- `IPatchWrapper` — interface for accessing PatchNode from generated PatchWrapper classes
+- `DeepDesyncReport` + `IDesyncReportSink` — desync report model and storage interface
+- `RpcResponse.DeepDesyncCrc` — nullable uint CRC in server response (null = disabled)
+- `EntityGrainOptions.DeepDesyncEnabled` — global runtime override (null/true/false) applied at grain activation
+- Server `ServerMetaConfigurationGenerator`: generated provider dispatches to `_PatchTracked` service when PatchWrapper active; generated factory sets `DeepDesyncEnabled = true` for `[DeepDesync]` services
+- Client `SimplifiedApiClientGenerator`: generated ApiClient creates `_patchTrackedService`, activates PatchNode before execution, computes local CRC, compares in Server and Optimistic modes
+- `PatchableList<T>`, `PatchableDictionary<K,V>`, `PatchableHashSet<T>` — full API parity with base collection types + implicit conversion from base types
+- Integration tests: 3 deep desync tests (deterministic OK, non-deterministic detected, mixed)
+- Test infrastructure: `Test.Server` now uses project reference + fully generated `ServerMetaConfiguration` (no manual providers)
+- **Debug API** — `IConnection.SetDebugOptionsAsync` / `MetaClient.SetDeepDesyncAsync` — client toggles deep desync per-session at runtime. Server gates via `MetaTransportOptions.AllowDebugApi` (default false, safe for production)
+- `DebugOptionsRequest` / `DebugOptionsResponse` transport packets; `RpcCall.DeepDesyncRequested` per-call flag
+- Expedition example: `GenerateNewMapBroken()` using `System.Random` (intentional desync), 3-button UI (ServerReplace / Optimistic / Broken), server `--desync` flag, client toggle button
+
+### Fixed
+
+- `ServerMetaConfigurationGenerator` assembly scan: no longer skips user assemblies with `SharedMeta` prefix — only skips framework packages
+
 ## [0.6.0] - 2026-04-03
 
 ### Added

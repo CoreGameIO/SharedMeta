@@ -35,6 +35,9 @@ namespace SharedMeta.Client.Network
         public Task<DebugOptionsResponse> SetDebugOptions(DebugOptionsRequest request)
             => _connection.InvokeAsync<DebugOptionsResponse>(nameof(SetDebugOptions), request);
 
+        public Task<DesyncReportResponse> SendDesyncReport(DesyncReportRequest request)
+            => _connection.InvokeAsync<DesyncReportResponse>(nameof(SendDesyncReport), request);
+
         public Task<AcknowledgeResponse> AcknowledgeSequence(AcknowledgeRequest request)
             => _connection.InvokeAsync<AcknowledgeResponse>(nameof(AcknowledgeSequence), request);
 

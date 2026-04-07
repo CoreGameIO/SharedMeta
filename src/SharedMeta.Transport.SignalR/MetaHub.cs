@@ -183,6 +183,18 @@ namespace SharedMeta.Transport.SignalR
             return handler.SetDebugOptionsAsync(request);
         }
 
+        public Task<DesyncReportResponse> SendDesyncReport(DesyncReportRequest request)
+        {
+            if (_transportOptions?.DesyncReportingEnabled != true)
+                return Task.FromResult(new DesyncReportResponse { Status = "disabled" });
+
+            var handler = GetHandler();
+            if (handler == null)
+                return Task.FromResult(new DesyncReportResponse { Status = "error", Error = "Not connected" });
+
+            return handler.SendDesyncReportAsync(request);
+        }
+
         /// <summary>
         /// Client explicitly leaves — full cleanup, session cannot be resumed.
         /// </summary>

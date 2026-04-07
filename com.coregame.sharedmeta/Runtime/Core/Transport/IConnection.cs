@@ -72,6 +72,12 @@ namespace SharedMeta.Core.Transport
         Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request);
 
         /// <summary>
+        /// Send a desync follow-up report (client patch bytes) for server-side analysis.
+        /// Server stores the diff in DesyncReportGrain when DesyncReportingEnabled is true.
+        /// </summary>
+        Task<DesyncReportResponse> SendDesyncReportAsync(DesyncReportRequest request);
+
+        /// <summary>
         /// Acknowledge received broadcasts up to a sequence number.
         /// </summary>
         Task AcknowledgeSequenceAsync(long sequenceNumber);

@@ -102,6 +102,12 @@ namespace SharedMeta.Server.Core.Transport
         Task<DebugOptionsResponse> SetDebugOptionsAsync(DebugOptionsRequest request);
 
         /// <summary>
+        /// Receive a desync report from the client. Server diffs against cached server patch
+        /// and stores the report in DesyncReportGrain. Requires DesyncReportingEnabled.
+        /// </summary>
+        Task<DesyncReportResponse> SendDesyncReportAsync(DesyncReportRequest request);
+
+        /// <summary>
         /// Called when transport connection is closed (timeout/network loss).
         /// Saves subscriptions for potential reconnect.
         /// </summary>

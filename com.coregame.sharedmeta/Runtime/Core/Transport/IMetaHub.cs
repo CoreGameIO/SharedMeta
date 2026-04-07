@@ -38,6 +38,12 @@ namespace SharedMeta.Core.Transport
         Task<DebugOptionsResponse> SetDebugOptions(DebugOptionsRequest request);
 
         /// <summary>
+        /// Send a deep desync follow-up report (client patch bytes).
+        /// Requires server-side DesyncReportingEnabled.
+        /// </summary>
+        Task<DesyncReportResponse> SendDesyncReport(DesyncReportRequest request);
+
+        /// <summary>
         /// Graceful disconnect: client explicitly leaves. Session cannot be resumed.
         /// </summary>
         Task GracefulDisconnect();

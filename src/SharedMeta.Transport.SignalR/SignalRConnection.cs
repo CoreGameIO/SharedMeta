@@ -197,6 +197,12 @@ namespace SharedMeta.Transport.SignalR
             return response.Success;
         }
 
+        public async Task<DesyncReportResponse> SendDesyncReportAsync(DesyncReportRequest request)
+        {
+            EnsureConnected();
+            return await _hub!.SendDesyncReport(request);
+        }
+
         /// <summary>
         /// Acknowledge received broadcasts.
         /// </summary>

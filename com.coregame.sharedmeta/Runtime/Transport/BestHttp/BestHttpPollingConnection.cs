@@ -193,6 +193,12 @@ namespace SharedMeta.Transport.BestHttp
             return response.Success;
         }
 
+        public async Task<DesyncReportResponse> SendDesyncReportAsync(DesyncReportRequest request)
+        {
+            EnsureSessionConnected();
+            return await PostAsync<DesyncReportResponse>("/desync-report", request);
+        }
+
         public async Task AcknowledgeSequenceAsync(long sequenceNumber)
         {
             EnsureSessionConnected();

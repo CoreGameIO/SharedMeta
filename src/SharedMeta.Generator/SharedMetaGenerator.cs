@@ -342,6 +342,13 @@ namespace SharedMeta.Generator
                     {
                         spc.AddSource($"{state!.RootType.TypeName}Patch.g.cs", source);
                     }
+
+                    // Companion schema for diagnostic / desync rendering
+                    var schemaSource = PatchSchemaGenerator.Generate(state!);
+                    if (schemaSource != null)
+                    {
+                        spc.AddSource($"{state!.RootType.TypeName}PatchSchema.g.cs", schemaSource);
+                    }
                 }
             });
 

@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.7.0] - 2026-04-04
+
+### Added
+- **Deep desync detection** — `[MetaServiceImpl(DeepDesync = true)]` enables field-level state mutation tracking. Generator produces a `_PatchTracked` service copy where `State` routes through `PatchWrapper`, recording all mutations into a PatchNode tree. Server computes FNV-1a CRC after each call; client compares local CRC. Catches state divergence even when return values match
+- `PatchTrackedClassGenerator` — copies full service class via Roslyn SyntaxTree with `State` → `PatchWrapper` substitution
+- `PatchCrc` — FNV-1a hash for patch comparison
+- `PatchNodeDiffer` — field-by-field diff of two PatchNode trees
+- `IPatchWrapper` interface, `DeepDesyncReport`, `IDesyncReportSink`
+- `IDesyncDiagnostics.OnPatchDesync` — fires on patch CRC mismatch
+- `RpcResponse.DeepDesyncCrc` — server → client CRC field
+- `EntityGrainOptions.DeepDesyncEnabled` — global runtime override (null = per-service, true = force on, false = force off)
+- `PatchableList<T>`, `PatchableDictionary<K,V>`, `PatchableHashSet<T>` — full API parity with base collections + implicit conversion
+- **Debug API** — `MetaClient.SetDeepDesyncAsync()` toggles deep desync per-session from client. `MetaTransportOptions.AllowDebugApi` gates on server (default off)
+- **Server-side desync logging for all mismatch kinds** — Result mismatches (Server execution mode) and Random scroll mismatches (Optimistic / CrossOptimistic modes) now also flow to the server through `SendDesyncReportAsync`. Gated by the same `MetaTransportOptions.DesyncReportingEnabled` option as patch reports. New `DesyncMismatchKind` flags enum (Patch | Result | Random); `DesyncReportRequest` and `DeepDesyncReport` carry the kind plus per-kind payload (server/client result bytes or scroll deltas). No server-side cache is needed for Result/Random — both values are sent inside the request
+- **Patch schema + JSON renderer for desync diagnostics** — `IPatchSchema` interface generated alongside each `PatchWrapper` (`{State}PatchSchema.g.cs`) maps field ids to property names and decoder types. `PatchTextRenderer.ToJson` visualizes a single patch and `PatchTextRenderer.DiffToJson` produces a side-by-side `{ "server": ..., "client": ... }` JSON of two diverged patches. `IPatchSchemaRegistry` is registered automatically by `ConfigureMeta()` and looked up by service name in `MetaConnectionHandler.SendDesyncReportAsync`. Zero overhead in normal RPC flow — schemas are only consulted when a desync report is being formatted. Falls back to hex if no registry is wired up
+- Expedition example: `GenerateNewMapBroken` is now mostly deterministic — it generates the full map via `Context.Random` and then corrupts only 5–15 cells with `System.Random`, so the patch diff JSON shows a small focused divergence instead of two completely different maps
+- Expedition example: `GenerateNewMapBroken()` with `System.Random`, 3-button generation UI, server `--desync` flag, client-side toggle button
+
+### Fixed
+- `ServerMetaConfigurationGenerator`: assembly scan no longer skips user assemblies with `SharedMeta` prefix
+- Test infrastructure: `Test.Server` uses project reference + fully generated server configuration
+- **Deep desync runtime toggle now actually works** — `[MetaServiceImpl(DeepDesync = true)]` previously hardcoded `provider.DeepDesyncEnabled = true` in the generated factory, so the per-session `SetDebugOptions` toggle and `EntityGrainOptions.DeepDesyncEnabled = false` were ignored (server always computed CRCs). The compile-time flag now only generates the supporting infrastructure (PatchTracked service copy, PatchSchema). Runtime activation is fully opt-in via `EntityGrainOptions.DeepDesyncEnabled` (global) or client-side `SetDebugOptions(true)` (per session)
+
 ## [0.6.0] - 2026-04-03
 
 ### Added

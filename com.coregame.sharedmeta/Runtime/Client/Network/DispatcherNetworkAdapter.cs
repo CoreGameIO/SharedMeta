@@ -175,6 +175,22 @@ namespace SharedMeta.Client.Network
             };
         }
 
+        public async Task<DesyncReportResponse?> SendDesyncReportAsync(DesyncReportRequest request)
+        {
+            try
+            {
+                SharedMeta.Core.Logging.MetaLog.Debug($"[Desync] Sending report: {request.ServiceName}.{request.MethodName} entity={request.EntityId} clientPatch={request.ClientPatchBytes?.Length ?? 0}B");
+                var response = await _dispatcher.Connection.SendDesyncReportAsync(request);
+                SharedMeta.Core.Logging.MetaLog.Debug($"[Desync] Server response: status={response?.Status} error={response?.Error}");
+                return response;
+            }
+            catch (Exception ex)
+            {
+                SharedMeta.Core.Logging.MetaLog.Error($"[Desync] SendDesyncReportAsync failed: {ex.Message}", ex);
+                return null;
+            }
+        }
+
         public void SuppressBroadcasts()
         {
             _dispatcher.SuppressBroadcasts();

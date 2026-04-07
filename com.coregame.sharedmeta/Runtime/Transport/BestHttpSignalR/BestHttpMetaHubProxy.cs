@@ -38,6 +38,9 @@ namespace SharedMeta.Transport.BestHttp
         public Task<DebugOptionsResponse> SetDebugOptions(DebugOptionsRequest request)
             => InvokeAsync<DebugOptionsResponse>(nameof(SetDebugOptions), request);
 
+        public Task<DesyncReportResponse> SendDesyncReport(DesyncReportRequest request)
+            => InvokeAsync<DesyncReportResponse>(nameof(SendDesyncReport), request);
+
         public Task<AcknowledgeResponse> AcknowledgeSequence(AcknowledgeRequest request)
             => InvokeAsync<AcknowledgeResponse>(nameof(AcknowledgeSequence), request);
 

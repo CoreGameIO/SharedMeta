@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using MemoryPack;
+using MessagePack;
+using Orleans;
 
 namespace SharedMeta.Core.Patch
 {
@@ -11,13 +14,14 @@ namespace SharedMeta.Core.Patch
         OnlyClient   // Client changed this field, server didn't
     }
 
-    public class PatchDiffEntry
+    [MemoryPackable, MessagePackObject, GenerateSerializer]
+    public partial class PatchDiffEntry
     {
         /// <summary>Field path as dot-separated field IDs, e.g. "3.1.0".</summary>
-        public string FieldPath { get; set; } = "";
-        public byte[]? ServerValue { get; set; }
-        public byte[]? ClientValue { get; set; }
-        public PatchDiffType Type { get; set; }
+        [Id(0), Key(0)] public string FieldPath { get; set; } = "";
+        [Id(1), Key(1)] public byte[]? ServerValue { get; set; }
+        [Id(2), Key(2)] public byte[]? ClientValue { get; set; }
+        [Id(3), Key(3)] public PatchDiffType Type { get; set; }
     }
 
     /// <summary>

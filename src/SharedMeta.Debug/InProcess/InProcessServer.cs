@@ -116,6 +116,18 @@ namespace SharedMeta.Debug.InProcess
             return handler.QueryCallAsync(request);
         }
 
+        internal Task<DesyncReportResponse> SendDesyncReportAsync(string connectionId, DesyncReportRequest request)
+        {
+            var handler = GetHandler(connectionId);
+            return handler.SendDesyncReportAsync(request);
+        }
+
+        internal Task<DebugOptionsResponse> SetDebugOptionsAsync(string connectionId, DebugOptionsRequest request)
+        {
+            var handler = GetHandler(connectionId);
+            return handler.SetDebugOptionsAsync(request);
+        }
+
         /// <summary>
         /// Internal: Handle graceful disconnect request.
         /// </summary>

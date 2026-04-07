@@ -50,6 +50,12 @@ namespace SharedMeta.Core.Network
         Task<ByteCallResponse> CallBytesAsync(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
 
         /// <summary>
+        /// Send a desync follow-up report (deep desync detection).
+        /// Returns null if the underlying transport does not support reporting.
+        /// </summary>
+        Task<SharedMeta.Core.Transport.DesyncReportResponse?> SendDesyncReportAsync(SharedMeta.Core.Transport.DesyncReportRequest request);
+
+        /// <summary>
         /// Suppress broadcast processing. Must be paired with ResumeBroadcasts().
         /// Used to prevent broadcasts from modifying state between receiving an RPC response
         /// and completing the local replay (which would cause desyncs).

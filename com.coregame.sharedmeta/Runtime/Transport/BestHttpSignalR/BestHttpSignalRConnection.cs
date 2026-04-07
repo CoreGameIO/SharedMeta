@@ -281,6 +281,12 @@ namespace SharedMeta.Transport.BestHttp
             return response.Success;
         }
 
+        public async Task<DesyncReportResponse> SendDesyncReportAsync(DesyncReportRequest request)
+        {
+            EnsureConnected();
+            return await _proxy!.SendDesyncReport(request);
+        }
+
         public async Task AcknowledgeSequenceAsync(long sequenceNumber)
         {
             EnsureConnected();

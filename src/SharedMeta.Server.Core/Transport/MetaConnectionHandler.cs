@@ -25,9 +25,25 @@ namespace SharedMeta.Server.Core.Transport
         private readonly IBroadcastSender _broadcastSender;
         private readonly SignatureValidator? _signatureValidator;
         private readonly ILogger _logger;
+        private readonly MetaTransportOptions? _transportOptions;
+        private readonly IMetaSerializer? _serializer;
+        private readonly SharedMeta.Core.Patch.IPatchSchemaRegistry? _schemaRegistry;
         private ISessionObserver? _observerRef;
         private Timer? _observerRenewalTimer;
         private static readonly TimeSpan ObserverRenewalInterval = TimeSpan.FromSeconds(60);
+
+        // Per-connection cache of recent server patches keyed by (entityId, service, method).
+        // Stores the most recent patch per (entity,service,method) — used for desync follow-up.
+        private readonly LinkedList<CachedServerPatch> _patchCache = new();
+        private readonly object _patchCacheLock = new();
+
+        private class CachedServerPatch
+        {
+            public string EntityId { get; set; } = "";
+            public string ServiceName { get; set; } = "";
+            public string MethodName { get; set; } = "";
+            public byte[] PatchBytes { get; set; } = Array.Empty<byte>();
+        }
 
         public string PlayerId { get; private set; } = string.Empty;
         public Guid SessionId { get; private set; }
@@ -40,7 +56,10 @@ namespace SharedMeta.Server.Core.Transport
             IEntityGrainResolver entityGrainResolver,
             IBroadcastSender broadcastSender,
             ILogger logger,
-            SignatureValidator? signatureValidator = null)
+            SignatureValidator? signatureValidator = null,
+            MetaTransportOptions? transportOptions = null,
+            IMetaSerializer? serializer = null,
+            SharedMeta.Core.Patch.IPatchSchemaRegistry? schemaRegistry = null)
         {
             _connectionId = connectionId ?? throw new ArgumentNullException(nameof(connectionId));
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
@@ -48,6 +67,9 @@ namespace SharedMeta.Server.Core.Transport
             _broadcastSender = broadcastSender ?? throw new ArgumentNullException(nameof(broadcastSender));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _signatureValidator = signatureValidator;
+            _transportOptions = transportOptions;
+            _serializer = serializer;
+            _schemaRegistry = schemaRegistry;
         }
 
         #region IMetaConnectionHandler
@@ -216,12 +238,29 @@ namespace SharedMeta.Server.Core.Transport
 
                 var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
 
-                return await grain.SendToEntityAsync(
+                var response = await grain.SendToEntityAsync(
                     request.EntityId,
                     request.RequestId,
                     call,
                     request.LastAcknowledgedSequence,
                     SessionId);
+
+                // Cache server patch for desync reporting (if enabled)
+                if (_transportOptions?.DesyncReportingEnabled == true && response.Operations != null)
+                {
+                    foreach (var op in response.Operations)
+                    {
+                        if (op.RequestId == request.RequestId
+                            && op.MainOperation?.Response?.PatchBytes != null)
+                        {
+                            CachePatch(request.EntityId, request.ServiceName, request.MethodName,
+                                op.MainOperation.Response.PatchBytes);
+                            break;
+                        }
+                    }
+                }
+
+                return response;
             }
             catch (Exception ex)
             {
@@ -285,6 +324,198 @@ namespace SharedMeta.Server.Core.Transport
             _logger.LogDebug("[Handler] Deep desync {Status} for {PlayerId}",
                 request.DeepDesyncEnabled ? "enabled" : "disabled", PlayerId);
             return Task.FromResult(new DebugOptionsResponse { Success = true });
+        }
+
+        public async Task<DesyncReportResponse> SendDesyncReportAsync(DesyncReportRequest request)
+        {
+            try
+            {
+                if (_transportOptions?.DesyncReportingEnabled != true)
+                    return new DesyncReportResponse { Status = "disabled" };
+
+                EnsureSessionConnected();
+
+                var kind = (DesyncMismatchKind)request.MismatchKind;
+                // Backwards compat: legacy clients that only set ClientPatchBytes had no MismatchKind.
+                if (kind == DesyncMismatchKind.None && request.ClientPatchBytes is { Length: > 0 })
+                    kind = DesyncMismatchKind.Patch;
+
+                var report = new SharedMeta.Core.Diagnostics.DeepDesyncReport
+                {
+                    PlayerId = PlayerId,
+                    EntityId = request.EntityId,
+                    ServiceName = request.ServiceName,
+                    MethodName = request.MethodName,
+                    Timestamp = DateTime.UtcNow,
+                    ArgsBytes = request.ArgsBytes,
+                    MismatchKind = (int)kind
+                };
+                int diffCount = 0;
+                var textParts = new List<string>();
+
+                // ── Patch mismatch ────────────────────────────────────────
+                if ((kind & DesyncMismatchKind.Patch) != 0)
+                {
+                    if (_serializer == null)
+                        return new DesyncReportResponse { Status = "error", Error = "Serializer not configured" };
+
+                    var cachedServerPatch = LookupPatch(request.EntityId, request.ServiceName, request.MethodName);
+
+                    // Either side may legitimately be empty: if one party mutated state and
+                    // the other didn't, that IS the divergence we want to report.
+                    SharedMeta.Core.Patch.PatchNode? serverNode = null;
+                    SharedMeta.Core.Patch.PatchNode? clientNode = null;
+                    if (cachedServerPatch is { Length: > 0 })
+                        serverNode = _serializer.Unpack<SharedMeta.Core.Patch.PatchNode>(cachedServerPatch);
+                    if (request.ClientPatchBytes is { Length: > 0 })
+                        clientNode = _serializer.Unpack<SharedMeta.Core.Patch.PatchNode>(request.ClientPatchBytes);
+
+                    if (serverNode == null && clientNode == null)
+                    {
+                        _logger.LogWarning("[Handler] Desync report: empty patches on both sides for {EntityId}.{Service}.{Method}",
+                            request.EntityId, request.ServiceName, request.MethodName);
+                        return new DesyncReportResponse { Status = "empty-patches" };
+                    }
+
+                    var diffEntries = serverNode != null && clientNode != null
+                        ? SharedMeta.Core.Patch.PatchNodeDiffer.Compare(serverNode, clientNode)
+                        : new List<SharedMeta.Core.Patch.PatchDiffEntry>();
+
+                    report.ServerPatchCrc = cachedServerPatch is { Length: > 0 } ? SharedMeta.Core.Patch.PatchCrc.Compute(cachedServerPatch) : 0u;
+                    report.ClientPatchCrc = request.ClientPatchBytes is { Length: > 0 } ? SharedMeta.Core.Patch.PatchCrc.Compute(request.ClientPatchBytes) : 0u;
+                    report.ServerPatchBytes = cachedServerPatch;
+                    report.ClientPatchBytes = request.ClientPatchBytes;
+                    report.Diff = diffEntries;
+                    diffCount = diffEntries.Count;
+
+                    // Prefer schema-based JSON rendering when a schema is registered for this service.
+                    var schema = _schemaRegistry?.GetByServiceName(request.ServiceName);
+                    if (schema != null)
+                    {
+                        var jsonDiff = SharedMeta.Core.Patch.PatchTextRenderer.DiffToJson(serverNode, clientNode, schema, _serializer);
+                        textParts.Add("PATCH:\n" + jsonDiff);
+                    }
+                    else
+                    {
+                        textParts.Add($"PATCH: {BuildTextDiff(diffEntries)}");
+                    }
+                }
+
+                // ── Result mismatch ───────────────────────────────────────
+                if ((kind & DesyncMismatchKind.Result) != 0)
+                {
+                    report.ServerResultBytes = request.ServerResultBytes;
+                    report.LocalResultBytes = request.LocalResultBytes;
+                    textParts.Add($"RESULT: server={BitConverter.ToString(request.ServerResultBytes)} local={BitConverter.ToString(request.LocalResultBytes)}");
+                }
+
+                // ── Random mismatch ───────────────────────────────────────
+                if ((kind & DesyncMismatchKind.Random) != 0)
+                {
+                    report.ServerRandomDelta = request.ServerRandomDelta;
+                    report.LocalRandomDelta = request.LocalRandomDelta;
+                    textParts.Add($"RANDOM: server={request.ServerRandomDelta} local={request.LocalRandomDelta}");
+                }
+
+                report.TextDiff = string.Join("\n", textParts);
+
+                var grain = _grainFactory.GetGrain<IDesyncReportGrain>(PlayerId);
+                await grain.StoreReportAsync(report);
+
+                LogDesync(report, diffCount);
+
+                return new DesyncReportResponse { Status = "stored" };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Handler] SendDesyncReportAsync error");
+                return new DesyncReportResponse { Status = "error", Error = ex.Message };
+            }
+        }
+
+        private void CachePatch(string entityId, string serviceName, string methodName, byte[] patchBytes)
+        {
+            var cacheSize = _transportOptions?.DesyncReportPatchCacheSize ?? 16;
+            lock (_patchCacheLock)
+            {
+                // Remove existing entry for same (entity, service, method) — keep only newest
+                var node = _patchCache.First;
+                while (node != null)
+                {
+                    var next = node.Next;
+                    if (node.Value.EntityId == entityId
+                        && node.Value.ServiceName == serviceName
+                        && node.Value.MethodName == methodName)
+                    {
+                        _patchCache.Remove(node);
+                    }
+                    node = next;
+                }
+                _patchCache.AddLast(new CachedServerPatch
+                {
+                    EntityId = entityId,
+                    ServiceName = serviceName,
+                    MethodName = methodName,
+                    PatchBytes = patchBytes
+                });
+                while (_patchCache.Count > cacheSize)
+                    _patchCache.RemoveFirst();
+            }
+        }
+
+        private byte[]? LookupPatch(string entityId, string serviceName, string methodName)
+        {
+            lock (_patchCacheLock)
+            {
+                for (var node = _patchCache.Last; node != null; node = node.Previous)
+                {
+                    if (node.Value.EntityId == entityId
+                        && node.Value.ServiceName == serviceName
+                        && node.Value.MethodName == methodName)
+                        return node.Value.PatchBytes;
+                }
+            }
+            return null;
+        }
+
+        private void LogDesync(SharedMeta.Core.Diagnostics.DeepDesyncReport report, int diffCount)
+        {
+            var level = _transportOptions?.DesyncLogLevel ?? DesyncLogLevel.Warning;
+            if (level == DesyncLogLevel.None) return;
+
+            var kind = (DesyncMismatchKind)report.MismatchKind;
+            switch (level)
+            {
+                case DesyncLogLevel.Warning:
+                    _logger.LogWarning("[Desync] {Player} {Service}.{Method} kind={Kind} (patchDiffs={DiffCount})",
+                        report.PlayerId, report.ServiceName, report.MethodName, kind, diffCount);
+                    break;
+                case DesyncLogLevel.Information:
+                    _logger.LogInformation("[Desync] {Player} {Entity}/{Service}.{Method} kind={Kind}; patchDiffs={DiffCount} serverPatch={ServerLen}B clientPatch={ClientLen}B",
+                        report.PlayerId, report.EntityId, report.ServiceName, report.MethodName, kind, diffCount,
+                        report.ServerPatchBytes?.Length ?? 0, report.ClientPatchBytes?.Length ?? 0);
+                    break;
+                case DesyncLogLevel.Debug:
+                    _logger.LogInformation("[Desync] {Player} {Entity}/{Service}.{Method} kind={Kind}\n{TextDiff}",
+                        report.PlayerId, report.EntityId, report.ServiceName, report.MethodName, kind,
+                        report.TextDiff);
+                    break;
+            }
+        }
+
+        private static string BuildTextDiff(List<SharedMeta.Core.Patch.PatchDiffEntry> entries)
+        {
+            if (entries.Count == 0) return "(no field-level differences detected)";
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < entries.Count; i++)
+            {
+                var e = entries[i];
+                sb.Append("field ").Append(e.FieldPath).Append(": ").Append(e.Type);
+                if (e.ServerValue != null) sb.Append(" server=").Append(BitConverter.ToString(e.ServerValue));
+                if (e.ClientValue != null) sb.Append(" client=").Append(BitConverter.ToString(e.ClientValue));
+                if (i < entries.Count - 1) sb.AppendLine();
+            }
+            return sb.ToString();
         }
 
         public async Task GracefulDisconnectAsync()
@@ -394,23 +625,33 @@ namespace SharedMeta.Server.Core.Transport
         private readonly IEntityGrainResolver _entityGrainResolver;
         private readonly ILoggerFactory _loggerFactory;
         private readonly SignatureValidator? _signatureValidator;
+        private readonly MetaTransportOptions? _transportOptions;
+        private readonly IMetaSerializer? _serializer;
+        private readonly SharedMeta.Core.Patch.IPatchSchemaRegistry? _schemaRegistry;
 
         public MetaConnectionHandlerFactory(
             IGrainFactory grainFactory,
             IEntityGrainResolver entityGrainResolver,
             ILoggerFactory loggerFactory,
-            SignatureValidator? signatureValidator = null)
+            SignatureValidator? signatureValidator = null,
+            MetaTransportOptions? transportOptions = null,
+            IMetaSerializer? serializer = null,
+            SharedMeta.Core.Patch.IPatchSchemaRegistry? schemaRegistry = null)
         {
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
             _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
             _signatureValidator = signatureValidator;
+            _transportOptions = transportOptions;
+            _serializer = serializer;
+            _schemaRegistry = schemaRegistry;
         }
 
         public IMetaConnectionHandler Create(string connectionId, IBroadcastSender broadcastSender)
         {
             var logger = _loggerFactory.CreateLogger<MetaConnectionHandler>();
-            return new MetaConnectionHandler(connectionId, _grainFactory, _entityGrainResolver, broadcastSender, logger, _signatureValidator);
+            return new MetaConnectionHandler(connectionId, _grainFactory, _entityGrainResolver, broadcastSender, logger,
+                _signatureValidator, _transportOptions, _serializer, _schemaRegistry);
         }
     }
 }

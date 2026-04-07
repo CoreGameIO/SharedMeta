@@ -783,10 +783,11 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
             sb.AppendLine($"        public IMetaProvider<{stateTypeFullName}> Create()");
             sb.AppendLine("        {");
-            if (deepDesync)
-                sb.AppendLine($"            return new {providerName}(_serviceResolver, _entityCallHandler) {{ DeepDesyncEnabled = true }};");
-            else
-                sb.AppendLine($"            return new {providerName}(_serviceResolver, _entityCallHandler);");
+            // Note: [MetaServiceImpl(DeepDesync = true)] only generates the supporting
+            // infrastructure (PatchTracked service copy, PatchSchema, etc). Runtime
+            // activation is opt-in via EntityGrainOptions.DeepDesyncEnabled (global)
+            // or the client-side SetDebugOptions toggle (per session).
+            sb.AppendLine($"            return new {providerName}(_serviceResolver, _entityCallHandler);");
             sb.AppendLine("        }");
             sb.AppendLine("    }");
         }
@@ -843,13 +844,42 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            // Register config download URL resolver");
             sb.AppendLine("            services.AddSingleton<SharedMeta.Server.Core.IConfigDownloadUrlResolver>(sp => new GeneratedConfigDownloadUrlResolver(sp));");
             sb.AppendLine();
-            sb.AppendLine("            // Register MetaConnectionHandlerFactory with signature validator");
+            sb.AppendLine("            // Register patch schema registry (used by diagnostic / desync paths to render PatchNode trees as readable JSON)");
+            sb.AppendLine("            services.AddSingleton<SharedMeta.Core.Patch.IPatchSchemaRegistry>(sp =>");
+            sb.AppendLine("            {");
+            sb.AppendLine("                var byState = new System.Collections.Generic.Dictionary<string, SharedMeta.Core.Patch.IPatchSchema>");
+            sb.AppendLine("                {");
+            foreach (var kvp in byStateType)
+            {
+                var stateTypeName = kvp.Value.First().StateTypeName;
+                var stateTypeFullName = kvp.Key;
+                sb.AppendLine($"                    [\"{stateTypeFullName}\"] = {stateTypeName}PatchSchema.Instance,");
+            }
+            sb.AppendLine("                };");
+            sb.AppendLine("                var byService = new System.Collections.Generic.Dictionary<string, SharedMeta.Core.Patch.IPatchSchema>");
+            sb.AppendLine("                {");
+            foreach (var kvp in byStateType)
+            {
+                var stateTypeName = kvp.Value.First().StateTypeName;
+                foreach (var svc in kvp.Value)
+                {
+                    sb.AppendLine($"                    [\"{svc.InterfaceName}\"] = {stateTypeName}PatchSchema.Instance,");
+                }
+            }
+            sb.AppendLine("                };");
+            sb.AppendLine("                return new SharedMeta.Core.Patch.PatchSchemaRegistry(byState, byService);");
+            sb.AppendLine("            });");
+            sb.AppendLine();
+            sb.AppendLine("            // Register MetaConnectionHandlerFactory with signature validator + transport options + serializer + schema registry");
             sb.AppendLine("            services.AddSingleton<SharedMeta.Server.Core.Transport.IMetaConnectionHandlerFactory>(sp =>");
             sb.AppendLine("                new SharedMeta.Server.Core.Transport.MetaConnectionHandlerFactory(");
             sb.AppendLine("                    sp.GetRequiredService<Orleans.IGrainFactory>(),");
             sb.AppendLine("                    sp.GetRequiredService<SharedMeta.Server.Core.Grains.IEntityGrainResolver>(),");
             sb.AppendLine("                    sp.GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>(),");
-            sb.AppendLine("                    MetaMethodSignatureValidator.ValidateClientSignatures));");
+            sb.AppendLine("                    MetaMethodSignatureValidator.ValidateClientSignatures,");
+            sb.AppendLine("                    sp.GetService<SharedMeta.Server.Core.Transport.MetaTransportOptions>(),");
+            sb.AppendLine("                    sp.GetService<SharedMeta.Core.IMetaSerializer>(),");
+            sb.AppendLine("                    sp.GetService<SharedMeta.Core.Patch.IPatchSchemaRegistry>()));");
             sb.AppendLine();
 
             sb.AppendLine("            return services;");
