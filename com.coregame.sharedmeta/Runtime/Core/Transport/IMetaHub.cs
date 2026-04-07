@@ -32,6 +32,12 @@ namespace SharedMeta.Core.Transport
         Task<ConfigDownloadUrlResponse> GetConfigDownloadUrl(ConfigDownloadUrlRequest request);
 
         /// <summary>
+        /// Set debug options for this session (deep desync, etc.).
+        /// Server may ignore if debug API is disabled.
+        /// </summary>
+        Task<DebugOptionsResponse> SetDebugOptions(DebugOptionsRequest request);
+
+        /// <summary>
         /// Graceful disconnect: client explicitly leaves. Session cannot be resumed.
         /// </summary>
         Task GracefulDisconnect();

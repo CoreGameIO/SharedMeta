@@ -24,9 +24,10 @@ public class TestClientSetup : IAsyncDisposable
     /// </summary>
     public IReadOnlyList<string> DetectedIssues => _issues;
 
-    public TestClientSetup(InProcessServer server, string? playerId = null)
+    public TestClientSetup(InProcessServer server, string? playerId = null,
+        IDesyncDiagnostics? diagnostics = null)
     {
-        var diagnostics = new TestDesyncDiagnostics(_issues);
+        diagnostics ??= new TestDesyncDiagnostics(_issues);
 
         _client = new MetaClient(
             server.CreateConnection(),

@@ -5,7 +5,7 @@ using SharedMeta.Core;
 
 namespace Expedition.Shared
 {
-    [MetaServiceImpl(typeof(IExpeditionService), typeof(ExpeditionState), typeof(IExpeditionProfileService))]
+    [MetaServiceImpl(typeof(IExpeditionService), typeof(ExpeditionState), typeof(IExpeditionProfileService), DeepDesync = true)]
     public partial class ExpeditionService : IExpeditionService
     {
         private ExpeditionState state => Context.State;
@@ -185,6 +185,68 @@ namespace Expedition.Shared
         public void GenerateNewMapOptimistic()
         {
             RegenerateMap();
+        }
+
+        /// <summary>
+        /// Intentionally broken: uses System.Random instead of Context.Random.
+        /// Server and client will generate different maps — demonstrates deep desync detection.
+        /// </summary>
+        public void GenerateNewMapBroken()
+        {
+            RegenerateMapBroken();
+        }
+
+        /// <summary>Non-deterministic map generation using System.Random (for desync demo).</summary>
+        private void RegenerateMapBroken()
+        {
+            var rng = new Random(); // BAD: non-deterministic!
+            var width = Config.MapWidth;
+            var height = Config.MapHeight;
+            var totalCells = width * height;
+
+            state.Width = width;
+            state.Height = height;
+            state.PlayerX = 0;
+            state.PlayerY = 0;
+            state.TreasuresCollected = 0;
+            state.IsComplete = false;
+
+            state.Cells = new List<byte>(totalCells);
+            state.Revealed = new List<bool>(totalCells);
+
+            for (int i = 0; i < totalCells; i++)
+            {
+                state.Cells.Add((byte)CellType.Empty);
+                state.Revealed.Add(false);
+            }
+
+            for (int i = 1; i < totalCells; i++)
+            {
+                if (rng.Next(100) < Config.WallPercent)
+                    state.Cells[i] = (byte)CellType.Wall;
+            }
+
+            for (int i = 1; i < totalCells; i++)
+            {
+                if (state.Cells[i] != (byte)CellType.Empty) continue;
+                if (rng.Next(100) < Config.ObstaclePercent)
+                    state.Cells[i] = (byte)CellType.Obstacle;
+            }
+
+            int treasureCount = 0;
+            for (int i = 1; i < totalCells; i++)
+            {
+                if (state.Cells[i] != (byte)CellType.Empty) continue;
+                if (rng.Next(100) < Config.TreasurePercent)
+                {
+                    state.Cells[i] = (byte)CellType.Treasure;
+                    treasureCount++;
+                }
+            }
+            state.TotalTreasures = treasureCount;
+
+            RevealArea(0, 0);
+            state.IsGenerated = true;
         }
 
         private void RegenerateMap()

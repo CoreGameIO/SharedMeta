@@ -17,4 +17,12 @@ public class EntityGrainOptions
     /// Default: EveryCall (save after every request, fully backward compatible).
     /// </summary>
     public PersistencePolicy PersistencePolicy { get; set; } = PersistencePolicy.EveryCall();
+
+    /// <summary>
+    /// Global override for deep desync detection.
+    /// When null (default): uses per-service setting from [MetaServiceImpl(DeepDesync = true)].
+    /// When true: forces deep desync on for all services.
+    /// When false: disables deep desync even if attribute says true.
+    /// </summary>
+    public bool? DeepDesyncEnabled { get; set; }
 }

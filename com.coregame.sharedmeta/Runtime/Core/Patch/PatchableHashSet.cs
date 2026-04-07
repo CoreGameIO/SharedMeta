@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 
@@ -30,6 +31,9 @@ namespace SharedMeta.Core.Patch
 
         /// <summary>Access the underlying HashSet directly.</summary>
         public HashSet<T> Inner => _set;
+
+        /// <summary>Implicit conversion from HashSet for assignment compatibility in PatchWrapper setters.</summary>
+        public static implicit operator PatchableHashSet<T>(HashSet<T> set) => new(set, null, 0, null);
 
         private void MarkChanged()
         {
@@ -88,6 +92,13 @@ namespace SharedMeta.Core.Patch
             MarkChanged();
         }
 
+        public int RemoveWhere(Predicate<T> match)
+        {
+            var removed = _set.RemoveWhere(match);
+            if (removed > 0) MarkChanged();
+            return removed;
+        }
+
         // === Read-only operations (no marking) ===
 
         public int Count => _set.Count;
@@ -101,6 +112,10 @@ namespace SharedMeta.Core.Patch
         public bool Overlaps(IEnumerable<T> other) => _set.Overlaps(other);
         public bool SetEquals(IEnumerable<T> other) => _set.SetEquals(other);
         public void CopyTo(T[] array, int arrayIndex) => _set.CopyTo(array, arrayIndex);
+        public void TrimExcess() => _set.TrimExcess();
+#if !NETSTANDARD2_1
+        public int EnsureCapacity(int capacity) => _set.EnsureCapacity(capacity);
+#endif
 
         public HashSet<T>.Enumerator GetEnumerator() => _set.GetEnumerator();
         IEnumerator<T> IEnumerable<T>.GetEnumerator() => _set.GetEnumerator();

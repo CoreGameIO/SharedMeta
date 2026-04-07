@@ -51,6 +51,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// </summary>
     public IExecutionModeProvider? ExecutionModeProvider { get; set; }
 
+    /// <summary>
+    /// When true, computes FNV-1a hash of serialized state after each method execution.
+    /// Client compares its local hash with the server's to detect state-level desyncs.
+    /// </summary>
+    public bool DeepDesyncEnabled { get; set; }
+
     public virtual void Initialize(IMetaProviderContext context, TState state,
         byte[]? serverRandomBytes = null, byte[]? optimisticRandomBytes = null)
     {
@@ -126,10 +132,11 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             var executionMode = ExecutionModeProvider?.GetMode(
                 call.ServiceName, call.MethodName, ExecutionMode.Optimistic) ?? ExecutionMode.Optimistic;
 
-            // Set up patch tracking for ServerPatch mode
+            // Set up patch tracking for ServerPatch mode or deep desync detection
             PatchNode? patchRoot = null;
             bool isServerReplace = executionMode == ExecutionMode.ServerReplace;
-            if (executionMode == ExecutionMode.ServerPatch)
+            bool deepDesyncActive = DeepDesyncEnabled || call.DeepDesyncRequested;
+            if (executionMode == ExecutionMode.ServerPatch || deepDesyncActive)
             {
                 patchRoot = new PatchNode(-1);
                 MetaContext.PatchWrapper = CreatePatchWrapper(patchRoot);
@@ -157,6 +164,22 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // Compute optimistic random scroll delta for desync detection
             var randomScrollDelta = _optimisticRandom.ScrollId - scrollIdBefore;
 
+            // Deep desync: compute CRC from patch (field-level mutation tracking)
+            uint? deepDesyncCrc = null;
+            if (deepDesyncActive && patchRoot != null)
+            {
+                patchRoot.Prune();
+                if (patchRoot.HasChanges)
+                {
+                    var deepDesyncPatchBytes = Context.Serializer.Pack(patchRoot);
+                    deepDesyncCrc = SharedMeta.Core.Patch.PatchCrc.Compute(deepDesyncPatchBytes);
+                }
+                else
+                {
+                    deepDesyncCrc = 0; // no changes
+                }
+            }
+
             // Capture cross-entity calls made during this operation
             var crossEntityCalls = MetaContext.CrossEntityCalls;
 
@@ -169,7 +192,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                     ReplayPayload = replayPayload,
                     Error = null,
                     RandomScrollDelta = randomScrollDelta,
-                    PatchBytes = patchBytes
+                    PatchBytes = patchBytes,
+                    DeepDesyncCrc = deepDesyncCrc
                 },
                 Broadcasts = new List<EntityBroadcast>(),
                 CrossEntityCalls = crossEntityCalls,

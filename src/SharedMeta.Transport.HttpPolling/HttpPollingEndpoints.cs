@@ -34,6 +34,7 @@ namespace SharedMeta.Transport.HttpPolling
             group.MapPost("/unsubscribe", HandleUnsubscribe);
             group.MapPost("/rpc", HandleRpcCall);
             group.MapPost("/query", HandleQueryCall);
+            group.MapPost("/debug-options", HandleSetDebugOptions);
             group.MapPost("/ack", HandleAcknowledge);
             group.MapPost("/poll", HandlePoll);
             group.MapPost("/config-url", HandleConfigDownloadUrl);
@@ -131,6 +132,26 @@ namespace SharedMeta.Transport.HttpPolling
 
             var response = await state.Handler.QueryCallAsync(request);
             return Results.Json(response, MetaJsonContext.Default.QueryCallResponse);
+        }
+
+        private static async Task<IResult> HandleSetDebugOptions(
+            HttpContext ctx,
+            HttpPollingConnectionManager mgr,
+            MetaTransportOptions? transportOptions = null)
+        {
+            if (transportOptions != null && !transportOptions.AllowDebugApi)
+                return Results.Json(
+                    new DebugOptionsResponse { Success = false, Error = "Debug API disabled" },
+                    MetaJsonContext.Default.DebugOptionsResponse);
+
+            var (state, error) = GetExistingConnection(ctx, mgr);
+            if (state == null) return error!;
+
+            var request = await ctx.Request.ReadFromJsonAsync(MetaJsonContext.Default.DebugOptionsRequest);
+            if (request == null) return Results.BadRequest("Invalid request body");
+
+            var response = await state.Handler.SetDebugOptionsAsync(request);
+            return Results.Json(response, MetaJsonContext.Default.DebugOptionsResponse);
         }
 
         private static async Task<IResult> HandleAcknowledge(

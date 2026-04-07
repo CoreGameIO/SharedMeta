@@ -40,6 +40,9 @@ namespace SharedMeta.Core.Network
 
         /// <summary>Full serialized state for ServerReplace mode.</summary>
         public byte[]? StateBytes { get; set; }
+
+        /// <summary>FNV-1a hash of server state after execution (deep desync detection). Null when disabled.</summary>
+        public uint? DeepDesyncCrc { get; set; }
     }
 
     /// <summary>
@@ -73,6 +76,9 @@ namespace SharedMeta.Core.Network
 
         /// <summary>Full serialized state for ServerReplace mode.</summary>
         public byte[]? StateBytes { get; set; }
+
+        /// <summary>FNV-1a hash of server state after execution (deep desync detection). Null when disabled.</summary>
+        public uint? DeepDesyncCrc { get; set; }
     }
 
     /// <summary>
@@ -111,5 +117,8 @@ namespace SharedMeta.Core.Network
 
         /// <summary>Full serialized state for ServerReplace mode.</summary>
         public byte[]? StateBytes { get; set; }
+
+        /// <summary>FNV-1a hash of server state after execution (deep desync detection). Null when disabled.</summary>
+        public uint? DeepDesyncCrc { get; set; }
     }
 }

@@ -164,6 +164,25 @@ namespace SharedMeta.Transport.SignalR
             }
         }
 
+        public Task<DebugOptionsResponse> SetDebugOptions(DebugOptionsRequest request)
+        {
+            if (_transportOptions != null && !_transportOptions.AllowDebugApi)
+            {
+                _logger.LogWarning("[MetaHub] SetDebugOptions rejected: AllowDebugApi=false. Run server with debug API enabled.");
+                return Task.FromResult(new DebugOptionsResponse { Success = false, Error = "Debug API disabled" });
+            }
+
+            var handler = GetHandler();
+            if (handler == null)
+            {
+                _logger.LogWarning("[MetaHub] SetDebugOptions rejected: handler not found (session not connected)");
+                return Task.FromResult(new DebugOptionsResponse { Success = false, Error = "Not connected" });
+            }
+
+            _logger.LogInformation("[MetaHub] SetDebugOptions: deepDesync={DeepDesync}", request.DeepDesyncEnabled);
+            return handler.SetDebugOptionsAsync(request);
+        }
+
         /// <summary>
         /// Client explicitly leaves — full cleanup, session cannot be resumed.
         /// </summary>

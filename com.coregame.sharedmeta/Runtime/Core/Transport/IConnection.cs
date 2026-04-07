@@ -66,6 +66,12 @@ namespace SharedMeta.Core.Transport
         Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request);
 
         /// <summary>
+        /// Set debug options for this session (e.g., enable deep desync detection).
+        /// Server may ignore if debug API is disabled in production.
+        /// </summary>
+        Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request);
+
+        /// <summary>
         /// Acknowledge received broadcasts up to a sequence number.
         /// </summary>
         Task AcknowledgeSequenceAsync(long sequenceNumber);

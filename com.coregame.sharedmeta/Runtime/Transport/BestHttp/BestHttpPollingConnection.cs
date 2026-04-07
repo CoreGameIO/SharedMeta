@@ -186,6 +186,13 @@ namespace SharedMeta.Transport.BestHttp
             return await PostAsync<QueryCallResponse>("/query", request);
         }
 
+        public async Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request)
+        {
+            EnsureSessionConnected();
+            var response = await PostAsync<DebugOptionsResponse>("/debug-options", request);
+            return response.Success;
+        }
+
         public async Task AcknowledgeSequenceAsync(long sequenceNumber)
         {
             EnsureSessionConnected();

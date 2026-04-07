@@ -335,7 +335,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}/// <summary>");
             sb.AppendLine($"{indent}/// Patch-tracking wrapper for {typeInfo.TypeName}.");
             sb.AppendLine($"{indent}/// </summary>");
-            sb.AppendLine($"{indent}public class {wrapperName}");
+            sb.AppendLine($"{indent}public class {wrapperName} : SharedMeta.Core.Patch.IPatchWrapper");
             sb.AppendLine($"{indent}{{");
 
             // Fields
@@ -359,6 +359,9 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
             sb.AppendLine($"{ii}/// <summary>True when patch tracking is active.</summary>");
             sb.AppendLine($"{ii}public bool IsTracking => _node != null;");
+            sb.AppendLine();
+            sb.AppendLine($"{ii}/// <summary>The underlying PatchNode tree (for CRC computation in deep desync detection).</summary>");
+            sb.AppendLine($"{ii}public PatchNode? Node => _node;");
             sb.AppendLine();
             sb.AppendLine($"{ii}/// <summary>Mark the entire {typeInfo.TypeName} as dirty (full replacement).</summary>");
             sb.AppendLine($"{ii}public void SetDirty()");
@@ -441,7 +444,10 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{ii}/// <summary>[Id({field.FieldId})] {field.Name} — auto-tracks mutations.</summary>");
             sb.AppendLine($"{ii}private {patchableType}? {fieldVar};");
             sb.AppendLine($"{ii}public {patchableType} {field.Name}");
-            sb.AppendLine($"{ii}    => {fieldVar} ??= new {patchableType}(_state.{field.Name}, _node, {field.FieldId}, _serializer);");
+            sb.AppendLine($"{ii}{{");
+            sb.AppendLine($"{ii}    get => {fieldVar} ??= new {patchableType}(_state.{field.Name}, _node, {field.FieldId}, _serializer);");
+            sb.AppendLine($"{ii}    set {{ _state.{field.Name} = value.Inner; _node?.MarkChildTerminal({field.FieldId}, _serializer.Pack(value.Inner)); {fieldVar} = null; }}");
+            sb.AppendLine($"{ii}}}");
             sb.AppendLine();
             sb.AppendLine($"{ii}/// <summary>Replace the entire {field.Name} collection.</summary>");
             sb.AppendLine($"{ii}public void Set{field.Name}({field.CollectionBaseType} value)");

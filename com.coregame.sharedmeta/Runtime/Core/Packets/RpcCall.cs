@@ -42,5 +42,11 @@ namespace SharedMeta.Core
         /// Carried in broadcasts for replay on other clients.
         /// </summary>
         [Id(8), Key(8)] public long ServerTimeTicks { get; set; }
+
+        /// <summary>
+        /// When true, server should compute deep desync CRC for this call.
+        /// Set per-session by SetDebugOptions.
+        /// </summary>
+        [Id(9), Key(9)] public bool DeepDesyncRequested { get; set; }
     }
 }

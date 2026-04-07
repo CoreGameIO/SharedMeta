@@ -162,6 +162,10 @@ namespace SharedMeta.Server.Core.Grains
             var context = new MetaProviderContext(entityId, _serializer, GrainFactory, _logger);
             _provider.Initialize(context, state.UserState, state.ServerRandomBytes, state.OptimisticRandomBytes);
 
+            // Apply global deep desync override from EntityGrainOptions
+            if (_options.DeepDesyncEnabled.HasValue && _provider is MetaProviderBase<TState> ddProvider)
+                ddProvider.DeepDesyncEnabled = _options.DeepDesyncEnabled.Value;
+
             // Resolve config version: use persisted version, or resolve for new entities
             _provider.InitializeConfig(state.ConfigVersion);
 

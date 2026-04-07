@@ -55,6 +55,37 @@ namespace SharedMeta.Generator.Generators
             }
 
             var implClassName = baseName2;
+            var patchTrackedClassName = implClassName + "_PatchTracked";
+
+            // Check if implementation has DeepDesync = true
+            bool hasDeepDesync = false;
+            if (compilation != null)
+            {
+                foreach (var syntaxTree in compilation.SyntaxTrees)
+                {
+                    var root = syntaxTree.GetRoot();
+                    foreach (var classDecl in root.DescendantNodes().OfType<ClassDeclarationSyntax>())
+                    {
+                        var model = compilation.GetSemanticModel(syntaxTree);
+                        var classSymbol = model.GetDeclaredSymbol(classDecl);
+                        if (classSymbol == null) continue;
+                        var implAttr = classSymbol.GetAttributes().FirstOrDefault(a =>
+                            a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaServiceImplAttribute");
+                        if (implAttr == null) continue;
+                        // Check interface match
+                        if (implAttr.ConstructorArguments.Length >= 1 &&
+                            implAttr.ConstructorArguments[0].Value is INamedTypeSymbol ifaceType &&
+                            ifaceType.Name == interfaceName)
+                        {
+                            var ddArg = implAttr.NamedArguments.FirstOrDefault(a => a.Key == "DeepDesync");
+                            hasDeepDesync = !ddArg.Value.IsNull && ddArg.Value.Value is true;
+                            break;
+                        }
+                    }
+                    if (hasDeepDesync) break;
+                }
+            }
+
             var methods = node.Members.OfType<MethodDeclarationSyntax>().ToList();
 
             // Get subscriber interfaces from attribute
@@ -130,6 +161,8 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        private readonly IMetaSerializer _serializer;");
             sb.AppendLine($"        private {stateTypeName} _state;");
             sb.AppendLine($"        private readonly {namespaceName}.{implClassName} _service;");
+            if (hasDeepDesync)
+                sb.AppendLine($"        private readonly {namespaceName}.{patchTrackedClassName} _patchTrackedService;");
             sb.AppendLine("        private readonly IExecutionModeProvider _modeProvider;");
             sb.AppendLine("        private readonly IDesyncDiagnostics? _diagnostics;");
             sb.AppendLine("        private readonly ICrossEntityResolver? _crossEntityResolver;");
@@ -233,6 +266,8 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            _optimisticRandom = optimisticRandom;");
             sb.AppendLine("            _config = config;");
             sb.AppendLine($"            _service = new {namespaceName}.{implClassName}();");
+            if (hasDeepDesync)
+                sb.AppendLine($"            _patchTrackedService = new {namespaceName}.{patchTrackedClassName}();");
             sb.AppendLine();
             sb.AppendLine("            _network.OnBroadcast += HandleBroadcast;");
             sb.AppendLine("        }");
@@ -248,7 +283,7 @@ namespace SharedMeta.Generator.Generators
             // Generate methods
             foreach (var method in methods)
             {
-                GenerateMethod(sb, method, interfaceName, namespaceName, implClassName, stateTypeName, serializer);
+                GenerateMethod(sb, method, interfaceName, namespaceName, implClassName, stateTypeName, serializer, hasDeepDesync);
             }
 
             // Context management
@@ -288,7 +323,7 @@ namespace SharedMeta.Generator.Generators
 
         private static void GenerateMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string interfaceName, string namespaceName, string implClassName, string? stateTypeName,
-            DetectedSerializer serializer)
+            DetectedSerializer serializer, bool hasDeepDesync = false)
         {
             var methodName = method.Identifier.Text;
             var returnType = method.ReturnType.ToString();
@@ -356,10 +391,10 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
 
             // Server mode implementation
-            GenerateServerMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer);
+            GenerateServerMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync);
 
             // Optimistic mode implementation
-            GenerateOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName);
+            GenerateOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync);
 
             // CrossOptimistic mode implementation
             GenerateCrossOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName);
@@ -400,7 +435,7 @@ namespace SharedMeta.Generator.Generators
 
         private static void GenerateServerMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
-            DetectedSerializer serializer)
+            DetectedSerializer serializer, string? stateTypeName = null, bool hasDeepDesync = false)
         {
             var methodName = method.Identifier.Text;
             var parameters = string.Join(", ", method.ParameterList.Parameters);
@@ -446,13 +481,24 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                try");
             sb.AppendLine("                {");
             sb.AppendLine("                SetContext(response.ReplayContext, _network.PlayerId, response.ServerTimeTicks);");
+            // Deep desync: activate PatchNode tracking before method execution
+            if (hasDeepDesync)
+            {
+                sb.AppendLine("                var _ddRoot = new SharedMeta.Core.Patch.PatchNode(-1);");
+                sb.AppendLine($"                MetaContextAccessor.Current!.PatchWrapper = new {stateTypeName}PatchWrapper(_state, _ddRoot, _serializer);");
+            }
+            var serviceRef = hasDeepDesync ? "_patchTrackedService" : "_service";
             if (isVoidReturn)
             {
-                sb.AppendLine($"                {awaitPrefix}_service.{methodName}({callArgs});");
+                sb.AppendLine($"                {awaitPrefix}{serviceRef}.{methodName}({callArgs});");
             }
             else
             {
-                sb.AppendLine($"                var localResult = {awaitPrefix}_service.{methodName}({callArgs});");
+                sb.AppendLine($"                var localResult = {awaitPrefix}{serviceRef}.{methodName}({callArgs});");
+            }
+            if (hasDeepDesync)
+            {
+                sb.AppendLine("                MetaContextAccessor.Current!.PatchWrapper = null;");
             }
             sb.AppendLine("                ClearContext();");
             sb.AppendLine();
@@ -469,6 +515,9 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                    throw new DesyncException(ServiceName, \"{methodAlias}\", serverResult, localResult);");
                 sb.AppendLine("                }");
             }
+
+            // Deep desync: compare patch CRC after execution
+            GenerateDeepDesyncCheck(sb, methodAlias, "response", "                ");
 
             if (!isVoidReturn)
             {
@@ -575,7 +624,7 @@ namespace SharedMeta.Generator.Generators
 
         private static void GenerateOptimisticMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
-            DetectedSerializer serializer, string? stateTypeName)
+            DetectedSerializer serializer, string? stateTypeName, bool hasDeepDesync = false)
         {
             var methodName = method.Identifier.Text;
             var parameters = string.Join(", ", method.ParameterList.Parameters);
@@ -611,19 +660,36 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            {");
 
             // Execute locally first
+            if (hasDeepDesync)
+            {
+                sb.AppendLine("                var _ddRoot = new SharedMeta.Core.Patch.PatchNode(-1);");
+                sb.AppendLine($"                ctx.PatchWrapper = new {stateTypeName}PatchWrapper(_state, _ddRoot, _serializer);");
+            }
+            var optServiceRef = hasDeepDesync ? "_patchTrackedService" : "_service";
             if (isVoidReturn)
             {
-                sb.AppendLine($"                {awaitPrefix}_service.{methodName}({callArgs});");
+                sb.AppendLine($"                {awaitPrefix}{optServiceRef}.{methodName}({callArgs});");
             }
             else
             {
-                sb.AppendLine($"                localResult = {awaitPrefix}_service.{methodName}({callArgs});");
+                sb.AppendLine($"                localResult = {awaitPrefix}{optServiceRef}.{methodName}({callArgs});");
             }
 
             sb.AppendLine("            }");
             sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
+            // Deep desync: compute local CRC before fire-and-forget (captures _ddRoot from try scope)
+            if (hasDeepDesync)
+            {
+                sb.AppendLine("            uint _ddLocalCrc = 0;");
+                sb.AppendLine("            if (ctx.PatchWrapper is SharedMeta.Core.Patch.IPatchWrapper _ddPw && _ddPw.Node != null)");
+                sb.AppendLine("            {");
+                sb.AppendLine("                _ddPw.Node.Prune();");
+                sb.AppendLine("                if (_ddPw.Node.HasChanges)");
+                sb.AppendLine("                    _ddLocalCrc = SharedMeta.Core.Patch.PatchCrc.Compute(_serializer.Pack(_ddPw.Node));");
+                sb.AppendLine("            }");
+            }
             sb.AppendLine();
 
             // Serialize arguments based on serializer
@@ -643,6 +709,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                        {");
                 sb.AppendLine($"                            _diagnostics?.OnRandomDesync(ServiceName, \"{methodAlias}\", t.Result.RandomScrollDelta, localScrollDelta);");
                 sb.AppendLine("                        }");
+                GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", usePrecomputed: hasDeepDesync);
                 sb.AppendLine("                    }");
                 sb.AppendLine("                });");
             }
@@ -660,6 +727,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                        {");
                 sb.AppendLine($"                            _diagnostics?.OnRandomDesync(ServiceName, \"{methodAlias}\", t.Result.RandomScrollDelta, localScrollDelta);");
                 sb.AppendLine("                        }");
+                GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", usePrecomputed: hasDeepDesync);
                 sb.AppendLine("                    }");
                 sb.AppendLine("                });");
                 sb.AppendLine();
@@ -1386,6 +1454,43 @@ namespace SharedMeta.Generator.Generators
                 }
             }
             return false;
+        }
+
+        /// <summary>
+        /// Generates deep desync CRC comparison using PatchNode from the service's PatchWrapper.
+        /// The PatchWrapper (via Context.PatchWrapper) records all state mutations.
+        /// When DeepDesyncCrc is present in server response, client serializes its local PatchNode
+        /// and compares CRC to detect state-level divergence.
+        /// </summary>
+        /// <summary>
+        /// Generate deep desync CRC check.
+        /// For Server mode: computes CRC from PatchWrapper on Context (still active).
+        /// For Optimistic mode: uses pre-computed _ddLocalCrc (Context already cleared).
+        /// </summary>
+        private static void GenerateDeepDesyncCheck(StringBuilder sb, string methodAlias, string responseVar, string indent, bool usePrecomputed = false)
+        {
+            sb.AppendLine($"{indent}if ({responseVar}.DeepDesyncCrc.HasValue)");
+            sb.AppendLine($"{indent}{{");
+            if (usePrecomputed)
+            {
+                // Optimistic: _ddLocalCrc computed before fire-and-forget, captured in closure
+                sb.AppendLine($"{indent}    if ({responseVar}.DeepDesyncCrc.Value != _ddLocalCrc)");
+                sb.AppendLine($"{indent}        _diagnostics?.OnPatchDesync(ServiceName, \"{methodAlias}\", {responseVar}.DeepDesyncCrc.Value, _ddLocalCrc);");
+            }
+            else
+            {
+                // Server: PatchWrapper still on Context
+                sb.AppendLine($"{indent}    uint localPatchCrc = 0;");
+                sb.AppendLine($"{indent}    if (MetaContextAccessor.Current?.PatchWrapper is SharedMeta.Core.Patch.IPatchWrapper _ipw && _ipw.Node != null)");
+                sb.AppendLine($"{indent}    {{");
+                sb.AppendLine($"{indent}        _ipw.Node.Prune();");
+                sb.AppendLine($"{indent}        if (_ipw.Node.HasChanges)");
+                sb.AppendLine($"{indent}            localPatchCrc = SharedMeta.Core.Patch.PatchCrc.Compute(_serializer.Pack(_ipw.Node));");
+                sb.AppendLine($"{indent}    }}");
+                sb.AppendLine($"{indent}    if ({responseVar}.DeepDesyncCrc.Value != localPatchCrc)");
+                sb.AppendLine($"{indent}        _diagnostics?.OnPatchDesync(ServiceName, \"{methodAlias}\", {responseVar}.DeepDesyncCrc.Value, localPatchCrc);");
+            }
+            sb.AppendLine($"{indent}}}");
         }
 
         private static string GetEventName(string methodName)

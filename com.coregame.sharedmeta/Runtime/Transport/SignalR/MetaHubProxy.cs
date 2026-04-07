@@ -32,6 +32,9 @@ namespace SharedMeta.Client.Network
         public Task<QueryCallResponse> QueryCall(QueryCallRequest request)
             => _connection.InvokeAsync<QueryCallResponse>(nameof(QueryCall), request);
 
+        public Task<DebugOptionsResponse> SetDebugOptions(DebugOptionsRequest request)
+            => _connection.InvokeAsync<DebugOptionsResponse>(nameof(SetDebugOptions), request);
+
         public Task<AcknowledgeResponse> AcknowledgeSequence(AcknowledgeRequest request)
             => _connection.InvokeAsync<AcknowledgeResponse>(nameof(AcknowledgeSequence), request);
 

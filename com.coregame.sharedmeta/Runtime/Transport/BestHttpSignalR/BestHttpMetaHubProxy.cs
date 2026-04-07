@@ -35,6 +35,9 @@ namespace SharedMeta.Transport.BestHttp
         public Task<QueryCallResponse> QueryCall(QueryCallRequest request)
             => InvokeAsync<QueryCallResponse>(nameof(QueryCall), request);
 
+        public Task<DebugOptionsResponse> SetDebugOptions(DebugOptionsRequest request)
+            => InvokeAsync<DebugOptionsResponse>(nameof(SetDebugOptions), request);
+
         public Task<AcknowledgeResponse> AcknowledgeSequence(AcknowledgeRequest request)
             => InvokeAsync<AcknowledgeResponse>(nameof(AcknowledgeSequence), request);
 

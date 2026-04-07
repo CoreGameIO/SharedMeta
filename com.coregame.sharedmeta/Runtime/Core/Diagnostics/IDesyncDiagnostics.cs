@@ -24,6 +24,12 @@ namespace SharedMeta.Core.Diagnostics
         void OnRandomDesync(string serviceName, string methodName, long serverDelta, long localDelta);
 
         /// <summary>
+        /// Called when deep desync detection finds a patch CRC mismatch.
+        /// State mutations differ between server and client, even if return values match.
+        /// </summary>
+        void OnPatchDesync(string serviceName, string methodName, uint serverCrc, uint localCrc) { }
+
+        /// <summary>
         /// Request full state comparison with server.
         /// </summary>
         Task<StateComparisonResult> CompareFullStateAsync(string entityId);

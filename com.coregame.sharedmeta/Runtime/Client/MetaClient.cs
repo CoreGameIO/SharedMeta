@@ -153,6 +153,19 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
+        /// Enable or disable deep desync detection for this session.
+        /// Requires server to have AllowDebugApi = true in MetaTransportOptions.
+        /// </summary>
+        public async Task<bool> SetDeepDesyncAsync(bool enabled)
+        {
+            var result = await Connection.SetDebugOptionsAsync(new Core.Transport.DebugOptionsRequest
+            {
+                DeepDesyncEnabled = enabled
+            });
+            return result;
+        }
+
+        /// <summary>
         /// Get a typed API client for an entity.
         /// </summary>
         public Task<TApiClient> GetServiceAsync<TApiClient>(string entityId) where TApiClient : class

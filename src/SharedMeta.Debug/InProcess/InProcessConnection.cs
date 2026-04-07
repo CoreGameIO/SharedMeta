@@ -129,6 +129,9 @@ namespace SharedMeta.Debug.InProcess
             return await _server.QueryCallAsync(_connectionId, request);
         }
 
+        public Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request)
+            => Task.FromResult(false);
+
         public async Task AcknowledgeSequenceAsync(long sequenceNumber)
         {
             EnsureConnected();

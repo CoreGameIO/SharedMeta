@@ -176,6 +176,13 @@ namespace SharedMeta.Transport.HttpPolling
             return await PostAsync<QueryCallResponse>("/query", request, MetaJsonContext.Default.QueryCallRequest);
         }
 
+        public async Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request)
+        {
+            EnsureSessionConnected();
+            var response = await PostAsync<DebugOptionsResponse>("/debug-options", request, MetaJsonContext.Default.DebugOptionsRequest);
+            return response.Success;
+        }
+
         public async Task AcknowledgeSequenceAsync(long sequenceNumber)
         {
             EnsureSessionConnected();

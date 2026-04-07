@@ -12,6 +12,7 @@ using SharedMeta.Server.Core;
 using SharedMeta.Server.Core.Grains;
 using SharedMeta.Server.Core.Transport;
 using SharedMeta.Test.Meta1;
+using SharedMeta.Test.Meta1.Server;
 using SharedMeta.Test.Server;
 using Xunit;
 

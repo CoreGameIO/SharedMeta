@@ -36,6 +36,9 @@ namespace SharedMeta.Core.Patch
         /// <summary>Access the underlying List directly.</summary>
         public List<T> Inner => _list;
 
+        /// <summary>Implicit conversion from List for assignment compatibility in PatchWrapper setters.</summary>
+        public static implicit operator PatchableList<T>(List<T> list) => new(list, null, 0, null);
+
         private void MarkChanged()
         {
             if (_parentNode != null && _serializer != null)
@@ -117,14 +120,61 @@ namespace SharedMeta.Core.Patch
             MarkChanged();
         }
 
+        public void InsertRange(int index, IEnumerable<T> collection)
+        {
+            _list.InsertRange(index, collection);
+            MarkChanged();
+        }
+
+        public void RemoveRange(int index, int count)
+        {
+            _list.RemoveRange(index, count);
+            MarkChanged();
+        }
+
+        public void Reverse(int index, int count)
+        {
+            _list.Reverse(index, count);
+            MarkChanged();
+        }
+
+        public void Sort(int index, int count, IComparer<T>? comparer)
+        {
+            _list.Sort(index, count, comparer);
+            MarkChanged();
+        }
+
         // === Read-only operations (no marking) ===
 
         public int Count => _list.Count;
         public bool IsReadOnly => false;
+        public int Capacity { get => _list.Capacity; set => _list.Capacity = value; }
 
         public bool Contains(T item) => _list.Contains(item);
         public int IndexOf(T item) => _list.IndexOf(item);
         public void CopyTo(T[] array, int arrayIndex) => _list.CopyTo(array, arrayIndex);
+
+        public T? Find(Predicate<T> match) => _list.Find(match);
+        public T? FindLast(Predicate<T> match) => _list.FindLast(match);
+        public List<T> FindAll(Predicate<T> match) => _list.FindAll(match);
+        public int FindIndex(Predicate<T> match) => _list.FindIndex(match);
+        public int FindIndex(int startIndex, Predicate<T> match) => _list.FindIndex(startIndex, match);
+        public int FindIndex(int startIndex, int count, Predicate<T> match) => _list.FindIndex(startIndex, count, match);
+        public int FindLastIndex(Predicate<T> match) => _list.FindLastIndex(match);
+        public int FindLastIndex(int startIndex, Predicate<T> match) => _list.FindLastIndex(startIndex, match);
+        public int FindLastIndex(int startIndex, int count, Predicate<T> match) => _list.FindLastIndex(startIndex, count, match);
+        public bool Exists(Predicate<T> match) => _list.Exists(match);
+        public bool TrueForAll(Predicate<T> match) => _list.TrueForAll(match);
+        public void ForEach(Action<T> action) => _list.ForEach(action);
+        public List<T> GetRange(int index, int count) => _list.GetRange(index, count);
+        public int BinarySearch(T item) => _list.BinarySearch(item);
+        public int BinarySearch(T item, IComparer<T>? comparer) => _list.BinarySearch(item, comparer);
+        public int BinarySearch(int index, int count, T item, IComparer<T>? comparer) => _list.BinarySearch(index, count, item, comparer);
+        public List<TOutput> ConvertAll<TOutput>(Converter<T, TOutput> converter) => _list.ConvertAll(converter);
+        public T[] ToArray() => _list.ToArray();
+        public int LastIndexOf(T item) => _list.LastIndexOf(item);
+        public int LastIndexOf(T item, int index) => _list.LastIndexOf(item, index);
+
         public List<T>.Enumerator GetEnumerator() => _list.GetEnumerator();
         IEnumerator<T> IEnumerable<T>.GetEnumerator() => _list.GetEnumerator();
         IEnumerator IEnumerable.GetEnumerator() => _list.GetEnumerator();

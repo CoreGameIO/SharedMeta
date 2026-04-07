@@ -15,5 +15,11 @@ namespace SharedMeta.Server.Core.Transport
         /// If a client happens to be authenticated, their claim-based PlayerId is still used.
         /// </summary>
         public bool RequireAuthentication { get; set; }
+
+        /// <summary>
+        /// When true, clients can enable debug features (deep desync detection) via SetDebugOptions.
+        /// Default: false (production safe). Enable during development/testing.
+        /// </summary>
+        public bool AllowDebugApi { get; set; }
     }
 }

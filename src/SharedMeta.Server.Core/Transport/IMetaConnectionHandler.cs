@@ -96,6 +96,12 @@ namespace SharedMeta.Server.Core.Transport
         Task GracefulDisconnectAsync();
 
         /// <summary>
+        /// Set debug options for this session (deep desync, etc.).
+        /// Returns false if debug API is disabled on server.
+        /// </summary>
+        Task<DebugOptionsResponse> SetDebugOptionsAsync(DebugOptionsRequest request);
+
+        /// <summary>
         /// Called when transport connection is closed (timeout/network loss).
         /// Saves subscriptions for potential reconnect.
         /// </summary>

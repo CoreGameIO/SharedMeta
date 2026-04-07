@@ -193,6 +193,13 @@ namespace SharedMeta.Core
         public Type StateType { get; }
         public Type[] Dependencies { get; }
 
+        /// <summary>
+        /// When true, the generator produces an additional PatchTracked copy of this service class.
+        /// The copy routes all State access through PatchWrapper, enabling field-level desync detection
+        /// by comparing patch CRCs between server and client.
+        /// </summary>
+        public bool DeepDesync { get; set; }
+
         public MetaServiceImplAttribute(Type serviceInterface, Type stateType, params Type[] dependencies)
         {
             ServiceInterface = serviceInterface;

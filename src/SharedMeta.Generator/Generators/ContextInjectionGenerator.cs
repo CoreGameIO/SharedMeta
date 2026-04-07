@@ -30,6 +30,10 @@ namespace SharedMeta.Generator.Generators
 
             var stateTypeName = stateTypeSymbol.ToDisplayString();
 
+            // Check for DeepDesync = true
+            var deepDesyncArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "DeepDesync");
+            bool deepDesync = !deepDesyncArg.Value.IsNull && deepDesyncArg.Value.Value is true;
+
             var namespaceName = symbol.ContainingNamespace.ToDisplayString();
             var className = symbol.Name;
 

@@ -33,6 +33,9 @@ namespace SharedMeta.Core.Patch
         /// <summary>Access the underlying Dictionary directly.</summary>
         public Dictionary<TKey, TValue> Inner => _dict;
 
+        /// <summary>Implicit conversion from Dictionary for assignment compatibility in PatchWrapper setters.</summary>
+        public static implicit operator PatchableDictionary<TKey, TValue>(Dictionary<TKey, TValue> dict) => new(dict, null, 0, null);
+
         private void MarkChanged()
         {
             if (_parentNode != null && _serializer != null)
@@ -79,6 +82,20 @@ namespace SharedMeta.Core.Patch
             MarkChanged();
         }
 
+        public bool TryAdd(TKey key, TValue value)
+        {
+#if NETSTANDARD2_1
+            if (_dict.ContainsKey(key)) return false;
+            _dict.Add(key, value);
+            MarkChanged();
+            return true;
+#else
+            var added = _dict.TryAdd(key, value);
+            if (added) MarkChanged();
+            return added;
+#endif
+        }
+
         // === Read-only operations (no marking) ===
 
         public int Count => _dict.Count;
@@ -89,6 +106,7 @@ namespace SharedMeta.Core.Patch
         IEnumerable<TValue> IReadOnlyDictionary<TKey, TValue>.Values => _dict.Values;
 
         public bool ContainsKey(TKey key) => _dict.ContainsKey(key);
+        public bool ContainsValue(TValue value) => _dict.ContainsValue(value);
         public bool Contains(KeyValuePair<TKey, TValue> item) => ((ICollection<KeyValuePair<TKey, TValue>>)_dict).Contains(item);
 
         public bool TryGetValue(TKey key,
@@ -96,6 +114,14 @@ namespace SharedMeta.Core.Patch
             [MaybeNullWhen(false)]
 #endif
             out TValue value) => _dict.TryGetValue(key, out value!);
+
+#if !NETSTANDARD2_1
+        public TValue? GetValueOrDefault(TKey key) => _dict.GetValueOrDefault(key);
+        public TValue GetValueOrDefault(TKey key, TValue defaultValue) => _dict.GetValueOrDefault(key, defaultValue);
+        public int EnsureCapacity(int capacity) => _dict.EnsureCapacity(capacity);
+        public void TrimExcess() => _dict.TrimExcess();
+        public void TrimExcess(int capacity) => _dict.TrimExcess(capacity);
+#endif
 
         public void CopyTo(KeyValuePair<TKey, TValue>[] array, int arrayIndex) =>
             ((ICollection<KeyValuePair<TKey, TValue>>)_dict).CopyTo(array, arrayIndex);

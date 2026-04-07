@@ -31,6 +31,8 @@ namespace SharedMeta.Generator.Generators
         /// True if [MetaService(DefaultConfig = true)] — needs resolution at aggregation time.
         /// </summary>
         public bool UsesDefaultConfig { get; set; }
+        /// <summary>True if [MetaServiceImpl(DeepDesync = true)].</summary>
+        public bool DeepDesync { get; set; }
     }
 
     /// <summary>
@@ -142,6 +144,10 @@ namespace SharedMeta.Generator.Generators
             {
                 info.MetaInitMethodName = metaInitMethod.Name;
             }
+
+            // Check for DeepDesync = true
+            var deepDesyncArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "DeepDesync");
+            info.DeepDesync = !deepDesyncArg.Value.IsNull && deepDesyncArg.Value.Value is true;
 
             // Get server dependencies from constructor arguments (params Type[])
             if (attr.ConstructorArguments.Length > 2)
@@ -339,7 +345,7 @@ namespace SharedMeta.Generator.Generators
             {
                 GenerateMetaProvider(sb, kvp.Key, kvp.Value, allServerDeps);
                 sb.AppendLine();
-                GenerateMetaProviderFactory(sb, kvp.Key, kvp.Value.First().StateTypeName);
+                GenerateMetaProviderFactory(sb, kvp.Key, kvp.Value.First().StateTypeName, kvp.Value.Any(s => s.DeepDesync));
                 sb.AppendLine();
             }
 
@@ -427,7 +433,7 @@ namespace SharedMeta.Generator.Generators
             {
                 GenerateMetaProvider(sb, kvp.Key, kvp.Value, allServerDeps);
                 sb.AppendLine();
-                GenerateMetaProviderFactory(sb, kvp.Key, kvp.Value.First().StateTypeName);
+                GenerateMetaProviderFactory(sb, kvp.Key, kvp.Value.First().StateTypeName, kvp.Value.Any(s => s.DeepDesync));
                 sb.AppendLine();
             }
 
@@ -599,7 +605,17 @@ namespace SharedMeta.Generator.Generators
             foreach (var service in services)
             {
                 var baseName = GetBaseName(service.InterfaceName);
-                sb.AppendLine($"                \"{service.InterfaceName}\" => await {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}(), methodName, payload, Context.Serializer),");
+                if (service.DeepDesync)
+                {
+                    // Deep desync: use PatchTracked version when PatchWrapper is active
+                    sb.AppendLine($"                \"{service.InterfaceName}\" => MetaContext!.PatchWrapper != null");
+                    sb.AppendLine($"                    ? await {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}PatchTracked(), methodName, payload, Context.Serializer)");
+                    sb.AppendLine($"                    : await {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}(), methodName, payload, Context.Serializer),");
+                }
+                else
+                {
+                    sb.AppendLine($"                \"{service.InterfaceName}\" => await {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}(), methodName, payload, Context.Serializer),");
+                }
             }
             sb.AppendLine("                _ => throw new InvalidOperationException($\"Unknown service: {serviceName}\")");
             sb.AppendLine("            };");
@@ -733,12 +749,18 @@ namespace SharedMeta.Generator.Generators
                 var baseName = GetBaseName(service.InterfaceName);
                 var fieldName = GetFieldName(service.InterfaceName);
                 sb.AppendLine($"        private {service.InterfaceName} Get{baseName}() => {fieldName} ??= new {service.ImplClassFullName}();");
+                if (service.DeepDesync)
+                {
+                    var ptFieldName = fieldName + "PT";
+                    sb.AppendLine($"        private {service.ImplClassFullName}_PatchTracked? {ptFieldName};");
+                    sb.AppendLine($"        private {service.InterfaceName} Get{baseName}PatchTracked() => {ptFieldName} ??= new {service.ImplClassFullName}_PatchTracked();");
+                }
             }
 
             sb.AppendLine("    }");
         }
 
-        private static void GenerateMetaProviderFactory(StringBuilder sb, string stateTypeFullName, string stateTypeName)
+        private static void GenerateMetaProviderFactory(StringBuilder sb, string stateTypeFullName, string stateTypeName, bool deepDesync = false)
         {
             var providerName = $"Generated{stateTypeName}MetaProvider";
             var factoryName = $"Generated{stateTypeName}MetaProviderFactory";
@@ -761,7 +783,10 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
             sb.AppendLine($"        public IMetaProvider<{stateTypeFullName}> Create()");
             sb.AppendLine("        {");
-            sb.AppendLine($"            return new {providerName}(_serviceResolver, _entityCallHandler);");
+            if (deepDesync)
+                sb.AppendLine($"            return new {providerName}(_serviceResolver, _entityCallHandler) {{ DeepDesyncEnabled = true }};");
+            else
+                sb.AppendLine($"            return new {providerName}(_serviceResolver, _entityCallHandler);");
             sb.AppendLine("        }");
             sb.AppendLine("    }");
         }

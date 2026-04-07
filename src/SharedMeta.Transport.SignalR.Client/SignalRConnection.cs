@@ -174,6 +174,13 @@ namespace SharedMeta.Transport.SignalR
             return await _hub!.QueryCall(request);
         }
 
+        public async Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request)
+        {
+            EnsureConnected();
+            var response = await _hub!.SetDebugOptions(request);
+            return response.Success;
+        }
+
         public async Task AcknowledgeSequenceAsync(long sequenceNumber)
         {
             EnsureConnected();

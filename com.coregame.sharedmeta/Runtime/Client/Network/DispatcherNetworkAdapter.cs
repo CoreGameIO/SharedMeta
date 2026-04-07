@@ -105,7 +105,8 @@ namespace SharedMeta.Client.Network
                 ServerTimeTicks = rpcOp.MainOperation.Call.ServerTimeTicks,
                 RandomScrollDelta = rpcOp.MainOperation.Response.RandomScrollDelta,
                 PatchBytes = rpcOp.MainOperation.Response.PatchBytes,
-                StateBytes = rpcOp.MainOperation.Response.StateBytes
+                StateBytes = rpcOp.MainOperation.Response.StateBytes,
+                DeepDesyncCrc = rpcOp.MainOperation.Response.DeepDesyncCrc
             };
         }
 
@@ -136,7 +137,8 @@ namespace SharedMeta.Client.Network
                 ServerTimeTicks = rpcOp.MainOperation.Call.ServerTimeTicks,
                 RandomScrollDelta = rpcOp.MainOperation.Response.RandomScrollDelta,
                 PatchBytes = rpcOp.MainOperation.Response.PatchBytes,
-                StateBytes = rpcOp.MainOperation.Response.StateBytes
+                StateBytes = rpcOp.MainOperation.Response.StateBytes,
+                DeepDesyncCrc = rpcOp.MainOperation.Response.DeepDesyncCrc
             };
         }
 
@@ -168,7 +170,8 @@ namespace SharedMeta.Client.Network
                 ServerTimeTicks = rpcOp.MainOperation.Call.ServerTimeTicks,
                 RandomScrollDelta = rpcOp.MainOperation.Response.RandomScrollDelta,
                 PatchBytes = rpcOp.MainOperation.Response.PatchBytes,
-                StateBytes = rpcOp.MainOperation.Response.StateBytes
+                StateBytes = rpcOp.MainOperation.Response.StateBytes,
+                DeepDesyncCrc = rpcOp.MainOperation.Response.DeepDesyncCrc
             };
         }
 

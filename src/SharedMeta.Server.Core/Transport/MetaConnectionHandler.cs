@@ -32,6 +32,7 @@ namespace SharedMeta.Server.Core.Transport
         public string PlayerId { get; private set; } = string.Empty;
         public Guid SessionId { get; private set; }
         public bool IsSessionConnected => PlayerId.Length > 0;
+        public bool DeepDesyncRequested { get; private set; }
 
         public MetaConnectionHandler(
             string connectionId,
@@ -209,7 +210,8 @@ namespace SharedMeta.Server.Core.Transport
                     CallerId = PlayerId,
                     Payload = request.Payload,
                     IsCrossOptimistic = request.IsCrossOptimistic,
-                    ServerTimeTicks = request.ServerTimeTicks
+                    ServerTimeTicks = request.ServerTimeTicks,
+                    DeepDesyncRequested = DeepDesyncRequested
                 };
 
                 var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
@@ -275,6 +277,14 @@ namespace SharedMeta.Server.Core.Transport
                 _logger.HandlerAcknowledgeError(ex);
                 return new AcknowledgeResponse { Success = false, Error = ex.Message };
             }
+        }
+
+        public Task<DebugOptionsResponse> SetDebugOptionsAsync(DebugOptionsRequest request)
+        {
+            DeepDesyncRequested = request.DeepDesyncEnabled;
+            _logger.LogDebug("[Handler] Deep desync {Status} for {PlayerId}",
+                request.DeepDesyncEnabled ? "enabled" : "disabled", PlayerId);
+            return Task.FromResult(new DebugOptionsResponse { Success = true });
         }
 
         public async Task GracefulDisconnectAsync()

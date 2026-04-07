@@ -96,6 +96,13 @@ namespace SharedMeta.Generator
                     spc.AddSource($"{symbol.Name}.Context.g.cs", source);
                 }
 
+                // Deep desync: generate PatchTracked copy of the service class
+                var deepDesyncSource = PatchTrackedClassGenerator.Generate(node, symbol, ctx.SemanticModel.Compilation);
+                if (deepDesyncSource != null)
+                {
+                    spc.AddSource($"{symbol.Name}_PatchTracked.g.cs", deepDesyncSource);
+                }
+
                 // Subscriber dispatcher (for framework service events)
                 var subscriberSource = SubscriberDispatcherGenerator.Generate(node, symbol);
                 if (subscriberSource != null)
@@ -275,7 +282,9 @@ namespace SharedMeta.Generator
                     // Skip system/framework assemblies
                     var assemblyName = assemblySymbol.Name;
                     if (assemblyName.StartsWith("System") || assemblyName.StartsWith("Microsoft") ||
-                        assemblyName.StartsWith("netstandard") || assemblyName.StartsWith("SharedMeta"))
+                        assemblyName.StartsWith("netstandard") || assemblyName == "mscorlib" ||
+                        assemblyName.StartsWith("Orleans") || assemblyName == "MemoryPack.Core" ||
+                        assemblyName == "MessagePack" || assemblyName == "MessagePack.Annotations")
                         continue;
 
                     // Find all types with [MetaServiceImpl] attribute

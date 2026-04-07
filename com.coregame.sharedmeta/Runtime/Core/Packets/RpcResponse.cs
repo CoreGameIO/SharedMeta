@@ -58,6 +58,12 @@ namespace SharedMeta.Core
         /// </summary>
         [Id(6), Key(6)] public byte[]? StateBytes { get; set; }
 
+        /// <summary>
+        /// FNV-1a hash of serialized state after method execution (deep desync detection).
+        /// Null when deep desync mode is disabled. Client compares its local hash with this.
+        /// </summary>
+        [Id(7), Key(7)] public uint? DeepDesyncCrc { get; set; }
+
         /// <summary>True if the call failed (Error is not null).</summary>
         [IgnoreMember] public bool HasError => Error != null;
 
