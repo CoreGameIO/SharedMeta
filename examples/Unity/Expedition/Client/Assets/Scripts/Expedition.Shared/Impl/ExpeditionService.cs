@@ -207,6 +207,13 @@ namespace Expedition.Shared
         /// Mostly deterministic map generation, but corrupts 5-15 random cells using
         /// <see cref="System.Random"/>. This produces a small, focused desync that the
         /// patch diff can show clearly (instead of a fully different 12x12 map).
+        ///
+        /// Each side, taken in isolation, must still be internally consistent — the
+        /// purpose of this method is to demonstrate **client/server divergence**, not
+        /// to leave each individual state with a broken invariant. We therefore
+        /// recompute <see cref="ExpeditionState.TotalTreasures"/> after corruption so
+        /// the player can always actually finish the resulting (albeit non-matching)
+        /// map.
         /// </summary>
         private void RegenerateMapBroken()
         {
@@ -224,6 +231,19 @@ namespace Expedition.Shared
                 int idx = rng.Next(1, totalCells); // skip [0] — player spawn
                 state.Cells[idx] = (byte)(rng.Next(4)); // any CellType
             }
+
+            // Recompute TotalTreasures so the per-side state stays internally consistent.
+            // The corruption may have removed treasure cells (now player can't reach
+            // the original total) or added new ones (player would overshoot). The map
+            // still desyncs across client/server because the corruption rng is different
+            // on each side — that's the point of the demo.
+            int treasureCount = 0;
+            for (int i = 0; i < totalCells; i++)
+            {
+                if (state.Cells[i] == (byte)CellType.Treasure)
+                    treasureCount++;
+            }
+            state.TotalTreasures = treasureCount;
         }
 
         private void RegenerateMap()

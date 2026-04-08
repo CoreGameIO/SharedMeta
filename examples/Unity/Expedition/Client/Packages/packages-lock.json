@@ -5,7 +5,7 @@
       "depth": 0,
       "source": "git",
       "dependencies": {},
-      "hash": "cf57bbc861de006bdeedbe8b5b88e8487fb0fcae"
+      "hash": "26f20b8a0c9f812842b525f2540710b5934d342e"
     },
     "com.github-glitchenzo.nugetforunity": {
       "version": "https://github.com/GlitchEnzo/NuGetForUnity.git?path=/src/NuGetForUnity",
