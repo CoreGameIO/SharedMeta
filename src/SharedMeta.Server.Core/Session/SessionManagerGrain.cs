@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Orleans;
 using Orleans.Runtime;
 using Orleans.Utilities;
@@ -24,6 +25,7 @@ namespace SharedMeta.Server.Core.Session
         private readonly IMetaSerializer _serializer;
         private readonly ILogger<SessionManagerGrain> _logger;
         private readonly IEntityGrainResolver _entityGrainResolver;
+        private readonly SessionManagerOptions _options;
 
         // Session state
         private readonly string _playerId;
@@ -55,6 +57,26 @@ namespace SharedMeta.Server.Core.Session
 
         // Saved subscriptions for reconnect after transport disconnect
         private List<SavedSubscription>? _savedSubscriptions;
+
+        // ── RPC ordering / stash ─────────────────────────────────────────
+        // When SessionManagerOptions.EnforceRpcOrder is true, RPC calls that arrive with
+        // RequestId > NextExpected are parked in this ring buffer until the gap is filled.
+        // The buffer also tracks LastDispatchedRequestId so the gate can classify each
+        // incoming call as Stale / NextExpected / OutOfOrder in O(1).
+        private readonly RpcOrderingBuffer<StashedRpcCall> _orderingBuffer;
+
+        // Stall timer (created lazily on first gap, disposed on recovery / terminate)
+        private IDisposable? _stallTimer;
+        private long _stallStartTicks;
+        private StallStage _lastStallStage = StallStage.None;
+
+        private sealed class StashedRpcCall
+        {
+            public long RequestId { get; set; }
+            public string EntityId { get; set; } = "";
+            public RpcCall Call { get; set; } = new();
+            public long LastAcknowledgedSequence { get; set; }
+        }
 
         #region Nested Types
 
@@ -102,13 +124,19 @@ namespace SharedMeta.Server.Core.Session
 
         #endregion
 
-        public SessionManagerGrain(IMetaSerializer serializer, ILogger<SessionManagerGrain> logger, IEntityGrainResolver entityGrainResolver)
+        public SessionManagerGrain(
+            IMetaSerializer serializer,
+            ILogger<SessionManagerGrain> logger,
+            IEntityGrainResolver entityGrainResolver,
+            IOptions<SessionManagerOptions>? options = null)
         {
             _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
+            _options = options?.Value ?? new SessionManagerOptions();
             _observerManager = new ObserverManager<ISessionObserver>(TimeSpan.FromMinutes(2), _logger);
             _playerId = this.GetPrimaryKeyString();
+            _orderingBuffer = new RpcOrderingBuffer<StashedRpcCall>(Math.Max(1, _options.StashCapacity));
         }
 
         public override Task OnActivateAsync(CancellationToken cancellationToken)
@@ -237,6 +265,7 @@ namespace SharedMeta.Server.Core.Session
             _entityStates.Clear();
             _deferredResponses.Clear();
             _sequenceNumber = 0;
+            ResetRpcOrderingState();
 
             _logger.SessionSuperseded(sessionId, _playerId);
 
@@ -289,6 +318,7 @@ namespace SharedMeta.Server.Core.Session
             _savedSubscriptions = null;
             _currentSessionId = Guid.Empty;
             _sequenceNumber = 0;
+            ResetRpcOrderingState();
 
             _logger.GracefulDisconnect(_playerId);
         }
@@ -452,41 +482,99 @@ namespace SharedMeta.Server.Core.Session
                 return cached;
             }
 
+            // ── RPC reordering: stash out-of-order requests ──────────────
+            if (_options.EnforceRpcOrder && requestId > 0)
+            {
+                var position = _orderingBuffer.Classify(requestId);
+                if (position == RequestPosition.OutOfOrder)
+                {
+                    var stashedCall = new StashedRpcCall
+                    {
+                        RequestId = requestId,
+                        EntityId = entityId,
+                        Call = call,
+                        LastAcknowledgedSequence = lastAcknowledgedSequence,
+                    };
+                    var stashResult = _orderingBuffer.TryStash(requestId, stashedCall);
+                    switch (stashResult)
+                    {
+                        case StashResult.Overflow:
+                            // No way to recover the intended ordering — terminate.
+                            await TerminateSessionForStashOverflow(requestId);
+                            return SessionResponse.ForError($"Request order stash overflow at requestId={requestId}");
+                        case StashResult.Duplicate:
+                            LogDuplicateStash(requestId);
+                            break;
+                        case StashResult.Stashed:
+                            EnsureStallTimerStarted();
+                            break;
+                    }
+
+                    // Pure ack response — TCS on the client stays pending until the real
+                    // result arrives later (bundled with the predecessor's response).
+                    return new SessionResponse
+                    {
+                        SequenceNumber = 0,
+                        Operations = new List<SessionOp>(),
+                        ServerTimeTicks = DateTime.UtcNow.Ticks
+                    };
+                }
+                if (position == RequestPosition.Stale)
+                {
+                    // Stale resend. Idempotency cache above should have caught the common
+                    // case; this branch handles cases where the response was already
+                    // evicted from _pendingPackets. Pass through and let the entity grain
+                    // re-execute (it's idempotent for replay-safe operations).
+                    _logger.LogDebug("[Session] Stale RPC requestId={ReqId}, lastDispatched={Last}",
+                        requestId, _orderingBuffer.LastDispatchedRequestId);
+                }
+            }
+
             if (!_subscribedEntities.TryGetValue(entityId, out var sub) || sub.GrainRef == null)
                 return SessionResponse.ForError($"Not subscribed to entity {entityId}");
 
             _logger.SendToEntity(_playerId, entityId, requestId, call.ServiceName, call.MethodName);
 
-            _inActiveRpc = true;
-            _rpcBroadcastQueue.Clear();
+            // Accumulator across the in-order call AND any consecutive stashed calls
+            // we drain after it.
+            var allOps = new List<SessionOp>();
+            bool anyDeferred = false;
+
             try
             {
-                var result = await sub.GrainRef.HandleCallAsync(call);
-                _inActiveRpc = false;
-
-                // CrossOptimistic: advance KnownEntitySequence for cross-entity calls.
-                // This causes their broadcasts (queued in _rpcBroadcastQueue) to be
-                // treated as duplicates and silently skipped in BuildPrecedingOperations.
-                if (call.IsCrossOptimistic && result.CrossEntityCalls is { Count: > 0 })
+                anyDeferred |= await ExecuteOneCallAsync(entityId, requestId, call, sub.GrainRef, allOps);
+                if (_options.EnforceRpcOrder && requestId > 0)
                 {
-                    foreach (var crossCall in result.CrossEntityCalls)
-                    {
-                        var crossState = GetOrCreateEntityState(crossCall.EntityId);
-                        crossState.KnownEntitySequence = Math.Max(
-                            crossState.KnownEntitySequence, crossCall.EntitySequenceNumber);
-                    }
+                    // The slot for this RequestId in the ring was conceptually the head;
+                    // since the call came in-order it was never populated, but the head
+                    // still needs to advance so subsequent stash lookups address the
+                    // correct slot.
+                    _orderingBuffer.MarkDispatchedInOrder(requestId);
                 }
 
-                var state = GetOrCreateEntityState(entityId);
-                _logger.RpcReturned(_playerId, entityId, result.EntitySequenceNumber, state.KnownEntitySequence, _rpcBroadcastQueue.Count, result.HasError);
+                // Drain consecutive stash entries inline. Each successful dequeue advances
+                // the buffer's LastDispatchedRequestId, so the loop walks forward until
+                // either the stash is empty or the next slot is empty (gap remains).
+                if (_options.EnforceRpcOrder)
+                {
+                    while (_orderingBuffer.TryDequeueNext(out _, out var stashed) && stashed != null)
+                    {
+                        if (!_subscribedEntities.TryGetValue(stashed.EntityId, out var stashedSub) || stashedSub.GrainRef == null)
+                        {
+                            // Stashed call's entity is gone — surface as an error op.
+                            allOps.Add(new SessionOp
+                            {
+                                EntityId = stashed.EntityId,
+                                RequestId = stashed.RequestId,
+                                Error = $"Not subscribed to entity {stashed.EntityId}",
+                                MainOperation = new OperationResult { Call = stashed.Call, Response = new RpcResponse() }
+                            });
+                            continue;
+                        }
 
-                // Collect preceding broadcasts queued during RPC + drain held
-                var allOps = CollectPrecedingOps(state, entityId);
-
-                if (state.KnownEntitySequence >= result.EntitySequenceNumber - 1)
-                    return BuildFastPathResponse(allOps, state, entityId, requestId, result);
-                else
-                    return BuildDeferredResponse(allOps, state, entityId, requestId, result, call);
+                        anyDeferred |= await ExecuteOneCallAsync(stashed.EntityId, stashed.RequestId, stashed.Call, stashedSub.GrainRef, allOps);
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -498,6 +586,108 @@ namespace SharedMeta.Server.Core.Session
                 _inActiveRpc = false;
                 _rpcBroadcastQueue.Clear();
             }
+
+            // If stash drained completely, signal stall recovery to the client.
+            if (_options.EnforceRpcOrder && _orderingBuffer.IsEmpty && _stallTimer != null)
+                StopStallTimerAndNotifyRecovered();
+
+            // Build a single SessionResponse from all accumulated ops.
+            return FinalizeAccumulatedResponse(allOps);
+        }
+
+        /// <summary>
+        /// Execute one RPC call against an entity and append its result + preceding broadcasts
+        /// to <paramref name="allOps"/>. Returns true if the result was deferred (entity sequence
+        /// gap detected) and added to <see cref="_deferredResponses"/> instead of allOps.
+        /// </summary>
+        private async Task<bool> ExecuteOneCallAsync(
+            string entityId, long requestId, RpcCall call, IEntityGrainBase grainRef, List<SessionOp> allOps)
+        {
+            _inActiveRpc = true;
+            _rpcBroadcastQueue.Clear();
+            EntityCallResult result;
+            try
+            {
+                result = await grainRef.HandleCallAsync(call);
+            }
+            finally
+            {
+                _inActiveRpc = false;
+            }
+
+            // CrossOptimistic: advance KnownEntitySequence for cross-entity calls so their
+            // own broadcasts (queued in _rpcBroadcastQueue) are silently skipped.
+            if (call.IsCrossOptimistic && result.CrossEntityCalls is { Count: > 0 })
+            {
+                foreach (var crossCall in result.CrossEntityCalls)
+                {
+                    var crossState = GetOrCreateEntityState(crossCall.EntityId);
+                    crossState.KnownEntitySequence = Math.Max(
+                        crossState.KnownEntitySequence, crossCall.EntitySequenceNumber);
+                }
+            }
+
+            var state = GetOrCreateEntityState(entityId);
+            _logger.RpcReturned(_playerId, entityId, result.EntitySequenceNumber, state.KnownEntitySequence, _rpcBroadcastQueue.Count, result.HasError);
+
+            // Collect preceding broadcasts queued during RPC + drain held
+            var preceding = CollectPrecedingOps(state, entityId);
+            if (preceding.Count > 0)
+                allOps.AddRange(preceding);
+
+            if (state.KnownEntitySequence >= result.EntitySequenceNumber - 1)
+            {
+                // Fast path — append result op directly
+                state.KnownEntitySequence = Math.Max(state.KnownEntitySequence, result.EntitySequenceNumber);
+                allOps.Add(CallResultToSessionOp(entityId, requestId, result));
+                DrainHeldBroadcasts(state, entityId);
+                MergeOutgoingBatch(allOps);
+                return false;
+            }
+
+            // Deferred path — register for later resolution, append only preceding ops
+            _logger.DeferredPath(_playerId, requestId, result.EntitySequenceNumber, state.KnownEntitySequence, allOps.Count);
+            _deferredResponses.Add(new DeferredResponse
+            {
+                RequestId = requestId,
+                EntityId = entityId,
+                RequiredEntitySeq = result.EntitySequenceNumber,
+                Result = result,
+                OriginalCall = call
+            });
+            MergeOutgoingBatch(allOps);
+            return true;
+        }
+
+        /// <summary>
+        /// Wrap accumulated ops into one SessionResponse with one fresh sequence number,
+        /// and add to the replay cache. Returns an empty (seq=0) response if there are no ops.
+        /// </summary>
+        private SessionResponse FinalizeAccumulatedResponse(List<SessionOp> allOps)
+        {
+            if (allOps.Count == 0)
+            {
+                return new SessionResponse
+                {
+                    SequenceNumber = 0,
+                    Operations = new List<SessionOp>(),
+                    ServerTimeTicks = DateTime.UtcNow.Ticks
+                };
+            }
+
+            var sessionSeq = ++_sequenceNumber;
+            var response = new SessionResponse
+            {
+                SequenceNumber = sessionSeq,
+                Operations = OrderOps(allOps),
+                ServerTimeTicks = DateTime.UtcNow.Ticks
+            };
+
+            _pendingPackets.Add(response);
+            CleanupPendingPacketsByCount();
+
+            _logger.FastPath(_playerId, sessionSeq, allOps.Count, 0);
+            return response;
         }
 
         /// <summary>
@@ -516,75 +706,146 @@ namespace SharedMeta.Server.Core.Session
             return ops;
         }
 
+        // ── RPC ordering stash helpers ───────────────────────────────────
+
         /// <summary>
-        /// Fast path: no entity sequence gap — include RPC result in response.
-        /// Assigns ONE sequence number to the whole SessionResponse.
+        /// Reset all RPC reordering state — invoked when the session is reset (supersede,
+        /// graceful disconnect, hard terminate). The next caller starts fresh from
+        /// <c>RequestId = 1</c>.
         /// </summary>
-        private SessionResponse BuildFastPathResponse(
-            List<SessionOp> allOps, EntityOrderingState state, string entityId,
-            long requestId, EntityCallResult result)
+        private void ResetRpcOrderingState()
         {
-            state.KnownEntitySequence = Math.Max(state.KnownEntitySequence, result.EntitySequenceNumber);
-
-            allOps.Add(CallResultToSessionOp(entityId, requestId, result));
-
-            // Drain held broadcasts that may now be in order after advancing knownSeq
-            DrainHeldBroadcasts(state, entityId);
-            MergeOutgoingBatch(allOps);
-
-            var sessionSeq = ++_sequenceNumber;
-            var response = new SessionResponse
-            {
-                SequenceNumber = sessionSeq,
-                Operations = OrderOps(allOps),
-                ServerTimeTicks = DateTime.UtcNow.Ticks
-            };
-
-            // Store for reconnection replay
-            _pendingPackets.Add(response);
-            CleanupPendingPacketsByCount();
-
-            _logger.FastPath(_playerId, sessionSeq, allOps.Count, state.KnownEntitySequence);
-
-            return response;
+            _orderingBuffer.Reset();
+            _stallTimer?.Dispose();
+            _stallTimer = null;
+            _lastStallStage = StallStage.None;
         }
 
-        /// <summary>
-        /// Deferred path: entity sequence gap detected — defer RPC result, return only preceding ops.
-        /// If there are preceding ops, assigns ONE sequence number. Otherwise seq=0.
-        /// </summary>
-        private SessionResponse BuildDeferredResponse(
-            List<SessionOp> allOps, EntityOrderingState state, string entityId,
-            long requestId, EntityCallResult result, RpcCall call)
+        private void LogDuplicateStash(long requestId)
         {
-            _logger.DeferredPath(_playerId, requestId, result.EntitySequenceNumber, state.KnownEntitySequence, allOps.Count);
-
-            _deferredResponses.Add(new DeferredResponse
+            switch (_options.DuplicateStashLogLevel)
             {
-                RequestId = requestId,
-                EntityId = entityId,
-                RequiredEntitySeq = result.EntitySequenceNumber,
-                Result = result,
-                OriginalCall = call
-            });
+                case StashDuplicateLogLevel.None: return;
+                case StashDuplicateLogLevel.Debug:
+                    _logger.LogDebug("[Session] Duplicate stashed RPC requestId={ReqId} player={Player}", requestId, _playerId);
+                    break;
+                case StashDuplicateLogLevel.Information:
+                    _logger.LogInformation("[Session] Duplicate stashed RPC requestId={ReqId} player={Player}", requestId, _playerId);
+                    break;
+                case StashDuplicateLogLevel.Warning:
+                    _logger.LogWarning("[Session] Duplicate stashed RPC requestId={ReqId} player={Player}", requestId, _playerId);
+                    break;
+            }
+        }
 
-            MergeOutgoingBatch(allOps);
+        // ── Stall timer + notifications ──────────────────────────────────
 
-            if (allOps.Count > 0)
+        private void EnsureStallTimerStarted()
+        {
+            if (_stallTimer != null) return;
+            _stallStartTicks = Environment.TickCount64;
+            _lastStallStage = StallStage.None;
+            _stallTimer = this.RegisterGrainTimer(
+                OnStallTick,
+                _options.StallTickInterval,
+                _options.StallTickInterval);
+        }
+
+        private async Task OnStallTick()
+        {
+            if (_orderingBuffer.IsEmpty)
             {
-                var sessionSeq = ++_sequenceNumber;
-                var response = new SessionResponse
-                {
-                    SequenceNumber = sessionSeq,
-                    Operations = OrderOps(allOps),
-                    ServerTimeTicks = DateTime.UtcNow.Ticks
-                };
-                _pendingPackets.Add(response);
-                CleanupPendingPacketsByCount();
-                return response;
+                StopStallTimerAndNotifyRecovered();
+                return;
             }
 
-            return new SessionResponse { Operations = new List<SessionOp>(), ServerTimeTicks = DateTime.UtcNow.Ticks };
+            var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - _stallStartTicks);
+            if (elapsed >= _options.MaxStallDuration)
+            {
+                _logger.LogWarning("[Session] Hard stall timeout after {Elapsed}; terminating session for player {Player}",
+                    elapsed, _playerId);
+                await TerminateSessionForStall(elapsed);
+                return;
+            }
+
+            StallStage targetStage =
+                elapsed >= _options.HardStallNotifyTimeout ? StallStage.TimeoutPending :
+                elapsed >= _options.SoftStallNotifyTimeout ? StallStage.Stalled :
+                StallStage.None;
+
+            if (targetStage != StallStage.None && targetStage != _lastStallStage)
+            {
+                _lastStallStage = targetStage;
+                await PushStallNotification(targetStage, elapsed);
+            }
+        }
+
+        private Task PushStallNotification(StallStage stage, TimeSpan elapsed)
+        {
+            var notification = new StallNotification
+            {
+                Stage = stage,
+                OldestMissingRequestId = _orderingBuffer.NextExpectedRequestId,
+                StashedCount = _orderingBuffer.Count,
+                ElapsedMilliseconds = (long)elapsed.TotalMilliseconds,
+            };
+            var response = new SessionResponse
+            {
+                SequenceNumber = 0,
+                Operations = new List<SessionOp>(),
+                ServerTimeTicks = DateTime.UtcNow.Ticks,
+                StallNotification = notification,
+            };
+            return _observerManager.Notify(o => o.OnBatch(response));
+        }
+
+        private void StopStallTimerAndNotifyRecovered()
+        {
+            if (_stallTimer == null) return;
+
+            var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - _stallStartTicks);
+            _stallTimer.Dispose();
+            _stallTimer = null;
+
+            // Only push recovery if we previously notified the client about a stall.
+            if (_lastStallStage != StallStage.None)
+            {
+                _ = PushStallNotification(StallStage.Recovered, elapsed);
+                _lastStallStage = StallStage.None;
+            }
+        }
+
+        private async Task TerminateSessionForStashOverflow(long requestId)
+        {
+            await TerminateSessionWithReason(
+                $"Request order stash overflow at requestId={requestId} (stashed={_orderingBuffer.Count}, capacity={_orderingBuffer.Capacity})");
+        }
+
+        private async Task TerminateSessionForStall(TimeSpan elapsed)
+        {
+            await TerminateSessionWithReason(
+                $"RPC ordering stall exceeded {elapsed.TotalSeconds:F0}s (oldestMissing={_orderingBuffer.NextExpectedRequestId}, stashed={_orderingBuffer.Count})");
+        }
+
+        private async Task TerminateSessionWithReason(string reason)
+        {
+            try
+            {
+                await _observerManager.Notify(o => o.OnSessionTerminated(reason));
+            }
+            catch { /* best effort */ }
+            _observerManager.Clear();
+
+            // Drop session state — client must reconnect (will get IsNewSession=true).
+            ResetRpcOrderingState();
+            _previousSessionIds.Add(_currentSessionId);
+            _currentSessionId = Guid.Empty;
+            _pendingPackets.Clear();
+            _entityStates.Clear();
+            _deferredResponses.Clear();
+            _sequenceNumber = 0;
+
+            _logger.LogWarning("[Session] Session terminated for player {Player}: {Reason}", _playerId, reason);
         }
 
         /// <summary>

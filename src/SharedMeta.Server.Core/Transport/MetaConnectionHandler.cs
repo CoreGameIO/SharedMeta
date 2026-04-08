@@ -243,7 +243,7 @@ namespace SharedMeta.Server.Core.Transport
                     request.RequestId,
                     call,
                     request.LastAcknowledgedSequence,
-                    SessionId);
+                    SessionId).ConfigureAwait(false);
 
                 // Cache server patch for desync reporting (if enabled)
                 if (_transportOptions?.DesyncReportingEnabled == true && response.Operations != null)

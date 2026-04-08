@@ -75,6 +75,45 @@ public class DeepDesyncTests
         Assert.NotEqual(desync.ServerCrc, desync.LocalCrc);
     }
 
+    /// <summary>
+    /// Stress test for the server-side request reordering gate (stash + drain in
+    /// <c>SessionManagerGrain</c>). Fires many deterministic Optimistic calls so the
+    /// threadpool is free to deliver them out of submission order to the in-process
+    /// transport. With <c>SessionManagerOptions.EnforceRpcOrder = true</c> (set by the
+    /// fixture) the session manager must stash out-of-order requests and drain them in
+    /// monotonic <c>RequestId</c> order before forwarding to the entity grain, so all
+    /// patch CRCs match and no patch desync is reported.
+    /// </summary>
+    [Fact(Timeout = 60_000)]
+    public async Task ConcurrentDeterministicCalls_NoPatchDesync_StressGate()
+    {
+        var server = new InProcessServer(_fixture.CreateHandlerFactory());
+        var diagnostics = new DesyncCollector();
+
+        await using var client = new TestClientSetup(server, "deep-desync-stress-" + Guid.NewGuid().ToString("N")[..8],
+            diagnostics: diagnostics);
+        await client.ConnectAsync();
+
+        var resolver = client.CreateResolver();
+        var entityId = client.PlayerId;
+        var api = await resolver.GetServiceAsync<DesyncTestServiceApiClient>(entityId);
+
+        // 50 sequential awaits — each schedules an Optimistic call but the local
+        // continuation runs without preserving submission order across the threadpool.
+        // Without server-side reordering this trips on the very first ~3 calls.
+        const int callCount = 50;
+        for (int i = 1; i <= callCount; i++)
+        {
+            await api.AddAsync(i);
+        }
+
+        // Wait for all fire-and-forget Optimistic continuations to drain
+        await Task.Delay(300);
+
+        Assert.Empty(diagnostics.PatchDesyncs);
+        Assert.Empty(client.DetectedIssues);
+    }
+
     [Fact(Timeout = 60_000)]
     public async Task MixedMethods_OnlyNonDeterministicDesyncs()
     {

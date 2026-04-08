@@ -970,11 +970,61 @@ public interface IDesyncDiagnostics
         T serverResult, T localResult);
     void OnRandomDesync(string serviceName, string methodName,
         long serverDelta, long localDelta);
+    void OnPatchDesync(string serviceName, string methodName,
+        uint serverCrc, uint localCrc);  // deep desync (0.7.0+)
     void OnCrossEntityResult(string entityId, string serviceName,
         string methodName, byte[]? resultBytes);
     Task<StateComparisonResult> CompareFullStateAsync(string entityId);
 }
 ```
+
+---
+
+## Session Health & RPC Ordering
+
+### Server-side RPC Reordering (0.8.0+)
+
+Some transports (HTTP polling, custom UDP, anything with intermediate `Task.Run`) do not preserve the order in which the client invoked RPCs by the time those calls reach the entity grain on the server. Concurrent Optimistic calls then race on the threadpool and cause phantom patch desyncs.
+
+`SessionManagerOptions.EnforceRpcOrder = true` opts in to a per-session reordering gate inside `SessionManagerGrain`. The gate parks out-of-order calls in a fixed-capacity ring buffer and drains them in monotonic `RequestId` order when their predecessor arrives. All results from the inline call + drained stash are bundled into a single `SessionResponse` so the client sees them atomically.
+
+```csharp
+services.Configure<SessionManagerOptions>(o =>
+{
+    o.EnforceRpcOrder = true;            // default: false
+    o.StashCapacity = 256;               // default
+    o.SoftStallNotifyTimeout = TimeSpan.FromMilliseconds(500);
+    o.HardStallNotifyTimeout = TimeSpan.FromSeconds(10);
+    o.MaxStallDuration = TimeSpan.FromMinutes(5);
+});
+```
+
+- **SignalR over a single hub connection**: ordering is preserved by the protocol; you can leave `EnforceRpcOrder = false`.
+- **HTTP polling / multi-channel transports**: should set `EnforceRpcOrder = true`.
+
+### Stall Notifications
+
+When an ordering gap stays open beyond `SoftStallNotifyTimeout`, the server pushes a `StallNotification` to the client through the existing observer channel. The client routes it to `ISessionHealthListener`:
+
+```csharp
+public interface ISessionHealthListener
+{
+    void OnSessionStalled(StallNotification notification);    // Stalled or TimeoutPending
+    void OnSessionRecovered(StallNotification notification);  // gap closed
+}
+
+new MetaClient(connection, serializer, new MetaClientOptions
+{
+    SessionHealth = new MyStallUiListener(),  // shows "syncing…" / prompt
+});
+```
+
+Stages:
+1. **`StallStage.Stalled`** — first notification (after `SoftStallNotifyTimeout`). UI shows a low-key indicator.
+2. **`StallStage.TimeoutPending`** — second notification (after `HardStallNotifyTimeout`). UI may prompt the user.
+3. **`StallStage.Recovered`** — gap closed; hide UI.
+
+After `MaxStallDuration` the server **terminates the session** (`ISessionObserver.OnSessionTerminated`) and the client must reconnect — the assumption is that the missing predecessor was lost permanently and continuing risks desync. Stash overflow (more than `StashCapacity` simultaneously parked requests) also terminates immediately.
 
 ---
 

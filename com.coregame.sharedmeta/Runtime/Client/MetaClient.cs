@@ -23,6 +23,12 @@ namespace SharedMeta.Client
         /// <summary>Diagnostics handler for desync detection. Default: null.</summary>
         public IDesyncDiagnostics? Diagnostics { get; set; }
 
+        /// <summary>
+        /// Optional listener for server-side session health notifications (RPC ordering stalls,
+        /// recovery). Implementations typically drive a UI overlay. Default: null (no-op).
+        /// </summary>
+        public ISessionHealthListener? SessionHealth { get; set; }
+
         /// <summary>Transformer registry. Default: new TransformerRegistry().</summary>
         public TransformerRegistry? TransformerRegistry { get; set; }
 
@@ -84,7 +90,10 @@ namespace SharedMeta.Client
             var modeProvider = options.ModeProvider ?? new ExecutionModeProvider();
             var diagnostics = options.Diagnostics;
 
-            _dispatcher = new ClientDispatcher(connection);
+            _dispatcher = new ClientDispatcher(connection)
+            {
+                SessionHealthListener = options.SessionHealth
+            };
             _dispatcher.OnSessionSuperseded += reason => OnSessionSuperseded?.Invoke(reason);
             _dispatcher.OnEntitiesResubscribed += entities => _resolver!.RefreshEntityStates(entities);
 

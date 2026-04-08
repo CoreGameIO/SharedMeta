@@ -44,6 +44,15 @@ namespace SharedMeta.Core.Transport
         /// </summary>
         [Id(3), Key(3)] public long ServerTimeTicks { get; set; }
 
+        /// <summary>
+        /// Out-of-band stall notification from the session manager, used by the server-side
+        /// RPC reordering layer to inform the client about temporarily stuck request flows
+        /// (missing predecessor that hasn't arrived yet). When non-null, this response is
+        /// purely informational and typically carries no <see cref="Operations"/>.
+        /// Routed on the client to <c>ISessionHealthListener</c>.
+        /// </summary>
+        [Id(4), Key(4)] public StallNotification? StallNotification { get; set; }
+
         /// <summary>True if there was a top-level error.</summary>
         [IgnoreMember] public bool HasError => Error != null;
 

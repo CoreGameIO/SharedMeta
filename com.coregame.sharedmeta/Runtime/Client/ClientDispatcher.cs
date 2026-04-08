@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using SharedMeta.Core;
+using SharedMeta.Core.Diagnostics;
 using SharedMeta.Core.Logging;
 using SharedMeta.Core.Transport;
 
@@ -103,6 +104,12 @@ namespace SharedMeta.Client
         public bool ImmediateMode { get; set; }
 
         /// <summary>
+        /// Optional listener for server-side stall notifications. Set by <c>MetaClient</c>
+        /// from <c>MetaClientOptions.SessionHealth</c>; null = drop notifications silently.
+        /// </summary>
+        public ISessionHealthListener? SessionHealthListener { get; set; }
+
+        /// <summary>
         /// Next expected broadcast sequence number.
         /// </summary>
         public long NextExpectedSequence { get { lock (_lock) return _broadcastBuffer.Head; } }
@@ -192,7 +199,10 @@ namespace SharedMeta.Client
                 _pendingRequests[requestId] = pending;
             }
 
-            // Start SignalR call without blocking - completion handled separately
+            // Start RPC call without blocking - completion handled separately.
+            // Call ordering is the transport's responsibility (SignalR preserves it
+            // naturally over a single hub connection; InProcessConnection has its own
+            // serialization). The dispatcher does NOT enforce ordering itself.
             _ = SendAndCompleteAsync(pending);
 
             return pending.Tcs.Task;
@@ -205,19 +215,15 @@ namespace SharedMeta.Client
                 MetaLog.Debug($"[ClientDispatcher] SendAndCompleteAsync: reqId={pending.RequestId}, " +
                     $"entity={pending.EntityId}, method={pending.ServiceName}.{pending.MethodName}");
 
-                // Include piggybacked acknowledgment with each request
                 var response = await _connection.RpcCallAsync(BuildRequest(pending));
 
                 MetaLog.Debug($"[ClientDispatcher] RPC response: reqId={pending.RequestId}, " +
                     $"seq={response.SequenceNumber}, opsCount={response.Operations?.Count ?? 0}, hasError={response.HasError}");
 
-                // Top-level transport error (server rejected before producing any ops)
                 if (response.HasError)
                 {
                     lock (_lock) { _pendingRequests.Remove(pending.RequestId); }
 
-                    // Detect session supersede from RPC rejection (defense-in-depth:
-                    // the transport's OnSessionTerminated event may be lost)
                     if (response.Error != null && response.Error.Contains("superseded", StringComparison.OrdinalIgnoreCase))
                     {
                         pending.Tcs.TrySetException(new InvalidOperationException(response.Error));
@@ -230,15 +236,10 @@ namespace SharedMeta.Client
                     return;
                 }
 
-                // ProcessServerResponse handles its own locking
                 ProcessServerResponse(response);
             }
             catch (Exception ex)
             {
-                // Transport error — request may or may not have reached the server.
-                // Keep pending for reconnect: ResendPendingRequestsAsync will re-send,
-                // and server idempotency (by requestId) prevents duplicates.
-                // If session terminates, HandleSessionTerminated will fail all pending TCS.
                 MetaLog.Warning($"[ClientDispatcher] RPC transport error (keeping pending for reconnect): {ex.Message}");
             }
         }
@@ -500,6 +501,25 @@ namespace SharedMeta.Client
         /// </summary>
         private void ProcessServerResponse(SessionResponse response)
         {
+            // Stall notifications are out-of-band: pure informational, no ops to dispatch,
+            // SequenceNumber = 0 (no replay caching). Route directly to the health listener
+            // and return — bypasses the broadcast buffer and request matching entirely.
+            if (response.StallNotification is { } stall && (response.Operations == null || response.Operations.Count == 0))
+            {
+                try
+                {
+                    if (stall.Stage == Core.Transport.StallStage.Recovered)
+                        SessionHealthListener?.OnSessionRecovered(stall);
+                    else
+                        SessionHealthListener?.OnSessionStalled(stall);
+                }
+                catch (Exception ex)
+                {
+                    MetaLog.Error($"[ClientDispatcher] SessionHealthListener threw: {ex.Message}", ex);
+                }
+                return;
+            }
+
             List<(SessionOp op, PendingRequest pending)>? resolvedRequests = null;
             List<SessionOp>? broadcastOps = null;
             bool isPureBroadcast;

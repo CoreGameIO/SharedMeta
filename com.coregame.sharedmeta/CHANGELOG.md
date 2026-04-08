@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.8.0] - 2026-04-08
+
+### Added
+
+- **Server-side RPC reordering** — `SessionManagerGrain` now optionally guarantees that RPC calls reach entity grains in monotonically increasing `RequestId` order, regardless of the threadpool / transport delivery order. New `SessionManagerOptions.EnforceRpcOrder` (default `false`) opts the gate in. The session manager parks out-of-order calls in a fixed-capacity ring buffer (`SessionManagerOptions.StashCapacity`, default 256), drains them in order when the missing predecessor arrives, and bundles all results into one `SessionResponse`. The client side requires no changes — `ClientDispatcher` already matches operations to pending TCS by `RequestId`. Required defense-in-depth for transports that don't preserve submission order at the wire level (HTTP polling, custom UDP, any pipeline with intermediate `Task.Run`); SignalR over a single hub connection works fine without it
+- `RpcOrderingBuffer<T>` — generic, allocation-free ring buffer with `Classify` / `TryStash` / `TryDequeueNext` / `MarkDispatchedInOrder` / `Reset` API. Lives in `SharedMeta.Server.Core.Session` and is the only ordering primitive `SessionManagerGrain` knows about. 13 focused unit tests cover overflow, head wraparound, duplicate / stale handling, and reset
+- **Session health stall notifications** — when an RPC ordering gap stays open beyond `SessionManagerOptions.SoftStallNotifyTimeout` (default 500 ms), the server pushes a `StallNotification` through the existing observer channel as a new `SessionResponse.StallNotification` field (with empty `Operations`). At `HardStallNotifyTimeout` (default 10 s) it pushes a second notification with `StallStage.TimeoutPending`. When the gap closes a `Recovered` notification follows. The hard upper bound is `MaxStallDuration` (default 5 minutes), after which the session is terminated and the client must reconnect
+- `ISessionHealthListener` (in `SharedMeta.Core.Diagnostics`) — client-side interface with `OnSessionStalled(StallNotification)` and `OnSessionRecovered(StallNotification)`. Wired through `MetaClientOptions.SessionHealth`. `ClientDispatcher.ProcessServerResponse` short-circuits stall-only batches into the listener without touching the broadcast buffer or pending requests
+- `SessionManagerOptions` — new DI-configurable options class controlling reordering, stall thresholds, stash capacity, duplicate-stash log level, and the stall timer tick interval
+- Stash duplicate logging level (`SessionManagerOptions.DuplicateStashLogLevel`) — `Debug` / `Information` / `Warning` / `None`
+- 4 new `SessionOrderingTests` — direct `ISessionManager` integration tests for in-order drain, stalled→recovered notification cycle, stash overflow → terminate session, and full stall stage progression (`Stalled` → `TimeoutPending` → `Recovered`)
+- 1 new `DeepDesyncTests.ConcurrentDeterministicCalls_NoPatchDesync_StressGate` — fires 50 sequential Optimistic RPCs through a real client to verify the reordering gate prevents the threadpool-induced reordering that previously caused phantom patch desyncs
+
+### Fixed
+
+- **Concurrent Optimistic RPCs no longer trigger phantom patch desyncs** — when a client made several Optimistic RPCs in quick succession (`await api.AddAsync(10); await api.AddAsync(20);`), the threadpool could deliver them to the entity grain in the wrong order, causing the deep-desync CRC comparison to fail even though the local execution was correct. Fixed at the architectural level by adding the optional server-side RPC reordering gate described above. Production transports with native FIFO guarantees (single SignalR hub connection) are unaffected; HTTP polling and similar transports must opt in via `SessionManagerOptions.EnforceRpcOrder = true`
+
 ## [0.7.0] - 2026-04-04
 
 ### Added

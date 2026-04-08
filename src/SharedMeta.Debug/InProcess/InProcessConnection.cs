@@ -15,14 +15,6 @@ namespace SharedMeta.Debug.InProcess
         private InProcessBroadcastSender? _broadcastSender;
         private bool _isConnected;
 
-        // Submission ordering: real transports like SignalR preserve call order over a
-        // single hub connection naturally. InProcess routes calls through the threadpool
-        // and Orleans grain scheduler, where concurrent invocations from multiple awaiters
-        // can be queued out of order. Hold a lock around the synchronous prefix of
-        // RpcCallAsync (which runs through to grain.SendToEntityAsync invocation) so the
-        // grain queue receives them in submission order.
-        private readonly SemaphoreSlim _sendOrderingGate = new SemaphoreSlim(1, 1);
-
         public string ConnectionId => _connectionId;
         public bool IsConnected => _isConnected;
 
@@ -128,22 +120,7 @@ namespace SharedMeta.Debug.InProcess
         public async Task<SessionResponse> RpcCallAsync(RpcCallRequest request)
         {
             EnsureConnected();
-
-            // Serialize the entire call. This is intentionally a strict FIFO gate so
-            // that consecutive Optimistic calls cannot interleave at the Orleans grain
-            // level (the threadpool can otherwise reorder concurrent grain.Invoke
-            // submissions, breaking deep-desync patch CRC comparisons). The throughput
-            // hit only matters for InProcess testing — real SignalR transports preserve
-            // order naturally over a single hub connection.
-            await _sendOrderingGate.WaitAsync().ConfigureAwait(false);
-            try
-            {
-                return await _server.RpcCallAsync(_connectionId, request).ConfigureAwait(false);
-            }
-            finally
-            {
-                _sendOrderingGate.Release();
-            }
+            return await _server.RpcCallAsync(_connectionId, request).ConfigureAwait(false);
         }
 
         public async Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request)

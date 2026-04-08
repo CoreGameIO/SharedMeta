@@ -10,6 +10,7 @@ using SharedMeta.Core.Network;
 using SharedMeta.Serialization.MemoryPack;
 using SharedMeta.Server.Core;
 using SharedMeta.Server.Core.Grains;
+using SharedMeta.Server.Core.Session;
 using SharedMeta.Server.Core.Transport;
 using SharedMeta.Test.Meta1;
 using SharedMeta.Test.Meta1.Server;
@@ -52,6 +53,8 @@ public class TestClusterFixture : IAsyncLifetime
 
     /// <summary>
     /// Create a MetaConnectionHandlerFactory that can be used with InProcessServer.
+    /// Server-side RPC reordering is configured globally on the silo via
+    /// <see cref="SiloConfigurator.Configure"/> (<c>SessionManagerOptions.EnforceRpcOrder = true</c>).
     /// </summary>
     public IMetaConnectionHandlerFactory CreateHandlerFactory(MetaTransportOptions? transportOptions = null)
     {
@@ -92,6 +95,21 @@ public class TestClusterFixture : IAsyncLifetime
                     {
                         o.SubscriberTtl = TimeSpan.FromMinutes(5);
                         o.DeepDesyncEnabled = true;
+                    });
+
+                    // Force-enable RPC reordering at the session manager so the in-process
+                    // tests exercise the same path that production HTTP transports use.
+                    // Stall thresholds are kept reasonable: heavy concurrent test runs can
+                    // starve the threadpool for several seconds on .NET 10, so MaxStallDuration
+                    // is generous. Notification timeouts are still small so stall-notification
+                    // tests don't take long to assert.
+                    services.Configure<SessionManagerOptions>(o =>
+                    {
+                        o.EnforceRpcOrder = true;
+                        o.SoftStallNotifyTimeout = TimeSpan.FromMilliseconds(200);
+                        o.HardStallNotifyTimeout = TimeSpan.FromMilliseconds(800);
+                        o.MaxStallDuration = TimeSpan.FromSeconds(30);
+                        o.StallTickInterval = TimeSpan.FromMilliseconds(100);
                     });
 
                     // Register execution mode provider (shared with tests)

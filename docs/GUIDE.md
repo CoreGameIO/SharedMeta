@@ -1423,6 +1423,62 @@ This ensures the client replays operations in the exact order they were applied 
 
 Every `RpcCallRequest` includes `LastAcknowledgedSequence`, avoiding a separate ack roundtrip. The server prunes `_pendingPackets` for acknowledged sequences.
 
+### Server-Side RPC Reordering (0.8.0+)
+
+Some transports do not preserve the order in which the client invoked RPCs by the time those calls reach the entity grain on the server. SignalR over a single hub connection is fine — it serializes calls at the wire level. **HTTP polling, custom UDP, anything with intermediate `Task.Run`** does not. Concurrent Optimistic calls then race on the threadpool and cause phantom patch desyncs ("the local Add(10) and Add(20) succeeded in order locally, but the server processed them as Add(20)→Add(10)").
+
+`SessionManagerOptions.EnforceRpcOrder = true` opts in to a per-session reordering gate inside `SessionManagerGrain`. The gate uses a fixed-capacity ring buffer (`RpcOrderingBuffer<T>`) keyed by monotonic `RequestId` (already supplied by `ClientDispatcher`):
+
+```csharp
+services.Configure<SessionManagerOptions>(o =>
+{
+    o.EnforceRpcOrder = true;            // default: false
+    o.StashCapacity = 256;               // bounded buffer
+    o.SoftStallNotifyTimeout = TimeSpan.FromMilliseconds(500);
+    o.HardStallNotifyTimeout = TimeSpan.FromSeconds(10);
+    o.MaxStallDuration = TimeSpan.FromMinutes(5);
+    o.StallTickInterval = TimeSpan.FromSeconds(1);
+    o.DuplicateStashLogLevel = StashDuplicateLogLevel.Debug;
+});
+```
+
+Flow:
+1. Each incoming `SendToEntityAsync` is classified as `Stale` (already dispatched) / `NextExpected` (process inline) / `OutOfOrder` (park in stash).
+2. Out-of-order calls return an empty ack response immediately — TCS on the client stays pending.
+3. When the missing predecessor arrives, the gate processes it inline, then drains every consecutive stash entry in the same grain method invocation.
+4. All results — the in-line call + drained stash — are bundled into **one** `SessionResponse` with one sequence number. The client's existing `RequestId` matching dispatches them to the right pending TCS.
+
+Client side requires no changes. The grain stays single-threaded; ordering is restored before any state mutation runs.
+
+### Stall Notifications and `ISessionHealthListener` (0.8.0+)
+
+When an ordering gap stays open beyond `SoftStallNotifyTimeout`, the server pushes a `StallNotification` to the client through the existing observer channel as a new `SessionResponse.StallNotification` field (with empty `Operations`). Stages:
+
+| Stage | When | Typical UI |
+|-------|------|-----------|
+| `StallStage.Stalled` | gap open ≥ `SoftStallNotifyTimeout` (default 500 ms) | low-key "syncing…" indicator |
+| `StallStage.TimeoutPending` | gap open ≥ `HardStallNotifyTimeout` (default 10 s) | "Connection issue. Wait or reconnect?" prompt |
+| `StallStage.Recovered` | gap closed | hide stall UI |
+
+Client wires it through `MetaClientOptions.SessionHealth`:
+
+```csharp
+public interface ISessionHealthListener
+{
+    void OnSessionStalled(StallNotification notification);    // Stalled or TimeoutPending
+    void OnSessionRecovered(StallNotification notification);
+}
+
+new MetaClient(connection, serializer, new MetaClientOptions
+{
+    SessionHealth = new MyStallUiListener(),
+});
+```
+
+`ClientDispatcher.ProcessServerResponse` short-circuits stall-only batches directly to the listener — they don't touch the broadcast buffer or pending requests.
+
+After `MaxStallDuration` (default 5 minutes) the server **terminates the session** via `ISessionObserver.OnSessionTerminated` with a `"RPC ordering stall exceeded …"` reason. Stash overflow (more than `StashCapacity` simultaneously parked requests) terminates immediately. In both cases the client must reconnect — the assumption is that the missing predecessor was lost permanently and continuing risks state desync.
+
 ---
 
 ## 13. Authentication
@@ -1455,6 +1511,58 @@ Response: { "token": "jwt...", "playerId": "abc123_20260226", "isNewPlayer": tru
 2. First login: generates PlayerId (`{random8hex}_{yyyyMMdd}`)
 3. Subsequent logins: returns existing PlayerId
 4. JWT token contains `sub` (PlayerId), `auth_type` ("device"), `jti` (unique ID)
+
+### Platform Authentication (0.6.0+)
+
+In addition to device-based login, the framework ships pluggable validators for platform identity providers. Each is a separate NuGet package; you register them via DI and the existing `/meta/auth/login-platform` endpoint dispatches to the right validator by `platform` name.
+
+| Package | Platform | Token type |
+|---------|----------|-----------|
+| `CoreGame.SharedMeta.Auth.Google` | Google Play Games | server auth code → OAuth2 token exchange |
+| `CoreGame.SharedMeta.Auth.Apple` | Sign in with Apple | JWT identity token → JWKS verification |
+| `CoreGame.SharedMeta.Auth.Steam` | Steam | session ticket → Steam Web API validation |
+
+Custom validators implement `IExternalAuthValidator` (`Validate(token)` → returns stable `platformUserId` + display data).
+
+```csharp
+builder.Services.AddMetaAuth(...);
+builder.Services.AddSharedMetaGoogleAuth(o =>
+{
+    o.WebClientId = "...apps.googleusercontent.com";
+    o.WebClientSecret = "...";
+});
+```
+
+**Login endpoint:**
+```
+POST /meta/auth/login-platform
+Body: { "platform": "google", "platformToken": "..." }
+Response: { "token": "jwt...", "playerId": "abc123_20260226", "isNewPlayer": false, "expiresAt": "..." }
+```
+
+The flow is the same as device login but the auth key is `{platform}:{platformUserId}` instead of the raw device id, so the same player can have multiple keys (e.g. one device id + one Google account) all mapped to the same `PlayerId`.
+
+### Account Linking
+
+After a player is authenticated via one method, additional auth keys can be linked to the same `PlayerId`:
+
+```
+POST /meta/auth/link [Authorize]
+Body: { "platform": "google", "platformToken": "..." }
+Response: { "success": true, "linkedKeys": [ "device:dev-abc", "google:1234567" ] }
+
+POST /meta/auth/unlink [Authorize]
+Body: { "authKey": "device:dev-abc" }
+Response: { "success": true, "remainingKeys": [ "google:1234567" ] }
+
+GET /meta/auth/keys [Authorize]
+Response: [ "device:dev-abc", "google:1234567" ]
+```
+
+Safety:
+- Cannot unlink the **last** auth key (would orphan the account).
+- Linking fails if the platform is already bound to a different `PlayerId` (conflict detection).
+- All link/unlink endpoints require an `[Authorize]` JWT — only the player themselves can modify their key list.
 
 ### Transport Integration
 
@@ -1972,11 +2080,86 @@ public interface IDesyncDiagnostics
         T serverResult, T localResult);
     void OnRandomDesync(string serviceName, string methodName,
         long serverDelta, long localDelta);
+    // Patch-level desync (deep desync, 0.7.0+)
+    void OnPatchDesync(string serviceName, string methodName,
+        uint serverCrc, uint localCrc);
     void OnCrossEntityResult(string entityId, string serviceName,
         string methodName, byte[]? resultBytes);
     Task<StateComparisonResult> CompareFullStateAsync(string entityId);
 }
 ```
+
+There are three independent desync detection layers, each fires its own callback:
+
+| Layer | When it fires | What it catches |
+|-------|---------------|-----------------|
+| **Result** | `OnResultMismatch` — return value bytes differ | Different return values from local vs server execution |
+| **Random** | `OnRandomDesync` — `Context.Random` scroll delta differs | Mismatched number of `Context.Random` calls |
+| **Patch** (deep desync) | `OnPatchDesync` — patch CRC differs | State mutations differ even when return values match |
+
+Result-level catches the easy cases. Patch-level catches "the method returned `true` on both sides but wrote different values to the state" — for example, `state.Money = rng.Next(100)` with `System.Random`. See [Deep Desync Detection](#deep-desync-detection-070) below.
+
+### Deep Desync Detection (0.7.0+)
+
+Field-level state mutation tracking via PatchNode CRC comparison. Opt-in per service:
+
+```csharp
+[MetaServiceImpl(typeof(IExpeditionService), typeof(ExpeditionState), DeepDesync = true)]
+public partial class ExpeditionService : IExpeditionService { … }
+```
+
+The generator produces a `_PatchTracked` copy of the service class where every `State.X = …` write routes through a generated `{State}PatchWrapper`, recording the field id and serialized value into a `PatchNode` tree. Server computes FNV-1a CRC of the serialized tree after each call; client does the same for its local execution; the CRCs are compared in the existing `OnResult/OnRandom` validation pipeline. Mismatch fires `OnPatchDesync`.
+
+**Runtime activation** is independent of the compile-time flag:
+
+```csharp
+// Server: global override (default null = per-session opt-in)
+services.Configure<EntityGrainOptions>(o => o.DeepDesyncEnabled = true);
+
+// Client: per-session toggle (server must opt in via MetaTransportOptions.AllowDebugApi)
+await client.SetDeepDesyncAsync(true);
+```
+
+`[MetaServiceImpl(DeepDesync = true)]` only generates the supporting infrastructure (PatchTracked service copy + `PatchSchema`); it does not force the feature on at runtime. This way `SetDeepDesyncAsync(false)` actually disables CRC computation per-session, and `EntityGrainOptions.DeepDesyncEnabled = false` works as a kill switch.
+
+**`PatchableList<T>`, `PatchableDictionary<K,V>`, `PatchableHashSet<T>`** wrap base collections and auto-record mutations into the same patch tree — use them for collection fields if you want fine-grained tracking. They have full API parity with the base collections + implicit conversion from them.
+
+### Server-Side Desync Reporting (0.7.0+)
+
+When a desync is detected on the client, the framework can ship the full evidence to the server for centralized logging and analysis. Opt-in:
+
+```csharp
+builder.Services.AddSingleton(new MetaTransportOptions
+{
+    DesyncReportingEnabled = true,             // default: false
+    DesyncReportPatchCacheSize = 16,           // per-connection patch ring
+    DesyncLogLevel = DesyncLogLevel.Warning,   // None | Warning | Information | Debug
+});
+```
+
+Behavior:
+- **Server side** caches the most recent server-computed `PatchNode` per `(entityId, service, method)` per connection (small bounded ring).
+- **Client side** detects a CRC mismatch (or result/random mismatch) → fires `OnPatchDesync`/`OnResultMismatch`/`OnRandomDesync` locally → fire-and-forget `SendDesyncReportAsync(...)` to the server with `MismatchKind` flags (`Patch | Result | Random`) and the relevant payload (patch bytes / result bytes / random delta).
+- **Server** receives the report, looks up the cached server patch, runs `PatchNodeDiffer.Compare`, formats the divergence as JSON via `PatchTextRenderer.DiffToJson` (using the per-state `IPatchSchema`), stores a `DeepDesyncReport` in `DesyncReportGrain` (per-player, bounded ring of 50), and logs at the configured level.
+
+Result and random mismatches don't need any server cache — both values are sent inside the request itself.
+
+### Patch Schema and JSON Renderer
+
+`{State}PatchSchema.g.cs` is generated alongside every `{State}PatchWrapper.g.cs`. It maps `[MemoryPackOrder(n)]` field ids to property names and decoder types. `PatchTextRenderer.ToJson` visualizes a single patch and `PatchTextRenderer.DiffToJson` produces a side-by-side `{ "server": ..., "client": ... }` JSON of two diverged patches:
+
+```
+PATCH:
+{
+  "Cells": {
+    "server": [0, 0, 1, 0, 0, 2, 0, ...],
+    "client": [0, 0, 1, 0, 0, 0, 0, ...]
+  },
+  "TreasuresCollected": { "server": 5, "client": 4 }
+}
+```
+
+`IPatchSchemaRegistry` is registered automatically by `ConfigureMeta()`. Schemas are only consulted when a desync report is being formatted — **zero overhead** in normal RPC flow.
 
 ### Common Desync Causes
 
@@ -2357,17 +2540,19 @@ See `tests/SharedMeta.IntegrationTests/` for complete examples.
 
 | Category | Capabilities |
 |----------|-------------|
-| **Core** | Shared state definitions, source-generated dispatchers/API clients, context injection, 4 execution modes (Local, Optimistic, Server, CrossOptimistic) |
-| **Networking** | SignalR (WebSocket), HTTP Long-Polling, InProcess (testing). All transports implement `IConnection` — swappable at configuration time |
-| **Session** | Per-player session management, reconnection with missed packet replay, request idempotency via RequestId, session supersede (single active session per player) |
+| **Core** | Shared state definitions, source-generated dispatchers/API clients, context injection, 6 execution modes (Local, Optimistic, Server, CrossOptimistic, ServerPatch, ServerReplace) |
+| **Networking** | SignalR (WebSocket), HTTP Long-Polling, BestHTTP (Unity all platforms incl. WebGL), InProcess (testing). All transports implement `IConnection` — swappable at configuration time |
+| **Session** | Per-player session management, reconnection with missed packet replay, request idempotency via RequestId, session supersede (single active session per player), optional server-side RPC reordering with stall notifications (0.8.0+) |
 | **Broadcast Ordering** | Per-entity sequence ordering, RPC broadcast bundling, deferred responses for gap filling |
-| **Security** | Optional JWT authentication (DeviceId → PlayerId), entity access policies (Open, OwnerOnly, UserOwned, Authorized), per-method `ForcePersist` for critical operations |
-| **Advanced** | Cross-entity calls via Orleans grains, server-side triggers (`[Trigger]`), framework service subscribers (`[ServiceTrigger]`), argument transformers (stateless and state-aware) |
+| **Authentication** | JWT (device-based), platform auth (Google Play Games / Apple / Steam), account linking and unlinking. Entity access policies (Open, OwnerOnly, UserOwned, Authorized) |
+| **Advanced** | Cross-entity calls via Orleans grains, server-side triggers (`[Trigger]`), framework service subscribers (`[ServiceTrigger]`), argument transformers (stateless and state-aware), per-method `ForcePersist` |
 | **Deterministic Random** | `Context.Random` (optimistic, xoshiro128**) — identical on client and server. `Context.ServerRandom` — server-only with replay. ScrollId delta for desync detection |
 | **Time Sync** | `Context.ServerTimeTicks` — synchronized UTC ticks for deterministic time-based mechanics (cooldowns, timers, regeneration) |
+| **Desync Detection** | Three layers: Result mismatch, Random scroll mismatch, **Patch CRC** (deep desync, 0.7.0+) — field-level state mutation tracking that catches "return value matched but state diverged". Optional server-side reporting + JSON renderer with `PatchSchema` for human-readable diff (0.7.0+) |
+| **Push-Based Reactive** | `[Tracked]` field annotations generate per-property change tracking; clients subscribe to specific field changes via generated `Tracked{State}` API |
 | **Serialization** | MemoryPack (transport) + Orleans GenerateSerializer (persistence). MessagePack alternative via `IMetaSerializer` |
 | **Persistence** | FileGrainStorage, configurable persistence policy (5 modes), per-method ForcePersist override |
-| **Code Generation** | Service dispatchers, typed API clients, context injection, DI registration, MetaProvider routing — all generated at compile time |
+| **Code Generation** | Service dispatchers, typed API clients, context injection, DI registration, MetaProvider routing, PatchWrapper / PatchApplier / PatchSchema per state — all generated at compile time |
 
 ### Planned
 
