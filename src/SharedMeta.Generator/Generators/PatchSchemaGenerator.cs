@@ -37,8 +37,11 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"namespace {targetNs}");
             sb.AppendLine("{");
 
-            // Root schema (sub-schemas are nested inside as separate classes)
-            EmitSchemaClass(sb, info.RootType, info.SubTypes, "    ");
+            // Root schema; dedupe set shared across all recursion levels so a sub-type
+            // referenced by multiple parents (e.g. Card both as sub-wrappable field on
+            // GameState and as List<Card> element on TablePair) is emitted exactly once.
+            var emitted = new HashSet<string>();
+            EmitSchemaClass(sb, info.RootType, info.SubTypes, "    ", emitted);
 
             sb.AppendLine("}");
             return sb.ToString();
@@ -48,7 +51,8 @@ namespace SharedMeta.Generator.Generators
             StringBuilder sb,
             PatchTypeInfo typeInfo,
             List<PatchTypeInfo> subTypes,
-            string indent)
+            string indent,
+            HashSet<string> emitted)
         {
             var className = typeInfo.TypeName + "PatchSchema";
             var ii = indent + "    ";
@@ -63,7 +67,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
 
             // GetFieldName
-            sb.AppendLine($"{ii}public string GetFieldName(int fieldId) => fieldId switch");
+            sb.AppendLine($"{ii}public string GetFieldName(long fieldId) => fieldId switch");
             sb.AppendLine($"{ii}{{");
             foreach (var f in typeInfo.Fields)
                 sb.AppendLine($"{ii}    {f.FieldId} => \"{f.Name}\",");
@@ -72,7 +76,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
 
             // DecodeLeaf
-            sb.AppendLine($"{ii}public object? DecodeLeaf(int fieldId, byte[] bytes, IMetaSerializer serializer) => fieldId switch");
+            sb.AppendLine($"{ii}public object? DecodeLeaf(long fieldId, byte[] bytes, IMetaSerializer serializer) => fieldId switch");
             sb.AppendLine($"{ii}{{");
             foreach (var f in typeInfo.Fields)
             {
@@ -84,8 +88,9 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{ii}}};");
             sb.AppendLine();
 
-            // GetNestedSchema
-            sb.AppendLine($"{ii}public IPatchSchema? GetNestedSchema(int fieldId) => fieldId switch");
+            // GetNestedSchema — for both sub-wrappable child fields AND element-sub-wrappable
+            // list fields. The renderer uses the latter to descend into element child subtrees.
+            sb.AppendLine($"{ii}public IPatchSchema? GetNestedSchema(long fieldId) => fieldId switch");
             sb.AppendLine($"{ii}{{");
             foreach (var f in typeInfo.Fields)
             {
@@ -93,24 +98,42 @@ namespace SharedMeta.Generator.Generators
                 {
                     sb.AppendLine($"{ii}    {f.FieldId} => {f.SubTypeName}PatchSchema.Instance,");
                 }
+                else if (f.IsElementSubWrappable && f.ElementSubTypeName != null)
+                {
+                    sb.AppendLine($"{ii}    {f.FieldId} => {f.ElementSubTypeName}PatchSchema.Instance,");
+                }
             }
             sb.AppendLine($"{ii}    _ => null");
             sb.AppendLine($"{ii}}};");
 
             sb.AppendLine($"{indent}}}");
 
-            // Emit a sibling schema class for every distinct sub-type referenced by this type
-            var generated = new HashSet<string>();
-            foreach (var f in typeInfo.Fields.Where(f => f.Kind == PatchFieldKind.SubWrappable))
-            {
-                if (f.SubTypeFullName == null || generated.Contains(f.SubTypeFullName)) continue;
-                generated.Add(f.SubTypeFullName);
+            // Emit a sibling schema class for every distinct sub-type referenced by this type.
+            // Both SubWrappable child fields AND element-sub-wrappable list fields contribute
+            // sub-types whose schemas need to exist (the renderer descends into element subtrees
+            // using the element type's PatchSchema). The dedupe set is shared across all
+            // recursion levels of EmitSchemaClass so a single sub-type is emitted exactly
+            // once even if it's referenced by multiple parents in the tree.
+            //
+            // Mark the current type as emitted before recursing so cycles (e.g. mutually
+            // referencing sub-states) don't infinite-loop.
+            emitted.Add(typeInfo.TypeFullName);
 
-                var sub = subTypes.FirstOrDefault(s => s.TypeFullName == f.SubTypeFullName);
+            foreach (var f in typeInfo.Fields)
+            {
+                string? subTypeFullName = null;
+                if (f.Kind == PatchFieldKind.SubWrappable && f.SubTypeFullName != null)
+                    subTypeFullName = f.SubTypeFullName;
+                else if (f.IsElementSubWrappable && f.ElementTypeFullName != null)
+                    subTypeFullName = f.ElementTypeFullName;
+
+                if (subTypeFullName == null || emitted.Contains(subTypeFullName)) continue;
+
+                var sub = subTypes.FirstOrDefault(s => s.TypeFullName == subTypeFullName);
                 if (sub != null)
                 {
                     sb.AppendLine();
-                    EmitSchemaClass(sb, sub, subTypes, indent);
+                    EmitSchemaClass(sb, sub, subTypes, indent, emitted);
                 }
             }
         }

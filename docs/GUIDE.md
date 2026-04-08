@@ -2161,6 +2161,100 @@ PATCH:
 
 `IPatchSchemaRegistry` is registered automatically by `ConfigureMeta()`. Schemas are only consulted when a desync report is being formatted — **zero overhead** in normal RPC flow.
 
+### Granular Collection Patches (0.9.0+)
+
+When a service has `[MetaServiceImpl(DeepDesync = true)]`, list-typed state fields use a fine-grained patch representation instead of dumping the whole list on every mutation. This dramatically reduces patch sizes for the common case of mutating one element of a large collection.
+
+**Element-sub-wrappable lists.** If `T` in `List<T>` has its own `[MemoryPackOrder]` properties, the generator emits a specialized `{Element}PatchableList` nested inside the parent `{State}PatchWrapper`. Its indexer hands out `{Element}PatchWrapper` bound to a per-element subtree node:
+
+```csharp
+[MemoryPackable]
+public partial class Hero
+{
+    [MemoryPackOrder(0)] public int Id { get; set; }
+    [MemoryPackOrder(1)] public int Exp { get; set; }
+    [MemoryPackOrder(2)] public List<Item> Equipment { get; set; } = new();
+}
+
+[MemoryPackable]
+public partial class PartyState : ISharedState
+{
+    [MemoryPackOrder(0)] public List<Hero> Heroes { get; set; } = new();
+}
+
+[MetaServiceImpl(typeof(IPartyService), typeof(PartyState), DeepDesync = true)]
+public partial class PartyService : IPartyService
+{
+    private PartyState state => State;
+
+    public void AwardExp(int heroIndex, int amount)
+    {
+        // Patch contains only Heroes/[heroIndex]/Exp — other heroes are NOT touched.
+        state.Heroes[heroIndex].Exp += amount;
+    }
+
+    public void EquipItem(int heroIndex, Item item)
+    {
+        // Two-level nesting works end-to-end. Patch contains an element subtree at
+        // Heroes/[heroIndex] with an Equipment collection node carrying one Insert op.
+        state.Heroes[heroIndex].Equipment.Add(item);
+    }
+}
+```
+
+**Compile-time tracking guard.** Helper methods that look up an element must be typed as `{Element}PatchWrapper`, not raw `{Element}`. The same source compiles in both the regular service class and the generated `_PatchTracked` copy thanks to a one-way `implicit operator {Wrapper}({State}?)`. The reverse direction is intentionally absent — returning raw `Hero` from a helper compiles in the regular branch but fails the `_PatchTracked` copy with `CS0029`, catching silent loss of patch tracking at compile time.
+
+```csharp
+private PartyStatePatchWrapper.HeroPatchWrapper? FindById(int heroId)
+    => state.Heroes.FirstOrDefault(h => h.Id == heroId);
+
+public void AwardExpById(int heroId, int amount)
+{
+    var hero = FindById(heroId);    // var = HeroPatchWrapper in _PatchTracked
+    if (hero != null) hero.Exp += amount;
+}
+```
+
+If you write `Hero? FindById(...)` instead, the regular branch compiles fine (it returns raw `Hero` from `List<Hero>.FirstOrDefault`), but the `_PatchTracked` branch fails:
+```
+error CS0029: Cannot implicitly convert type
+'PartyStatePatchWrapper.HeroPatchWrapper' to 'Hero'
+```
+Use `var` for locals so the same source works in both branches.
+
+**Structural ops.** `Add` / `Insert` / `RemoveAt` / `Remove` / `Clear` and indexer assignment record individual `PatchListOp` entries on the collection node's `StructuralOps` list:
+
+| Method | Op kind | Notes |
+|--------|---------|-------|
+| `Add(item)` | `Insert` | Index = `Count - 1` after the add |
+| `Insert(idx, item)` | `Insert` | Sender shifts existing element children's indices forward |
+| `RemoveAt(idx)` | `RemoveAt` | Sender drops element child at `idx` and shifts higher indices down |
+| `Remove(item)` | `RemoveAt` | Resolved to index via `IndexOf` |
+| `list[i] = value` | `Set` | Drops in-place mutations for that index (element wholesale replaced) |
+| `Clear()` | `Clear` | Drops all element children and prior structural ops |
+| `Sort` / `Reverse` / `AddRange` / `RemoveAll` | `FullReplace` | Falls back to packing the whole list |
+| `state.Heroes = newList` | `FullReplace` | Wholesale field reassignment is also recorded as a `FullReplace` op (clears any prior ops/element children on the node first) |
+
+All applied in submission order on the receiver via `CollectionPatchApplier.Apply<T>(...)`.
+
+**Invariant:** list-typed patch nodes never carry a terminal `Value` — wholesale replacement is just another op in the `StructuralOps` stream. This means **assign-then-mutate in the same call works**:
+
+```csharp
+public void RegenerateMap()
+{
+    state.Cells = new List<byte>(totalCells);   // FullReplace op (packed empty list)
+    for (int i = 0; i < totalCells; i++)
+        state.Cells.Add(0);                      // chained Insert ops
+    state.Cells[5] = wallValue;                  // chained Set op
+}
+```
+
+The receiver applies all ops in submission order — `FullReplace` → `Insert` × N → `Set` — so client and server converge to identical lists. Earlier versions wrote a terminal `Value` on the setter and silently dropped subsequent structural ops; that's no longer possible.
+
+**Mixed structural + element mutations** in the same call work correctly: when `RemoveAt` shifts indices, the sender automatically calls `ShiftElementChildren` on the collection node so any pending element subtree mutations end up at the correct post-removal indices.
+
+**Scalar lists also benefit.** `PatchableList<T>` for `List<int>`, `List<byte>`, `List<string>`, etc. uses op-based recording in 0.9.0. A single `state.Cells[5] = newValue` writes one `Set` op instead of dumping the entire array — important for things like `List<byte> Cells` map data.
+
 ### Common Desync Causes
 
 1. **Using `System.Random`** instead of `Context.Random` — different seeds

@@ -495,14 +495,14 @@ namespace SharedMeta.Generator.Generators
         /// <summary>
         /// Generate a specialized PatchableList class for a List&lt;T&gt; field whose element
         /// type T has its own PatchWrapper. Indexer / enumerator return TPatchWrapper bound
-        /// to a per-element subtree of the patch tree, so element-level mutations write into
-        /// {field}/[index]/{member} rather than dumping the whole list as a terminal blob.
+        /// to a per-element subtree of the patch tree (an element-by-index child of the
+        /// collection node), so element-level mutations write into <c>{field}/[index]/{member}</c>
+        /// rather than dumping the whole list as a terminal blob.
         ///
-        /// Phase 1: Insert / RemoveAt / Clear / Sort / etc. still fall back to a full
-        /// snapshot (the entire list is packed and written as a terminal on the field's
-        /// node). Index assignment <c>list[i] = wrapper</c> writes the new element as a
-        /// terminal at <c>[i]</c> rather than snapshotting everything. Phase 2 (op-log)
-        /// would replace the snapshot fallbacks with granular operations.
+        /// Phase 2 (granular list patches): structural ops are recorded as
+        /// <see cref="PatchListOp"/> entries on the collection node's <c>StructuralOps</c>
+        /// list, and Insert/RemoveAt also shift the indices of any pending element children
+        /// so they remain canonical for the post-op state.
         /// </summary>
         private static void GenerateElementListClass(
             StringBuilder sb, PatchFieldInfo field, PatchTypeInfo elemInfo, string ii)
@@ -515,7 +515,8 @@ namespace SharedMeta.Generator.Generators
 
             sb.AppendLine($"{ii}/// <summary>");
             sb.AppendLine($"{ii}/// Specialized PatchableList for List&lt;{field.ElementSubTypeName}&gt;.");
-            sb.AppendLine($"{ii}/// Hands out {elemWrapper} elements bound to per-index sub-trees of the patch.");
+            sb.AppendLine($"{ii}/// Hands out {elemWrapper} elements bound to per-element subtree nodes,");
+            sb.AppendLine($"{ii}/// records structural mutations as PatchListOp entries on the collection node.");
             sb.AppendLine($"{ii}/// </summary>");
             sb.AppendLine($"{ii}public class {className}");
             sb.AppendLine($"{ii}    : System.Collections.Generic.IList<{elemWrapper}>,");
@@ -541,43 +542,101 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{inner}public int Count => _list.Count;");
             sb.AppendLine($"{inner}public bool IsReadOnly => false;");
             sb.AppendLine();
+            sb.AppendLine($"{inner}private bool TrackingEnabled => _collectionNode != null && _serializer != null;");
+            sb.AppendLine();
             sb.AppendLine($"{inner}/// <summary>");
-            sb.AppendLine($"{inner}/// Indexer get returns a wrapper bound to the per-element subtree node, so");
-            sb.AppendLine($"{inner}/// mutations through it (e.g. <c>list[5].Field = X</c>) flow into the patch.");
-            sb.AppendLine($"{inner}/// Indexer set replaces the element wholesale and writes a terminal at the index.");
+            sb.AppendLine($"{inner}/// Indexer get returns a wrapper bound to the per-element subtree node so");
+            sb.AppendLine($"{inner}/// mutations through it (<c>list[5].Field = X</c>) flow into the patch.");
+            sb.AppendLine($"{inner}/// Indexer set records a Set structural op and drops any in-place mutations");
+            sb.AppendLine($"{inner}/// previously recorded for that index (the element is being wholesale-replaced).");
             sb.AppendLine($"{inner}/// </summary>");
             sb.AppendLine($"{inner}public {elemWrapper} this[int index]");
             sb.AppendLine($"{inner}{{");
-            sb.AppendLine($"{inner}    get => new {elemWrapper}(_list[index], _collectionNode?.GetOrCreateChild(index), _serializer!);");
+            sb.AppendLine($"{inner}    get => new {elemWrapper}(_list[index], _collectionNode?.GetOrCreateElementChild(index), _serializer!);");
             sb.AppendLine($"{inner}    set");
             sb.AppendLine($"{inner}    {{");
             sb.AppendLine($"{inner}        _list[index] = value.Raw;");
-            sb.AppendLine($"{inner}        if (_collectionNode != null && _serializer != null)");
-            sb.AppendLine($"{inner}            _collectionNode.MarkChildTerminal(index, _serializer.Pack(value.Raw));");
+            sb.AppendLine($"{inner}        if (TrackingEnabled)");
+            sb.AppendLine($"{inner}        {{");
+            sb.AppendLine($"{inner}            _collectionNode!.RemoveElementChild(index);");
+            sb.AppendLine($"{inner}            _collectionNode.AddStructuralOp(new SharedMeta.Core.Patch.PatchListOp");
+            sb.AppendLine($"{inner}            {{");
+            sb.AppendLine($"{inner}                Kind = SharedMeta.Core.Patch.PatchListOpKind.Set,");
+            sb.AppendLine($"{inner}                Index = index,");
+            sb.AppendLine($"{inner}                ElementBytes = _serializer!.Pack(value.Raw),");
+            sb.AppendLine($"{inner}            }});");
+            sb.AppendLine($"{inner}        }}");
             sb.AppendLine($"{inner}    }}");
             sb.AppendLine($"{inner}}}");
             sb.AppendLine();
-            sb.AppendLine($"{inner}/// <summary>");
-            sb.AppendLine($"{inner}/// Phase 1: structural mutations (Add/Insert/Remove/RemoveAt/Clear) fall back to a");
-            sb.AppendLine($"{inner}/// full collection snapshot — the whole list is packed and written as a terminal");
-            sb.AppendLine($"{inner}/// on the field's collection node. Phase 2 will replace this with granular ops.");
-            sb.AppendLine($"{inner}/// </summary>");
-            sb.AppendLine($"{inner}private void MarkFullSnapshot()");
+            sb.AppendLine($"{inner}public void Add({elemWrapper} item)");
             sb.AppendLine($"{inner}{{");
-            sb.AppendLine($"{inner}    if (_collectionNode != null && _serializer != null)");
-            sb.AppendLine($"{inner}        _collectionNode.MarkTerminal(_serializer.Pack(_list));");
+            sb.AppendLine($"{inner}    _list.Add(item.Raw);");
+            sb.AppendLine($"{inner}    if (TrackingEnabled)");
+            sb.AppendLine($"{inner}    {{");
+            sb.AppendLine($"{inner}        _collectionNode!.AddStructuralOp(new SharedMeta.Core.Patch.PatchListOp");
+            sb.AppendLine($"{inner}        {{");
+            sb.AppendLine($"{inner}            Kind = SharedMeta.Core.Patch.PatchListOpKind.Insert,");
+            sb.AppendLine($"{inner}            Index = _list.Count - 1,");
+            sb.AppendLine($"{inner}            ElementBytes = _serializer!.Pack(item.Raw),");
+            sb.AppendLine($"{inner}        }});");
+            sb.AppendLine($"{inner}    }}");
             sb.AppendLine($"{inner}}}");
             sb.AppendLine();
-            sb.AppendLine($"{inner}public void Add({elemWrapper} item) {{ _list.Add(item.Raw); MarkFullSnapshot(); }}");
-            sb.AppendLine($"{inner}public void Insert(int index, {elemWrapper} item) {{ _list.Insert(index, item.Raw); MarkFullSnapshot(); }}");
+            sb.AppendLine($"{inner}public void Insert(int index, {elemWrapper} item)");
+            sb.AppendLine($"{inner}{{");
+            sb.AppendLine($"{inner}    if (TrackingEnabled)");
+            sb.AppendLine($"{inner}        _collectionNode!.ShiftElementChildren(fromIndex: index, delta: +1);");
+            sb.AppendLine($"{inner}    _list.Insert(index, item.Raw);");
+            sb.AppendLine($"{inner}    if (TrackingEnabled)");
+            sb.AppendLine($"{inner}    {{");
+            sb.AppendLine($"{inner}        _collectionNode!.AddStructuralOp(new SharedMeta.Core.Patch.PatchListOp");
+            sb.AppendLine($"{inner}        {{");
+            sb.AppendLine($"{inner}            Kind = SharedMeta.Core.Patch.PatchListOpKind.Insert,");
+            sb.AppendLine($"{inner}            Index = index,");
+            sb.AppendLine($"{inner}            ElementBytes = _serializer!.Pack(item.Raw),");
+            sb.AppendLine($"{inner}        }});");
+            sb.AppendLine($"{inner}    }}");
+            sb.AppendLine($"{inner}}}");
+            sb.AppendLine();
             sb.AppendLine($"{inner}public bool Remove({elemWrapper} item)");
             sb.AppendLine($"{inner}{{");
-            sb.AppendLine($"{inner}    var removed = _list.Remove(item.Raw);");
-            sb.AppendLine($"{inner}    if (removed) MarkFullSnapshot();");
-            sb.AppendLine($"{inner}    return removed;");
+            sb.AppendLine($"{inner}    var idx = _list.IndexOf(item.Raw);");
+            sb.AppendLine($"{inner}    if (idx < 0) return false;");
+            sb.AppendLine($"{inner}    RemoveAt(idx);");
+            sb.AppendLine($"{inner}    return true;");
             sb.AppendLine($"{inner}}}");
-            sb.AppendLine($"{inner}public void RemoveAt(int index) {{ _list.RemoveAt(index); MarkFullSnapshot(); }}");
-            sb.AppendLine($"{inner}public void Clear() {{ _list.Clear(); MarkFullSnapshot(); }}");
+            sb.AppendLine();
+            sb.AppendLine($"{inner}public void RemoveAt(int index)");
+            sb.AppendLine($"{inner}{{");
+            sb.AppendLine($"{inner}    if (TrackingEnabled)");
+            sb.AppendLine($"{inner}    {{");
+            sb.AppendLine($"{inner}        _collectionNode!.RemoveElementChild(index);");
+            sb.AppendLine($"{inner}        _collectionNode.ShiftElementChildren(fromIndex: index + 1, delta: -1);");
+            sb.AppendLine($"{inner}    }}");
+            sb.AppendLine($"{inner}    _list.RemoveAt(index);");
+            sb.AppendLine($"{inner}    if (TrackingEnabled)");
+            sb.AppendLine($"{inner}    {{");
+            sb.AppendLine($"{inner}        _collectionNode!.AddStructuralOp(new SharedMeta.Core.Patch.PatchListOp");
+            sb.AppendLine($"{inner}        {{");
+            sb.AppendLine($"{inner}            Kind = SharedMeta.Core.Patch.PatchListOpKind.RemoveAt,");
+            sb.AppendLine($"{inner}            Index = index,");
+            sb.AppendLine($"{inner}        }});");
+            sb.AppendLine($"{inner}    }}");
+            sb.AppendLine($"{inner}}}");
+            sb.AppendLine();
+            sb.AppendLine($"{inner}public void Clear()");
+            sb.AppendLine($"{inner}{{");
+            sb.AppendLine($"{inner}    _list.Clear();");
+            sb.AppendLine($"{inner}    if (TrackingEnabled)");
+            sb.AppendLine($"{inner}    {{");
+            sb.AppendLine($"{inner}        _collectionNode!.ClearCollectionState();");
+            sb.AppendLine($"{inner}        _collectionNode.AddStructuralOp(new SharedMeta.Core.Patch.PatchListOp");
+            sb.AppendLine($"{inner}        {{");
+            sb.AppendLine($"{inner}            Kind = SharedMeta.Core.Patch.PatchListOpKind.Clear,");
+            sb.AppendLine($"{inner}        }});");
+            sb.AppendLine($"{inner}    }}");
+            sb.AppendLine($"{inner}}}");
             sb.AppendLine();
             sb.AppendLine($"{inner}public bool Contains({elemWrapper} item) => _list.Contains(item.Raw);");
             sb.AppendLine($"{inner}public int IndexOf({elemWrapper} item) => _list.IndexOf(item.Raw);");
@@ -624,14 +683,18 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"{ii}public {listClassName} {field.Name}");
                 sb.AppendLine($"{ii}{{");
                 sb.AppendLine($"{ii}    get => {fieldVar} ??= new {listClassName}(_state.{field.Name}, _node?.GetOrCreateChild({field.FieldId}), _serializer);");
-                sb.AppendLine($"{ii}    set {{ _state.{field.Name} = value.Inner; _node?.MarkChildTerminal({field.FieldId}, _serializer.Pack(value.Inner)); {fieldVar} = null; }}");
+                // Setter records a FullReplace structural op rather than a terminal Value.
+                // Keeps the invariant: list nodes never have Value; subsequent in-place
+                // mutations (Add, indexer Set, etc.) chain in submission order with the
+                // replacement instead of being silently dropped by the receiver.
+                sb.AppendLine($"{ii}    set {{ _state.{field.Name} = value.Inner; _node?.MarkChildFullReplace({field.FieldId}, _serializer.Pack(value.Inner)); {fieldVar} = null; }}");
                 sb.AppendLine($"{ii}}}");
                 sb.AppendLine();
                 sb.AppendLine($"{ii}/// <summary>Replace the entire {field.Name} collection.</summary>");
                 sb.AppendLine($"{ii}public void Set{field.Name}({field.CollectionBaseType} value)");
                 sb.AppendLine($"{ii}{{");
                 sb.AppendLine($"{ii}    _state.{field.Name} = value;");
-                sb.AppendLine($"{ii}    _node?.MarkChildTerminal({field.FieldId}, _serializer.Pack(value));");
+                sb.AppendLine($"{ii}    _node?.MarkChildFullReplace({field.FieldId}, _serializer.Pack(value));");
                 sb.AppendLine($"{ii}    {fieldVar} = null;");
                 sb.AppendLine($"{ii}}}");
                 return;
@@ -655,19 +718,27 @@ namespace SharedMeta.Generator.Generators
                     return;
             }
 
+            // PatchableList uses op-based replacement (FullReplace structural op) so
+            // subsequent mutations chain in order. Dict / HashSet / Array don't have an
+            // op stream — they keep using terminal Value writes (each mutation overwrites
+            // the snapshot wholesale, so the invariant holds trivially for them).
+            var replaceCall = field.CollectionWrapperType == "PatchableList"
+                ? "MarkChildFullReplace"
+                : "MarkChildTerminal";
+
             sb.AppendLine($"{ii}/// <summary>[Id({field.FieldId})] {field.Name} — auto-tracks mutations.</summary>");
             sb.AppendLine($"{ii}private {patchableType}? {fieldVar};");
             sb.AppendLine($"{ii}public {patchableType} {field.Name}");
             sb.AppendLine($"{ii}{{");
             sb.AppendLine($"{ii}    get => {fieldVar} ??= new {patchableType}(_state.{field.Name}, _node, {field.FieldId}, _serializer);");
-            sb.AppendLine($"{ii}    set {{ _state.{field.Name} = value.Inner; _node?.MarkChildTerminal({field.FieldId}, _serializer.Pack(value.Inner)); {fieldVar} = null; }}");
+            sb.AppendLine($"{ii}    set {{ _state.{field.Name} = value.Inner; _node?.{replaceCall}({field.FieldId}, _serializer.Pack(value.Inner)); {fieldVar} = null; }}");
             sb.AppendLine($"{ii}}}");
             sb.AppendLine();
             sb.AppendLine($"{ii}/// <summary>Replace the entire {field.Name} collection.</summary>");
             sb.AppendLine($"{ii}public void Set{field.Name}({field.CollectionBaseType} value)");
             sb.AppendLine($"{ii}{{");
             sb.AppendLine($"{ii}    _state.{field.Name} = value;");
-            sb.AppendLine($"{ii}    _node?.MarkChildTerminal({field.FieldId}, _serializer.Pack(value));");
+            sb.AppendLine($"{ii}    _node?.{replaceCall}({field.FieldId}, _serializer.Pack(value));");
             sb.AppendLine($"{ii}    {fieldVar} = null;");
             sb.AppendLine($"{ii}}}");
         }
@@ -808,31 +879,45 @@ namespace SharedMeta.Generator.Generators
             }
             else if (field.IsElementSubWrappable && field.CollectionWrapperType == "PatchableList")
             {
-                // List<TElement> where TElement has its own PatchWrapper.
-                // Terminal → entire list was replaced; otherwise iterate per-element subtrees.
-                sb.AppendLine($"{ii}                if (child.IsTerminal)");
-                sb.AppendLine($"{ii}                    state.{field.Name} = serializer.Unpack<{field.CollectionBaseType}>(child.Value!);");
-                sb.AppendLine($"{ii}                else if (state.{field.Name} != null && child.Children != null)");
+                // List<TElement> with element-sub-wrappable elements: structural ops +
+                // per-element subtree mutations applied via CollectionPatchApplier.
+                sb.AppendLine($"{ii}                if (state.{field.Name} != null)");
                 sb.AppendLine($"{ii}                {{");
-                sb.AppendLine($"{ii}                    foreach (var elemChild in child.Children)");
-                sb.AppendLine($"{ii}                    {{");
-                sb.AppendLine($"{ii}                        var idx = elemChild.FieldId;");
-                sb.AppendLine($"{ii}                        if (idx < 0 || idx >= state.{field.Name}.Count) continue;");
-                sb.AppendLine($"{ii}                        if (elemChild.IsTerminal)");
-                sb.AppendLine($"{ii}                            state.{field.Name}[idx] = serializer.Unpack<{field.ElementTypeFullName}>(elemChild.Value!);");
-                sb.AppendLine($"{ii}                        else");
-                sb.AppendLine($"{ii}                            Apply{field.ElementSubTypeName}(state.{field.Name}[idx], elemChild, serializer);");
-                sb.AppendLine($"{ii}                    }}");
+                sb.AppendLine($"{ii}                    SharedMeta.Core.Patch.CollectionPatchApplier.Apply<{field.ElementTypeFullName}>(");
+                sb.AppendLine($"{ii}                        state.{field.Name},");
+                sb.AppendLine($"{ii}                        child,");
+                sb.AppendLine($"{ii}                        serializer,");
+                sb.AppendLine($"{ii}                        unpackElement: bytes => serializer.Unpack<{field.ElementTypeFullName}>(bytes)!,");
+                sb.AppendLine($"{ii}                        unpackList: bytes => serializer.Unpack<{field.CollectionBaseType}>(bytes)!,");
+                sb.AppendLine($"{ii}                        applyElementSubtree: (elem, subtree) => Apply{field.ElementSubTypeName}(elem, subtree, serializer));");
+                sb.AppendLine($"{ii}                }}");
+            }
+            else if (field.Kind == PatchFieldKind.Collection && field.CollectionWrapperType == "PatchableList")
+            {
+                // List<TElement> where TElement is a primitive / value-type / non-sub-wrappable
+                // class: structural ops without element subtree recursion.
+                sb.AppendLine($"{ii}                if (state.{field.Name} != null)");
+                sb.AppendLine($"{ii}                {{");
+                sb.AppendLine($"{ii}                    SharedMeta.Core.Patch.CollectionPatchApplier.Apply<{field.ElementTypeFullName}>(");
+                sb.AppendLine($"{ii}                        state.{field.Name},");
+                sb.AppendLine($"{ii}                        child,");
+                sb.AppendLine($"{ii}                        serializer,");
+                sb.AppendLine($"{ii}                        unpackElement: bytes => serializer.Unpack<{field.ElementTypeFullName}>(bytes)!,");
+                sb.AppendLine($"{ii}                        unpackList: bytes => serializer.Unpack<{field.CollectionBaseType}>(bytes)!);");
                 sb.AppendLine($"{ii}                }}");
             }
             else if (field.Kind == PatchFieldKind.SubWrappable)
             {
+                // Value-then-Children: a SetX call writes a snapshot of the new sub-object,
+                // and any subsequent in-place mutations through the wrapper add Field
+                // children to the same node. Apply Value first (replacing the sub-object),
+                // then recurse into Children to layer on the later mutations in order.
                 sb.AppendLine($"{ii}                if (child.IsTerminal)");
                 sb.AppendLine($"{ii}                    state.{field.Name} = serializer.Unpack<{field.TypeFullName}>(child.Value!);");
                 if (field.IsNullable)
-                    sb.AppendLine($"{ii}                else if (state.{field.Name} != null)");
+                    sb.AppendLine($"{ii}                if (state.{field.Name} != null && child.Children != null)");
                 else
-                    sb.AppendLine($"{ii}                else");
+                    sb.AppendLine($"{ii}                if (child.Children != null)");
                 sb.AppendLine($"{ii}                    Apply{field.SubTypeName}(state.{field.Name}!, child, serializer);");
             }
             else

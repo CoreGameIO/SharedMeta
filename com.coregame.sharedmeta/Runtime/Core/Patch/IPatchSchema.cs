@@ -15,20 +15,20 @@ namespace SharedMeta.Core.Patch
     public interface IPatchSchema
     {
         /// <summary>Resolve a field id (from [MemoryPackOrder] / [Id] / [Key]) to its declared property name.</summary>
-        string GetFieldName(int fieldId);
+        string GetFieldName(long fieldId);
 
         /// <summary>
         /// Decode a terminal patch value back into a typed object using the field's declared type.
         /// Used by the renderer to format the value as JSON.
         /// Returns the raw bytes if the field id is unknown.
         /// </summary>
-        object? DecodeLeaf(int fieldId, byte[] bytes, IMetaSerializer serializer);
+        object? DecodeLeaf(long fieldId, byte[] bytes, IMetaSerializer serializer);
 
         /// <summary>
         /// For SubWrappable fields (nested ISharedState), return the schema of the nested type.
         /// Returns null for terminal / collection fields.
         /// </summary>
-        IPatchSchema? GetNestedSchema(int fieldId);
+        IPatchSchema? GetNestedSchema(long fieldId);
     }
 
     /// <summary>

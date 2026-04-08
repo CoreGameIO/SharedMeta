@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.9.0] - 2026-04-08
+
+### Added — granular list patches
+
+- **Element-sub-wrappable lists** — services with `[MetaServiceImpl(DeepDesync = true)]` can define state with `List<T>` where `T` has `[MemoryPackOrder]`/`[Id]`/`[Key]` properties. The generator emits a specialized `{Element}PatchableList` nested class whose indexer hands out per-element `{Element}PatchWrapper` bound to per-element subtree nodes. Mutations like `state.Heroes[5].Exp += 100` flow into `Heroes/[5]/Exp`, not a full collection snapshot. Two-level nesting works (`state.Heroes[i].Equipment.Add(item)`)
+- **Compile-time tracking guard via type system** — every `{State}PatchWrapper` has a one-way `static implicit operator {Wrapper}({State}?)`. With no reverse operator, the type system enforces that helper methods exposing collection elements **must** return `{Element}PatchWrapper`. Returning raw `{Element}` from a helper compiles in the regular service class but fails the generated `_PatchTracked` copy with `CS0029`. Silent loss of patch tracking is now a compile error
+- **Granular structural ops for `List<T>`** — `Add`/`Insert`/`RemoveAt`/`Remove`/`Clear`/`Set` are recorded as individual `PatchListOp` entries on the collection node's `StructuralOps` list. Same for scalar lists (`List<byte>`, `List<int>`). Sort/Reverse/AddRange fall back to `FullReplace` ops
+- **Index shifting** — when `Insert`/`RemoveAt` reshape a list with pending element-subtree mutations, the sender shifts the affected child indices via `PatchNode.ShiftElementChildren`. Mixed structural+element mutations in one call work correctly
+- `PatchListOp` / `PatchListOpKind` types in `SharedMeta.Core.Patch`
+- `CollectionPatchApplier.Apply<T>(...)` runtime helper for generated appliers
+- `PatchTextRenderer` updated for collection nodes — renders `ops`/`elements` sections separately
+- 10 `ElementSubWrappableTests` + new `PartyState`/`Hero`/`Item` test surface in `SharedMeta.Test.Meta1`
+
+### Changed — wire format break
+
+- **`PatchNode` wire format extended**: new `PatchChildKind Kind` field, `FieldId` widened to `long`, new `StructuralOps: List<PatchListOp>?` field. Patches between 0.8.0 and 0.9.0 are not interoperable. Both client and server must upgrade together
+- `IPatchSchema` interface uses `long fieldId` (was `int`)
+- `PatchNodeDiffer` keys children by `(Kind, FieldId)` to avoid collisions between field children and element children
+
+### Fixed
+
+- **Nullable type dedupe in `PatchSchemaGenerator`** — `Card?` and `Card` referenced from different parents previously emitted two competing `CardPatchSchema` classes in the same scope. Now nullable annotations are stripped and the dedupe set is shared across all recursion levels
+
 ## [0.8.0] - 2026-04-08
 
 ### Added

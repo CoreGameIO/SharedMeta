@@ -5,32 +5,42 @@ using System.Collections.Generic;
 namespace SharedMeta.Core.Patch
 {
     /// <summary>
-    /// Wraps a List&lt;T&gt; with automatic change tracking for ServerPatch mode.
-    /// All mutating operations auto-mark the field as dirty when tracking is active.
-    /// Implements IList&lt;T&gt; for transparent use as a list.
+    /// Wraps a List&lt;T&gt; with automatic change tracking. Records mutations as
+    /// granular structural ops on a parent <see cref="PatchNode"/> (Phase 2: granular
+    /// list patches), so a single mutation no longer dumps the entire collection.
+    ///
+    /// Used for list fields whose element type is **not** sub-wrappable (no
+    /// <c>[Id]</c>/<c>[MemoryPackOrder]</c> properties on the element). For element-
+    /// sub-wrappable lists the generator emits a specialized
+    /// <c>{Element}PatchableList</c> nested class that additionally hands out
+    /// per-element <c>{Element}PatchWrapper</c> instances bound to element children.
+    ///
+    /// All mutating operations are O(1) on the patch tree (one structural op append).
+    /// Sort / Reverse / RemoveAll fall back to <see cref="PatchListOpKind.FullReplace"/>.
     /// </summary>
     public class PatchableList<T> : IList<T>, IReadOnlyList<T>
     {
         private readonly List<T> _list;
-        private readonly PatchNode? _parentNode;
-        private readonly int _fieldId;
+        private readonly PatchNode? _collectionNode;
         private readonly IMetaSerializer? _serializer;
 
         public PatchableList(List<T> list, PatchNode? parentNode, int fieldId, IMetaSerializer? serializer)
         {
             _list = list;
-            _parentNode = parentNode;
-            _fieldId = fieldId;
             _serializer = serializer;
+            // The collection's own node lives under the parent, addressed by fieldId.
+            // We capture it at construction so subsequent ops can append structural ops
+            // directly without re-resolving via the parent.
+            _collectionNode = parentNode?.GetOrCreateFieldChild(fieldId);
         }
 
         /// <summary>
-        /// Explicitly mark this collection as dirty.
-        /// Useful after mutating through Raw or external references.
+        /// Explicitly mark this collection as dirty by emitting a FullReplace op.
+        /// Useful after mutating through Inner or external references.
         /// </summary>
         public void SetDirty()
         {
-            MarkChanged();
+            EmitFullReplace();
         }
 
         /// <summary>Access the underlying List directly.</summary>
@@ -39,112 +49,166 @@ namespace SharedMeta.Core.Patch
         /// <summary>Implicit conversion from List for assignment compatibility in PatchWrapper setters.</summary>
         public static implicit operator PatchableList<T>(List<T> list) => new(list, null, 0, null);
 
-        private void MarkChanged()
+        // === Op emission ===
+
+        private bool TrackingEnabled => _collectionNode != null && _serializer != null;
+
+        private void EmitInsert(int index, T item)
         {
-            if (_parentNode != null && _serializer != null)
-                _parentNode.MarkChildTerminal(_fieldId, _serializer.Pack(_list));
+            if (!TrackingEnabled) return;
+            _collectionNode!.AddStructuralOp(new PatchListOp
+            {
+                Kind = PatchListOpKind.Insert,
+                Index = index,
+                ElementBytes = _serializer!.Pack(item),
+            });
         }
 
-        // === Mutating operations (auto-mark dirty) ===
+        private void EmitRemoveAt(int index)
+        {
+            if (!TrackingEnabled) return;
+            _collectionNode!.AddStructuralOp(new PatchListOp
+            {
+                Kind = PatchListOpKind.RemoveAt,
+                Index = index,
+            });
+        }
+
+        private void EmitSet(int index, T item)
+        {
+            if (!TrackingEnabled) return;
+            _collectionNode!.AddStructuralOp(new PatchListOp
+            {
+                Kind = PatchListOpKind.Set,
+                Index = index,
+                ElementBytes = _serializer!.Pack(item),
+            });
+        }
+
+        private void EmitClear()
+        {
+            if (!TrackingEnabled) return;
+            _collectionNode!.ClearCollectionState();
+            _collectionNode.AddStructuralOp(new PatchListOp { Kind = PatchListOpKind.Clear });
+        }
+
+        private void EmitFullReplace()
+        {
+            if (!TrackingEnabled) return;
+            _collectionNode!.ClearCollectionState();
+            _collectionNode.AddStructuralOp(new PatchListOp
+            {
+                Kind = PatchListOpKind.FullReplace,
+                ElementBytes = _serializer!.Pack(_list),
+            });
+        }
+
+        // === Mutating operations (auto-record granular ops) ===
 
         public T this[int index]
         {
             get => _list[index];
-            set { _list[index] = value; MarkChanged(); }
+            set
+            {
+                _list[index] = value;
+                EmitSet(index, value);
+            }
         }
 
         public void Add(T item)
         {
             _list.Add(item);
-            MarkChanged();
+            EmitInsert(_list.Count - 1, item);
         }
 
         public void Insert(int index, T item)
         {
             _list.Insert(index, item);
-            MarkChanged();
+            EmitInsert(index, item);
         }
 
         public bool Remove(T item)
         {
-            var removed = _list.Remove(item);
-            if (removed) MarkChanged();
-            return removed;
+            var idx = _list.IndexOf(item);
+            if (idx < 0) return false;
+            _list.RemoveAt(idx);
+            EmitRemoveAt(idx);
+            return true;
         }
 
         public void RemoveAt(int index)
         {
             _list.RemoveAt(index);
-            MarkChanged();
+            EmitRemoveAt(index);
         }
 
         public void Clear()
         {
             _list.Clear();
-            MarkChanged();
+            EmitClear();
         }
 
         public void AddRange(IEnumerable<T> collection)
         {
             _list.AddRange(collection);
-            MarkChanged();
+            EmitFullReplace();
         }
 
         public void RemoveAll(Predicate<T> match)
         {
             var removed = _list.RemoveAll(match);
-            if (removed > 0) MarkChanged();
+            if (removed > 0) EmitFullReplace();
         }
 
         public void Sort()
         {
             _list.Sort();
-            MarkChanged();
+            EmitFullReplace();
         }
 
         public void Sort(Comparison<T> comparison)
         {
             _list.Sort(comparison);
-            MarkChanged();
+            EmitFullReplace();
         }
 
         public void Sort(IComparer<T>? comparer)
         {
             _list.Sort(comparer);
-            MarkChanged();
+            EmitFullReplace();
         }
 
         public void Reverse()
         {
             _list.Reverse();
-            MarkChanged();
+            EmitFullReplace();
         }
 
         public void InsertRange(int index, IEnumerable<T> collection)
         {
             _list.InsertRange(index, collection);
-            MarkChanged();
+            EmitFullReplace();
         }
 
         public void RemoveRange(int index, int count)
         {
             _list.RemoveRange(index, count);
-            MarkChanged();
+            EmitFullReplace();
         }
 
         public void Reverse(int index, int count)
         {
             _list.Reverse(index, count);
-            MarkChanged();
+            EmitFullReplace();
         }
 
         public void Sort(int index, int count, IComparer<T>? comparer)
         {
             _list.Sort(index, count, comparer);
-            MarkChanged();
+            EmitFullReplace();
         }
 
-        // === Read-only operations (no marking) ===
+        // === Read-only operations (no recording) ===
 
         public int Count => _list.Count;
         public bool IsReadOnly => false;

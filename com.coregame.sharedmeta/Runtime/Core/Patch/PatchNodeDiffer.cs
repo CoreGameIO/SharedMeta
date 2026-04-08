@@ -91,24 +91,31 @@ namespace SharedMeta.Core.Patch
                 return;
             }
 
-            // Both have children — recurse by FieldId
+            // Both have children — recurse by (Kind, FieldId).
+            // Field children and element-by-index children must not collide on the
+            // same dictionary key when both kinds are present in a collection node.
             var serverChildren = server.Children ?? new List<PatchNode>();
             var clientChildren = client.Children ?? new List<PatchNode>();
 
-            var serverMap = serverChildren.ToDictionary(c => c.FieldId);
-            var clientMap = clientChildren.ToDictionary(c => c.FieldId);
+            var serverMap = serverChildren.ToDictionary(c => MakeChildKey(c));
+            var clientMap = clientChildren.ToDictionary(c => MakeChildKey(c));
 
-            var allFieldIds = new HashSet<int>(serverMap.Keys);
-            allFieldIds.UnionWith(clientMap.Keys);
+            var allKeys = new HashSet<(PatchChildKind, long)>(serverMap.Keys);
+            allKeys.UnionWith(clientMap.Keys);
 
-            foreach (var fieldId in allFieldIds)
+            foreach (var key in allKeys)
             {
-                var childPath = string.IsNullOrEmpty(path) ? fieldId.ToString() : $"{path}.{fieldId}";
-                serverMap.TryGetValue(fieldId, out var sChild);
-                clientMap.TryGetValue(fieldId, out var cChild);
+                var label = key.Item1 == PatchChildKind.ElementByIndex
+                    ? "[" + key.Item2 + "]"
+                    : key.Item2.ToString();
+                var childPath = string.IsNullOrEmpty(path) ? label : $"{path}.{label}";
+                serverMap.TryGetValue(key, out var sChild);
+                clientMap.TryGetValue(key, out var cChild);
                 CompareRecursive(sChild, cChild, childPath, results);
             }
         }
+
+        private static (PatchChildKind, long) MakeChildKey(PatchNode node) => (node.Kind, node.FieldId);
 
         private static void CollectAll(PatchNode node, string path, PatchDiffType type, List<PatchDiffEntry> results)
         {

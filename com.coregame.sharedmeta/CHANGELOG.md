@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.9.0] - 2026-04-08
+
+### Added — granular list patches
+
+- **Element-sub-wrappable lists** — `[MetaServiceImpl(DeepDesync = true)]` services can now define state with `List<T>` where `T` itself has `[MemoryPackOrder]`/`[Id]`/`[Key]` properties. The generator emits a specialized `{Element}PatchableList` nested class that hands out per-element `{Element}PatchWrapper` instances bound to per-element subtree nodes in the patch tree. Mutations like `state.Heroes[5].Exp += 100` now flow into `Heroes/[5]/Exp` instead of dumping the whole list. Two-level nesting works end-to-end (`state.Heroes[i].Equipment.Add(item)`)
+- **Compile-time tracking guard via type system** — every generated `{State}PatchWrapper` exposes a one-way `static implicit operator {Wrapper}({State}?)` that produces an untracked-proxy wrapper from raw state. Combined with the absence of any reverse operator, the C# type system enforces that helper methods exposing collection elements **must** be typed as `{Element}PatchWrapper`. Returning raw `{Element}` from a helper compiles fine in the regular service class but fails the generated `_PatchTracked` copy with a clear `CS0029` error pointing at the offending line. Silent loss of patch tracking is now a compile error
+- **Granular structural ops for `List<T>`** — `Add`/`Insert`/`RemoveAt`/`Remove`/`Clear`/`Set` are recorded as individual `PatchListOp` entries on the collection node's new `StructuralOps` list, not as full snapshots. Same applies to scalar lists (`List<byte> Cells`, `List<int>`, etc.) — they now use the same op-based representation. `Sort`/`Reverse`/`AddRange`/`InsertRange`/`RemoveRange`/`RemoveAll` fall back to a `FullReplace` op
+- **Index shifting for sub-wrappable element children** — when `Insert` or `RemoveAt` reshape a list that has pending element-subtree mutations, the sender automatically shifts the affected child indices via `PatchNode.ShiftElementChildren`. The receiver applies structural ops in order and looks up element children at their canonical post-op indices, so mixed structural+element mutations in one call (e.g. `MixedShift`: `hero.Exp += 500; heroes.RemoveAt(otherIdx);`) work correctly
+- `PatchListOp` / `PatchListOpKind` types in `SharedMeta.Core.Patch` (`Insert`, `RemoveAt`, `Set`, `Clear`, `FullReplace`)
+- `CollectionPatchApplier.Apply<T>(...)` runtime helper used by generated `{State}PatchApplier` for collection fields. Handles all three apply paths (terminal full-replace, structural ops, element subtrees) in one call
+- `PatchTextRenderer` updated for collection nodes — renders `ops`/`elements` sections separately so diagnostic JSON shows the actual structural ops alongside per-element changes
+- 10 `ElementSubWrappableTests` + new `PartyState`/`Hero`/`Item` test surface in `SharedMeta.Test.Meta1` covering AddHero, AwardExp via wrapper helper, BatchUpdate (two element subtrees), Insert/RemoveAt/Set/Clear ops, two-level `AddItemToHero`, two-level element mutation `UpgradeItem`, and the mixed-shift case
+
+### Changed — wire format break
+
+- **`PatchNode` wire format extended**: new `PatchChildKind Kind` field (`Field` | `ElementByIndex`), `FieldId` widened from `int` to `long`, new `StructuralOps: List<PatchListOp>?` field. Patches between 0.8.0 and 0.9.0 are not interoperable. Both client and server must upgrade together
+- `IPatchSchema.GetFieldName` / `DecodeLeaf` / `GetNestedSchema` now take `long fieldId` (was `int`)
+- `IPatchSchemaRegistry` and generated `{State}PatchSchema` updated to match
+- `PatchNodeDiffer` keys child entries by `(Kind, FieldId)` so element children and field children no longer collide on the same dictionary key
+- Generated `{State}PatchSchema` for state types containing element-sub-wrappable list fields now also emits the element type's schema as a sibling class, and `GetNestedSchema` resolves the collection field id to that element schema so the renderer can descend into element subtrees
+
+### Fixed
+
+- **Nullable type dedupe in `PatchSchemaGenerator`** — `Card?` and `Card` referenced from different parents previously emitted two competing `CardPatchSchema` classes in the same nested namespace. Now nullable annotations are stripped during sub-type collection, and the dedupe set is shared across all recursion levels
+
 ## [0.8.0] - 2026-04-08
 
 ### Added

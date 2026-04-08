@@ -25,5 +25,56 @@ namespace SharedMeta.Test.Meta1
         /// </summary>
         [MetaMethod(Alias = "BatchUpdate", Mode = ExecutionMode.Optimistic)]
         void BatchUpdate(int firstId, int firstExpDelta, int secondId, int secondHpDelta);
+
+        /// <summary>Remove the hero at the given index. Phase 2: structural op.</summary>
+        [MetaMethod(Alias = "RemoveHero", Mode = ExecutionMode.Optimistic)]
+        void RemoveHero(int index);
+
+        /// <summary>Insert a hero at the given index. Phase 2: structural op.</summary>
+        [MetaMethod(Alias = "InsertHero", Mode = ExecutionMode.Optimistic)]
+        void InsertHero(int index, int id, string name, int level);
+
+        /// <summary>Replace the hero at the given index wholesale. Phase 2: Set op.</summary>
+        [MetaMethod(Alias = "ReplaceHero", Mode = ExecutionMode.Optimistic)]
+        void ReplaceHero(int index, int id, string name, int level);
+
+        /// <summary>Clear the entire hero list.</summary>
+        [MetaMethod(Alias = "ClearHeroes", Mode = ExecutionMode.Optimistic)]
+        void ClearHeroes();
+
+        /// <summary>
+        /// Two-level nested case: add an item to the equipment list of a specific hero
+        /// (looked up by index). Verifies that nested element-sub-wrappable lists work
+        /// end-to-end — Heroes[i].Equipment.Add(item) flows through one collection node
+        /// nested inside another's element subtree.
+        /// </summary>
+        [MetaMethod(Alias = "AddItemToHero", Mode = ExecutionMode.Optimistic)]
+        void AddItemToHero(int heroIndex, int itemId, string itemName, int power);
+
+        /// <summary>
+        /// Two-level nested case + element mutation: bump the Power field of a specific
+        /// item on a specific hero. <c>Heroes[i].Equipment[j].Power = X</c>.
+        /// </summary>
+        [MetaMethod(Alias = "UpgradeItem", Mode = ExecutionMode.Optimistic)]
+        void UpgradeItem(int heroIndex, int itemIndex, int newPower);
+
+        /// <summary>
+        /// Mixed structural op + element mutation in the SAME call: shifts indices.
+        /// AwardExp(secondId) is recorded as element subtree, then RemoveHero(firstIdx)
+        /// shifts the existing element child down. The applied patch must still find
+        /// the correct (post-shift) hero and apply its mutation there.
+        /// </summary>
+        [MetaMethod(Alias = "MixedShift", Mode = ExecutionMode.Optimistic)]
+        void MixedShift(int firstIdxToRemove, int secondHeroId, int expDelta);
+
+        /// <summary>
+        /// Reassign-then-mutate: replace the entire Heroes list with a fresh empty
+        /// instance and then add a hero in the same call. Repro for the bug where the
+        /// list-field setter wrote a terminal Value, the subsequent Add appended a
+        /// structural op, and the receiver's early-return on Value silently dropped
+        /// the op (so client never saw the new hero).
+        /// </summary>
+        [MetaMethod(Alias = "RegenerateAndAdd", Mode = ExecutionMode.Optimistic)]
+        void RegenerateAndAdd(int newHeroId, string newHeroName);
     }
 }
