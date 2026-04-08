@@ -30,6 +30,10 @@ namespace SharedMeta.Generator.Generators
         public string? SubTypeFullName { get; set; }
         // Tracked (backing-field approach)
         public bool IsTracked { get; set; }
+        // Element sub-wrappable: a List<T> where T itself has [Id] properties
+        // (so the element gets its own PatchWrapper). Phase 1 supports List<T> only.
+        public bool IsElementSubWrappable { get; set; }
+        public string? ElementSubTypeName { get; set; }
     }
 
     public class PatchTypeInfo
@@ -157,6 +161,13 @@ namespace SharedMeta.Generator.Generators
             else if (propType.NullableAnnotation == NullableAnnotation.Annotated)
             {
                 field.IsNullable = true;
+                // For reference types, the nullable annotation is part of the symbol's
+                // display string (`Card?` vs `Card`). When the same nested type appears
+                // both as `Card?` and `Card` in different parents, our dedupe logic
+                // (keyed on full type name) would treat them as two distinct types and
+                // emit two competing PatchWrappers in the same nested scope. Strip the
+                // annotation here so all downstream logic sees one canonical type.
+                nonNullType = nonNullType.WithNullableAnnotation(NullableAnnotation.NotAnnotated);
             }
 
             // Array (but not byte[])
@@ -182,8 +193,31 @@ namespace SharedMeta.Generator.Generators
                 {
                     field.Kind = PatchFieldKind.Collection;
                     field.CollectionWrapperType = "PatchableList";
-                    field.CollectionBaseType = $"System.Collections.Generic.List<{named.TypeArguments[0].ToDisplayString()}>";
-                    field.ElementTypeFullName = named.TypeArguments[0].ToDisplayString();
+                    // Normalize the element type's nullable annotation (see notes on the
+                    // reference-type branch above) so List<Card?> and List<Card> resolve
+                    // to the same canonical CardPatchWrapper.
+                    var elemTypeArg = named.TypeArguments[0];
+                    if (elemTypeArg.NullableAnnotation == NullableAnnotation.Annotated)
+                        elemTypeArg = elemTypeArg.WithNullableAnnotation(NullableAnnotation.NotAnnotated);
+                    field.CollectionBaseType = $"System.Collections.Generic.List<{elemTypeArg.ToDisplayString()}>";
+                    field.ElementTypeFullName = elemTypeArg.ToDisplayString();
+
+                    // Element sub-wrappable: if the element type itself has [Id]/[MemoryPackOrder]/[Key]
+                    // properties, we generate a specialized PatchableList that wraps each element in its
+                    // own PatchWrapper. Mutations through the wrapper write into a per-element subtree.
+                    if (elemTypeArg is INamedTypeSymbol elementType
+                        && !elementType.IsValueType
+                        && elementType.SpecialType != SpecialType.System_String
+                        && HasIdProperties(elementType))
+                    {
+                        field.IsElementSubWrappable = true;
+                        field.ElementSubTypeName = elementType.Name;
+                        // Recursively analyze the element type so we have its PatchTypeInfo
+                        // available when generating the specialized list class.
+                        var elemInfo = AnalyzeType(elementType, subTypes, visited);
+                        if (elemInfo != null && elemInfo.Fields.Count > 0)
+                            subTypes.Add(elemInfo);
+                    }
                     return field;
                 }
 
@@ -353,6 +387,33 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{ii}}}");
             sb.AppendLine();
 
+            // Implicit conversion from raw {StateType} → wrapper. Produces an "untracked
+            // proxy" wrapper (no parent node, no serializer) — reads/writes apply to the
+            // raw state but never reach a patch tree. This exists for compile-time-only
+            // shape-matching: helper methods that return {Wrapper} can be invoked outside
+            // the PatchTracked context (where collections still hand out raw elements)
+            // without forcing the caller to write boilerplate. Inside the PatchTracked
+            // context the specialized PatchableList already returns a real wrapper, so
+            // this conversion is never actually exercised.
+            //
+            // Note: there is intentionally NO reverse operator. {Wrapper} → {StateType}
+            // would silently strip patch tracking, which is exactly the bug class we're
+            // using the type system to prevent.
+            //
+            // Two overloads (nullable + non-nullable) so common helper patterns like
+            //   var hero = state.Heroes.FirstOrDefault(...);  // Hero?
+            //   return hero;                                  // wrapper return type
+            // don't hit a CS8604 warning for the nullable input.
+            //
+            // The attribute uses a string literal ("state") instead of nameof(state)
+            // because `nameof(parameter)` inside an attribute on the same method only
+            // works in C# 11+. Generated code must compile against older language
+            // versions too (older test/example projects).
+            sb.AppendLine($"{ii}[return: System.Diagnostics.CodeAnalysis.NotNullIfNotNull(\"state\")]");
+            sb.AppendLine($"{ii}public static implicit operator {wrapperName}?({stateType}? state)");
+            sb.AppendLine($"{ii}    => state == null ? null : new {wrapperName}(state, null, null!);");
+            sb.AppendLine();
+
             // Raw, IsTracking, SetDirty
             sb.AppendLine($"{ii}/// <summary>Access the underlying {typeInfo.TypeName} directly.</summary>");
             sb.AppendLine($"{ii}public {stateType} Raw => _state;");
@@ -387,7 +448,7 @@ namespace SharedMeta.Generator.Generators
                 }
             }
 
-            // Nested sub-wrapper classes (deduplicated)
+            // Nested sub-wrapper classes (deduplicated by sub-type full name)
             var generated = new HashSet<string>();
             foreach (var field in typeInfo.Fields.Where(f => f.Kind == PatchFieldKind.SubWrappable))
             {
@@ -403,7 +464,134 @@ namespace SharedMeta.Generator.Generators
                 }
             }
 
+            // Element-sub-wrappable list element wrappers + their specialized list class.
+            // The element type's PatchWrapper must exist before its list class can reference it,
+            // so emit the wrapper first (also deduplicated against the sub-wrappable set above).
+            var generatedListElems = new HashSet<string>();
+            foreach (var field in typeInfo.Fields.Where(f => f.IsElementSubWrappable))
+            {
+                if (field.ElementTypeFullName == null || generatedListElems.Contains(field.ElementTypeFullName))
+                    continue;
+                generatedListElems.Add(field.ElementTypeFullName);
+
+                var elemInfo = subTypes.FirstOrDefault(s => s.TypeFullName == field.ElementTypeFullName);
+                if (elemInfo == null) continue;
+
+                // Emit the element type's PatchWrapper if it wasn't already emitted as a sub-wrapper
+                if (!generated.Contains(field.ElementTypeFullName))
+                {
+                    generated.Add(field.ElementTypeFullName);
+                    sb.AppendLine();
+                    GenerateWrapper(sb, elemInfo, subTypes, ii);
+                }
+
+                sb.AppendLine();
+                GenerateElementListClass(sb, field, elemInfo, ii);
+            }
+
             sb.AppendLine($"{indent}}}");
+        }
+
+        /// <summary>
+        /// Generate a specialized PatchableList class for a List&lt;T&gt; field whose element
+        /// type T has its own PatchWrapper. Indexer / enumerator return TPatchWrapper bound
+        /// to a per-element subtree of the patch tree, so element-level mutations write into
+        /// {field}/[index]/{member} rather than dumping the whole list as a terminal blob.
+        ///
+        /// Phase 1: Insert / RemoveAt / Clear / Sort / etc. still fall back to a full
+        /// snapshot (the entire list is packed and written as a terminal on the field's
+        /// node). Index assignment <c>list[i] = wrapper</c> writes the new element as a
+        /// terminal at <c>[i]</c> rather than snapshotting everything. Phase 2 (op-log)
+        /// would replace the snapshot fallbacks with granular operations.
+        /// </summary>
+        private static void GenerateElementListClass(
+            StringBuilder sb, PatchFieldInfo field, PatchTypeInfo elemInfo, string ii)
+        {
+            var className = field.ElementSubTypeName + "PatchableList";
+            var elemType = field.ElementTypeFullName!;
+            var elemWrapper = field.ElementSubTypeName + "PatchWrapper";
+            var listType = $"System.Collections.Generic.List<{elemType}>";
+            var inner = ii + "    ";
+
+            sb.AppendLine($"{ii}/// <summary>");
+            sb.AppendLine($"{ii}/// Specialized PatchableList for List&lt;{field.ElementSubTypeName}&gt;.");
+            sb.AppendLine($"{ii}/// Hands out {elemWrapper} elements bound to per-index sub-trees of the patch.");
+            sb.AppendLine($"{ii}/// </summary>");
+            sb.AppendLine($"{ii}public class {className}");
+            sb.AppendLine($"{ii}    : System.Collections.Generic.IList<{elemWrapper}>,");
+            sb.AppendLine($"{ii}      System.Collections.Generic.IReadOnlyList<{elemWrapper}>");
+            sb.AppendLine($"{ii}{{");
+            sb.AppendLine($"{inner}private readonly {listType} _list;");
+            sb.AppendLine($"{inner}private readonly PatchNode? _collectionNode;");
+            sb.AppendLine($"{inner}private readonly IMetaSerializer? _serializer;");
+            sb.AppendLine();
+            sb.AppendLine($"{inner}public {className}({listType} list, PatchNode? collectionNode, IMetaSerializer? serializer)");
+            sb.AppendLine($"{inner}{{");
+            sb.AppendLine($"{inner}    _list = list;");
+            sb.AppendLine($"{inner}    _collectionNode = collectionNode;");
+            sb.AppendLine($"{inner}    _serializer = serializer;");
+            sb.AppendLine($"{inner}}}");
+            sb.AppendLine();
+            sb.AppendLine($"{inner}/// <summary>Access the underlying List directly.</summary>");
+            sb.AppendLine($"{inner}public {listType} Inner => _list;");
+            sb.AppendLine();
+            sb.AppendLine($"{inner}/// <summary>Implicit conversion from raw List for setter compatibility on the parent wrapper.</summary>");
+            sb.AppendLine($"{inner}public static implicit operator {className}({listType} list) => new {className}(list, null, null);");
+            sb.AppendLine();
+            sb.AppendLine($"{inner}public int Count => _list.Count;");
+            sb.AppendLine($"{inner}public bool IsReadOnly => false;");
+            sb.AppendLine();
+            sb.AppendLine($"{inner}/// <summary>");
+            sb.AppendLine($"{inner}/// Indexer get returns a wrapper bound to the per-element subtree node, so");
+            sb.AppendLine($"{inner}/// mutations through it (e.g. <c>list[5].Field = X</c>) flow into the patch.");
+            sb.AppendLine($"{inner}/// Indexer set replaces the element wholesale and writes a terminal at the index.");
+            sb.AppendLine($"{inner}/// </summary>");
+            sb.AppendLine($"{inner}public {elemWrapper} this[int index]");
+            sb.AppendLine($"{inner}{{");
+            sb.AppendLine($"{inner}    get => new {elemWrapper}(_list[index], _collectionNode?.GetOrCreateChild(index), _serializer!);");
+            sb.AppendLine($"{inner}    set");
+            sb.AppendLine($"{inner}    {{");
+            sb.AppendLine($"{inner}        _list[index] = value.Raw;");
+            sb.AppendLine($"{inner}        if (_collectionNode != null && _serializer != null)");
+            sb.AppendLine($"{inner}            _collectionNode.MarkChildTerminal(index, _serializer.Pack(value.Raw));");
+            sb.AppendLine($"{inner}    }}");
+            sb.AppendLine($"{inner}}}");
+            sb.AppendLine();
+            sb.AppendLine($"{inner}/// <summary>");
+            sb.AppendLine($"{inner}/// Phase 1: structural mutations (Add/Insert/Remove/RemoveAt/Clear) fall back to a");
+            sb.AppendLine($"{inner}/// full collection snapshot — the whole list is packed and written as a terminal");
+            sb.AppendLine($"{inner}/// on the field's collection node. Phase 2 will replace this with granular ops.");
+            sb.AppendLine($"{inner}/// </summary>");
+            sb.AppendLine($"{inner}private void MarkFullSnapshot()");
+            sb.AppendLine($"{inner}{{");
+            sb.AppendLine($"{inner}    if (_collectionNode != null && _serializer != null)");
+            sb.AppendLine($"{inner}        _collectionNode.MarkTerminal(_serializer.Pack(_list));");
+            sb.AppendLine($"{inner}}}");
+            sb.AppendLine();
+            sb.AppendLine($"{inner}public void Add({elemWrapper} item) {{ _list.Add(item.Raw); MarkFullSnapshot(); }}");
+            sb.AppendLine($"{inner}public void Insert(int index, {elemWrapper} item) {{ _list.Insert(index, item.Raw); MarkFullSnapshot(); }}");
+            sb.AppendLine($"{inner}public bool Remove({elemWrapper} item)");
+            sb.AppendLine($"{inner}{{");
+            sb.AppendLine($"{inner}    var removed = _list.Remove(item.Raw);");
+            sb.AppendLine($"{inner}    if (removed) MarkFullSnapshot();");
+            sb.AppendLine($"{inner}    return removed;");
+            sb.AppendLine($"{inner}}}");
+            sb.AppendLine($"{inner}public void RemoveAt(int index) {{ _list.RemoveAt(index); MarkFullSnapshot(); }}");
+            sb.AppendLine($"{inner}public void Clear() {{ _list.Clear(); MarkFullSnapshot(); }}");
+            sb.AppendLine();
+            sb.AppendLine($"{inner}public bool Contains({elemWrapper} item) => _list.Contains(item.Raw);");
+            sb.AppendLine($"{inner}public int IndexOf({elemWrapper} item) => _list.IndexOf(item.Raw);");
+            sb.AppendLine($"{inner}public void CopyTo({elemWrapper}[] array, int arrayIndex)");
+            sb.AppendLine($"{inner}{{");
+            sb.AppendLine($"{inner}    for (int i = 0; i < _list.Count; i++) array[arrayIndex + i] = this[i];");
+            sb.AppendLine($"{inner}}}");
+            sb.AppendLine();
+            sb.AppendLine($"{inner}public System.Collections.Generic.IEnumerator<{elemWrapper}> GetEnumerator()");
+            sb.AppendLine($"{inner}{{");
+            sb.AppendLine($"{inner}    for (int i = 0; i < _list.Count; i++) yield return this[i];");
+            sb.AppendLine($"{inner}}}");
+            sb.AppendLine($"{inner}System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();");
+            sb.AppendLine($"{ii}}}");
         }
 
         private static void GenerateTerminalProp(StringBuilder sb, PatchFieldInfo field, string ii)
@@ -422,6 +610,32 @@ namespace SharedMeta.Generator.Generators
         {
             var fieldVar = "_" + char.ToLower(field.Name[0]) + field.Name.Substring(1);
             string patchableType;
+
+            // Element-sub-wrappable List<T>: use a specialized list class that hands
+            // out element-level PatchWrappers and tracks mutations into per-element
+            // sub-trees of the patch.
+            if (field.IsElementSubWrappable && field.CollectionWrapperType == "PatchableList")
+            {
+                var elementWrapper = field.ElementSubTypeName + "PatchWrapper";
+                var listClassName = field.ElementSubTypeName + "PatchableList";
+
+                sb.AppendLine($"{ii}/// <summary>[Id({field.FieldId})] {field.Name} — element-level patch tracking via {elementWrapper}.</summary>");
+                sb.AppendLine($"{ii}private {listClassName}? {fieldVar};");
+                sb.AppendLine($"{ii}public {listClassName} {field.Name}");
+                sb.AppendLine($"{ii}{{");
+                sb.AppendLine($"{ii}    get => {fieldVar} ??= new {listClassName}(_state.{field.Name}, _node?.GetOrCreateChild({field.FieldId}), _serializer);");
+                sb.AppendLine($"{ii}    set {{ _state.{field.Name} = value.Inner; _node?.MarkChildTerminal({field.FieldId}, _serializer.Pack(value.Inner)); {fieldVar} = null; }}");
+                sb.AppendLine($"{ii}}}");
+                sb.AppendLine();
+                sb.AppendLine($"{ii}/// <summary>Replace the entire {field.Name} collection.</summary>");
+                sb.AppendLine($"{ii}public void Set{field.Name}({field.CollectionBaseType} value)");
+                sb.AppendLine($"{ii}{{");
+                sb.AppendLine($"{ii}    _state.{field.Name} = value;");
+                sb.AppendLine($"{ii}    _node?.MarkChildTerminal({field.FieldId}, _serializer.Pack(value));");
+                sb.AppendLine($"{ii}    {fieldVar} = null;");
+                sb.AppendLine($"{ii}}}");
+                return;
+            }
 
             switch (field.CollectionWrapperType)
             {
@@ -561,97 +775,128 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{ii}        {{");
 
             foreach (var field in typeInfo.Fields)
-            {
-                sb.AppendLine($"{ii}            case {field.FieldId}: // {field.Name}");
-
-                if (field.IsTracked)
-                {
-                    // [Tracked] backing field — use generated property setter which handles change tracking
-                    sb.AppendLine($"{ii}                if (child.IsTerminal)");
-                    sb.AppendLine($"{ii}                    state.{field.Name} = serializer.Unpack<{field.TypeFullName}>(child.Value!);");
-                }
-                else if (field.Kind == PatchFieldKind.SubWrappable)
-                {
-                    sb.AppendLine($"{ii}                if (child.IsTerminal)");
-                    sb.AppendLine($"{ii}                    state.{field.Name} = serializer.Unpack<{field.TypeFullName}>(child.Value!);");
-                    if (field.IsNullable)
-                        sb.AppendLine($"{ii}                else if (state.{field.Name} != null)");
-                    else
-                        sb.AppendLine($"{ii}                else");
-                    sb.AppendLine($"{ii}                    Apply{field.SubTypeName}(state.{field.Name}!, child, serializer);");
-                }
-                else
-                {
-                    sb.AppendLine($"{ii}                if (child.IsTerminal)");
-                    sb.AppendLine($"{ii}                    state.{field.Name} = serializer.Unpack<{field.TypeFullName}>(child.Value!);");
-                }
-
-                sb.AppendLine($"{ii}                break;");
-            }
+                EmitFieldApplyCase(sb, field, ii);
 
             sb.AppendLine($"{ii}        }}");
             sb.AppendLine($"{ii}    }}");
             sb.AppendLine($"{ii}}}");
 
-            // Private methods for sub-type applying (deduplicated)
+            // Private methods for sub-type applying (deduplicated). This includes both
+            // SubWrappable child fields AND element types of IsElementSubWrappable lists,
+            // because both cases need a per-type Apply{Name} method to recurse into.
             var generated = new HashSet<string>();
             GenerateSubAppliers(sb, typeInfo, subTypes, generated, ii);
 
             sb.AppendLine($"{indent}}}");
         }
 
+        /// <summary>
+        /// Emit the switch case for a single patch-tree field. Shared between the root
+        /// Apply method and per-sub-type Apply{Name} methods so the same field shapes
+        /// (terminal / sub-wrappable / element-sub-wrappable list) are handled identically
+        /// at every depth of the patch tree.
+        /// </summary>
+        private static void EmitFieldApplyCase(StringBuilder sb, PatchFieldInfo field, string ii)
+        {
+            sb.AppendLine($"{ii}            case {field.FieldId}: // {field.Name}");
+
+            if (field.IsTracked)
+            {
+                // [Tracked] backing field — use generated property setter which handles change tracking
+                sb.AppendLine($"{ii}                if (child.IsTerminal)");
+                sb.AppendLine($"{ii}                    state.{field.Name} = serializer.Unpack<{field.TypeFullName}>(child.Value!);");
+            }
+            else if (field.IsElementSubWrappable && field.CollectionWrapperType == "PatchableList")
+            {
+                // List<TElement> where TElement has its own PatchWrapper.
+                // Terminal → entire list was replaced; otherwise iterate per-element subtrees.
+                sb.AppendLine($"{ii}                if (child.IsTerminal)");
+                sb.AppendLine($"{ii}                    state.{field.Name} = serializer.Unpack<{field.CollectionBaseType}>(child.Value!);");
+                sb.AppendLine($"{ii}                else if (state.{field.Name} != null && child.Children != null)");
+                sb.AppendLine($"{ii}                {{");
+                sb.AppendLine($"{ii}                    foreach (var elemChild in child.Children)");
+                sb.AppendLine($"{ii}                    {{");
+                sb.AppendLine($"{ii}                        var idx = elemChild.FieldId;");
+                sb.AppendLine($"{ii}                        if (idx < 0 || idx >= state.{field.Name}.Count) continue;");
+                sb.AppendLine($"{ii}                        if (elemChild.IsTerminal)");
+                sb.AppendLine($"{ii}                            state.{field.Name}[idx] = serializer.Unpack<{field.ElementTypeFullName}>(elemChild.Value!);");
+                sb.AppendLine($"{ii}                        else");
+                sb.AppendLine($"{ii}                            Apply{field.ElementSubTypeName}(state.{field.Name}[idx], elemChild, serializer);");
+                sb.AppendLine($"{ii}                    }}");
+                sb.AppendLine($"{ii}                }}");
+            }
+            else if (field.Kind == PatchFieldKind.SubWrappable)
+            {
+                sb.AppendLine($"{ii}                if (child.IsTerminal)");
+                sb.AppendLine($"{ii}                    state.{field.Name} = serializer.Unpack<{field.TypeFullName}>(child.Value!);");
+                if (field.IsNullable)
+                    sb.AppendLine($"{ii}                else if (state.{field.Name} != null)");
+                else
+                    sb.AppendLine($"{ii}                else");
+                sb.AppendLine($"{ii}                    Apply{field.SubTypeName}(state.{field.Name}!, child, serializer);");
+            }
+            else
+            {
+                sb.AppendLine($"{ii}                if (child.IsTerminal)");
+                sb.AppendLine($"{ii}                    state.{field.Name} = serializer.Unpack<{field.TypeFullName}>(child.Value!);");
+            }
+
+            sb.AppendLine($"{ii}                break;");
+        }
+
         private static void GenerateSubAppliers(
             StringBuilder sb, PatchTypeInfo typeInfo, List<PatchTypeInfo> subTypes,
             HashSet<string> generated, string ii)
         {
+            // SubWrappable child fields → emit Apply{SubTypeName}
             foreach (var field in typeInfo.Fields.Where(f => f.Kind == PatchFieldKind.SubWrappable))
             {
-                if (field.SubTypeFullName == null || generated.Contains(field.SubTypeFullName))
-                    continue;
-                generated.Add(field.SubTypeFullName);
-
-                var subInfo = subTypes.FirstOrDefault(s => s.TypeFullName == field.SubTypeFullName);
-                if (subInfo == null) continue;
-
-                sb.AppendLine();
-                sb.AppendLine($"{ii}private static void Apply{subInfo.TypeName}({subInfo.TypeFullName} state, PatchNode patch, IMetaSerializer serializer)");
-                sb.AppendLine($"{ii}{{");
-                sb.AppendLine($"{ii}    if (patch.Children == null) return;");
-                sb.AppendLine($"{ii}    foreach (var child in patch.Children)");
-                sb.AppendLine($"{ii}    {{");
-                sb.AppendLine($"{ii}        switch (child.FieldId)");
-                sb.AppendLine($"{ii}        {{");
-
-                foreach (var subField in subInfo.Fields)
-                {
-                    sb.AppendLine($"{ii}            case {subField.FieldId}: // {subField.Name}");
-
-                    if (subField.Kind == PatchFieldKind.SubWrappable)
-                    {
-                        sb.AppendLine($"{ii}                if (child.IsTerminal)");
-                        sb.AppendLine($"{ii}                    state.{subField.Name} = serializer.Unpack<{subField.TypeFullName}>(child.Value!);");
-                        if (subField.IsNullable)
-                            sb.AppendLine($"{ii}                else if (state.{subField.Name} != null)");
-                        else
-                            sb.AppendLine($"{ii}                else");
-                        sb.AppendLine($"{ii}                    Apply{subField.SubTypeName}(state.{subField.Name}!, child, serializer);");
-                    }
-                    else
-                    {
-                        sb.AppendLine($"{ii}                if (child.IsTerminal)");
-                        sb.AppendLine($"{ii}                    state.{subField.Name} = serializer.Unpack<{subField.TypeFullName}>(child.Value!);");
-                    }
-
-                    sb.AppendLine($"{ii}                break;");
-                }
-
-                sb.AppendLine($"{ii}        }}");
-                sb.AppendLine($"{ii}    }}");
-                sb.AppendLine($"{ii}}}");
-
-                // Recursively generate sub-appliers for this sub-type's sub-wrappable fields
-                GenerateSubAppliers(sb, subInfo, subTypes, generated, ii);
+                if (field.SubTypeFullName == null) continue;
+                EmitSubApplier(sb, field.SubTypeFullName, subTypes, generated, ii);
             }
+
+            // Element types of element-sub-wrappable lists → emit Apply{ElementName} too,
+            // because the parent's switch case calls Apply{ElementName}(list[idx], elemChild, ...)
+            foreach (var field in typeInfo.Fields.Where(f => f.IsElementSubWrappable))
+            {
+                if (field.ElementTypeFullName == null) continue;
+                EmitSubApplier(sb, field.ElementTypeFullName, subTypes, generated, ii);
+            }
+        }
+
+        /// <summary>
+        /// Emit an Apply{TypeName}(state, patch, serializer) method for the given sub-type
+        /// and recurse into its own sub-types. Idempotent — adds the type to <paramref name="generated"/>
+        /// to dedupe across sibling fields that reference the same nested type.
+        /// </summary>
+        private static void EmitSubApplier(
+            StringBuilder sb, string subTypeFullName, List<PatchTypeInfo> subTypes,
+            HashSet<string> generated, string ii)
+        {
+            if (generated.Contains(subTypeFullName)) return;
+            generated.Add(subTypeFullName);
+
+            var subInfo = subTypes.FirstOrDefault(s => s.TypeFullName == subTypeFullName);
+            if (subInfo == null) return;
+
+            sb.AppendLine();
+            sb.AppendLine($"{ii}private static void Apply{subInfo.TypeName}({subInfo.TypeFullName} state, PatchNode patch, IMetaSerializer serializer)");
+            sb.AppendLine($"{ii}{{");
+            sb.AppendLine($"{ii}    if (patch.Children == null) return;");
+            sb.AppendLine($"{ii}    foreach (var child in patch.Children)");
+            sb.AppendLine($"{ii}    {{");
+            sb.AppendLine($"{ii}        switch (child.FieldId)");
+            sb.AppendLine($"{ii}        {{");
+
+            foreach (var subField in subInfo.Fields)
+                EmitFieldApplyCase(sb, subField, ii);
+
+            sb.AppendLine($"{ii}        }}");
+            sb.AppendLine($"{ii}    }}");
+            sb.AppendLine($"{ii}}}");
+
+            // Recursively generate sub-appliers for this sub-type's own nested types
+            GenerateSubAppliers(sb, subInfo, subTypes, generated, ii);
         }
     }
 }
