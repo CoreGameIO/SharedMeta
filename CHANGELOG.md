@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.9.1] - 2026-04-09
+
+### Added
+
+- **Natural property assignment for sub-wrappable fields** — `{State}PatchWrapper` now emits setters for nested-object properties. `state.RequiredProfile = new Profile { ... }` works via implicit operator. Assign-then-mutate in the same call is supported (applier unpacks Value first, then applies Children mutations)
+- `PatchNode.MarkChildFullReplace(fieldId, packed)` — clears collection state + records `FullReplace` op in one call
+- 411-test `SharedMeta.PatchFuzzTests` project — standalone patch roundtrip suite covering all field types, collection ops, nested mutations, and 70 randomized fuzz seeds
+
+### Fixed
+
+- **List field reassignment drops subsequent mutations** — list-field setters now record `FullReplace` structural ops instead of terminal Value, so `state.Heroes = new List(); state.Heroes.Add(...)` works correctly
+- **`CollectionPatchApplier` early return on Value** — no longer drops structural ops when Value is present on the same node
+- **`PatchTextRenderer` diff hides divergent collection fields** — skip condition now checks StructuralOps/Children, not just Value equality
+- **SubWrappable applier `if/else` on terminal vs children** — changed to sequential Value-then-Children so `SetX()` + mutate-via-wrapper works
+
 ## [0.9.0] - 2026-04-08
 
 ### Added — granular list patches

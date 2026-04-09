@@ -751,6 +751,14 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{ii}/// <summary>[Id({field.FieldId})] {field.Name} — sub-wrapper for granular tracking.</summary>");
             sb.AppendLine($"{ii}private {subWrapper}? {fieldVar};");
 
+            // Both getter AND setter are emitted so user code can write the natural
+            // form `wrapper.Field = new SubType { ... }`. The implicit operator on
+            // the sub-wrapper class converts the raw object into an untracked wrapper,
+            // and the setter extracts .Raw and writes a terminal Value on the field's
+            // patch node. Subsequent in-place mutations through the same wrapper after
+            // the assignment add Field-children on top of that Value, and the generated
+            // applier handles the Value+Children pair (Value is unpacked first, then
+            // the children mutations are layered on top in submission order).
             if (field.IsNullable)
             {
                 sb.AppendLine($"{ii}public {subWrapper}? {field.Name}");
@@ -761,13 +769,27 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"{ii}        return {fieldVar} ??= new {subWrapper}(");
                 sb.AppendLine($"{ii}            _state.{field.Name}, _node?.GetOrCreateChild({field.FieldId}), _serializer);");
                 sb.AppendLine($"{ii}    }}");
+                sb.AppendLine($"{ii}    set");
+                sb.AppendLine($"{ii}    {{");
+                sb.AppendLine($"{ii}        _state.{field.Name} = value?.Raw;");
+                sb.AppendLine($"{ii}        _node?.MarkChildTerminal({field.FieldId}, _serializer.Pack(_state.{field.Name}));");
+                sb.AppendLine($"{ii}        {fieldVar} = null;");
+                sb.AppendLine($"{ii}    }}");
                 sb.AppendLine($"{ii}}}");
             }
             else
             {
                 sb.AppendLine($"{ii}public {subWrapper} {field.Name}");
-                sb.AppendLine($"{ii}    => {fieldVar} ??= new {subWrapper}(");
+                sb.AppendLine($"{ii}{{");
+                sb.AppendLine($"{ii}    get => {fieldVar} ??= new {subWrapper}(");
                 sb.AppendLine($"{ii}        _state.{field.Name}, _node?.GetOrCreateChild({field.FieldId}), _serializer);");
+                sb.AppendLine($"{ii}    set");
+                sb.AppendLine($"{ii}    {{");
+                sb.AppendLine($"{ii}        _state.{field.Name} = value.Raw;");
+                sb.AppendLine($"{ii}        _node?.MarkChildTerminal({field.FieldId}, _serializer.Pack(value.Raw));");
+                sb.AppendLine($"{ii}        {fieldVar} = null;");
+                sb.AppendLine($"{ii}    }}");
+                sb.AppendLine($"{ii}}}");
             }
 
             sb.AppendLine();

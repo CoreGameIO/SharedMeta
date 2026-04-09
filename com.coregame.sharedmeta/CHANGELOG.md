@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.9.1] - 2026-04-09
+
+### Added
+
+- **Natural property assignment for sub-wrappable fields** — generated `{State}PatchWrapper` now emits a setter alongside the getter for nested-object properties (`Profile`, `Stats`, etc.). Writing `state.RequiredProfile = new Profile { ... }` works directly through the implicit operator instead of requiring the `SetRequiredProfile(...)` helper. Assign-then-mutate in the same call (`state.RequiredProfile = new Profile { ... }; state.RequiredProfile.Level += 5`) is fully supported — the applier unpacks the Value snapshot first, then layers the subsequent field mutations on top
+- `PatchNode.MarkChildFullReplace(fieldId, packed)` — convenience method that clears collection state and records a `FullReplace` structural op in one call, used by generated list-field setters
+- 411-test `SharedMeta.PatchFuzzTests` project — standalone patch roundtrip suite (no Orleans, no network) covering scalars, sub-objects, nullable transitions, all scalar list ops, element-sub-wrappable list ops with nested Equipment/SkillIds/Tags, dict/hashset, reassign-then-mutate across every collection type, edge cases, and 70 randomized fuzz seeds
+
+### Fixed
+
+- **List field reassignment drops subsequent mutations** — generated list-field setters (`state.Heroes = newList`) wrote a terminal `Value` on the patch node; any `Add`/`Set`/`Insert` in the same call appended structural ops to the same node, but the receiver's early-return on `Value` silently dropped them. Setter now records a `FullReplace` structural op instead, keeping the invariant "list nodes never carry terminal Value". Subsequent mutations chain in submission order
+- **`CollectionPatchApplier` early return on Value** — when a collection node had both `Value` and `StructuralOps` (which could happen with legacy patches or edge cases), the applier returned after unpacking Value without processing the ops. Now applies Value first, then continues with structural ops and element children
+- **`PatchTextRenderer` diff hides divergent collection fields** — the skip condition `both terminals equal → skip` didn't check for `StructuralOps` or `Children` layered on top of the matching Value. Fields with identical Value snapshots but divergent ops were silently omitted from desync reports. Now requires empty Children and StructuralOps on both sides to skip
+- **SubWrappable applier doesn't handle Value+Children** — `SetX(newObj)` followed by `state.X.Field = Y` in the same call produced a node with both Value and Children; the generated applier used `if/else` (terminal vs recurse). Changed to sequential: unpack Value first, then recurse into Children if present
+
 ## [0.9.0] - 2026-04-08
 
 ### Added — granular list patches

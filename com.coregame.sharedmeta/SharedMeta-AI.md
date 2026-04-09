@@ -733,7 +733,7 @@ The SharedMeta source generator (`CoreGame.SharedMeta.Generator`) produces:
 | `[MetaService]` interface | `*ApiClient.g.cs` — typed client API with async methods |
 | `[MetaService]` interface | `*ServiceExtensions.g.cs` — DI registration helpers |
 | `[MetaServiceImpl]` class | `*.Context.g.cs` — Context/State/dependency injection |
-| `ISharedState` class | `*PatchWrapper.g.cs` — change tracking for ServerPatch mode |
+| `ISharedState` class | `*PatchWrapper.g.cs` — change tracking for ServerPatch mode (nested-object fields have get+set via implicit operator; collections have get+set for reassignment) |
 | `ISharedState` class | `*PatchApplier.g.cs` — client-side patch application |
 | All `[MetaService]` in assembly | `ServerMetaConfiguration.g.cs` — MetaProvider + service registration |
 | `[Transformer]` classes | `TransformerRegistrations.g.cs` — auto-registration |

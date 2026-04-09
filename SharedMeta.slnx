@@ -34,6 +34,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/SharedMeta.IntegrationTests/SharedMeta.IntegrationTests.csproj" />
+    <Project Path="tests/SharedMeta.PatchFuzzTests/SharedMeta.PatchFuzzTests.csproj" />
     <Project Path="tests/SharedMeta.Test.Meta1/SharedMeta.Test.Meta1.csproj" />
     <Project Path="tests/SharedMeta.Test.Server/SharedMeta.Test.Server.csproj" />
   </Folder>

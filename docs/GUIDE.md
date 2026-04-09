@@ -588,7 +588,7 @@ public void Attack(Card card)
 
 **Property types:**
 - **Value types** (int, bool, enum, string): get/set with automatic tracking
-- **Nested state objects** (types with `[Id]` properties): sub-wrappers with recursive tracking
+- **Nested state objects** (types with `[Id]` properties): sub-wrappers with recursive tracking. Both get and set are supported — `state.Profile = new Profile { ... }` assigns via the implicit operator; assign-then-mutate in the same call works (`state.Profile = new Profile { Level = 1 }; state.Profile.Level += 5`)
 - **Collections**: `PatchableList<T>`, `PatchableDictionary<K,V>`, `PatchableHashSet<T>`, `PatchableArray<T>` — auto-mark dirty on any mutation (Add, Remove, Clear, indexed set, etc.)
 - **`SetDirty()`**: Available on all wrappers for explicit marking (e.g., after mutating via `Raw`)
 
