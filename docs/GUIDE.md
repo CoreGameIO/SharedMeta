@@ -1731,6 +1731,53 @@ void UpdateNickname(string name);
 
 Use for: purchases, currency operations, inventory changes, and any operation where data loss on crash is unacceptable.
 
+### Mid-Method Persistence (Context.SaveStateAsync)
+
+`ForcePersist` saves state **after** the method returns. When you need a checkpoint **during** execution — e.g., before sending an acknowledgement to another entity — use `Context.SaveStateAsync()`:
+
+```csharp
+[MetaMethod(Mode = ExecutionMode.Server)]
+async Task<ResolveResult> ResolveSessionResources(string blockUid)
+{
+    // 1. Query room for actual resources
+    var roomApi = Context.GetEntityApi<IRoomService>(roomId);
+    var resources = await roomApi.GetResources(Context.CallerId, blockUid);
+
+    // 2. Apply to own state
+    State.ApplyResources(resources);
+    State.RemoveResourceBlock(blockUid);
+
+    // 3. Persist NOW — before sending ACK
+    await Context.SaveStateAsync();
+
+    // 4. Safe to acknowledge — if crash happens here, player state is already saved
+    await roomApi.AcknowledgeBlock(Context.CallerId, blockUid);
+
+    return new ResolveResult { Success = true };
+}
+```
+
+**Behavior by environment:**
+
+| Environment | Behavior |
+|-------------|----------|
+| Server | Persists state + random bytes to Orleans storage immediately, resets persistence tracking |
+| Client | No-op (`Task.CompletedTask`) — method continues without side effects |
+
+**When to use:**
+- Pseudo-transactional cross-entity resource transfers (lock → save → ack)
+- Long-running server methods where intermediate state must survive a crash
+- Any point where you need a durable checkpoint before an irreversible external action
+
+**ForcePersist vs SaveStateAsync:**
+
+| | `[MetaMethod(ForcePersist = true)]` | `Context.SaveStateAsync()` |
+|---|---|---|
+| When | After method returns | Explicit call site during execution |
+| Granularity | Whole method | Any point within a method |
+| Declaration | Attribute on interface | Code in service implementation |
+| Use case | "This method must always save" | "Save here, then continue" |
+
 ---
 
 ## 15. Orleans Backend

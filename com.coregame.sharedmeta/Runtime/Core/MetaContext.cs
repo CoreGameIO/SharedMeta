@@ -122,6 +122,14 @@ namespace SharedMeta.Core
         public object? Config { get; set; }
 
         /// <summary>
+        /// Force-persist the current entity state mid-method.
+        /// On server: persists state to storage immediately.
+        /// On client: no-op (returns completed task).
+        /// Use for pseudo-transactional patterns where state must be saved before continuing.
+        /// </summary>
+        public virtual Task SaveStateAsync() => Task.CompletedTask;
+
+        /// <summary>
         /// Patch wrapper for ServerPatch mode. Non-null when patch tracking is active.
         /// The actual type is generated (e.g., GameStatePatchWrapper).
         /// </summary>

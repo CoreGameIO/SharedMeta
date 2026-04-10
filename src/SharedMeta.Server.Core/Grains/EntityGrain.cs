@@ -157,6 +157,14 @@ namespace SharedMeta.Server.Core.Grains
 
                     return await targetGrain.GetEntityStateAsync();
                 };
+
+                providerBase.SaveStateHandler = async () =>
+                {
+                    PersistRandomBytes();
+                    await _persistentState.WriteStateAsync();
+                    ResetPersistenceTracking();
+                    _logger.PersistenceForced(entityId, _requestsSinceLastSave);
+                };
             }
 
             var context = new MetaProviderContext(entityId, _serializer, GrainFactory, _logger);

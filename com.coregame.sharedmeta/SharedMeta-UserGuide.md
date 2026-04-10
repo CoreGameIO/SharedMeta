@@ -453,6 +453,15 @@ var otherState = await Context.GetState<ShardState>("shard_north");
 
 System method on `MetaContext`. Server reads via `[AlwaysInterleave]` grain method (deadlock-safe). Result recorded for deterministic client replay. Returns `null` if entity type is unknown.
 
+### Mid-Method State Persistence
+
+```csharp
+// Force-persist entity state at this point (server: saves to storage, client: no-op)
+await Context.SaveStateAsync();
+```
+
+Use for pseudo-transactional patterns: mutate state → checkpoint → send acknowledgement to another entity. If the grain crashes after `SaveStateAsync()` but before the ACK, the saved state survives and the client can retry the ACK on reconnect.
+
 ---
 
 ## Triggers & Subscribers

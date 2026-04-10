@@ -721,6 +721,19 @@ bool ProcessPurchase(string itemId, int price);
 
 Use for: purchases, currency operations, inventory changes.
 
+### Mid-Method Persistence (Context.SaveStateAsync)
+
+Force-persist state at an explicit point during method execution:
+
+```csharp
+await Context.SaveStateAsync();
+```
+
+- **Server**: persists state + random bytes to Orleans storage immediately
+- **Client**: no-op (`Task.CompletedTask`)
+- Use for pseudo-transactional cross-entity patterns: mutate state → `SaveStateAsync()` → send ACK to another entity
+- Unlike `ForcePersist` (saves after method returns), `SaveStateAsync` checkpoints at the call site
+
 ---
 
 ## Code Generation

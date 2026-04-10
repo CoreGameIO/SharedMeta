@@ -128,6 +128,25 @@ namespace SharedMeta.Server
         /// </summary>
         public Func<string, string, Task<byte[]?>>? EntityStateHandler { get; set; }
 
+        /// <summary>
+        /// Handler for mid-method state persistence.
+        /// Set by EntityGrain to enable SaveStateAsync() from service methods.
+        /// </summary>
+        public Func<Task>? SaveStateHandler { get; set; }
+
+        /// <summary>
+        /// Force-persist the current entity state mid-method.
+        /// Delegates to EntityGrain via SaveStateHandler.
+        /// </summary>
+        public override Task SaveStateAsync()
+        {
+            if (SaveStateHandler == null)
+                throw new InvalidOperationException(
+                    "SaveStateHandler not set. Cannot persist state mid-method. " +
+                    "Ensure EntityGrain has wired SaveStateHandler.");
+            return SaveStateHandler();
+        }
+
         private List<CrossEntityCallInfo>? _crossEntityCalls;
 
         /// <summary>

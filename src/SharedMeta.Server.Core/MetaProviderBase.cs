@@ -46,6 +46,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     public Func<string, string, Task<byte[]?>>? EntityStateHandler { get; set; }
 
     /// <summary>
+    /// Handler for mid-method state persistence.
+    /// Set by EntityGrain to enable Context.SaveStateAsync() from service methods.
+    /// </summary>
+    public Func<Task>? SaveStateHandler { get; set; }
+
+    /// <summary>
     /// Server-side execution mode provider. Determines per-method execution mode.
     /// Set via DI to enable runtime mode switching (e.g., switching to ServerPatch).
     /// </summary>
@@ -71,6 +77,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         MetaContext.ServiceResolver = ServiceResolver;
         MetaContext.EntityCallHandler = EntityCallHandler;
         MetaContext.EntityStateHandler = EntityStateHandler;
+        MetaContext.SaveStateHandler = SaveStateHandler;
 
         // Initialize deterministic randoms
         _serverRandom = DeserializeOrCreateRandom(context.Serializer, serverRandomBytes, context.EntityId + ":server");

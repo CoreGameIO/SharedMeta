@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.2] - 2026-04-10
+
+### Added
+
+- **`Context.SaveStateAsync()`** — force-persist entity state mid-method for pseudo-transactional patterns. On server: persists state + random bytes to Orleans storage immediately. On client: no-op. Enables safe cross-entity resource transfer where state must be checkpointed before sending acknowledgements
+
 ## [0.9.1] - 2026-04-09
 
 ### Added
