@@ -1037,6 +1037,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                if (response.StateBytes is { Length: > 0 } stateData)");
             sb.AppendLine("                {");
             sb.AppendLine($"                    _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
+            sb.AppendLine("                    _crossEntityResolver?.UpdateCachedState(_network.EntityId ?? string.Empty, _state);");
             sb.AppendLine("                    _optimisticRandom?.Skip(response.RandomScrollDelta);");
             sb.AppendLine("                }");
             sb.AppendLine("                else");
@@ -1199,6 +1200,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                    if (broadcast.StateBytes is { Length: > 0 } stateData)");
                 sb.AppendLine("                    {");
                 sb.AppendLine($"                        _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
+                sb.AppendLine("                        _crossEntityResolver?.UpdateCachedState(_network.EntityId ?? string.Empty, _state);");
                 sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
                 sb.AppendLine("                    }");
                 // PatchBytes check: apply patch or replay normally
@@ -1297,6 +1299,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine("                    if (broadcast.StateBytes is { Length: > 0 } stateData)");
                     sb.AppendLine("                    {");
                     sb.AppendLine($"                        _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
+                    sb.AppendLine("                        _crossEntityResolver?.UpdateCachedState(_network.EntityId ?? string.Empty, _state);");
                     sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
                     sb.AppendLine("                    }");
                     // Replay the service method to update state
@@ -1351,6 +1354,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                if (triggerOp.Response.StateBytes is { Length: > 0 } stateData)");
             sb.AppendLine("                {");
             sb.AppendLine($"                    _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
+            sb.AppendLine("                    _crossEntityResolver?.UpdateCachedState(_network.EntityId ?? string.Empty, _state);");
             sb.AppendLine("                    _optimisticRandom?.Skip(triggerOp.Response.RandomScrollDelta);");
             sb.AppendLine("                }");
             sb.AppendLine("                else if (triggerOp.Response.PatchBytes is { Length: > 0 } patchData)");

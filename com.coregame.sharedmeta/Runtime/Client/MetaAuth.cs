@@ -4,19 +4,28 @@ using System.Threading.Tasks;
 using SharedMeta.Core.Auth;
 using SharedMeta.Core.Logging;
 #nullable enable
-#if !NETSTANDARD2_1 && !UNITY_5_3_OR_NEWER
-using System.Net.Http;
-using System.Net.Http.Json;
-#endif
 
 namespace SharedMeta.Client
 {
     /// <summary>
     /// Cross-platform authentication helper.
     /// Handles login and token caching for both Unity and .NET.
+    ///
+    /// Extensibility: set <see cref="Provider"/> to route all auth calls through
+    /// a custom <see cref="IMetaAuthProvider"/> — useful for local backends,
+    /// alternative transports, or third-party auth services. The legacy
+    /// <see cref="LoginFunc"/>/<see cref="PlatformLoginFunc"/>/<see cref="AuthActionFunc"/>/<see cref="UnlinkFunc"/>
+    /// hooks are still honored as a fallback for backward compatibility.
     /// </summary>
     public static class MetaAuth
     {
+        /// <summary>
+        /// Active auth provider. When set, takes precedence over legacy Func hooks.
+        /// On non-Unity .NET targets an <see cref="HttpMetaAuthProvider"/> is used by
+        /// default when neither <see cref="Provider"/> nor the legacy Func hooks are set.
+        /// </summary>
+        public static IMetaAuthProvider? Provider { get; set; }
+
         /// <summary>
         /// Authenticate with the server, reusing a cached token if still valid.
         /// </summary>
@@ -53,15 +62,8 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
-        /// Platform-specific login function. Set this to override the default HTTP implementation.
-        /// On Unity, this is set automatically by <c>UnityMetaAuth</c> (SharedMeta.Auth.Client assembly).
-        /// </summary>
-        public static Func<string, string, CancellationToken, Task<MetaLoginResult>>? LoginFunc { get; set; }
-
-        /// <summary>
         /// Authenticate with the server using a DeviceId. Always makes a network call.
-        /// On Unity: uses UnityWebRequest (requires UnityMetaAuth.Register() or auto-registration).
-        /// On .NET: uses HttpClient.
+        /// Priority: <see cref="Provider"/> → <see cref="LoginFunc"/> → default HttpClient (non-Unity only).
         /// </summary>
         /// <param name="authUrl">Auth endpoint URL (e.g., "http://localhost:5100/meta/auth").</param>
         /// <param name="deviceId">Unique device identifier.</param>
@@ -74,27 +76,26 @@ namespace SharedMeta.Client
             var url = authUrl.TrimEnd('/') + "/login";
             MetaLog.Debug("[MetaAuth] Logging in at: " + url);
 
+            if (Provider != null)
+                return await Provider.LoginAsync(url, deviceId, cancellation);
+
             if (LoginFunc != null)
                 return await LoginFunc(url, deviceId, cancellation);
 
 #if !NETSTANDARD2_1 && !UNITY_5_3_OR_NEWER
-            return await LoginHttpClientAsync(url, deviceId, cancellation);
+            return await new HttpMetaAuthProvider().LoginAsync(url, deviceId, cancellation);
 #else
             throw new PlatformNotSupportedException(
-                "MetaAuth.LoginAsync requires either UnityMetaAuth.Register() (Unity) or net8.0+. " +
-                "Call UnityMetaAuth.Register() before using MetaAuth, or set MetaAuth.LoginFunc manually.");
+                "MetaAuth.LoginAsync requires either UnityMetaAuth.Register() (Unity) or a custom Provider. " +
+                "Call UnityMetaAuth.Register() before using MetaAuth, or set MetaAuth.Provider manually.");
 #endif
         }
 
         /// <summary>
         /// Login via platform (Google, Apple, Steam) instead of device ID.
         /// Validates platform token server-side and returns JWT.
+        /// Priority: <see cref="Provider"/> → <see cref="PlatformLoginFunc"/> → default HttpClient (non-Unity only).
         /// </summary>
-        /// <param name="authUrl">Auth endpoint URL (e.g., "http://localhost:5100/meta/auth").</param>
-        /// <param name="platform">Platform name: "google", "apple", "steam".</param>
-        /// <param name="platformToken">Token/ticket from the platform SDK.</param>
-        /// <param name="tokenStorage">Optional: cache the resulting token.</param>
-        /// <param name="cancellation">Cancellation token.</param>
         public static async Task<MetaLoginResult> LoginWithPlatformAsync(
             string authUrl,
             string platform,
@@ -106,15 +107,21 @@ namespace SharedMeta.Client
             MetaLog.Debug("[MetaAuth] Platform login at: " + url + " platform: " + platform);
 
             MetaLoginResult result;
-            if (PlatformLoginFunc != null)
+            if (Provider != null)
+            {
+                result = await Provider.LoginWithPlatformAsync(url, platform, platformToken, cancellation);
+            }
+            else if (PlatformLoginFunc != null)
+            {
                 result = await PlatformLoginFunc(url, platform, platformToken, cancellation);
+            }
             else
             {
 #if !NETSTANDARD2_1 && !UNITY_5_3_OR_NEWER
-                result = await PlatformLoginHttpClientAsync(url, platform, platformToken, cancellation);
+                result = await new HttpMetaAuthProvider().LoginWithPlatformAsync(url, platform, platformToken, cancellation);
 #else
                 throw new PlatformNotSupportedException(
-                    "MetaAuth.LoginWithPlatformAsync requires UnityMetaAuth or net8.0+.");
+                    "MetaAuth.LoginWithPlatformAsync requires UnityMetaAuth or a custom Provider.");
 #endif
             }
 
@@ -130,6 +137,7 @@ namespace SharedMeta.Client
         /// <summary>
         /// Link a platform account to the currently authenticated player.
         /// Requires a valid JWT token (from prior device or platform login).
+        /// Priority: <see cref="Provider"/> → <see cref="AuthActionFunc"/> → default HttpClient (non-Unity only).
         /// </summary>
         public static async Task<bool> LinkAccountAsync(
             string authUrl,
@@ -141,20 +149,24 @@ namespace SharedMeta.Client
             var url = authUrl.TrimEnd('/') + "/link";
             MetaLog.Debug("[MetaAuth] Linking " + platform + " at: " + url);
 
+            if (Provider != null)
+                return await Provider.LinkAsync(url, platform, platformToken, accessToken, cancellation);
+
             if (AuthActionFunc != null)
                 return await AuthActionFunc(url, platform, platformToken, accessToken, cancellation);
 
 #if !NETSTANDARD2_1 && !UNITY_5_3_OR_NEWER
-            return await LinkHttpClientAsync(url, platform, platformToken, accessToken, cancellation);
+            return await new HttpMetaAuthProvider().LinkAsync(url, platform, platformToken, accessToken, cancellation);
 #else
             throw new PlatformNotSupportedException(
-                "MetaAuth.LinkAccountAsync requires UnityMetaAuth or net8.0+.");
+                "MetaAuth.LinkAccountAsync requires UnityMetaAuth or a custom Provider.");
 #endif
         }
 
         /// <summary>
         /// Unlink an auth key from the currently authenticated player.
         /// Cannot unlink the last key.
+        /// Priority: <see cref="Provider"/> → <see cref="UnlinkFunc"/> → default HttpClient (non-Unity only).
         /// </summary>
         public static async Task<bool> UnlinkAsync(
             string authUrl,
@@ -165,14 +177,17 @@ namespace SharedMeta.Client
             var url = authUrl.TrimEnd('/') + "/unlink";
             MetaLog.Debug("[MetaAuth] Unlinking " + authKey + " at: " + url);
 
+            if (Provider != null)
+                return await Provider.UnlinkAsync(url, authKey, accessToken, cancellation);
+
             if (UnlinkFunc != null)
                 return await UnlinkFunc(url, authKey, accessToken, cancellation);
 
 #if !NETSTANDARD2_1 && !UNITY_5_3_OR_NEWER
-            return await UnlinkHttpClientAsync(url, authKey, accessToken, cancellation);
+            return await new HttpMetaAuthProvider().UnlinkAsync(url, authKey, accessToken, cancellation);
 #else
             throw new PlatformNotSupportedException(
-                "MetaAuth.UnlinkAsync requires UnityMetaAuth or net8.0+.");
+                "MetaAuth.UnlinkAsync requires UnityMetaAuth or a custom Provider.");
 #endif
         }
 
@@ -185,59 +200,21 @@ namespace SharedMeta.Client
             MetaLog.Debug("[MetaAuth] Token cleared");
         }
 
-        /// <summary>Platform-specific platform login function (set by UnityMetaAuth).</summary>
+        // ============================================
+        // Legacy Func-based hooks (kept for backward compatibility with UnityMetaAuth).
+        // Prefer setting MetaAuth.Provider for new code.
+        // ============================================
+
+        /// <summary>Legacy platform-specific login function. Prefer <see cref="Provider"/>.</summary>
+        public static Func<string, string, CancellationToken, Task<MetaLoginResult>>? LoginFunc { get; set; }
+
+        /// <summary>Legacy platform-specific platform login function. Prefer <see cref="Provider"/>.</summary>
         public static Func<string, string, string, CancellationToken, Task<MetaLoginResult>>? PlatformLoginFunc { get; set; }
 
-        /// <summary>Platform-specific link function (set by UnityMetaAuth).</summary>
+        /// <summary>Legacy platform-specific link function. Prefer <see cref="Provider"/>.</summary>
         public static Func<string, string, string, string, CancellationToken, Task<bool>>? AuthActionFunc { get; set; }
 
-        /// <summary>Platform-specific unlink function (set by UnityMetaAuth).</summary>
+        /// <summary>Legacy platform-specific unlink function. Prefer <see cref="Provider"/>.</summary>
         public static Func<string, string, string, CancellationToken, Task<bool>>? UnlinkFunc { get; set; }
-
-#if !NETSTANDARD2_1 && !UNITY_5_3_OR_NEWER
-        private static async Task<MetaLoginResult> LoginHttpClientAsync(
-            string url, string deviceId, CancellationToken cancellation)
-        {
-            using var http = new HttpClient();
-            var response = await http.PostAsJsonAsync(url, new { DeviceId = deviceId }, cancellation);
-            response.EnsureSuccessStatusCode();
-
-            var result = await response.Content.ReadFromJsonAsync<MetaLoginResult>(cancellationToken: cancellation);
-            return result ?? throw new InvalidOperationException("Login returned null response");
-        }
-
-        private static async Task<MetaLoginResult> PlatformLoginHttpClientAsync(
-            string url, string platform, string platformToken, CancellationToken cancellation)
-        {
-            using var http = new HttpClient();
-            var response = await http.PostAsJsonAsync(url,
-                new { Platform = platform, PlatformToken = platformToken }, cancellation);
-            response.EnsureSuccessStatusCode();
-
-            var result = await response.Content.ReadFromJsonAsync<MetaLoginResult>(cancellationToken: cancellation);
-            return result ?? throw new InvalidOperationException("Platform login returned null response");
-        }
-
-        private static async Task<bool> LinkHttpClientAsync(
-            string url, string platform, string platformToken, string accessToken, CancellationToken cancellation)
-        {
-            using var http = new HttpClient();
-            http.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
-            var response = await http.PostAsJsonAsync(url,
-                new { Platform = platform, PlatformToken = platformToken }, cancellation);
-            return response.IsSuccessStatusCode;
-        }
-
-        private static async Task<bool> UnlinkHttpClientAsync(
-            string url, string authKey, string accessToken, CancellationToken cancellation)
-        {
-            using var http = new HttpClient();
-            http.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
-            var response = await http.PostAsJsonAsync(url, new { AuthKey = authKey }, cancellation);
-            return response.IsSuccessStatusCode;
-        }
-#endif
     }
 }

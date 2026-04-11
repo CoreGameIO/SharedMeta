@@ -1631,6 +1631,8 @@ MetaAuth.ClearToken(storage);
 
 `UnityMetaAuth.Register()` is called automatically via `[RuntimeInitializeOnLoadMethod]` — it sets `MetaAuth.LoginFunc` to the Unity `UnityWebRequest` implementation. No manual registration needed.
 
+**Custom auth providers (0.9.3+)**: `MetaAuth.Provider` accepts any `IMetaAuthProvider` implementation and takes precedence over the legacy Func hooks and the built-in HTTP fallback. Use this to plug in a local backend (`SharedMeta.Backend.Local`'s `LocalMetaAuthProvider`), Firebase, PlayFab, or any other auth service without game-code changes. Priority order: `Provider` → legacy Funcs → HTTP default.
+
 ### Entity Access Policy
 
 ```csharp

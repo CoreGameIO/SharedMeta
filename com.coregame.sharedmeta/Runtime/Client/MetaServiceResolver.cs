@@ -359,6 +359,15 @@ namespace SharedMeta.Client
             throw new InvalidOperationException($"Not connected to entity '{entityId}'. Call EnsureSubscribedAsync first.");
         }
 
+        void ICrossEntityResolver.UpdateCachedState(string entityId, object newState)
+        {
+            lock (_lock)
+            {
+                if (_connections.TryGetValue(entityId, out var connection))
+                    connection.State = newState;
+            }
+        }
+
         IMetaSerializer ICrossEntityResolver.Serializer => _serializer;
 
         void ICrossEntityResolver.RecordCrossEntityResult(string entityId, string serviceName, string methodName, object? result)

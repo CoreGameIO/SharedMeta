@@ -687,6 +687,8 @@ MetaAuth.ClearToken(storage); // logout
 
 **Unity**: `UnityMetaAuth` auto-registers via `[RuntimeInitializeOnLoadMethod]` — sets `MetaAuth.LoginFunc` to `UnityWebRequest` implementation. Unity-dependent code (`PlayerPrefsTokenStorage`, `UnityMetaAuth`) is in `SharedMeta.Auth.Client` asmdef (`noEngineReferences: false`).
 
+**Custom auth providers (0.9.3+)**: implement `IMetaAuthProvider` and assign to `MetaAuth.Provider` to replace the HTTP auth flow entirely. Used by `SharedMeta.Backend.Local`'s `LocalMetaAuthProvider` to derive deterministic PlayerIds without any network call, so `MetaAuth.EnsureAuthenticatedAsync` works identically in local and remote modes. Priority: `Provider` → legacy Func hooks → built-in HTTP fallback.
+
 **Enforcing auth:** `MetaTransportOptions.RequireAuthentication = true` rejects anonymous connections at SessionConnect. Additionally, you can add `[Authorize]` on a hub subclass or `.RequireAuthorization()` on endpoint mapping for middleware-level protection.
 
 ---

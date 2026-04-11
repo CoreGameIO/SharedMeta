@@ -269,6 +269,8 @@ For other platforms, implement `ITokenStorage` (3 methods: `Load`, `Save`, `Clea
 
 > **Unity note**: `UnityMetaAuth` auto-registers via `[RuntimeInitializeOnLoadMethod]` — no manual setup needed. Unity-dependent auth code (`PlayerPrefsTokenStorage`, `UnityMetaAuth`) lives in the `SharedMeta.Auth.Client` assembly. If your asmdef has explicit references, add `SharedMeta.Auth.Client`.
 
+> **Custom auth provider (0.9.3+)**: To bypass the HTTP auth flow entirely (local backend, Firebase, PlayFab, etc.), implement `IMetaAuthProvider` and set `MetaAuth.Provider = yourProvider` at startup. All `MetaAuth` calls will route through it. See `SharedMeta.Backend.Local`'s `LocalMetaAuthProvider` for a reference implementation.
+
 ---
 
 ## Push-Based Change Tracking

@@ -41,6 +41,15 @@ namespace SharedMeta.Core
         object GetEntityState(string entityId);
 
         /// <summary>
+        /// Overwrite the cached state reference for an entity. Called by generated
+        /// ApiClient code in ServerReplace mode after <c>_state = Unpack(stateBytes)</c>,
+        /// so that <see cref="GetEntityState"/> and <c>Client.GetState&lt;T&gt;()</c>
+        /// observe the same fresh instance the ApiClient now holds. No-op if the entity
+        /// is not subscribed.
+        /// </summary>
+        void UpdateCachedState(string entityId, object newState);
+
+        /// <summary>
         /// Get the config object for a subscribed entity. Returns null if no config.
         /// Used by generated LocalEntityCaller to propagate Config to cross-entity context.
         /// </summary>
