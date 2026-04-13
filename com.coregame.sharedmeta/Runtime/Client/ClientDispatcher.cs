@@ -52,6 +52,9 @@ namespace SharedMeta.Client
         // Pending RPC requests awaiting response
         private readonly Dictionary<long, PendingRequest> _pendingRequests = new();
 
+        // Last request ID that received a real entity response (TCS completed with result)
+        private long _lastCompletedRequestId;
+
         // Session management
         private Guid _sessionId;
         private long _lastAcknowledgedSequence;
@@ -81,8 +84,11 @@ namespace SharedMeta.Client
         /// <summary>Current session ID.</summary>
         public Guid SessionId => _sessionId;
 
-        /// <summary>Current client-side request ID counter.</summary>
+        /// <summary>Current client-side request ID counter (last sent).</summary>
         public long CurrentRequestId { get { lock (_lock) return _nextRequestId; } }
+
+        /// <summary>Last request ID that received a real entity response.</summary>
+        public long LastCompletedRequestId => _lastCompletedRequestId;
 
         /// <summary>Last acknowledged sequence number.</summary>
         public long LastAcknowledgedSequence => _lastAcknowledgedSequence;
@@ -108,6 +114,34 @@ namespace SharedMeta.Client
         /// from <c>MetaClientOptions.SessionHealth</c>; null = drop notifications silently.
         /// </summary>
         public ISessionHealthListener? SessionHealthListener { get; set; }
+
+        /// <summary>
+        /// Optional listener for client-side connection health (pending request timeouts).
+        /// Set by <c>MetaClient</c> from <c>MetaClientOptions.ConnectionHealth</c>.
+        /// </summary>
+        public IConnectionHealthListener? ConnectionHealthListener { get; set; }
+
+        /// <summary>
+        /// Timeout thresholds for client-side connection health monitoring.
+        /// </summary>
+        public ConnectionHealthOptions ConnectionHealthOptions { get; set; } = new();
+
+        private ConnectionHealthStatus _lastHealthStatus = ConnectionHealthStatus.Healthy;
+        private DateTime _lastRetryTime;
+
+        /// <summary>
+        /// Optional diagnostics log for request lifecycle tracing. When set, all send/receive/resend/stall
+        /// events are logged via this delegate. Typically writes to a file for post-mortem analysis.
+        /// </summary>
+        public Action<string>? DiagnosticsLog { get; set; }
+
+        private void LogDiag(string msg)
+        {
+            var log = DiagnosticsLog;
+            if (log == null) return;
+            var ts = DateTime.UtcNow.ToString("HH:mm:ss.fff");
+            log($"[{ts}] {msg}");
+        }
 
         /// <summary>
         /// Next expected broadcast sequence number.
@@ -200,10 +234,9 @@ namespace SharedMeta.Client
             }
 
             // Start RPC call without blocking - completion handled separately.
-            // Call ordering is the transport's responsibility (SignalR preserves it
-            // naturally over a single hub connection; InProcessConnection has its own
-            // serialization). The dispatcher does NOT enforce ordering itself.
             _ = SendAndCompleteAsync(pending);
+
+            LogDiag($"SEND reqId={pending.RequestId} {pending.ServiceName}.{pending.MethodName} entity={pending.EntityId}");
 
             return pending.Tcs.Task;
         }
@@ -217,11 +250,14 @@ namespace SharedMeta.Client
 
                 var response = await _connection.RpcCallAsync(BuildRequest(pending));
 
+                LogDiag($"RECV reqId={pending.RequestId} seq={response.SequenceNumber} ops={response.Operations?.Count ?? 0} err={response.HasError}");
+
                 MetaLog.Debug($"[ClientDispatcher] RPC response: reqId={pending.RequestId}, " +
                     $"seq={response.SequenceNumber}, opsCount={response.Operations?.Count ?? 0}, hasError={response.HasError}");
 
                 if (response.HasError)
                 {
+                    LogDiag($"ERROR reqId={pending.RequestId} {response.Error}");
                     lock (_lock) { _pendingRequests.Remove(pending.RequestId); }
 
                     if (response.Error != null && response.Error.Contains("superseded", StringComparison.OrdinalIgnoreCase))
@@ -240,6 +276,7 @@ namespace SharedMeta.Client
             }
             catch (Exception ex)
             {
+                LogDiag($"TRANSPORT_ERROR reqId={pending.RequestId} {ex.GetType().Name}: {ex.Message} (kept pending)");
                 MetaLog.Warning($"[ClientDispatcher] RPC transport error (keeping pending for reconnect): {ex.Message}");
             }
         }
@@ -370,6 +407,7 @@ namespace SharedMeta.Client
                 return Task.CompletedTask;
 
             MetaLog.Info($"[ClientDispatcher] Re-sending {pendingList.Count} pending requests after reconnect");
+            LogDiag($"RESEND_ALL count={pendingList.Count} ids=[{string.Join(",", pendingList.Select(p => p.RequestId))}]");
 
             foreach (var pending in pendingList)
             {
@@ -384,7 +422,7 @@ namespace SharedMeta.Client
         {
             try
             {
-                // Include piggybacked acknowledgment with each request
+                LogDiag($"RESEND_START reqId={pending.RequestId} {pending.ServiceName}.{pending.MethodName}");
                 var response = await _connection.RpcCallAsync(BuildRequest(pending));
 
                 // Top-level transport error
@@ -410,6 +448,7 @@ namespace SharedMeta.Client
             catch (Exception ex)
             {
                 // Transport error on re-send — keep pending for next reconnect attempt.
+                LogDiag($"RESEND_ERROR reqId={pending.RequestId} {ex.GetType().Name}: {ex.Message} (kept pending)");
                 MetaLog.Warning($"[ClientDispatcher] Re-send transport error (keeping pending): {ex.Message}");
             }
         }
@@ -456,6 +495,10 @@ namespace SharedMeta.Client
         /// <returns>Number of broadcasts processed.</returns>
         public int ProcessPendingBroadcasts()
         {
+            // Check client-side response timeouts FIRST — must run every frame regardless
+            // of broadcast suppression, otherwise auto-retry stops while waiting for RPC replay.
+            CheckConnectionHealth();
+
             int totalCount = 0;
 
             // Loop to pick up messages that handlers may have pushed during delivery
@@ -485,8 +528,80 @@ namespace SharedMeta.Client
             return totalCount;
         }
 
+        /// <summary>
+        /// Check pending request ages against timeout thresholds and notify listener on transitions.
+        /// Called from ProcessPendingBroadcasts (game-loop thread). Reads _pendingRequests under lock,
+        /// computes status and calls listener outside lock (same pattern as broadcast delivery).
+        /// </summary>
+        private void CheckConnectionHealth()
+        {
+            long oldestMs = 0;
+            int count;
+            var now = DateTime.UtcNow;
+
+            lock (_lock)
+            {
+                count = _pendingRequests.Count;
+                foreach (var pr in _pendingRequests.Values)
+                {
+                    var age = (long)(now - pr.CreatedAt).TotalMilliseconds;
+                    if (age > oldestMs) oldestMs = age;
+                }
+            }
+
+            ConnectionHealthStatus newStatus;
+            if (count == 0)
+                newStatus = ConnectionHealthStatus.Healthy;
+            else if (oldestMs >= ConnectionHealthOptions.HardTimeoutMs)
+                newStatus = ConnectionHealthStatus.Unresponsive;
+            else if (oldestMs >= ConnectionHealthOptions.SoftTimeoutMs)
+                newStatus = ConnectionHealthStatus.Slow;
+            else
+                newStatus = ConnectionHealthStatus.Healthy;
+
+            // Auto-retry: periodically resend all pending requests that exceeded soft timeout.
+            // This is the primary recovery mechanism — client-side, no server dependency.
+            var retryMs = ConnectionHealthOptions.RetryIntervalMs;
+            if (retryMs > 0 && count > 0 && oldestMs >= ConnectionHealthOptions.SoftTimeoutMs)
+            {
+                if ((now - _lastRetryTime).TotalMilliseconds >= retryMs)
+                {
+                    _lastRetryTime = now;
+                    List<long> ids;
+                    lock (_lock) { ids = _pendingRequests.Keys.ToList(); }
+                    LogDiag($"AUTO_RETRY {count} pending, oldest={oldestMs}ms, ids=[{string.Join(",", ids)}]");
+                    _ = ResendPendingRequestsAsync();
+                }
+            }
+            else if (count > 0 && oldestMs < ConnectionHealthOptions.SoftTimeoutMs)
+            {
+                // Pending but not old enough — no retry yet
+            }
+            else if (count == 0 && _lastHealthStatus != ConnectionHealthStatus.Healthy)
+            {
+                // Was unhealthy, now all resolved
+                LogDiag("HEALTH_CLEAR all pending resolved");
+            }
+
+            // Notify listener on status transitions
+            var listener = ConnectionHealthListener;
+            if (listener != null && newStatus != _lastHealthStatus)
+            {
+                _lastHealthStatus = newStatus;
+                try
+                {
+                    listener.OnConnectionHealthChanged(newStatus, oldestMs, count);
+                }
+                catch (Exception ex)
+                {
+                    MetaLog.Error($"[ClientDispatcher] ConnectionHealthListener threw: {ex.Message}", ex);
+                }
+            }
+        }
+
         private void HandleBatch(SessionResponse response)
         {
+            LogDiag($"BATCH seq={response.SequenceNumber} ops={response.Operations?.Count ?? 0} stall={response.StallNotification?.Stage}");
             MetaLog.Debug($"[ClientDispatcher] HandleBatch: seq={response.SequenceNumber}, opsCount={response.Operations?.Count ?? 0}");
             // ProcessServerResponse handles its own locking
             ProcessServerResponse(response);
@@ -506,6 +621,9 @@ namespace SharedMeta.Client
             // and return — bypasses the broadcast buffer and request matching entirely.
             if (response.StallNotification is { } stall && (response.Operations == null || response.Operations.Count == 0))
             {
+                // Server-side stall info — informational. Client auto-retry handles resending.
+                LogDiag($"STALL stage={stall.Stage} missing=#{stall.OldestMissingRequestId} stashed={stall.StashedCount} elapsed={stall.ElapsedMilliseconds}ms");
+
                 try
                 {
                     if (stall.Stage == Core.Transport.StallStage.Recovered)
@@ -605,7 +723,10 @@ namespace SharedMeta.Client
                 // 4. Complete the TCS(es) — caller continues with local replay.
                 foreach (var (op, pending) in resolvedRequests!)
                 {
+                    LogDiag($"CONFIRMED reqId={pending.RequestId} {pending.ServiceName}.{pending.MethodName}");
                     MetaLog.Debug($"[ClientDispatcher] Resolved reqId={pending.RequestId}, method={pending.ServiceName}.{pending.MethodName}");
+                    if (pending.RequestId > _lastCompletedRequestId)
+                        _lastCompletedRequestId = pending.RequestId;
                     pending.Tcs.TrySetResult(op);
                 }
             }
@@ -721,6 +842,20 @@ namespace SharedMeta.Client
         /// Re-establish session and re-subscribe to all entities after transport reconnect.
         /// </summary>
         public event Action<List<ResubscribedEntityInfo>>? OnEntitiesResubscribed;
+
+        /// <summary>
+        /// Resume the current session — re-establish with the same sessionId and
+        /// recover missed packets. Called internally on transport reconnect, and
+        /// can be called manually via <see cref="MetaClient.ResumeSessionAsync"/>
+        /// for user-initiated "try again" after connection health timeout.
+        /// </summary>
+        public async Task ResumeSessionAsync()
+        {
+            if (!_connection.IsConnected)
+                throw new InvalidOperationException("Transport is not connected. Call Connection.ConnectAsync() first.");
+
+            await ReconnectAsync();
+        }
 
         private async Task ReconnectAsync()
         {
@@ -873,6 +1008,7 @@ namespace SharedMeta.Client
                 _nextRequestId = 0;
                 _terminated = false;
                 IsSessionConnected = false;
+                _lastHealthStatus = ConnectionHealthStatus.Healthy;
             }
 
             foreach (var pending in pendingToFail)
@@ -896,6 +1032,7 @@ namespace SharedMeta.Client
                 _pendingRequests.Clear();
                 _broadcastHandlers.Clear();
                 _broadcastBuffer.Clear();
+                _lastHealthStatus = ConnectionHealthStatus.Healthy;
             }
 
             foreach (var pending in pendingToFail)

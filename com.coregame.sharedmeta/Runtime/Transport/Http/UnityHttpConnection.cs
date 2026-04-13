@@ -260,7 +260,9 @@ namespace SharedMeta.Client.Network
                     {
                         foreach (var broadcast in pollResponse.Broadcasts)
                         {
-                            if (broadcast.Operations != null && broadcast.Operations.Count > 0)
+                            // Deliver broadcasts with operations AND out-of-band notifications
+                            // (StallNotification has Operations.Count == 0 but must still be delivered)
+                            if (broadcast.Operations is { Count: > 0 } || broadcast.StallNotification != null)
                                 OnBatch?.Invoke(broadcast);
                         }
                     }

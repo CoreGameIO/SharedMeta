@@ -1156,6 +1156,25 @@ Stages:
 
 After `MaxStallDuration` the server **terminates the session** (`ISessionObserver.OnSessionTerminated`) and the client must reconnect — the assumption is that the missing predecessor was lost permanently and continuing risks desync. Stash overflow (more than `StashCapacity` simultaneously parked requests) also terminates immediately.
 
+> **Note (0.10.0+):** Server-side stall notifications are now **lazy** — pushed on the next incoming request, not via periodic grain timers. Client-side auto-retry handles recovery.
+
+### Client-Side Connection Health (0.10.0+)
+
+`IConnectionHealthListener` monitors pending RPC age on the client. Works even when server is unreachable.
+
+```csharp
+new MetaClient(connection, serializer, new MetaClientOptions
+{
+    ConnectionHealth = myHealthListener,       // IConnectionHealthListener
+    ConnectionHealthOptions = new()            // SoftTimeoutMs=1000, HardTimeoutMs=5000, RetryIntervalMs=2000
+});
+```
+
+- **Auto-retry**: client resends all pending requests every `RetryIntervalMs` when oldest exceeds `SoftTimeoutMs`. Primary packet-loss recovery — no server dependency.
+- **`ResumeSessionAsync()`**: restore session without restart (same `sessionId`, missed packet recovery).
+- **`DebugConnectionWrapper`**: wraps `IConnection` for latency/loss/disconnect simulation. `PacketLossMode.ConnectionDrop` (SignalR) vs `RequestHang` (HTTP polling). `SimulateTemporaryDisconnectAsync(ms)` for metro-style testing.
+- **`DiagnosticsLog`**: `Action<string>` on `ClientDispatcher` for file-based request lifecycle tracing (SEND/RECV/CONFIRMED/AUTO_RETRY/RESEND).
+
 ---
 
 ## Pitfalls to Avoid

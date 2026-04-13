@@ -30,6 +30,19 @@ namespace SharedMeta.Client
         /// </summary>
         public ISessionHealthListener? SessionHealth { get; set; }
 
+        /// <summary>
+        /// Optional listener for client-side connection health (pending request timeouts).
+        /// Notified when requests exceed <see cref="ConnectionHealthOptions"/> thresholds.
+        /// Default: null (no monitoring).
+        /// </summary>
+        public IConnectionHealthListener? ConnectionHealth { get; set; }
+
+        /// <summary>
+        /// Timeout thresholds for client-side connection health monitoring.
+        /// Only used when <see cref="ConnectionHealth"/> is set. Default: 1s soft, 5s hard.
+        /// </summary>
+        public ConnectionHealthOptions? ConnectionHealthOptions { get; set; }
+
         /// <summary>Transformer registry. Default: new TransformerRegistry().</summary>
         public TransformerRegistry? TransformerRegistry { get; set; }
 
@@ -93,8 +106,11 @@ namespace SharedMeta.Client
 
             _dispatcher = new ClientDispatcher(connection)
             {
-                SessionHealthListener = options.SessionHealth
+                SessionHealthListener = options.SessionHealth,
+                ConnectionHealthListener = options.ConnectionHealth
             };
+            if (options.ConnectionHealthOptions != null)
+                _dispatcher.ConnectionHealthOptions = options.ConnectionHealthOptions;
             _dispatcher.OnSessionSuperseded += reason => OnSessionSuperseded?.Invoke(reason);
             _dispatcher.OnEntitiesResubscribed += entities => _resolver!.RefreshEntityStates(entities);
 
@@ -137,6 +153,23 @@ namespace SharedMeta.Client
             {
                 throw new InvalidOperationException($"Failed to establish session: {sessionResult.Error}");
             }
+        }
+
+        /// <summary>
+        /// Attempt to resume the current session after a connection issue.
+        /// Reconnects the transport if needed, then re-establishes the session
+        /// with the same sessionId — server returns missed packets and re-subscribes entities.
+        /// Use this for "try again" scenarios (metro/tunnel, temporary network loss).
+        /// Throws on failure — caller can fall back to <see cref="RestartSessionAsync"/> if needed.
+        /// </summary>
+        public async Task ResumeSessionAsync()
+        {
+            if (!Connection.IsConnected)
+            {
+                await Connection.ConnectAsync();
+            }
+
+            await _dispatcher.ResumeSessionAsync();
         }
 
         /// <summary>

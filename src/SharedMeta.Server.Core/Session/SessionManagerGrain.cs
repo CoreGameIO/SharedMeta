@@ -65,10 +65,8 @@ namespace SharedMeta.Server.Core.Session
         // incoming call as Stale / NextExpected / OutOfOrder in O(1).
         private readonly RpcOrderingBuffer<StashedRpcCall> _orderingBuffer;
 
-        // Stall timer (created lazily on first gap, disposed on recovery / terminate)
-        private IDisposable? _stallTimer;
+        // Stall diagnostics — no timer, checked lazily on next request or grain deactivation
         private long _stallStartTicks;
-        private StallStage _lastStallStage = StallStage.None;
 
         private sealed class StashedRpcCall
         {
@@ -155,6 +153,16 @@ namespace SharedMeta.Server.Core.Session
         public override async Task OnDeactivateAsync(DeactivationReason reason, CancellationToken cancellationToken)
         {
             _logger.SessionDeactivating(_playerId);
+
+            if (_options.EnforceRpcOrder && !_orderingBuffer.IsEmpty)
+            {
+                var elapsed = _stallStartTicks > 0
+                    ? TimeSpan.FromMilliseconds(Environment.TickCount64 - _stallStartTicks)
+                    : TimeSpan.Zero;
+                _logger.LogWarning(
+                    "[Session] Grain deactivating with {Count} stashed RPCs (missing=#{Missing}, stalled={Elapsed}) for player {Player}",
+                    _orderingBuffer.Count, _orderingBuffer.NextExpectedRequestId, elapsed, _playerId);
+            }
 
             _observerCleanupTimer?.Dispose();
 
@@ -485,6 +493,17 @@ namespace SharedMeta.Server.Core.Session
             // ── RPC reordering: stash out-of-order requests ──────────────
             if (_options.EnforceRpcOrder && requestId > 0)
             {
+                // Lazy stall diagnostics: if there's an existing gap, push notification
+                // on this request arrival instead of using a periodic timer.
+                if (_stallStartTicks > 0 && !_orderingBuffer.IsEmpty)
+                {
+                    var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - _stallStartTicks);
+                    var stage = elapsed >= _options.HardStallNotifyTimeout
+                        ? StallStage.TimeoutPending
+                        : StallStage.Stalled;
+                    _ = PushStallNotification(stage, elapsed);
+                }
+
                 var position = _orderingBuffer.Classify(requestId);
                 if (position == RequestPosition.OutOfOrder)
                 {
@@ -506,7 +525,8 @@ namespace SharedMeta.Server.Core.Session
                             LogDuplicateStash(requestId);
                             break;
                         case StashResult.Stashed:
-                            EnsureStallTimerStarted();
+                            if (_stallStartTicks == 0)
+                                _stallStartTicks = Environment.TickCount64;
                             break;
                     }
 
@@ -587,9 +607,13 @@ namespace SharedMeta.Server.Core.Session
                 _rpcBroadcastQueue.Clear();
             }
 
-            // If stash drained completely, signal stall recovery to the client.
-            if (_options.EnforceRpcOrder && _orderingBuffer.IsEmpty && _stallTimer != null)
-                StopStallTimerAndNotifyRecovered();
+            if (_options.EnforceRpcOrder)
+            {
+                if (_orderingBuffer.IsEmpty)
+                {
+                    _stallStartTicks = 0;
+                }
+            }
 
             // Build a single SessionResponse from all accumulated ops.
             return FinalizeAccumulatedResponse(allOps);
@@ -716,9 +740,7 @@ namespace SharedMeta.Server.Core.Session
         private void ResetRpcOrderingState()
         {
             _orderingBuffer.Reset();
-            _stallTimer?.Dispose();
-            _stallTimer = null;
-            _lastStallStage = StallStage.None;
+            _stallStartTicks = 0;
         }
 
         private void LogDuplicateStash(long requestId)
@@ -738,47 +760,7 @@ namespace SharedMeta.Server.Core.Session
             }
         }
 
-        // ── Stall timer + notifications ──────────────────────────────────
-
-        private void EnsureStallTimerStarted()
-        {
-            if (_stallTimer != null) return;
-            _stallStartTicks = Environment.TickCount64;
-            _lastStallStage = StallStage.None;
-            _stallTimer = this.RegisterGrainTimer(
-                OnStallTick,
-                _options.StallTickInterval,
-                _options.StallTickInterval);
-        }
-
-        private async Task OnStallTick()
-        {
-            if (_orderingBuffer.IsEmpty)
-            {
-                StopStallTimerAndNotifyRecovered();
-                return;
-            }
-
-            var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - _stallStartTicks);
-            if (elapsed >= _options.MaxStallDuration)
-            {
-                _logger.LogWarning("[Session] Hard stall timeout after {Elapsed}; terminating session for player {Player}",
-                    elapsed, _playerId);
-                await TerminateSessionForStall(elapsed);
-                return;
-            }
-
-            StallStage targetStage =
-                elapsed >= _options.HardStallNotifyTimeout ? StallStage.TimeoutPending :
-                elapsed >= _options.SoftStallNotifyTimeout ? StallStage.Stalled :
-                StallStage.None;
-
-            if (targetStage != StallStage.None && targetStage != _lastStallStage)
-            {
-                _lastStallStage = targetStage;
-                await PushStallNotification(targetStage, elapsed);
-            }
-        }
+        // ── Stall diagnostics (lazy, no timer) ────────────────────────────
 
         private Task PushStallNotification(StallStage stage, TimeSpan elapsed)
         {
@@ -799,21 +781,6 @@ namespace SharedMeta.Server.Core.Session
             return _observerManager.Notify(o => o.OnBatch(response));
         }
 
-        private void StopStallTimerAndNotifyRecovered()
-        {
-            if (_stallTimer == null) return;
-
-            var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - _stallStartTicks);
-            _stallTimer.Dispose();
-            _stallTimer = null;
-
-            // Only push recovery if we previously notified the client about a stall.
-            if (_lastStallStage != StallStage.None)
-            {
-                _ = PushStallNotification(StallStage.Recovered, elapsed);
-                _lastStallStage = StallStage.None;
-            }
-        }
 
         private async Task TerminateSessionForStashOverflow(long requestId)
         {

@@ -56,24 +56,21 @@ public class SessionOrderingTests
     {
         var (sessionId, observer, grain, entityId) = await SetupSessionAsync("ordering-stall");
 
-        // Send req=2 → stash. The stall timer starts; after SoftStallNotifyTimeout (200ms in fixture)
-        // the server should push a Stalled notification through the observer.
+        // Send req=2 → stash. Stall diagnostics are lazy — notification arrives on NEXT request.
         var resp2 = await grain.SendToEntityAsync(entityId, requestId: 2, BuildAddCall(2), 0, sessionId);
         Assert.Empty(resp2.Operations);
 
-        // Wait for stall notification. OldestMissingRequestId is the request the server
-        // is waiting for to fill the gap — req=1 (since req=2 is stashed and req=1 hasn't arrived yet).
+        // Send req=3 → stash. This triggers lazy stall notification for the gap (missing req=1).
+        var resp3 = await grain.SendToEntityAsync(entityId, requestId: 3, BuildAddCall(3), 0, sessionId);
+        Assert.Empty(resp3.Operations);
+
         var stalled = await observer.WaitForStallAsync(StallStage.Stalled, TimeSpan.FromSeconds(5));
         Assert.NotNull(stalled);
         Assert.Equal(1, stalled!.OldestMissingRequestId);
-        Assert.Equal(1, stalled.StashedCount);
 
-        // Now send req=1 to close the gap. Server drains stash and pushes a Recovered notification.
+        // Now send req=1 to close the gap. Server drains stash (req=1, req=2, req=3).
         var resp1 = await grain.SendToEntityAsync(entityId, requestId: 1, BuildAddCall(1), 0, sessionId);
-        Assert.Equal(2, resp1.Operations.Count(o => o.RequestId > 0));
-
-        var recovered = await observer.WaitForStallAsync(StallStage.Recovered, TimeSpan.FromSeconds(5));
-        Assert.NotNull(recovered);
+        Assert.Equal(3, resp1.Operations.Count(o => o.RequestId > 0));
 
         await grain.GracefulDisconnectAsync();
     }
@@ -105,28 +102,31 @@ public class SessionOrderingTests
     }
 
     [Fact(Timeout = 60_000)]
-    public async Task StallTimeout_TerminatesSession()
+    public async Task StallDiagnostics_EscalatesWithElapsedTime()
     {
-        // Override MaxStallDuration to a very short value via a brand-new player so we
-        // don't disturb the rest of the test session manager state. The fixture's silo-wide
-        // SessionManagerOptions has MaxStallDuration=30s; we can't change it per-test, so
-        // this test relies on the fixture's HardStallNotifyTimeout being short enough to
-        // produce a TimeoutPending notification (which we treat as a "stall progresses through
-        // its stages" verification).
+        // Lazy stall diagnostics escalate based on elapsed time since first stash.
+        // Send req=2 (stash), wait past HardStallNotifyTimeout, send req=3 →
+        // should get TimeoutPending (not just Stalled).
         var (sessionId, observer, grain, entityId) = await SetupSessionAsync("ordering-stall-stages");
 
+        // req=2 → stash, starts stall clock
         await grain.SendToEntityAsync(entityId, requestId: 2, BuildAddCall(2), 0, sessionId);
 
+        // req=3 → triggers lazy stall notification (Stalled, elapsed < HardStallNotifyTimeout)
+        await grain.SendToEntityAsync(entityId, requestId: 3, BuildAddCall(3), 0, sessionId);
         var stalled = await observer.WaitForStallAsync(StallStage.Stalled, TimeSpan.FromSeconds(5));
         Assert.NotNull(stalled);
 
+        // Wait past HardStallNotifyTimeout (fixture uses short timeouts for tests)
+        await Task.Delay(TimeSpan.FromSeconds(2));
+
+        // req=4 → triggers lazy notification again, now elapsed > HardStallNotifyTimeout → TimeoutPending
+        await grain.SendToEntityAsync(entityId, requestId: 4, BuildAddCall(4), 0, sessionId);
         var pending = await observer.WaitForStallAsync(StallStage.TimeoutPending, TimeSpan.FromSeconds(5));
         Assert.NotNull(pending);
 
-        // Recover by sending req=1.
+        // Recover by sending req=1 — drains all stashed
         await grain.SendToEntityAsync(entityId, requestId: 1, BuildAddCall(1), 0, sessionId);
-        var recovered = await observer.WaitForStallAsync(StallStage.Recovered, TimeSpan.FromSeconds(5));
-        Assert.NotNull(recovered);
 
         await grain.GracefulDisconnectAsync();
     }

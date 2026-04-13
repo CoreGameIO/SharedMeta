@@ -270,7 +270,7 @@ namespace SharedMeta.Transport.HttpPolling
                     {
                         foreach (var broadcast in pollResponse.Broadcasts)
                         {
-                            if (broadcast.Operations is { Count: > 0 })
+                            if (broadcast.Operations is { Count: > 0 } || broadcast.StallNotification != null)
                             {
                                 OnBatch?.Invoke(broadcast);
                             }

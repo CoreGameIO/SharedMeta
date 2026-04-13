@@ -1479,6 +1479,95 @@ new MetaClient(connection, serializer, new MetaClientOptions
 
 After `MaxStallDuration` (default 5 minutes) the server **terminates the session** via `ISessionObserver.OnSessionTerminated` with a `"RPC ordering stall exceeded …"` reason. Stash overflow (more than `StashCapacity` simultaneously parked requests) terminates immediately. In both cases the client must reconnect — the assumption is that the missing predecessor was lost permanently and continuing risks state desync.
 
+> **Note (0.10.0+):** Server-side stall notifications are now **lazy** — pushed on the next incoming request rather than via periodic grain timers. This eliminates timer overhead for HTTP polling games where brief out-of-order arrival is normal. Client-side auto-retry is the primary recovery mechanism.
+
+### Client-Side Connection Health Monitoring (0.10.0+)
+
+`IConnectionHealthListener` monitors pending RPC request age on the client side. Independent of server stall detection — works even when the server is completely unreachable.
+
+```csharp
+public interface IConnectionHealthListener
+{
+    void OnConnectionHealthChanged(ConnectionHealthStatus status, long oldestPendingMs, int pendingCount);
+}
+// Status: Healthy → Slow (spinner) → Unresponsive (modal dialog)
+```
+
+Configuration via `ConnectionHealthOptions`:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `SoftTimeoutMs` | 1000 | Show spinner |
+| `HardTimeoutMs` | 5000 | Show "connection issue" dialog |
+| `RetryIntervalMs` | 2000 | Auto-resend pending requests every N ms |
+
+Wire it through `MetaClientOptions`:
+
+```csharp
+var client = new MetaClient(connection, serializer, new MetaClientOptions
+{
+    ConnectionHealth = new MyConnectionHealthUI(),
+    ConnectionHealthOptions = new ConnectionHealthOptions
+    {
+        SoftTimeoutMs = 1000,
+        HardTimeoutMs = 5000,
+        RetryIntervalMs = 2000,
+    }
+});
+```
+
+**Auto-retry** is the primary recovery mechanism for lost packets. When pending requests exceed `SoftTimeoutMs`, the client automatically resends all pending requests every `RetryIntervalMs`. This is fully client-side — no server dependency, works with any transport.
+
+**Session resume:** When showing a "reconnect" dialog, call `MetaClient.ResumeSessionAsync()` to restore the current session (same `sessionId`, missed packet recovery) without restarting. Falls back to `RestartSessionAsync()` if resume fails.
+
+### Debug Network Simulation (0.10.0+)
+
+`DebugConnectionWrapper` wraps any `IConnection` to simulate network problems:
+
+```csharp
+var settings = new DebugConnectionSettings
+{
+    MinLatencyMs = 200,
+    MaxLatencyMs = 500,
+    PacketLossPercent = 10,
+    LossMode = PacketLossMode.RequestHang, // for HTTP polling
+    Enabled = true,
+};
+IConnection connection = new DebugConnectionWrapper(realConnection, settings);
+```
+
+| `PacketLossMode` | Behavior | Transport |
+|-------------------|----------|-----------|
+| `ConnectionDrop` | Full disconnect (`OnDisconnected`) | SignalR, WebSocket, TCP |
+| `RequestHang` | Throw `HttpRequestException` per request | HTTP polling |
+
+Debug methods:
+- `SimulateDisconnect()` — permanent drop
+- `SimulateTemporaryDisconnectAsync(3000)` — real disconnect→reconnect with 3s outage, server saves/restores subscriptions
+
+Settings are mutable at runtime for live debug UI adjustment. See the Expedition Unity example for a complete debug panel implementation.
+
+### Diagnostics Log (0.10.0+)
+
+File-based request lifecycle tracing for debugging connection issues:
+
+```csharp
+if (client.Dispatcher is ClientDispatcher cd)
+{
+    var writer = new StreamWriter("connection_diag.log", append: false) { AutoFlush = true };
+    cd.DiagnosticsLog = msg => writer.WriteLine(msg);
+}
+```
+
+Output format:
+```
+[HH:mm:ss.fff] SEND reqId=5 IExpeditionService.Move entity=expedition-xxx
+[HH:mm:ss.fff] TRANSPORT_ERROR reqId=5 HttpRequestException: ... (kept pending)
+[HH:mm:ss.fff] AUTO_RETRY 3 pending, oldest=2005ms, ids=[5,6,7]
+[HH:mm:ss.fff] RESEND_ALL count=3 ids=[5,6,7]
+[HH:mm:ss.fff] CONFIRMED reqId=5 IExpeditionService.Move
+```
+
 ---
 
 ## 13. Authentication
