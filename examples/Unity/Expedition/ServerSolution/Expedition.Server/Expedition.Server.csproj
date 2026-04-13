@@ -15,6 +15,7 @@
     <PackageReference Include="CoreGame.SharedMeta.Server.Core" />
     <PackageReference Include="CoreGame.SharedMeta.Orleans" />
     <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR" />
+    <PackageReference Include="CoreGame.SharedMeta.Transport.HttpPolling" />
     <PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" />
     <PackageReference Include="CoreGame.SharedMeta.Auth" />
     <PackageReference Include="Microsoft.Orleans.Server" />

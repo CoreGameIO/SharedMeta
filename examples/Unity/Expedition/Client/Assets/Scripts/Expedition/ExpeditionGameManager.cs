@@ -7,6 +7,7 @@ using SharedMeta.Client.Network;
 using SharedMeta.Core;
 using SharedMeta.Core.Auth;
 using SharedMeta.Core.Reactive;
+using SharedMeta.Core.Diagnostics;
 using SharedMeta.Core.Transport;
 using SharedMeta.Serialization.MemoryPack;
 using Expedition.Shared;
@@ -43,17 +44,27 @@ public class ExpeditionGameManager : MonoBehaviour
     private ExpeditionServiceQueryApi _expeditionQuery;
     private bool _pendingRender;
     private ExpeditionDesyncDiagnostics _diagnostics;
+    private ExpeditionConnectionHealth _connectionHealth;
+
+    // Debug network simulation (editor/dev builds only)
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    public DebugConnectionSettings DebugNetworkSettings { get; private set; }
+    public DebugConnectionWrapper DebugConnection { get; private set; }
+#endif
 
     public ExpeditionProfileServiceApiClient ProfileApi => _profileApi;
     public ExpeditionServiceApiClient ExpeditionApi => _expApi;
-    public bool IsConnected => Client != null && _expeditionEntityId != null;
+    public bool IsConnected => Client != null && _expeditionEntityId != null && !(_connectionHealth?.IsBlocked == true);
 
-    async void Start()
+    private bool _useHttpPolling;
+
+    void Start()
     {
         if (string.IsNullOrEmpty(deviceId))
             deviceId = SystemInfo.deviceUniqueIdentifier;
 
-        await ConnectAsync();
+        // Show transport choice — ConnectWithTransport will be called from UI
+        ui.ShowTransportChoice();
     }
 
     void Update()
@@ -74,6 +85,15 @@ public class ExpeditionGameManager : MonoBehaviour
         var desyncMsg = _diagnostics?.DrainPendingMessage();
         if (!string.IsNullOrEmpty(desyncMsg))
             ui?.SetStatus(desyncMsg);
+
+        // Drain connection health updates
+        var healthMsg = _connectionHealth?.DrainPendingMessage();
+        if (healthMsg != null)
+            ui?.SetConnectionHealth(healthMsg, modal: _connectionHealth.IsBlocked);
+
+        // Update request tracking display
+        if (Client.Dispatcher is SharedMeta.Client.ClientDispatcher cd)
+            ui?.UpdateRequestTracking(cd.CurrentRequestId, cd.LastCompletedRequestId, cd.PendingRequestCount);
     }
 
     void OnDestroy()
@@ -81,6 +101,70 @@ public class ExpeditionGameManager : MonoBehaviour
         TrackedProfileState.Unregister();
         TrackedExpeditionState.Unregister();
         Client?.Dispose();
+    }
+
+    /// <summary>
+    /// Called from UI when transport is chosen. Initiates authentication and connection.
+    /// </summary>
+    public async Task ConnectWithTransport(bool useHttpPolling)
+    {
+        _useHttpPolling = useHttpPolling;
+        await ConnectAsync();
+    }
+
+    /// <summary>
+    /// Try to resume the current session after connection health goes Unresponsive.
+    /// Attempts session resume first (same sessionId, missed packet recovery).
+    /// Falls back to full session restart if resume fails.
+    /// </summary>
+    public async Task ReconnectAsync()
+    {
+        if (Client == null) return;
+        try
+        {
+            ui.SetStatus("Resuming session...");
+            ui.SetConnectionHealth("");
+
+            try
+            {
+                // Try resume — same sessionId, server returns missed packets
+                await Client.ResumeSessionAsync();
+                ui.SetStatus("Session resumed!");
+                _pendingRender = true;
+                return;
+            }
+            catch (Exception resumeEx)
+            {
+                Debug.LogWarning($"[Expedition] Session resume failed, restarting: {resumeEx.Message}");
+            }
+
+            // Fallback: full restart (new session, re-subscribe from scratch)
+            ui.SetStatus("Restarting session...");
+            await Client.RestartSessionAsync();
+            ui.SetStatus("Reconnected! Reloading...");
+
+            _profileApi = await Client.GetExpeditionProfileServiceAsync();
+            await _profileApi.UpdateEnergyAsync();
+
+            var currentExpId = ProfileState?.CurrentExpeditionEntityId;
+            if (!string.IsNullOrEmpty(currentExpId))
+            {
+                _expeditionEntityId = currentExpId;
+                _expApi = await Client.GetServiceAsync<ExpeditionServiceApiClient>(_expeditionEntityId);
+                ui.SetStatus("Reconnected!");
+            }
+            else
+            {
+                ui.ShowGenerationModeChoice();
+            }
+
+            _pendingRender = true;
+        }
+        catch (Exception ex)
+        {
+            ui.SetStatus($"Reconnect failed: {ex.Message}");
+            Debug.LogException(ex);
+        }
     }
 
     private async Task ConnectAsync()
@@ -94,19 +178,57 @@ public class ExpeditionGameManager : MonoBehaviour
                 $"{serverUrl}/meta/auth", deviceId, tokenStorage);
             ui.SetStatus($"Authenticated: {login.PlayerId}");
 
-            var metaUrl = $"{serverUrl}/meta";
             var serializer = new MemoryPackMetaSerializer();
-            var connection = new SignalRConnection(metaUrl, login.Token);
+
+            IConnection connection;
+            if (_useHttpPolling)
+            {
+#if HAS_NEWTONSOFT_JSON
+                connection = new UnityHttpConnection(new UnityHttpConnectionOptions
+                {
+                    ServerUrl = $"{serverUrl}/meta-http",
+                    AccessToken = login.Token
+                });
+#else
+                Debug.LogError("HTTP polling requires com.unity.nuget.newtonsoft-json package. Falling back to SignalR.");
+                _useHttpPolling = false;
+                connection = new SignalRConnection($"{serverUrl}/meta", login.Token);
+#endif
+            }
+            else
+            {
+                connection = new SignalRConnection($"{serverUrl}/meta", login.Token);
+            }
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            DebugNetworkSettings = new DebugConnectionSettings
+            {
+                Enabled = false,
+                // HTTP polling can lose individual requests; SignalR is all-or-nothing
+                LossMode = _useHttpPolling ? PacketLossMode.RequestHang : PacketLossMode.ConnectionDrop
+            };
+            DebugConnection = new DebugConnectionWrapper(connection, DebugNetworkSettings);
+            connection = DebugConnection;
+#endif
 
             _diagnostics = new ExpeditionDesyncDiagnostics(ui);
+            _connectionHealth = new ExpeditionConnectionHealth(ui);
             Client = new MetaClient(
                 connection, serializer,
                 new MetaClientOptions
                 {
                     PlayerId = login.PlayerId,
-                    Diagnostics = _diagnostics
+                    Diagnostics = _diagnostics,
+                    ConnectionHealth = _connectionHealth
                 }
             );
+
+            // File-based diagnostics log for request lifecycle tracing
+            var logPath = System.IO.Path.Combine(Application.persistentDataPath, "connection_diag.log");
+            Debug.Log($"[Expedition] Diagnostics log: {logPath}");
+            var logWriter = new System.IO.StreamWriter(logPath, append: false) { AutoFlush = true };
+            if (Client.Dispatcher is SharedMeta.Client.ClientDispatcher cd2)
+                cd2.DiagnosticsLog = msg => { try { logWriter.WriteLine(msg); } catch { } };
 
             Client.Resolver.RegisterAllServices();
 
@@ -397,4 +519,51 @@ internal class ExpeditionDesyncDiagnostics : SharedMeta.Core.Diagnostics.IDesync
 
     public Task<SharedMeta.Core.Diagnostics.StateComparisonResult> CompareFullStateAsync(string entityId)
         => Task.FromResult(new SharedMeta.Core.Diagnostics.StateComparisonResult { IsMatch = true });
+}
+
+/// <summary>
+/// Connection health listener for the Expedition client.
+/// Converts health status changes to UI messages, drained on main thread.
+/// </summary>
+internal class ExpeditionConnectionHealth : IConnectionHealthListener
+{
+    private readonly ExpeditionUIGenerator _ui;
+    private string _pendingMessage;
+    private bool _hasPending;
+
+    /// <summary>True when connection is Unresponsive — game should block input.</summary>
+    public bool IsBlocked { get; private set; }
+
+    public ExpeditionConnectionHealth(ExpeditionUIGenerator ui) => _ui = ui;
+
+    /// <summary>
+    /// Returns the pending health message (null = no update, "" = clear overlay).
+    /// </summary>
+    public string DrainPendingMessage()
+    {
+        if (!_hasPending) return null;
+        _hasPending = false;
+        return _pendingMessage;
+    }
+
+    public void OnConnectionHealthChanged(ConnectionHealthStatus status, long oldestPendingMs, int pendingCount)
+    {
+        switch (status)
+        {
+            case ConnectionHealthStatus.Slow:
+                _pendingMessage = $"Syncing... ({pendingCount} pending, {oldestPendingMs}ms)";
+                IsBlocked = false;
+                break;
+            case ConnectionHealthStatus.Unresponsive:
+                _pendingMessage = $"Connection issue! ({pendingCount} pending, {oldestPendingMs / 1000}s)";
+                IsBlocked = true;
+                break;
+            case ConnectionHealthStatus.Healthy:
+                _pendingMessage = "";
+                IsBlocked = false;
+                break;
+        }
+        _hasPending = true;
+        Debug.Log($"[ConnectionHealth] {status}: {pendingCount} pending, oldest={oldestPendingMs}ms");
+    }
 }

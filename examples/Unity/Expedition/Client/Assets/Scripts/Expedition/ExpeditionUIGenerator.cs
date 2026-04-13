@@ -32,6 +32,25 @@ public class ExpeditionUIGenerator : MonoBehaviour
     private Button _serverReplaceButton;
     private Button _optimisticButton;
 
+    // Transport choice (shown at startup)
+    private GameObject _transportChoicePanel;
+
+    // Connection health overlay
+    private GameObject _connectionHealthPanel;
+    private Text _connectionHealthText;
+    private Button _reconnectButton;
+    private GameObject _modalBlocker; // full-screen blocker behind health panel
+
+    // Request tracking (bottom status area)
+    private Text _requestTrackingText;
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    // Debug network controls
+    private GameObject _debugNetPanel;
+    private Text _debugLatencyLabel;
+    private Text _debugLossLabel;
+#endif
+
     // D-Pad buttons
     private Button _btnUp;
     private Button _btnDown;
@@ -60,6 +79,25 @@ public class ExpeditionUIGenerator : MonoBehaviour
     {
         if (_statusText != null)
             _statusText.text = message;
+    }
+
+    /// <summary>
+    /// Show or hide the connection health overlay. Empty string hides it.
+    /// </summary>
+    public void SetConnectionHealth(string message, bool modal = false)
+    {
+        if (_connectionHealthPanel == null) return;
+        if (string.IsNullOrEmpty(message))
+        {
+            _connectionHealthPanel.SetActive(false);
+            if (_modalBlocker != null) _modalBlocker.SetActive(false);
+        }
+        else
+        {
+            _connectionHealthText.text = message;
+            _connectionHealthPanel.SetActive(true);
+            if (_modalBlocker != null) _modalBlocker.SetActive(modal);
+        }
     }
 
     private void GenerateUI()
@@ -93,6 +131,15 @@ public class ExpeditionUIGenerator : MonoBehaviour
             new Vector2(0, 0), new Vector2(1, 1), Color.cyan);
         _statusText.alignment = TextAnchor.MiddleCenter;
         _statusText.fontSize = 18;
+
+        // Request tracking (right of status, shows sent/confirmed request IDs)
+        var trackingPanel = CreatePanel(canvasGo.transform, "TrackingPanel",
+            new Vector2(0.5f, 0), new Vector2(1, 0), new Vector2(0, 100), new Vector2(0, 120));
+        trackingPanel.GetComponent<Image>().color = new Color(0, 0, 0, 0.4f);
+        _requestTrackingText = CreateText(trackingPanel.transform, "TrackingText", "",
+            new Vector2(0, 0), new Vector2(1, 1), new Color(0.6f, 0.8f, 0.6f));
+        _requestTrackingText.alignment = TextAnchor.MiddleRight;
+        _requestTrackingText.fontSize = 12;
 
         // Deep desync toggle (top-right)
         var desyncToggleBtn = CreateButton(canvasGo.transform, "DesyncToggle", "Desync: OFF",
@@ -180,6 +227,64 @@ public class ExpeditionUIGenerator : MonoBehaviour
 
         // D-Pad for touch/click control (right side)
         CreateDPad(canvasGo.transform);
+
+        // Transport choice panel (shown at startup, before connecting)
+        _transportChoicePanel = CreatePanel(canvasGo.transform, "TransportChoicePanel",
+            new Vector2(0.2f, 0.35f), new Vector2(0.8f, 0.65f), Vector2.zero, Vector2.zero);
+        _transportChoicePanel.GetComponent<Image>().color = new Color(0.1f, 0.2f, 0.3f, 0.95f);
+
+        var transportTitle = CreateText(_transportChoicePanel.transform, "TransportTitle",
+            "Choose transport:",
+            new Vector2(0, 0.6f), new Vector2(1, 1), Color.white);
+        transportTitle.alignment = TextAnchor.MiddleCenter;
+        transportTitle.fontSize = 20;
+
+        var transportDesc = CreateText(_transportChoicePanel.transform, "TransportDesc",
+            "SignalR: WebSocket, real-time, FIFO guaranteed\n" +
+            "HTTP Polling: individual HTTP requests, can lose packets",
+            new Vector2(0.05f, 0.3f), new Vector2(0.95f, 0.6f), new Color(0.8f, 0.8f, 0.8f));
+        transportDesc.alignment = TextAnchor.MiddleCenter;
+        transportDesc.fontSize = 13;
+
+        var signalRBtn = CreateButton(_transportChoicePanel.transform, "SignalRBtn",
+            "SignalR", new Vector2(0.1f, 0.05f), new Vector2(0.48f, 0.28f), new Color(0.2f, 0.5f, 0.6f));
+        signalRBtn.onClick.AddListener(() => OnTransportChosen(false));
+
+        var httpBtn = CreateButton(_transportChoicePanel.transform, "HttpBtn",
+            "HTTP Polling", new Vector2(0.52f, 0.05f), new Vector2(0.9f, 0.28f), new Color(0.5f, 0.4f, 0.1f));
+        httpBtn.onClick.AddListener(() => OnTransportChosen(true));
+
+        // Modal blocker — full-screen semi-transparent overlay behind health panel,
+        // blocks all input when connection is Unresponsive
+        _modalBlocker = new GameObject("ModalBlocker");
+        _modalBlocker.transform.SetParent(canvasGo.transform);
+        var blockerRt = _modalBlocker.AddComponent<RectTransform>();
+        blockerRt.anchorMin = Vector2.zero;
+        blockerRt.anchorMax = Vector2.one;
+        blockerRt.offsetMin = Vector2.zero;
+        blockerRt.offsetMax = Vector2.zero;
+        var blockerImg = _modalBlocker.AddComponent<Image>();
+        blockerImg.color = new Color(0, 0, 0, 0.5f);
+        blockerImg.raycastTarget = true; // blocks clicks
+        _modalBlocker.SetActive(false);
+
+        // Connection health overlay (top-center, hidden by default)
+        _connectionHealthPanel = CreatePanel(canvasGo.transform, "ConnectionHealthPanel",
+            new Vector2(0.2f, 1), new Vector2(0.8f, 1), new Vector2(0, -100), new Vector2(0, -65));
+        _connectionHealthPanel.GetComponent<Image>().color = new Color(0.8f, 0.2f, 0.1f, 0.9f);
+        _connectionHealthText = CreateText(_connectionHealthPanel.transform, "HealthText", "",
+            new Vector2(0, 0), new Vector2(0.7f, 1), Color.white);
+        _connectionHealthText.alignment = TextAnchor.MiddleCenter;
+        _connectionHealthText.fontSize = 15;
+        _reconnectButton = CreateButton(_connectionHealthPanel.transform, "ReconnectBtn",
+            "Reconnect", new Vector2(0.72f, 0.1f), new Vector2(0.98f, 0.9f), new Color(0.2f, 0.5f, 0.2f));
+        _reconnectButton.onClick.AddListener(() => _ = gameManager.ReconnectAsync());
+        _connectionHealthPanel.SetActive(false);
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        // Debug network simulation panel (left side, below controls hint)
+        CreateDebugNetworkPanel(canvasGo.transform);
+#endif
     }
 
     private async System.Threading.Tasks.Task ToggleDeepDesync(bool enabled)
@@ -188,6 +293,25 @@ public class ExpeditionUIGenerator : MonoBehaviour
         SetStatus(result
             ? $"Deep desync {(enabled ? "ENABLED" : "DISABLED")}"
             : "Deep desync toggle failed (server may have AllowDebugApi=false)");
+    }
+
+    /// <summary>Update request tracking display.</summary>
+    public void UpdateRequestTracking(long lastSent, long lastCompleted, int pendingCount)
+    {
+        if (_requestTrackingText != null)
+            _requestTrackingText.text = $"Sent: #{lastSent}  Confirmed: #{lastCompleted}  Pending: {pendingCount}";
+    }
+
+    /// <summary>Show the transport choice panel.</summary>
+    public void ShowTransportChoice()
+    {
+        _transportChoicePanel.SetActive(true);
+    }
+
+    private void OnTransportChosen(bool useHttpPolling)
+    {
+        _transportChoicePanel.SetActive(false);
+        _ = gameManager.ConnectWithTransport(useHttpPolling);
     }
 
     /// <summary>Show the generation mode choice panel.</summary>
@@ -210,7 +334,7 @@ public class ExpeditionUIGenerator : MonoBehaviour
         rt.anchorMin = new Vector2(1, 0);
         rt.anchorMax = new Vector2(1, 0);
         rt.pivot = new Vector2(1, 0);
-        rt.anchoredPosition = new Vector2(-20, 110);
+        rt.anchoredPosition = new Vector2(-40, 110);
         rt.sizeDelta = new Vector2(160, 160);
 
         float btnSize = 48;
@@ -312,6 +436,86 @@ public class ExpeditionUIGenerator : MonoBehaviour
             _ => ""
         };
     }
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    private void CreateDebugNetworkPanel(Transform parent)
+    {
+        // Narrow vertical panel — buttons stacked, doesn't overlap the game field
+        _debugNetPanel = CreatePanel(parent, "DebugNetPanel",
+            new Vector2(0, 0), new Vector2(0, 0), new Vector2(10, 65), new Vector2(160, 280));
+        _debugNetPanel.GetComponent<Image>().color = new Color(0.15f, 0.1f, 0.2f, 0.9f);
+
+        var title = CreateText(_debugNetPanel.transform, "DebugTitle", "Net Debug",
+            new Vector2(0, 0.92f), new Vector2(1, 1), new Color(1f, 0.6f, 0.3f));
+        title.alignment = TextAnchor.MiddleCenter;
+        title.fontSize = 12;
+
+        // Enable toggle
+        var enableBtn = CreateButton(_debugNetPanel.transform, "EnableBtn", "Sim: OFF",
+            new Vector2(0.05f, 0.8f), new Vector2(0.95f, 0.91f), new Color(0.3f, 0.3f, 0.3f));
+        var enableText = enableBtn.GetComponentInChildren<Text>();
+        enableBtn.onClick.AddListener(() =>
+        {
+            var settings = gameManager.DebugNetworkSettings;
+            if (settings == null) return;
+            settings.Enabled = !settings.Enabled;
+            enableText.text = settings.Enabled ? "Sim: ON" : "Sim: OFF";
+            enableBtn.GetComponent<Image>().color = settings.Enabled
+                ? new Color(0.7f, 0.3f, 0.1f) : new Color(0.3f, 0.3f, 0.3f);
+        });
+
+        // Permanent disconnect button
+        var disconnectBtn = CreateButton(_debugNetPanel.transform, "DisconnectBtn", "Drop",
+            new Vector2(0.05f, 0.69f), new Vector2(0.95f, 0.79f), new Color(0.6f, 0.1f, 0.1f));
+        disconnectBtn.onClick.AddListener(() => gameManager.DebugConnection?.SimulateDisconnect());
+
+        // Temporary disconnect (metro/tunnel) button
+        var metroBtn = CreateButton(_debugNetPanel.transform, "MetroBtn", "Metro 3s",
+            new Vector2(0.05f, 0.58f), new Vector2(0.95f, 0.68f), new Color(0.5f, 0.3f, 0.1f));
+        metroBtn.onClick.AddListener(() => _ = gameManager.DebugConnection?.SimulateTemporaryDisconnectAsync(3000));
+
+        // Latency: label + buttons
+        _debugLatencyLabel = CreateText(_debugNetPanel.transform, "LatencyLabel", "Latency: 0ms",
+            new Vector2(0, 0.42f), new Vector2(1, 0.55f), Color.white);
+        _debugLatencyLabel.fontSize = 11;
+
+        var latencyUp = CreateButton(_debugNetPanel.transform, "LatUp", "+",
+            new Vector2(0.05f, 0.31f), new Vector2(0.48f, 0.42f), new Color(0.2f, 0.5f, 0.2f));
+        latencyUp.onClick.AddListener(() => AdjustLatency(500));
+        var latencyDown = CreateButton(_debugNetPanel.transform, "LatDown", "-",
+            new Vector2(0.52f, 0.31f), new Vector2(0.95f, 0.42f), new Color(0.5f, 0.2f, 0.2f));
+        latencyDown.onClick.AddListener(() => AdjustLatency(-500));
+
+        // Loss: label + buttons
+        _debugLossLabel = CreateText(_debugNetPanel.transform, "LossLabel", "Loss: 0%",
+            new Vector2(0, 0.16f), new Vector2(1, 0.29f), Color.white);
+        _debugLossLabel.fontSize = 11;
+
+        var lossUp = CreateButton(_debugNetPanel.transform, "LossUp", "+",
+            new Vector2(0.05f, 0.04f), new Vector2(0.48f, 0.15f), new Color(0.2f, 0.5f, 0.2f));
+        lossUp.onClick.AddListener(() => AdjustLoss(10f));
+        var lossDown = CreateButton(_debugNetPanel.transform, "LossDown", "-",
+            new Vector2(0.52f, 0.04f), new Vector2(0.95f, 0.15f), new Color(0.5f, 0.2f, 0.2f));
+        lossDown.onClick.AddListener(() => AdjustLoss(-10f));
+    }
+
+    private void AdjustLatency(int delta)
+    {
+        var settings = gameManager.DebugNetworkSettings;
+        if (settings == null) return;
+        settings.MinLatencyMs = Mathf.Max(0, settings.MinLatencyMs + delta);
+        settings.MaxLatencyMs = Mathf.Max(settings.MinLatencyMs, settings.MaxLatencyMs + delta);
+        _debugLatencyLabel.text = $"Latency: {settings.MinLatencyMs}-{settings.MaxLatencyMs}ms";
+    }
+
+    private void AdjustLoss(float delta)
+    {
+        var settings = gameManager.DebugNetworkSettings;
+        if (settings == null) return;
+        settings.PacketLossPercent = Mathf.Clamp(settings.PacketLossPercent + delta, 0f, 100f);
+        _debugLossLabel.text = $"Loss: {settings.PacketLossPercent:0}%";
+    }
+#endif
 
     // ========================
     // UI Factory Helpers

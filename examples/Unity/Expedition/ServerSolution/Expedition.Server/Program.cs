@@ -16,7 +16,9 @@ using SharedMeta.Core.Framework;
 using SharedMeta.Orleans.Framework;
 using SharedMeta.Serialization.MemoryPack;
 using SharedMeta.Transport.SignalR;
+using SharedMeta.Transport.HttpPolling;
 using SharedMeta.Auth;
+using SharedMeta.Server.Core.Session;
 using Expedition.Shared;
 using Expedition.Shared.Server;
 using Microsoft.AspNetCore.Hosting;
@@ -91,6 +93,16 @@ builder.Services.AddSingleton(new MetaTransportOptions
     DesyncLogLevel = DesyncLogLevel.Debug  // log full text diff for inspection
 });
 
+// HTTP Polling connection manager (for /meta-http transport)
+builder.Services.AddSingleton<HttpPollingConnectionManager>(sp =>
+    new HttpPollingConnectionManager(
+        sp.GetRequiredService<IMetaConnectionHandlerFactory>(),
+        sp.GetRequiredService<ILoggerFactory>()));
+
+// RPC ordering — required for HTTP polling (no wire-level FIFO guarantee).
+// Also safe for SignalR (one extra int comparison in the in-order case).
+builder.Services.Configure<SessionManagerOptions>(o => o.EnforceRpcOrder = true);
+
 // CORS
 builder.Services.AddCors(options =>
 {
@@ -108,6 +120,7 @@ app.UseAuthorization();
 app.MapMetaAuth("/meta/auth");
 
 app.MapHub<MetaHub>("/meta");
+app.MapMetaHttpPolling("/meta-http");
 app.MapGet("/", () => "Expedition.Server is running");
 
 // Config download endpoint
