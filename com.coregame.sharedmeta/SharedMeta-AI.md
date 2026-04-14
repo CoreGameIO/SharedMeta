@@ -683,6 +683,10 @@ var client = new MetaClient(connection, serializer, new MetaClientOptions { Play
 ITokenStorage storage = new PlayerPrefsTokenStorage(); // Unity; implement ITokenStorage for other platforms
 var login = await MetaAuth.EnsureAuthenticatedAsync($"{serverUrl}/meta/auth", deviceId, storage);
 MetaAuth.ClearToken(storage); // logout
+
+// Reset device binding (0.10.1+) — force-unlinks deviceId from current player.
+// Next login creates a new player profile. Works even when device is the only auth key.
+await MetaAuth.ResetDeviceAsync($"{serverUrl}/meta/auth", deviceId, accessToken, storage);
 ```
 
 **Unity**: `UnityMetaAuth` auto-registers via `[RuntimeInitializeOnLoadMethod]` — sets `MetaAuth.LoginFunc` to `UnityWebRequest` implementation. Unity-dependent code (`PlayerPrefsTokenStorage`, `UnityMetaAuth`) is in `SharedMeta.Auth.Client` asmdef (`noEngineReferences: false`).

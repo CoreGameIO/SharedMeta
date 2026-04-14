@@ -63,6 +63,16 @@ namespace SharedMeta.Auth
     }
 
     /// <summary>
+    /// Reset (force-unlink) a device from the current player.
+    /// After reset, the next login with this deviceId will create a new player.
+    /// </summary>
+    public class ResetDeviceRequest
+    {
+        /// <summary>Device ID to unlink from the current player.</summary>
+        public string DeviceId { get; set; } = "";
+    }
+
+    /// <summary>
     /// Response for link/unlink operations.
     /// </summary>
     public class AuthOperationResponse

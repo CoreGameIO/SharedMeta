@@ -63,6 +63,17 @@ namespace SharedMeta.Core.Auth
                 authUrl, new { AuthKey = authKey }, cancellation);
             return response.IsSuccessStatusCode;
         }
+
+        public async Task<bool> ResetDeviceAsync(
+            string authUrl, string deviceId, string accessToken, CancellationToken cancellation)
+        {
+            using var http = new HttpClient();
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+            var response = await http.PostAsJsonAsync(
+                authUrl, new { DeviceId = deviceId }, cancellation);
+            return response.IsSuccessStatusCode;
+        }
     }
 }
 #endif

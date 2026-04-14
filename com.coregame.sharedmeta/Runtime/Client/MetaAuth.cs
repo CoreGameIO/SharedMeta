@@ -192,6 +192,55 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
+        /// Reset (force-unlink) a device from the current player.
+        /// After reset, the next login with this deviceId will create a new player.
+        /// Requires a valid access token (call after login).
+        /// </summary>
+        /// <param name="authUrl">Auth endpoint URL (e.g., "http://localhost:5100/meta/auth").</param>
+        /// <param name="deviceId">Device ID to unlink.</param>
+        /// <param name="accessToken">Current JWT access token.</param>
+        /// <param name="tokenStorage">Optional token storage — if provided, cached token is cleared on success.</param>
+        /// <param name="cancellation">Cancellation token.</param>
+        /// <returns>True if device was successfully reset.</returns>
+        public static async Task<bool> ResetDeviceAsync(
+            string authUrl,
+            string deviceId,
+            string accessToken,
+            ITokenStorage? tokenStorage = null,
+            CancellationToken cancellation = default)
+        {
+            var url = authUrl.TrimEnd('/') + "/reset-device";
+            MetaLog.Debug("[MetaAuth] Resetting device at: " + url);
+
+            bool success;
+            if (Provider != null)
+            {
+                success = await Provider.ResetDeviceAsync(url, deviceId, accessToken, cancellation);
+            }
+            else if (ResetDeviceFunc != null)
+            {
+                success = await ResetDeviceFunc(url, deviceId, accessToken, cancellation);
+            }
+            else
+            {
+#if !NETSTANDARD2_1 && !UNITY_5_3_OR_NEWER
+                success = await new HttpMetaAuthProvider().ResetDeviceAsync(url, deviceId, accessToken, cancellation);
+#else
+                throw new PlatformNotSupportedException(
+                    "MetaAuth.ResetDeviceAsync requires UnityMetaAuth or a custom Provider.");
+#endif
+            }
+
+            if (success && tokenStorage != null)
+            {
+                tokenStorage.Clear();
+                MetaLog.Debug("[MetaAuth] Token cleared after device reset");
+            }
+
+            return success;
+        }
+
+        /// <summary>
         /// Clear cached token (logout).
         /// </summary>
         public static void ClearToken(ITokenStorage tokenStorage)
@@ -216,5 +265,8 @@ namespace SharedMeta.Client
 
         /// <summary>Legacy platform-specific unlink function. Prefer <see cref="Provider"/>.</summary>
         public static Func<string, string, string, CancellationToken, Task<bool>>? UnlinkFunc { get; set; }
+
+        /// <summary>Legacy platform-specific reset-device function. Prefer <see cref="Provider"/>.</summary>
+        public static Func<string, string, string, CancellationToken, Task<bool>>? ResetDeviceFunc { get; set; }
     }
 }

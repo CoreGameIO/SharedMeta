@@ -113,6 +113,25 @@ namespace SharedMeta.Auth
             return Task.FromResult(_state.State.PlayerId);
         }
 
+        public async Task<string?> ForceUnlinkAsync()
+        {
+            var playerId = _state.State.PlayerId;
+            if (playerId == null)
+                return null;
+
+            var authKey = this.GetPrimaryKeyString();
+
+            // Remove from index
+            var index = _grainFactory.GetGrain<IAuthIndexGrain>(playerId);
+            await index.RemoveKeyAsync(authKey);
+
+            // Clear this grain's state
+            _state.State.PlayerId = null;
+            await _state.WriteStateAsync();
+
+            return playerId;
+        }
+
         private static string GeneratePlayerId()
         {
             return $"{Guid.NewGuid().ToString("N")[..8]}_{DateTime.UtcNow:yyyyMMdd}";

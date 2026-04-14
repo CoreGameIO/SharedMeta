@@ -31,5 +31,12 @@ namespace SharedMeta.Core.Auth
         /// <summary>Unlink an auth key from the currently authenticated player.</summary>
         Task<bool> UnlinkAsync(
             string authUrl, string authKey, string accessToken, CancellationToken cancellation);
+
+        /// <summary>
+        /// Reset (force-unlink) a device from the current player.
+        /// After reset, the next login with this deviceId will create a new player.
+        /// </summary>
+        Task<bool> ResetDeviceAsync(
+            string authUrl, string deviceId, string accessToken, CancellationToken cancellation);
     }
 }

@@ -27,6 +27,7 @@ namespace SharedMeta.Client.Auth
             MetaAuth.PlatformLoginFunc = PlatformLoginUnityAsync;
             MetaAuth.AuthActionFunc = LinkUnityAsync;
             MetaAuth.UnlinkFunc = UnlinkUnityAsync;
+            MetaAuth.ResetDeviceFunc = ResetDeviceUnityAsync;
         }
 
         private static async Task<MetaLoginResult> LoginUnityAsync(
@@ -59,6 +60,14 @@ namespace SharedMeta.Client.Auth
             string url, string authKey, string accessToken, CancellationToken cancellation)
         {
             var body = "{\"authKey\":\"" + EscapeJson(authKey) + "\"}";
+            var json = await PostJsonAsync(url, body, accessToken, cancellation);
+            return ExtractJsonBool(json, "success");
+        }
+
+        private static async Task<bool> ResetDeviceUnityAsync(
+            string url, string deviceId, string accessToken, CancellationToken cancellation)
+        {
+            var body = "{\"deviceId\":\"" + EscapeJson(deviceId) + "\"}";
             var json = await PostJsonAsync(url, body, accessToken, cancellation);
             return ExtractJsonBool(json, "success");
         }

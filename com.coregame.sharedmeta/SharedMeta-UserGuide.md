@@ -263,6 +263,11 @@ var login = await MetaAuth.EnsureAuthenticatedAsync($"{serverUrl}/meta/auth", de
 
 // Logout — clears stored token
 MetaAuth.ClearToken(storage);
+
+// Reset device binding (0.10.1+) — force-unlinks deviceId from current player.
+// Useful for "Reset progress" / "Switch account" buttons. Next login creates a new player.
+// Works even when the device is the player's only auth key (unlike /unlink).
+await MetaAuth.ResetDeviceAsync($"{serverUrl}/meta/auth", deviceId, login.Token, storage);
 ```
 
 For other platforms, implement `ITokenStorage` (3 methods: `Load`, `Save`, `Clear`).

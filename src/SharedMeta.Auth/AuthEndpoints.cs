@@ -35,6 +35,9 @@ namespace SharedMeta.Auth
             endpoints.MapPost($"{prefix}/unlink", HandleUnlink)
                 .RequireAuthorization();
 
+            endpoints.MapPost($"{prefix}/reset-device", HandleResetDevice)
+                .RequireAuthorization();
+
             endpoints.MapGet($"{prefix}/keys", HandleGetKeys)
                 .RequireAuthorization();
 
@@ -207,6 +210,44 @@ namespace SharedMeta.Auth
             var index = grainFactory.GetGrain<IAuthIndexGrain>(playerId);
             var keys = await index.GetKeysAsync();
             return Results.Ok(keys);
+        }
+
+        /// <summary>
+        /// Reset device binding: POST /meta/auth/reset-device [Authorize]
+        /// { "deviceId": "..." }
+        /// Force-unlinks the device from the current player. Next login with this
+        /// deviceId will create a new player profile.
+        /// </summary>
+        private static async Task<IResult> HandleResetDevice(
+            HttpContext ctx,
+            IGrainFactory grainFactory)
+        {
+            var playerId = GetPlayerId(ctx);
+            if (playerId == null)
+                return Results.Unauthorized();
+
+            var request = await ctx.Request.ReadFromJsonAsync<ResetDeviceRequest>();
+            if (request == null || string.IsNullOrEmpty(request.DeviceId))
+                return Results.BadRequest(new { error = "DeviceId is required" });
+
+            var grain = grainFactory.GetGrain<IAuthGrain>(request.DeviceId);
+            var linkedPlayerId = await grain.GetPlayerIdAsync();
+
+            if (linkedPlayerId == null)
+                return Results.Json(
+                    new AuthOperationResponse { Success = false, Error = "Device is not linked to any player" },
+                    statusCode: 404);
+
+            if (linkedPlayerId != playerId)
+                return Results.Json(
+                    new AuthOperationResponse { Success = false, Error = "Device is linked to a different player" },
+                    statusCode: 403);
+
+            var unlinkedId = await grain.ForceUnlinkAsync();
+            return unlinkedId != null
+                ? Results.Ok(new AuthOperationResponse { Success = true })
+                : Results.Json(new AuthOperationResponse { Success = false, Error = "Reset failed" },
+                    statusCode: 400);
         }
 
         private static string? GetPlayerId(HttpContext ctx)

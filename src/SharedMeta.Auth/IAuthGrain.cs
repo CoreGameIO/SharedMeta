@@ -33,6 +33,13 @@ namespace SharedMeta.Auth
         /// Get the PlayerId currently linked to this auth key, or null.
         /// </summary>
         Task<string?> GetPlayerIdAsync();
+
+        /// <summary>
+        /// Force-unlink this auth key regardless of remaining key count.
+        /// Used for device reset scenarios where the player wants to start fresh.
+        /// Returns the PlayerId that was unlinked, or null if not linked.
+        /// </summary>
+        Task<string?> ForceUnlinkAsync();
     }
 
     /// <summary>

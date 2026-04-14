@@ -1646,12 +1646,36 @@ Response: { "success": true, "remainingKeys": [ "google:1234567" ] }
 
 GET /meta/auth/keys [Authorize]
 Response: [ "device:dev-abc", "google:1234567" ]
+
+POST /meta/auth/reset-device [Authorize]
+Body: { "deviceId": "dev-abc" }
+Response: { "success": true }
 ```
 
 Safety:
-- Cannot unlink the **last** auth key (would orphan the account).
+- Cannot unlink the **last** auth key via `/unlink` (would orphan the account).
 - Linking fails if the platform is already bound to a different `PlayerId` (conflict detection).
 - All link/unlink endpoints require an `[Authorize]` JWT — only the player themselves can modify their key list.
+
+### Resetting Device Binding (0.10.1+)
+
+Sometimes a player wants to start a fresh profile while keeping the same device — for example, a "Reset progress" or "Switch account" debug/settings command. `/unlink` cannot do this when the device is the player's only auth key (the "last key" safety check rejects it).
+
+`POST /meta/auth/reset-device` is an authorized endpoint that **force-unlinks** the given `deviceId` from the current player, with no "last key" check. After the call, the next login with that `deviceId` creates a new player profile.
+
+**Client (any platform):**
+```csharp
+await MetaAuth.ResetDeviceAsync(
+    authUrl,
+    deviceId,                  // typically SystemInfo.deviceUniqueIdentifier
+    accessToken,               // current JWT
+    tokenStorage);             // optional — cached token is cleared on success
+
+// next login creates a brand-new player
+var login = await MetaAuth.EnsureAuthenticatedAsync(authUrl, deviceId, tokenStorage);
+```
+
+The server-side primitive is `IAuthGrain.ForceUnlinkAsync()` — same as `UnlinkAsync` but skips the safety check. Use it directly from server code if you need to wipe a binding outside the HTTP flow.
 
 ### Transport Integration
 
