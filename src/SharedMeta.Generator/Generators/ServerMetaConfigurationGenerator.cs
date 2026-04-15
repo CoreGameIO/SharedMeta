@@ -851,19 +851,18 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                {");
             foreach (var kvp in byStateType)
             {
-                var stateTypeName = kvp.Value.First().StateTypeName;
                 var stateTypeFullName = kvp.Key;
-                sb.AppendLine($"                    [\"{stateTypeFullName}\"] = {stateTypeName}PatchSchema.Instance,");
+                sb.AppendLine($"                    [\"{stateTypeFullName}\"] = {stateTypeFullName}PatchSchema.Instance,");
             }
             sb.AppendLine("                };");
             sb.AppendLine("                var byService = new System.Collections.Generic.Dictionary<string, SharedMeta.Core.Patch.IPatchSchema>");
             sb.AppendLine("                {");
             foreach (var kvp in byStateType)
             {
-                var stateTypeName = kvp.Value.First().StateTypeName;
+                var stateTypeFullName = kvp.Key;
                 foreach (var svc in kvp.Value)
                 {
-                    sb.AppendLine($"                    [\"{svc.InterfaceName}\"] = {stateTypeName}PatchSchema.Instance,");
+                    sb.AppendLine($"                    [\"{svc.InterfaceName}\"] = {stateTypeFullName}PatchSchema.Instance,");
                 }
             }
             sb.AppendLine("                };");
