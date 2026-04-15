@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.10.2] - 2026-04-15
+
+### Fixed
+
+- **`ServerMetaConfiguration.g.cs` referenced `PatchSchema` classes without namespace qualification**, causing `CS0103: The name '{State}PatchSchema' does not exist in the current context` in server projects whose namespace differs from the state type's namespace. Generator now emits fully-qualified `{StateFullName}PatchSchema.Instance` for both `byState` and `byService` registry entries
+
 ## [0.10.1] - 2026-04-14
 
 ### Added
