@@ -24,6 +24,12 @@ public partial class EntityGrainState<TState> where TState : class, ISharedState
     /// Once set, the entity uses this version until explicitly upgraded.
     /// </summary>
     [Id(6), Key(6), MemoryPackOrder(6)] public MetaConfigVersion ConfigVersion { get; set; }
+
+    /// <summary>
+    /// Packed positional list of MetaRandom states for [NamedRandom] declarations on TState.
+    /// Null/empty for states without named randoms. Restored via IMetaProviderContext.NamedRandomsBytes.
+    /// </summary>
+    [Id(7), Key(7), MemoryPackOrder(7)] public byte[]? NamedRandomsBytes { get; set; }
 }
 
 /// <summary>

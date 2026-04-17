@@ -388,6 +388,7 @@ namespace SharedMeta.Server.Core.Session
                     StateBytes = snapshot.StateBytes,
                     EntitySequenceNumber = snapshot.CurrentSequenceNumber,
                     OptimisticRandomBytes = snapshot.OptimisticRandomBytes,
+                    NamedRandomsBytes = snapshot.NamedRandomsBytes,
                     ConfigVersion = snapshot.ConfigVersion
                 };
             }
@@ -428,6 +429,7 @@ namespace SharedMeta.Server.Core.Session
                     StateBytes = snapshot.StateBytes,
                     EntitySequenceNumber = snapshot.CurrentSequenceNumber,
                     OptimisticRandomBytes = snapshot.OptimisticRandomBytes,
+                    NamedRandomsBytes = snapshot.NamedRandomsBytes,
                     ConfigVersion = snapshot.ConfigVersion
                 };
             }
@@ -1184,6 +1186,7 @@ namespace SharedMeta.Server.Core.Session
                         StateBytes = snapshot.StateBytes,
                         EntitySequenceNumber = snapshot.CurrentSequenceNumber,
                         OptimisticRandomBytes = snapshot.OptimisticRandomBytes,
+                        NamedRandomsBytes = snapshot.NamedRandomsBytes,
                         ConfigVersion = snapshot.ConfigVersion
                     });
 

@@ -46,5 +46,6 @@ namespace SharedMeta.Server.Core.Session
         [Id(2)] public long EntitySequenceNumber { get; set; }
         [Id(3)] public byte[]? OptimisticRandomBytes { get; set; }
         [Id(4)] public MetaConfigVersion ConfigVersion { get; set; }
+        [Id(5)] public byte[]? NamedRandomsBytes { get; set; }
     }
 }

@@ -33,6 +33,20 @@ namespace SharedMeta.Generator.Generators
         public bool UsesDefaultConfig { get; set; }
         /// <summary>True if [MetaServiceImpl(DeepDesync = true)].</summary>
         public bool DeepDesync { get; set; }
+
+        /// <summary>
+        /// Named randoms declared via [NamedRandom] on the state class, in attribute declaration order.
+        /// </summary>
+        public List<NamedRandomDeclaration> NamedRandoms { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Captured [NamedRandom] declaration for codegen emission.
+    /// </summary>
+    public class NamedRandomDeclaration
+    {
+        public string Name { get; set; } = "";
+        public string? SeedOverride { get; set; }
     }
 
     /// <summary>
@@ -148,6 +162,23 @@ namespace SharedMeta.Generator.Generators
             // Check for DeepDesync = true
             var deepDesyncArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "DeepDesync");
             info.DeepDesync = !deepDesyncArg.Value.IsNull && deepDesyncArg.Value.Value is true;
+
+            // Collect [NamedRandom] attributes from the state type (positional — declaration order matters)
+            foreach (var stateAttr in stateType.GetAttributes())
+            {
+                if (stateAttr.AttributeClass?.ToDisplayString() != "SharedMeta.Core.NamedRandomAttribute")
+                    continue;
+                if (stateAttr.ConstructorArguments.Length == 0) continue;
+                if (stateAttr.ConstructorArguments[0].Value is not string name || string.IsNullOrEmpty(name))
+                    continue;
+
+                string? seedOverride = null;
+                var seedArg = stateAttr.NamedArguments.FirstOrDefault(a => a.Key == "Seed");
+                if (!seedArg.Value.IsNull && seedArg.Value.Value is string seedStr && !string.IsNullOrEmpty(seedStr))
+                    seedOverride = seedStr;
+
+                info.NamedRandoms.Add(new NamedRandomDeclaration { Name = name, SeedOverride = seedOverride });
+            }
 
             // Get server dependencies from constructor arguments (params Type[])
             if (attr.ConstructorArguments.Length > 2)
@@ -550,6 +581,26 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            EntityCallHandler = entityCallHandler;");
             sb.AppendLine("        }");
             sb.AppendLine();
+
+            // NamedRandomDescriptors override — union of [NamedRandom] attributes across services sharing this state.
+            // Since multiple services may share the same state, use any service's collected list (should be identical).
+            var namedRandoms = services
+                .Select(s => s.NamedRandoms)
+                .FirstOrDefault(nr => nr.Count > 0);
+            if (namedRandoms is { Count: > 0 })
+            {
+                sb.AppendLine("        private static readonly SharedMeta.Core.Random.NamedRandomDescriptor[] _namedRandomDescriptors = new[]");
+                sb.AppendLine("        {");
+                foreach (var nr in namedRandoms)
+                {
+                    var seedArg = nr.SeedOverride != null ? $"\"{nr.SeedOverride}\"" : "null";
+                    sb.AppendLine($"            new SharedMeta.Core.Random.NamedRandomDescriptor(\"{nr.Name}\", {seedArg}),");
+                }
+                sb.AppendLine("        };");
+                sb.AppendLine();
+                sb.AppendLine("        protected override IReadOnlyList<SharedMeta.Core.Random.NamedRandomDescriptor> NamedRandomDescriptors => _namedRandomDescriptors;");
+                sb.AppendLine();
+            }
 
             // Override OnDeactivating to clear service cache
             sb.AppendLine("        public override void OnDeactivating()");

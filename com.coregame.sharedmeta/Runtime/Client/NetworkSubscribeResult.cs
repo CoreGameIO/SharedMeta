@@ -12,6 +12,7 @@ namespace SharedMeta.Client
         public INetwork Network { get; init; } = null!;
         public byte[]? StateBytes { get; init; }
         public byte[]? OptimisticRandomBytes { get; init; }
+        public byte[]? NamedRandomsBytes { get; init; }
         public MetaConfigVersion ConfigVersion { get; init; }
     }
 }

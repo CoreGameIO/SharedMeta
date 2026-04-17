@@ -47,6 +47,38 @@ namespace SharedMeta.Core
     }
 
     /// <summary>
+    /// Declares a named deterministic random on a shared state class.
+    /// The generator emits a typed <see cref="SharedMeta.Core.Random.IMetaRandom"/> property on service contexts
+    /// operating on this state (e.g. <c>CombatRandom</c>), and the framework persists the random state
+    /// alongside the entity as a packed list in attribute declaration order.
+    /// <para>
+    /// Both server and client run the same PRNG with the same seed — use this to isolate independent
+    /// random streams within one entity (e.g. "Combat" vs "Loot") so advancing one does not affect another.
+    /// </para>
+    /// <para>
+    /// Reordering or adding/removing attributes is a code change: positional storage means renamed or shifted
+    /// entries are re-seeded from the default derivation. The existing entity's unrelated randoms keep advancing.
+    /// </para>
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class, AllowMultiple = true)]
+    public class NamedRandomAttribute : Attribute
+    {
+        /// <summary>Identifier used to generate the context property (e.g. "Combat" → Context.CombatRandom).</summary>
+        public string Name { get; }
+
+        /// <summary>
+        /// Optional explicit seed literal. If null, the random is seeded from <c>entityId + ":" + Name</c>.
+        /// Set this when you need a globally fixed stream regardless of the entity.
+        /// </summary>
+        public string? Seed { get; set; }
+
+        public NamedRandomAttribute(string name)
+        {
+            Name = name;
+        }
+    }
+
+    /// <summary>
     /// Marks a class as static game configuration data.
     /// Config is provided by IMetaConfigProvider on the server and sent to clients on subscribe.
     /// Access via Context.Config in service methods and [MetaInit].
@@ -133,6 +165,37 @@ namespace SharedMeta.Core
         ServerReplace
     }
 
+    /// <summary>
+    /// Controls generation of a synchronous client API overload for an Optimistic (or Local) method.
+    /// </summary>
+    public enum SyncApi
+    {
+        /// <summary>Do not generate a sync overload. Only the async method is produced.</summary>
+        None = 0,
+
+        /// <summary>Generate both the async method and a sync `{Method}Sync` overload.</summary>
+        Generate = 1,
+
+        /// <summary>Generate ONLY the sync method; no async overload is produced.</summary>
+        OnlySync = 2
+    }
+
+    /// <summary>
+    /// What to do at runtime if the sync overload is invoked but conditions block synchronous execution
+    /// (e.g. the effective execution mode has been overridden to a server-round-trip mode via config).
+    /// </summary>
+    public enum SyncPolicy
+    {
+        /// <summary>Throw InvalidOperationException. Default — catches misuse immediately.</summary>
+        Throw = 0,
+
+        /// <summary>Log a warning via MetaLog + IDiagnostics and continue executing locally.</summary>
+        Warn = 1,
+
+        /// <summary>Silently continue executing locally. Use only when you accept the risk.</summary>
+        Silent = 2
+    }
+
     [AttributeUsage(AttributeTargets.Method)]
     public class MetaMethodAttribute : Attribute
     {
@@ -173,6 +236,21 @@ namespace SharedMeta.Core
         /// Ignored if Query is false.
         /// </summary>
         public bool OpenAccess { get; set; }
+
+        /// <summary>
+        /// Controls generation of a synchronous client API overload (e.g. `{Method}Sync`).
+        /// Only valid for <see cref="ExecutionMode.Optimistic"/> and <see cref="ExecutionMode.Local"/>.
+        /// The service method itself must have a non-Task return type.
+        /// Use this in frame-critical code paths (e.g. DOTS main-thread) where the mutation must be
+        /// visible in the same frame without an `await` boundary.
+        /// </summary>
+        public SyncApi Sync { get; set; } = SyncApi.None;
+
+        /// <summary>
+        /// What the generated sync method does when runtime conditions block synchronous execution
+        /// (e.g. execution mode was overridden to Server via config). Defaults to <see cref="SyncPolicy.Throw"/>.
+        /// </summary>
+        public SyncPolicy SyncPolicy { get; set; } = SyncPolicy.Throw;
     }
 
     /// <summary>

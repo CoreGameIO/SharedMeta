@@ -139,6 +139,7 @@ namespace SharedMeta.Core.Transport
         public string? Error { get; set; }
         public byte[] StateBytes { get; set; } = Array.Empty<byte>();
         public byte[]? OptimisticRandomBytes { get; set; }
+        public byte[]? NamedRandomsBytes { get; set; }
         public MetaConfigVersion ConfigVersion { get; set; }
     }
 }

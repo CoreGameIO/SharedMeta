@@ -60,5 +60,6 @@ namespace SharedMeta.Core.Transport
         [Id(3), Key(3)] public byte[]? OptimisticRandomBytes { get; set; }
         [Id(4), Key(4)] public int ConfigMajorVersion { get; set; }
         [Id(5), Key(5)] public int ConfigMinorVersion { get; set; }
+        [Id(6), Key(6)] public byte[]? NamedRandomsBytes { get; set; }
     }
 }

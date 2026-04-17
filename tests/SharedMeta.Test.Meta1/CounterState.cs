@@ -8,6 +8,8 @@ namespace SharedMeta.Test.Meta1
     /// Contains a list of operations with their order preserved.
     /// </summary>
     [MemoryPackable]
+    [NamedRandom("Combat")]
+    [NamedRandom("Loot")]
     public partial class CounterState : ISharedState
     {
         /// <summary>

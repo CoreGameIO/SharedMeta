@@ -30,6 +30,15 @@ namespace SharedMeta.Core.Diagnostics
         void OnPatchDesync(string serviceName, string methodName, uint serverCrc, uint localCrc) { }
 
         /// <summary>
+        /// Called when a generated sync method is invoked but the effective execution mode
+        /// (resolved via IExecutionModeProvider) is not Optimistic/Local — i.e. a server round-trip
+        /// would be required but sync execution was requested anyway. Fires only when
+        /// <see cref="SharedMeta.Core.SyncPolicy.Warn"/> or <see cref="SharedMeta.Core.SyncPolicy.Silent"/>
+        /// is configured (Throw raises an exception instead of invoking this callback).
+        /// </summary>
+        void OnSyncPolicyViolation(string serviceName, string methodName, SharedMeta.Core.ExecutionMode effectiveMode) { }
+
+        /// <summary>
         /// Request full state comparison with server.
         /// </summary>
         Task<StateComparisonResult> CompareFullStateAsync(string entityId);

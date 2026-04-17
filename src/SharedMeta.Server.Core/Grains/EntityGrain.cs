@@ -22,13 +22,16 @@ namespace SharedMeta.Server.Core.Grains
         public IMetaSerializer Serializer { get; }
         public IGrainFactory GrainFactory { get; }
         public ILogger? Logger { get; }
+        public byte[]? NamedRandomsBytes { get; }
 
-        public MetaProviderContext(string entityId, IMetaSerializer serializer, IGrainFactory grainFactory, ILogger? logger = null)
+        public MetaProviderContext(string entityId, IMetaSerializer serializer, IGrainFactory grainFactory,
+            ILogger? logger = null, byte[]? namedRandomsBytes = null)
         {
             EntityId = entityId;
             Serializer = serializer;
             GrainFactory = grainFactory;
             Logger = logger;
+            NamedRandomsBytes = namedRandomsBytes;
         }
     }
 
@@ -167,7 +170,7 @@ namespace SharedMeta.Server.Core.Grains
                 };
             }
 
-            var context = new MetaProviderContext(entityId, _serializer, GrainFactory, _logger);
+            var context = new MetaProviderContext(entityId, _serializer, GrainFactory, _logger, state.NamedRandomsBytes);
             _provider.Initialize(context, state.UserState, state.ServerRandomBytes, state.OptimisticRandomBytes);
 
             // Apply global deep desync override from EntityGrainOptions
@@ -252,11 +255,13 @@ namespace SharedMeta.Server.Core.Grains
 
             var stateBytes = _provider?.GetStateBytes() ?? _serializer.Pack(state.UserState);
 
+            var namedBytes = _provider?.GetNamedRandomsBytes();
             return new EntitySnapshot
             {
                 StateBytes = stateBytes,
                 CurrentSequenceNumber = state.EntitySequenceNumber,
                 OptimisticRandomBytes = _provider?.GetOptimisticRandomBytes(),
+                NamedRandomsBytes = namedBytes is { Length: > 0 } ? namedBytes : null,
                 ConfigVersion = _provider?.ConfigVersion ?? default
             };
         }
@@ -542,6 +547,8 @@ namespace SharedMeta.Server.Core.Grains
             var state = _persistentState.State;
             state.ServerRandomBytes = _provider.GetServerRandomBytes();
             state.OptimisticRandomBytes = _provider.GetOptimisticRandomBytes();
+            var namedBytes = _provider.GetNamedRandomsBytes();
+            state.NamedRandomsBytes = namedBytes.Length > 0 ? namedBytes : null;
         }
 
         private async Task DistributeBroadcasts(List<EntityBroadcast> broadcasts, long operationSequence, string? excludePlayerId)

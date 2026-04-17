@@ -110,6 +110,15 @@ namespace SharedMeta.Core
         public IMetaRandom? ServerRandom { get; set; }
 
         /// <summary>
+        /// Named deterministic randoms declared via <see cref="NamedRandomAttribute"/> on the entity state.
+        /// Positional: index corresponds to attribute declaration order on the state class.
+        /// Generated context properties access this list by literal index (e.g. Context.NamedRandoms[0]).
+        /// Semantics mirror <see cref="Random"/> (same algorithm and seed on server and client).
+        /// Null or empty when the state has no [NamedRandom] attributes.
+        /// </summary>
+        public IReadOnlyList<IMetaRandom>? NamedRandoms { get; set; }
+
+        /// <summary>
         /// Logger for meta methods. On server: bridges to ILogger. On client: uses MetaLog.
         /// </summary>
         public IMetaLogger Log { get; set; } = NullMetaLogger.Instance;

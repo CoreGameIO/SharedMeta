@@ -138,5 +138,12 @@ namespace SharedMeta.Test.Meta1
                 return -1;
             return otherState.Sum;
         }
+
+        public int DrawFromNamed(int which, int max)
+        {
+            // Generated Context props: CombatRandom → NamedRandoms[0], LootRandom → NamedRandoms[1]
+            var rng = which == 0 ? CombatRandom : LootRandom;
+            return rng.Next(max);
+        }
     }
 }

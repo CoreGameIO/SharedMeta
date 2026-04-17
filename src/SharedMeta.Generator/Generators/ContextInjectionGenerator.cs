@@ -43,6 +43,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("using System;");
             sb.AppendLine("using System.Threading.Tasks;");
             sb.AppendLine("using SharedMeta.Core;");
+            sb.AppendLine("using SharedMeta.Core.Random;");
             sb.AppendLine("using SharedMeta.Core.Transport;");
             if (serializer == DetectedSerializer.MemoryPack)
             {
@@ -56,6 +57,20 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        protected MetaContext<{stateTypeName}> Context => MetaContextAccessor.Get<{stateTypeName}>();");
             sb.AppendLine();
             sb.AppendLine($"        protected {stateTypeName} State => Context.State;");
+
+            // Named random accessors — one property per [NamedRandom] on the state (positional)
+            var namedRandoms = stateTypeSymbol.GetAttributes()
+                .Where(a => a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.NamedRandomAttribute")
+                .Select(a => a.ConstructorArguments.Length > 0 ? a.ConstructorArguments[0].Value as string : null)
+                .Where(n => !string.IsNullOrEmpty(n))
+                .ToList();
+            for (int i = 0; i < namedRandoms.Count; i++)
+            {
+                var n = namedRandoms[i];
+                sb.AppendLine();
+                sb.AppendLine($"        /// <summary>Named deterministic random '{n}' declared via [NamedRandom] on {stateTypeName}.</summary>");
+                sb.AppendLine($"        protected IMetaRandom {n}Random => Context.NamedRandoms![{i}];");
+            }
 
             // Typed Config accessor — if the service has a ConfigType
             var serviceInterfaceSymbol = attr.ConstructorArguments[0].Value as INamedTypeSymbol;

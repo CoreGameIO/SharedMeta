@@ -64,6 +64,15 @@ namespace SharedMeta.Core
         /// </summary>
         [Id(7), Key(7)] public uint? DeepDesyncCrc { get; set; }
 
+        /// <summary>
+        /// Per-index scroll deltas for named randoms declared via [NamedRandom] on the state.
+        /// Positional: index corresponds to attribute declaration order. Null when no named
+        /// randoms advanced on the server. Client uses these for desync detection (compare with
+        /// its own local deltas) and for Skip-catchup on ServerPatch/ServerReplace modes where
+        /// the client doesn't execute the method locally.
+        /// </summary>
+        [Id(8), Key(8)] public long[]? NamedRandomScrollDeltas { get; set; }
+
         /// <summary>True if the call failed (Error is not null).</summary>
         [IgnoreMember] public bool HasError => Error != null;
 

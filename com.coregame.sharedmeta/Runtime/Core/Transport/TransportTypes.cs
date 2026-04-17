@@ -33,6 +33,9 @@ namespace SharedMeta.Core.Transport
 
         /// <summary>Config minor version (data). 0 = no config.</summary>
         [Id(4), Key(4)] public int ConfigMinorVersion { get; set; }
+
+        /// <summary>Serialized named-random states (packed positional list) for deterministic replay.</summary>
+        [Id(5), Key(5)] public byte[]? NamedRandomsBytes { get; set; }
     }
 
     /// <summary>

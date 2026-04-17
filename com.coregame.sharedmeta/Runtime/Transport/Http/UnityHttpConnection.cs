@@ -155,6 +155,7 @@ namespace SharedMeta.Client.Network
                 Error = response.Error,
                 StateBytes = response.StateBytes ?? Array.Empty<byte>(),
                 OptimisticRandomBytes = response.OptimisticRandomBytes,
+                NamedRandomsBytes = response.NamedRandomsBytes,
                 ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion)
             };
         }

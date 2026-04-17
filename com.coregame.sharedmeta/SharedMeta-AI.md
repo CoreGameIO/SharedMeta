@@ -110,6 +110,21 @@ int loot = Context.ServerRandom!.Next(100); // Server-only random
 - `Context.Random` — identical algorithm (xoshiro128**) and seed on both sides
 - `Context.ServerRandom` — generated on server, replayed on client via payload
 
+**Independent streams per state — `[NamedRandom]`:** when several mechanics (combat, loot, map gen) must not share scroll position, declare each on the state:
+
+```csharp
+[SharedState]
+[NamedRandom("Combat")]
+[NamedRandom("Loot")]
+public partial class GameState : ISharedState { ... }
+
+// Generator emits typed property on every service Context partial:
+int dmg  = CombatRandom.Next(100);
+int item = LootRandom.Next(drops.Count);
+```
+
+Same semantics as `Context.Random` (shared deterministic stream, per-entity seed from `entityId + ":" + Name`, transported on subscribe). `Seed = "literal"` pins a fixed seed across all entities. Server reports per-index scroll deltas; client catches up on `ServerPatch` / broadcast replay. Reordering attributes reseeds the affected slots — positional storage.
+
 ### 4. Never Use DateTime.Now
 
 Use `Context.ServerTimeTicks` (synchronized UTC ticks) instead:

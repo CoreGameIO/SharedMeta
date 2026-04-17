@@ -68,6 +68,7 @@ namespace SharedMeta.Generator.Generators
             var allUsings = new HashSet<string>(usings);
             allUsings.Add("using SharedMeta.Core;");
             allUsings.Add("using SharedMeta.Core.Patch;");
+            allUsings.Add("using SharedMeta.Core.Random;");
             foreach (var u in allUsings)
                 sb.AppendLine(u);
             sb.AppendLine();
@@ -127,6 +128,18 @@ namespace SharedMeta.Generator.Generators
                     }
                 }
             }
+
+            // Named random accessors — must mirror ContextInjectionGenerator so method bodies copy cleanly
+            var namedRandoms = stateTypeSymbol.GetAttributes()
+                .Where(a => a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.NamedRandomAttribute")
+                .Select(a => a.ConstructorArguments.Length > 0 ? a.ConstructorArguments[0].Value as string : null)
+                .Where(n => !string.IsNullOrEmpty(n))
+                .ToList();
+            for (int i = 0; i < namedRandoms.Count; i++)
+            {
+                sb.AppendLine($"        protected IMetaRandom {namedRandoms[i]}Random => Context.NamedRandoms![{i}];");
+            }
+            if (namedRandoms.Count > 0) sb.AppendLine();
 
             // Copy fields (private backing fields, etc.)
             foreach (var field in fields)

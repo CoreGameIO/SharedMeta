@@ -43,6 +43,9 @@ namespace SharedMeta.Core.Network
 
         /// <summary>FNV-1a hash of server state after execution (deep desync detection). Null when disabled.</summary>
         public uint? DeepDesyncCrc { get; set; }
+
+        /// <summary>Per-index scroll deltas for [NamedRandom] streams (positional). Null when none advanced.</summary>
+        public long[]? NamedRandomScrollDeltas { get; set; }
     }
 
     /// <summary>
@@ -79,6 +82,9 @@ namespace SharedMeta.Core.Network
 
         /// <summary>FNV-1a hash of server state after execution (deep desync detection). Null when disabled.</summary>
         public uint? DeepDesyncCrc { get; set; }
+
+        /// <summary>Per-index scroll deltas for [NamedRandom] streams (positional). Null when none advanced.</summary>
+        public long[]? NamedRandomScrollDeltas { get; set; }
     }
 
     /// <summary>
@@ -120,5 +126,8 @@ namespace SharedMeta.Core.Network
 
         /// <summary>FNV-1a hash of server state after execution (deep desync detection). Null when disabled.</summary>
         public uint? DeepDesyncCrc { get; set; }
+
+        /// <summary>Per-index scroll deltas for [NamedRandom] streams (positional). Null when none advanced.</summary>
+        public long[]? NamedRandomScrollDeltas { get; set; }
     }
 }

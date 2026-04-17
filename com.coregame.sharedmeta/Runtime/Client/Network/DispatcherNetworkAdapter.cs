@@ -60,6 +60,7 @@ namespace SharedMeta.Client.Network
                 TriggerOperations = op.TriggerOperations,
                 ServerTimeTicks = op.MainOperation.Call.ServerTimeTicks,
                 RandomScrollDelta = op.MainOperation.Response.RandomScrollDelta,
+                NamedRandomScrollDeltas = op.MainOperation.Response.NamedRandomScrollDeltas,
                 PatchBytes = op.MainOperation.Response.PatchBytes,
                 StateBytes = op.MainOperation.Response.StateBytes
             });
@@ -104,6 +105,7 @@ namespace SharedMeta.Client.Network
                 CrossEntityOperations = rpcOp.CrossEntityOperations,
                 ServerTimeTicks = rpcOp.MainOperation.Call.ServerTimeTicks,
                 RandomScrollDelta = rpcOp.MainOperation.Response.RandomScrollDelta,
+                NamedRandomScrollDeltas = rpcOp.MainOperation.Response.NamedRandomScrollDeltas,
                 PatchBytes = rpcOp.MainOperation.Response.PatchBytes,
                 StateBytes = rpcOp.MainOperation.Response.StateBytes,
                 DeepDesyncCrc = rpcOp.MainOperation.Response.DeepDesyncCrc
@@ -136,6 +138,7 @@ namespace SharedMeta.Client.Network
                 CrossEntityOperations = rpcOp.CrossEntityOperations,
                 ServerTimeTicks = rpcOp.MainOperation.Call.ServerTimeTicks,
                 RandomScrollDelta = rpcOp.MainOperation.Response.RandomScrollDelta,
+                NamedRandomScrollDeltas = rpcOp.MainOperation.Response.NamedRandomScrollDeltas,
                 PatchBytes = rpcOp.MainOperation.Response.PatchBytes,
                 StateBytes = rpcOp.MainOperation.Response.StateBytes,
                 DeepDesyncCrc = rpcOp.MainOperation.Response.DeepDesyncCrc
@@ -169,6 +172,7 @@ namespace SharedMeta.Client.Network
                 CrossEntityOperations = rpcOp.CrossEntityOperations,
                 ServerTimeTicks = rpcOp.MainOperation.Call.ServerTimeTicks,
                 RandomScrollDelta = rpcOp.MainOperation.Response.RandomScrollDelta,
+                NamedRandomScrollDeltas = rpcOp.MainOperation.Response.NamedRandomScrollDeltas,
                 PatchBytes = rpcOp.MainOperation.Response.PatchBytes,
                 StateBytes = rpcOp.MainOperation.Response.StateBytes,
                 DeepDesyncCrc = rpcOp.MainOperation.Response.DeepDesyncCrc

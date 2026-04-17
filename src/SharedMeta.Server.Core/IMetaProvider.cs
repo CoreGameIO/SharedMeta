@@ -24,6 +24,12 @@ namespace SharedMeta.Server.Core
 
         /// <summary>Logger for the provider. Null if not configured.</summary>
         ILogger? Logger { get; }
+
+        /// <summary>
+        /// Persisted state for named randoms declared via [NamedRandom] on the state.
+        /// Packed list of MetaRandom in attribute declaration order. Null = no named randoms persisted yet.
+        /// </summary>
+        byte[]? NamedRandomsBytes => null;
     }
 
     /// <summary>
@@ -114,6 +120,12 @@ namespace SharedMeta.Server.Core
         /// Get the current optimistic random state bytes for persistence/snapshot.
         /// </summary>
         byte[] GetOptimisticRandomBytes();
+
+        /// <summary>
+        /// Get the current named-randoms state bytes (packed list) for persistence/snapshot.
+        /// Default returns empty bytes for providers without [NamedRandom] on their state.
+        /// </summary>
+        byte[] GetNamedRandomsBytes() => System.Array.Empty<byte>();
 
         /// <summary>
         /// Run state initialization/migration logic.

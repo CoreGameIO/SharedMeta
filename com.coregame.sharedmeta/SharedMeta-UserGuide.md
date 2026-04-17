@@ -384,6 +384,32 @@ int loot = Context.ServerRandom!.Next(100);
 - `Context.Random` — xoshiro128**, same seed on both sides
 - `Context.ServerRandom` — recorded on server, replayed on client via payload
 
+### Named random streams — `[NamedRandom]`
+
+Declare independent streams on the state when different mechanics must not share scroll position (adding a call to one system should not shift values in another):
+
+```csharp
+[SharedState]
+[NamedRandom("Combat")]
+[NamedRandom("Loot")]
+[NamedRandom("MapGen", Seed = "map-v2")]  // pin seed across entities
+public partial class GameState : ISharedState { ... }
+```
+
+The generator emits a typed property per attribute on every service `Context` partial for this state:
+
+```csharp
+int dmg  = CombatRandom.Next(100);      // independent from Loot / MapGen
+int item = LootRandom.Next(drops.Count);
+float h  = MapGenRandom.NextFloat();
+```
+
+Same algorithm and seed on server and client — Optimistic/Local methods see identical values both sides. Persisted per-entity, transmitted on subscribe, and caught up on `ServerPatch` / broadcast replay via per-index scroll deltas.
+
+**Reordering `[NamedRandom]` attributes reseeds the affected slots** (positional list) — a deliberate code change, documented because there is no meaningful "previous" random value to preserve.
+
+Keep `Context.Random` for the common case of one logical stream; reach for `[NamedRandom]` when mechanics need isolation.
+
 ---
 
 ## Server Time

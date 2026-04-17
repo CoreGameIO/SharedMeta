@@ -140,6 +140,7 @@ namespace SharedMeta.Server.Core.Transport
                         StateBytes = e.StateBytes,
                         EntitySequenceNumber = e.EntitySequenceNumber,
                         OptimisticRandomBytes = e.OptimisticRandomBytes,
+                        NamedRandomsBytes = e.NamedRandomsBytes,
                         ConfigMajorVersion = e.ConfigVersion.Major,
                         ConfigMinorVersion = e.ConfigVersion.Minor
                     }).ToList()
@@ -180,6 +181,7 @@ namespace SharedMeta.Server.Core.Transport
                     StateBytes = result.StateBytes ?? Array.Empty<byte>(),
                     EntitySequenceNumber = result.EntitySequenceNumber,
                     OptimisticRandomBytes = result.OptimisticRandomBytes,
+                    NamedRandomsBytes = result.NamedRandomsBytes,
                     ConfigMajorVersion = result.ConfigVersion.Major,
                     ConfigMinorVersion = result.ConfigVersion.Minor
                 };

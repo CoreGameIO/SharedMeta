@@ -24,6 +24,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
 
     private MetaRandom _serverRandom = null!;
     private MetaRandom _optimisticRandom = null!;
+    private MetaRandom[] _namedRandoms = System.Array.Empty<MetaRandom>();
+    private IMetaRandom[]? _namedRandomsView;
 
     /// <summary>
     /// Service resolver for dependency injection (e.g., IRandomService).
@@ -83,6 +85,9 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         _serverRandom = DeserializeOrCreateRandom(context.Serializer, serverRandomBytes, context.EntityId + ":server");
         _optimisticRandom = DeserializeOrCreateRandom(context.Serializer, optimisticRandomBytes, context.EntityId + ":optimistic");
 
+        // Initialize named randoms from descriptors (+ persisted bytes, if any)
+        InitializeNamedRandoms(context);
+
         // Hook for subclass initialization
         OnInitialize();
     }
@@ -93,6 +98,83 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             return serializer.Unpack<MetaRandom>(bytes);
         return MetaRandom.FromString(seed);
     }
+
+    /// <summary>
+    /// Descriptors for named randoms declared via [NamedRandom] on the state.
+    /// Overridden by the generated provider. Positional — index is stable across activations.
+    /// </summary>
+    protected virtual IReadOnlyList<NamedRandomDescriptor> NamedRandomDescriptors
+        => System.Array.Empty<NamedRandomDescriptor>();
+
+    private void InitializeNamedRandoms(IMetaProviderContext context)
+    {
+        var descriptors = NamedRandomDescriptors;
+        if (descriptors.Count == 0)
+        {
+            _namedRandoms = System.Array.Empty<MetaRandom>();
+            _namedRandomsView = null;
+            return;
+        }
+
+        MetaRandom[]? persisted = null;
+        var bytes = context.NamedRandomsBytes;
+        if (bytes != null && bytes.Length > 0)
+        {
+            // Stored as positional array; treat mismatched length as a code change → reseed missing slots.
+            persisted = context.Serializer.Unpack<MetaRandom[]>(bytes);
+        }
+
+        _namedRandoms = new MetaRandom[descriptors.Count];
+        for (int i = 0; i < descriptors.Count; i++)
+        {
+            if (persisted != null && i < persisted.Length && persisted[i] != null)
+            {
+                _namedRandoms[i] = persisted[i];
+            }
+            else
+            {
+                var d = descriptors[i];
+                var seed = d.SeedOverride ?? (context.EntityId + ":" + d.Name);
+                _namedRandoms[i] = MetaRandom.FromString(seed);
+            }
+        }
+
+        _namedRandomsView = new IMetaRandom[_namedRandoms.Length];
+        for (int i = 0; i < _namedRandoms.Length; i++)
+            _namedRandomsView[i] = _namedRandoms[i];
+    }
+
+    /// <summary>
+    /// Snapshot current ScrollId of each named random. Returns null if no named randoms declared
+    /// so callers can skip the work entirely.
+    /// </summary>
+    private long[]? CaptureNamedScrolls()
+    {
+        if (_namedRandoms.Length == 0) return null;
+        var snap = new long[_namedRandoms.Length];
+        for (int i = 0; i < _namedRandoms.Length; i++)
+            snap[i] = _namedRandoms[i].ScrollId;
+        return snap;
+    }
+
+    /// <summary>
+    /// Compute per-index deltas vs a previous snapshot. Returns null if all deltas are zero
+    /// (no named random was advanced), so wire overhead stays at zero for the common case.
+    /// </summary>
+    private long[]? ComputeNamedScrollDeltas(long[]? before)
+    {
+        if (before == null || before.Length == 0) return null;
+        long[]? deltas = null;
+        for (int i = 0; i < before.Length; i++)
+        {
+            var d = _namedRandoms[i].ScrollId - before[i];
+            if (d == 0) continue;
+            deltas ??= new long[before.Length];
+            deltas[i] = d;
+        }
+        return deltas;
+    }
+
 
     /// <summary>
     /// Override to perform additional initialization after context and state are set.
@@ -130,10 +212,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContext.ServerTimeTicks = call.ServerTimeTicks;
             MetaContext.Random = _optimisticRandom;
             MetaContext.ServerRandom = new MetaRandomRecorder(_serverRandom, MetaContext);
+            MetaContext.NamedRandoms = _namedRandomsView;
             MetaContextAccessor.Current = MetaContext;
 
             // Capture optimistic random scroll position before dispatch
             var scrollIdBefore = _optimisticRandom.ScrollId;
+            var namedScrollsBefore = CaptureNamedScrolls();
 
             // Determine server-side execution mode
             var executionMode = ExecutionModeProvider?.GetMode(
@@ -170,6 +254,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
 
             // Compute optimistic random scroll delta for desync detection
             var randomScrollDelta = _optimisticRandom.ScrollId - scrollIdBefore;
+            var namedRandomScrollDeltas = ComputeNamedScrollDeltas(namedScrollsBefore);
 
             // Deep desync: compute CRC from patch (field-level mutation tracking)
             uint? deepDesyncCrc = null;
@@ -199,6 +284,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                     ReplayPayload = replayPayload,
                     Error = null,
                     RandomScrollDelta = randomScrollDelta,
+                    NamedRandomScrollDeltas = namedRandomScrollDeltas,
                     PatchBytes = patchBytes,
                     DeepDesyncCrc = deepDesyncCrc
                 },
@@ -217,6 +303,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                 ExcludePlayerId = call.CallerId, // Don't broadcast back to caller
                 ServerTimeTicks = call.ServerTimeTicks,
                 RandomScrollDelta = randomScrollDelta,
+                NamedRandomScrollDeltas = namedRandomScrollDeltas,
                 PatchBytes = patchBytes
             };
 
@@ -227,6 +314,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                 foreach (var triggerMethod in triggers)
                 {
                     var triggerScrollBefore = _optimisticRandom.ScrollId;
+                    var triggerNamedScrollsBefore = CaptureNamedScrolls();
 
                     // Set up patch tracking for trigger (if ServerPatch mode)
                     PatchNode? triggerPatchRoot = null;
@@ -251,6 +339,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                     }
 
                     var triggerScrollDelta = _optimisticRandom.ScrollId - triggerScrollBefore;
+                    var triggerNamedDeltas = ComputeNamedScrollDeltas(triggerNamedScrollsBefore);
 
                     mainBroadcast.TriggerBroadcasts.Add(new EntityBroadcast
                     {
@@ -261,6 +350,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                         ExcludePlayerId = null, // Broadcast triggers to everyone
                         ServerTimeTicks = call.ServerTimeTicks,
                         RandomScrollDelta = triggerScrollDelta,
+                        NamedRandomScrollDeltas = triggerNamedDeltas,
                         PatchBytes = triggerPatchBytes
                     });
                 }
@@ -399,6 +489,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         return Context.Serializer.Pack(_optimisticRandom);
     }
 
+    public byte[] GetNamedRandomsBytes()
+    {
+        if (Context == null || _namedRandoms.Length == 0) return [];
+        return Context.Serializer.Pack(_namedRandoms);
+    }
+
     public async Task<int> InitializeStateAsync(int currentVersion)
     {
         if (MetaContext == null) return currentVersion;
@@ -406,6 +502,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         // Set up ServerRandom so [MetaInit] methods can use it
         MetaContext.ServerRandom = new MetaRandomRecorder(_serverRandom, MetaContext);
         MetaContext.Random = _optimisticRandom;
+        MetaContext.NamedRandoms = _namedRandomsView;
         MetaContextAccessor.Current = MetaContext;
         MetaContext.BeginOperation();
 

@@ -6,7 +6,7 @@ namespace SharedMeta.Test.Meta1
     public interface IPartyService : IMetaService
     {
         /// <summary>Add a hero to the party.</summary>
-        [MetaMethod(Alias = "AddHero", Mode = ExecutionMode.Optimistic)]
+        [MetaMethod(Alias = "AddHero", Mode = ExecutionMode.Optimistic, Sync = SyncApi.Generate)]
         void AddHero(int id, string name, int level);
 
         /// <summary>
@@ -16,7 +16,7 @@ namespace SharedMeta.Test.Meta1
         ///   - mutations through the wrapper produce a per-element patch sub-tree
         ///     (instead of a full collection snapshot)
         /// </summary>
-        [MetaMethod(Alias = "AwardExp", Mode = ExecutionMode.Optimistic)]
+        [MetaMethod(Alias = "AwardExp", Mode = ExecutionMode.Optimistic, Sync = SyncApi.Generate)]
         void AwardExp(int heroId, int amount);
 
         /// <summary>

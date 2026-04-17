@@ -167,6 +167,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        private readonly IDesyncDiagnostics? _diagnostics;");
             sb.AppendLine("        private readonly ICrossEntityResolver? _crossEntityResolver;");
             sb.AppendLine("        private MetaRandom? _optimisticRandom;");
+            sb.AppendLine("        private IReadOnlyList<MetaRandom>? _namedRandoms;");
             sb.AppendLine("        private readonly object? _config;");
             sb.AppendLine($"        private const string ServiceName = \"{interfaceName}\";");
             sb.AppendLine($"        private Exception? _errorException;");
@@ -255,7 +256,8 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            IDesyncDiagnostics? diagnostics = null,");
             sb.AppendLine($"            ICrossEntityResolver? crossEntityResolver = null,");
             sb.AppendLine($"            MetaRandom? optimisticRandom = null,");
-            sb.AppendLine($"            object? config = null)");
+            sb.AppendLine($"            object? config = null,");
+            sb.AppendLine($"            IReadOnlyList<MetaRandom>? namedRandoms = null)");
             sb.AppendLine("        {");
             sb.AppendLine("            _network = network;");
             sb.AppendLine("            _serializer = serializer;");
@@ -264,6 +266,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            _diagnostics = diagnostics;");
             sb.AppendLine("            _crossEntityResolver = crossEntityResolver;");
             sb.AppendLine("            _optimisticRandom = optimisticRandom;");
+            sb.AppendLine("            _namedRandoms = namedRandoms;");
             sb.AppendLine("            _config = config;");
             sb.AppendLine($"            _service = new {namespaceName}.{implClassName}();");
             if (hasDeepDesync)
@@ -272,6 +275,55 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            _network.OnBroadcast += HandleBroadcast;");
             sb.AppendLine("        }");
             sb.AppendLine();
+
+            // Named-random scroll helpers — mirror MetaProviderBase captures on the server side.
+            // When _namedRandoms is null (state has no [NamedRandom]), all of these are zero-cost no-ops.
+            sb.AppendLine("        private long[]? CaptureNamedScrollSnapshot()");
+            sb.AppendLine("        {");
+            sb.AppendLine("            if (_namedRandoms == null || _namedRandoms.Count == 0) return null;");
+            sb.AppendLine("            var snap = new long[_namedRandoms.Count];");
+            sb.AppendLine("            for (int _i = 0; _i < _namedRandoms.Count; _i++) snap[_i] = _namedRandoms[_i].ScrollId;");
+            sb.AppendLine("            return snap;");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+            sb.AppendLine("        private long[]? ComputeLocalNamedScrollDeltas(long[]? before)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            if (before == null || _namedRandoms == null) return null;");
+            sb.AppendLine("            long[]? deltas = null;");
+            sb.AppendLine("            var limit = System.Math.Min(before.Length, _namedRandoms.Count);");
+            sb.AppendLine("            for (int _i = 0; _i < limit; _i++)");
+            sb.AppendLine("            {");
+            sb.AppendLine("                var _d = _namedRandoms[_i].ScrollId - before[_i];");
+            sb.AppendLine("                if (_d == 0) continue;");
+            sb.AppendLine("                deltas ??= new long[before.Length];");
+            sb.AppendLine("                deltas[_i] = _d;");
+            sb.AppendLine("            }");
+            sb.AppendLine("            return deltas;");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+            sb.AppendLine("        private void ApplyNamedScrollSkips(long[]? serverDeltas)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            if (serverDeltas == null || _namedRandoms == null) return;");
+            sb.AppendLine("            var limit = System.Math.Min(serverDeltas.Length, _namedRandoms.Count);");
+            sb.AppendLine("            for (int _i = 0; _i < limit; _i++)");
+            sb.AppendLine("                if (serverDeltas[_i] > 0) _namedRandoms[_i].Skip(serverDeltas[_i]);");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+            sb.AppendLine("        private void CompareAndReportNamedScrollDesync(string methodAlias, long[]? serverDeltas, long[]? localDeltas)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            var serverLen = serverDeltas?.Length ?? 0;");
+            sb.AppendLine("            var localLen = localDeltas?.Length ?? 0;");
+            sb.AppendLine("            var max = System.Math.Max(serverLen, localLen);");
+            sb.AppendLine("            for (int _i = 0; _i < max; _i++)");
+            sb.AppendLine("            {");
+            sb.AppendLine("                var _s = _i < serverLen ? serverDeltas![_i] : 0L;");
+            sb.AppendLine("                var _l = _i < localLen ? localDeltas![_i] : 0L;");
+            sb.AppendLine("                if (_s != _l)");
+            sb.AppendLine("                    _diagnostics?.OnRandomDesync(ServiceName, methodAlias + \"[NamedRandom:\" + _i + \"]\", _s, _l);");
+            sb.AppendLine("            }");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
             sb.AppendLine("        private void SetError(Exception ex, string methodName)");
             sb.AppendLine("        {");
             sb.AppendLine("            MetaLog.Error($\"[{ServiceName}.{methodName}] Service error\", ex);");
@@ -299,10 +351,11 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        /// <summary>");
             sb.AppendLine($"        /// Replace internal state and random after reconnect.");
             sb.AppendLine($"        /// </summary>");
-            sb.AppendLine($"        public void RefreshState({stateTypeName} newState, MetaRandom? newRandom)");
+            sb.AppendLine($"        public void RefreshState({stateTypeName} newState, MetaRandom? newRandom, IReadOnlyList<MetaRandom>? newNamedRandoms = null)");
             sb.AppendLine("        {");
             sb.AppendLine("            _state = newState;");
             sb.AppendLine("            _optimisticRandom = newRandom;");
+            sb.AppendLine("            if (newNamedRandoms != null) _namedRandoms = newNamedRandoms;");
             sb.AppendLine("            _errorException = null;");
             sb.AppendLine("            OnStateRefreshed?.Invoke(newState);");
             sb.AppendLine("            OnStateMutated?.Invoke();");
@@ -334,6 +387,8 @@ namespace SharedMeta.Generator.Generators
             var methodAlias = GetMethodAlias(method, methodName);
             var defaultMode = "Server";
             bool isQueryMethod = false;
+            string syncApi = "None";
+            string syncPolicy = "Throw";
 
             var attributes = method.AttributeLists.SelectMany(a => a.Attributes);
             var metaMethod = attributes.FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
@@ -349,6 +404,10 @@ namespace SharedMeta.Generator.Generators
                         if (name == "Query" && arg.Expression is LiteralExpressionSyntax queryLit
                             && queryLit.Token.Text == "true")
                             isQueryMethod = true;
+                        if (name == "Sync" && arg.Expression is MemberAccessExpressionSyntax syncAccess)
+                            syncApi = syncAccess.Name.Identifier.Text;
+                        if (name == "SyncPolicy" && arg.Expression is MemberAccessExpressionSyntax policyAccess)
+                            syncPolicy = policyAccess.Name.Identifier.Text;
                     }
                 }
             }
@@ -370,40 +429,104 @@ namespace SharedMeta.Generator.Generators
             var argNames = method.ParameterList.Parameters.Select(p => p.Identifier.Text).ToList();
             var callArgs = string.Join(", ", argNames);
 
-            // Public method with mode switch
-            sb.AppendLine($"        /// <summary>");
-            sb.AppendLine($"        /// {methodName} - Default mode: {defaultMode}");
-            sb.AppendLine($"        /// </summary>");
-            sb.AppendLine($"        public {asyncReturnType} {methodName}Async({parameters})");
-            sb.AppendLine("        {");
-            sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
-            sb.AppendLine($"            var mode = _modeProvider.GetMode(ServiceName, \"{methodAlias}\", ExecutionMode.{defaultMode});");
-            sb.AppendLine($"            if (mode == ExecutionMode.ServerPatch)");
-            sb.AppendLine($"                return {methodName}Async_ServerPatch({callArgs});");
-            sb.AppendLine($"            if (mode == ExecutionMode.ServerReplace)");
-            sb.AppendLine($"                return {methodName}Async_ServerReplace({callArgs});");
-            sb.AppendLine($"            if (mode == ExecutionMode.Server)");
-            sb.AppendLine($"                return {methodName}Async_Server({callArgs});");
-            sb.AppendLine($"            if (mode == ExecutionMode.CrossOptimistic)");
-            sb.AppendLine($"                return {methodName}Async_CrossOptimistic({callArgs});");
-            sb.AppendLine($"            return {methodName}Async_Optimistic({callArgs});");
-            sb.AppendLine("        }");
-            sb.AppendLine();
+            bool wantsSync = syncApi == "Generate" || syncApi == "OnlySync";
+            bool onlySync = syncApi == "OnlySync";
 
-            // Server mode implementation
-            GenerateServerMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync);
+            // Compile-time validation for sync generation.
+            // Emit #error lines into the generated output — Roslyn surfaces them as CS1029
+            // with our message, which is clearer than silently skipping misconfigured methods.
+            if (wantsSync)
+            {
+                if (defaultMode != "Optimistic" && defaultMode != "Local")
+                {
+                    sb.AppendLine($"#error SharedMeta: [MetaMethod] on '{interfaceName}.{methodName}' has Sync = SyncApi.{syncApi} but Mode = ExecutionMode.{defaultMode}. Sync API generation is only supported for Optimistic or Local methods.");
+                }
+                if (isAsync)
+                {
+                    sb.AppendLine($"#error SharedMeta: [MetaMethod] on '{interfaceName}.{methodName}' has Sync = SyncApi.{syncApi} but the service signature is async (return type '{returnType}'). Change the return type to a non-Task type, or remove Sync.");
+                }
+            }
 
-            // Optimistic mode implementation
-            GenerateOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync);
+            // Public async method with mode switch — skipped when Sync = OnlySync
+            if (!onlySync)
+            {
+                sb.AppendLine($"        /// <summary>");
+                sb.AppendLine($"        /// {methodName} - Default mode: {defaultMode}");
+                sb.AppendLine($"        /// </summary>");
+                sb.AppendLine($"        public {asyncReturnType} {methodName}Async({parameters})");
+                sb.AppendLine("        {");
+                sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
+                sb.AppendLine($"            var mode = _modeProvider.GetMode(ServiceName, \"{methodAlias}\", ExecutionMode.{defaultMode});");
+                sb.AppendLine($"            if (mode == ExecutionMode.ServerPatch)");
+                sb.AppendLine($"                return {methodName}Async_ServerPatch({callArgs});");
+                sb.AppendLine($"            if (mode == ExecutionMode.ServerReplace)");
+                sb.AppendLine($"                return {methodName}Async_ServerReplace({callArgs});");
+                sb.AppendLine($"            if (mode == ExecutionMode.Server)");
+                sb.AppendLine($"                return {methodName}Async_Server({callArgs});");
+                sb.AppendLine($"            if (mode == ExecutionMode.CrossOptimistic)");
+                sb.AppendLine($"                return {methodName}Async_CrossOptimistic({callArgs});");
+                sb.AppendLine($"            return {methodName}Async_Optimistic({callArgs});");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+            }
 
-            // CrossOptimistic mode implementation
-            GenerateCrossOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync);
+            // Public sync method — only emitted when Sync is requested on a valid Optimistic/Local sync signature.
+            // Runtime guard: if IExecutionModeProvider has overridden the mode away from Optimistic/Local
+            // (e.g. loaded config promoted this method to Server), apply SyncPolicy (Throw/Warn/Silent).
+            // TODO(sync-mode-override): today we still run the local body on Warn/Silent — consider an
+            // opt-in that schedules a server round-trip instead (fire-and-discard local result) for callers
+            // that want correctness over immediacy when a config override downgrades the mode.
+            if (wantsSync && !isAsync && (defaultMode == "Optimistic" || defaultMode == "Local"))
+            {
+                string syncRet = isVoidReturn ? "void" : innerReturnType;
+                sb.AppendLine($"        /// <summary>");
+                sb.AppendLine($"        /// Synchronous overload of {methodName}. Executes locally and fires the server round-trip in the background.");
+                sb.AppendLine($"        /// SyncPolicy on runtime mode override: {syncPolicy}.");
+                sb.AppendLine($"        /// </summary>");
+                sb.AppendLine($"        public {syncRet} {methodName}Sync({parameters})");
+                sb.AppendLine("        {");
+                sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
+                sb.AppendLine($"            var mode = _modeProvider.GetMode(ServiceName, \"{methodAlias}\", ExecutionMode.{defaultMode});");
+                sb.AppendLine("            if (mode != ExecutionMode.Optimistic && mode != ExecutionMode.Local)");
+                sb.AppendLine("            {");
+                if (syncPolicy == "Warn")
+                {
+                    sb.AppendLine($"                MetaLog.Warning($\"[{{ServiceName}}.{methodAlias}] Sync called but effective mode is {{mode}} — executing locally without a server round-trip.\");");
+                    sb.AppendLine($"                _diagnostics?.OnSyncPolicyViolation(ServiceName, \"{methodAlias}\", mode);");
+                }
+                else if (syncPolicy == "Silent")
+                {
+                    sb.AppendLine($"                _diagnostics?.OnSyncPolicyViolation(ServiceName, \"{methodAlias}\", mode);");
+                }
+                else // Throw (default)
+                {
+                    sb.AppendLine($"                throw new InvalidOperationException($\"[{{ServiceName}}.{methodAlias}] Sync invocation blocked: effective mode is {{mode}} (overridden by IExecutionModeProvider). Use {methodName}Async, or set SyncPolicy = SyncPolicy.Warn/Silent on [MetaMethod].\");");
+                }
+                sb.AppendLine("            }");
+                if (isVoidReturn)
+                    sb.AppendLine($"            {methodName}Sync_Optimistic({callArgs});");
+                else
+                    sb.AppendLine($"            return {methodName}Sync_Optimistic({callArgs});");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+            }
 
-            // ServerPatch mode implementation
-            GenerateServerPatchMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName);
+            // Per-mode private implementations. Emitted only when the corresponding public dispatcher
+            // can actually reach them — skipped when Sync = OnlySync since no async public dispatcher exists.
+            if (!onlySync)
+            {
+                GenerateServerMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync);
+                GenerateOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync);
+                GenerateCrossOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync);
+                GenerateServerPatchMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName);
+                GenerateServerReplaceMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName);
+            }
 
-            // ServerReplace mode implementation
-            GenerateServerReplaceMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName);
+            // Private sync-optimistic body — only emitted when the public sync method was emitted above.
+            if (wantsSync && !isAsync && (defaultMode == "Optimistic" || defaultMode == "Local"))
+            {
+                GenerateOptimisticMethodSync(sb, method, methodAlias, innerReturnType, isVoidReturn, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync);
+            }
         }
 
         /// <summary>
@@ -655,6 +778,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            ctx.ServerTimeTicks = serverTimeTicks;");
             sb.AppendLine("            ctx.Random = _optimisticRandom;");
             sb.AppendLine("            ctx.Config = _config;");
+            sb.AppendLine("            ctx.NamedRandoms = _namedRandoms;");
             sb.AppendLine("            MetaContextAccessor.Current = ctx;");
 
             if (!isVoidReturn)
@@ -664,6 +788,7 @@ namespace SharedMeta.Generator.Generators
 
             // Capture scrollId before local execution for desync detection
             sb.AppendLine("            var scrollIdBefore = _optimisticRandom?.ScrollId ?? 0;");
+            sb.AppendLine("            var namedScrollsBefore = CaptureNamedScrollSnapshot();");
             sb.AppendLine("            var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
 
             sb.AppendLine("            try");
@@ -689,6 +814,11 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
+            // Capture local deltas synchronously — MUST happen before the fire-and-forget ContinueWith
+            // or subsequent Optimistic calls on the same ApiClient will race and advance the random
+            // state further by the time this continuation runs, producing a phantom desync.
+            sb.AppendLine("            var localScrollDelta = (_optimisticRandom?.ScrollId ?? 0) - scrollIdBefore;");
+            sb.AppendLine("            var localNamedScrollDeltas = ComputeLocalNamedScrollDeltas(namedScrollsBefore);");
             // Deep desync: compute local CRC before fire-and-forget (captures _ddRoot from try scope)
             if (hasDeepDesync)
             {
@@ -720,12 +850,12 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                    {");
                 sb.AppendLine("                    if (t.IsCompletedSuccessfully)");
                 sb.AppendLine("                    {");
-                sb.AppendLine("                        var localScrollDelta = (_optimisticRandom?.ScrollId ?? 0) - scrollIdBefore;");
                 sb.AppendLine("                        if (t.Result.RandomScrollDelta != localScrollDelta)");
                 sb.AppendLine("                        {");
                 sb.AppendLine($"                            _diagnostics?.OnRandomDesync(ServiceName, \"{methodAlias}\", t.Result.RandomScrollDelta, localScrollDelta);");
                 GenerateRandomMismatchReport(sb, methodAlias, "t.Result.RandomScrollDelta", "localScrollDelta", "                            ");
                 sb.AppendLine("                        }");
+                sb.AppendLine($"                        CompareAndReportNamedScrollDesync(\"{methodAlias}\", t.Result.NamedRandomScrollDeltas, localNamedScrollDeltas);");
                 GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", hasDeepDesync);
                 sb.AppendLine("                    }");
                 sb.AppendLine("                    }");
@@ -743,12 +873,148 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                    {");
                 GenerateOptimisticResultDeserialization(sb, returnType, methodAlias, serializer);
                 sb.AppendLine();
-                sb.AppendLine("                        var localScrollDelta = (_optimisticRandom?.ScrollId ?? 0) - scrollIdBefore;");
                 sb.AppendLine("                        if (t.Result.RandomScrollDelta != localScrollDelta)");
                 sb.AppendLine("                        {");
                 sb.AppendLine($"                            _diagnostics?.OnRandomDesync(ServiceName, \"{methodAlias}\", t.Result.RandomScrollDelta, localScrollDelta);");
                 GenerateRandomMismatchReport(sb, methodAlias, "t.Result.RandomScrollDelta", "localScrollDelta", "                            ");
                 sb.AppendLine("                        }");
+                sb.AppendLine($"                        CompareAndReportNamedScrollDesync(\"{methodAlias}\", t.Result.NamedRandomScrollDeltas, localNamedScrollDeltas);");
+                GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", hasDeepDesync);
+                sb.AppendLine("                    }");
+                sb.AppendLine("                    }");
+                sb.AppendLine($"                    catch (Exception _ddEx) {{ SharedMeta.Core.Logging.MetaLog.Error(\"[Optimistic-Continuation] {methodAlias}: \" + _ddEx, _ddEx); }}");
+                sb.AppendLine("                });");
+                sb.AppendLine();
+                sb.AppendLine("            return localResult;");
+            }
+
+            sb.AppendLine("        }");
+            sb.AppendLine();
+        }
+
+        // Sync mirror of GenerateOptimisticMethod. Preconditions (validated in GenerateMethod):
+        //   - Mode is Optimistic or Local
+        //   - Service method has a non-Task return type (no await needed on the impl call)
+        // Body parity with the async version — identical mutations, context, tracker, fire-and-forget
+        // continuation. Only differences: no `async`/`Task<>` wrapper, no `await` on impl call.
+        private static void GenerateOptimisticMethodSync(StringBuilder sb, MethodDeclarationSyntax method,
+            string methodAlias, string returnType, bool isVoidReturn, int paramCount, string callArgs,
+            DetectedSerializer serializer, string? stateTypeName, bool hasDeepDesync = false)
+        {
+            var methodName = method.Identifier.Text;
+            var parameters = string.Join(", ", method.ParameterList.Parameters);
+            string syncReturnType = isVoidReturn ? "void" : returnType;
+
+            sb.AppendLine($"        private {syncReturnType} {methodName}Sync_Optimistic({parameters})");
+            sb.AppendLine("        {");
+
+            sb.AppendLine("            var serverTimeTicks = _network.ServerTimeTicks;");
+
+            sb.AppendLine($"            var ctx = new ClientMetaContext<{stateTypeName}>(_state, _serializer);");
+            sb.AppendLine("            ctx.CallerId = _network.PlayerId;");
+            sb.AppendLine("            ctx.ServerTimeTicks = serverTimeTicks;");
+            sb.AppendLine("            ctx.Random = _optimisticRandom;");
+            sb.AppendLine("            ctx.Config = _config;");
+            sb.AppendLine("            ctx.NamedRandoms = _namedRandoms;");
+            sb.AppendLine("            MetaContextAccessor.Current = ctx;");
+
+            if (!isVoidReturn)
+            {
+                sb.AppendLine($"            {returnType} localResult;");
+            }
+
+            sb.AppendLine("            var scrollIdBefore = _optimisticRandom?.ScrollId ?? 0;");
+            sb.AppendLine("            var namedScrollsBefore = CaptureNamedScrollSnapshot();");
+            sb.AppendLine("            var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
+
+            sb.AppendLine("            try");
+            sb.AppendLine("            {");
+
+            if (hasDeepDesync)
+            {
+                sb.AppendLine("                var _ddRoot = new SharedMeta.Core.Patch.PatchNode(-1);");
+                sb.AppendLine($"                ctx.PatchWrapper = new {stateTypeName}PatchWrapper(_state, _ddRoot, _serializer);");
+            }
+            var optServiceRef = hasDeepDesync ? "_patchTrackedService" : "_service";
+            if (isVoidReturn)
+            {
+                sb.AppendLine($"                {optServiceRef}.{methodName}({callArgs});");
+            }
+            else
+            {
+                sb.AppendLine($"                localResult = {optServiceRef}.{methodName}({callArgs});");
+            }
+
+            sb.AppendLine("            }");
+            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
+            sb.AppendLine("            MetaContextAccessor.Current = null;");
+            sb.AppendLine("            _tracker.FlushAndNotify();");
+            // Capture local deltas synchronously — MUST happen before the fire-and-forget ContinueWith
+            // or subsequent Optimistic calls on the same ApiClient will race and advance the random
+            // state further by the time this continuation runs, producing a phantom desync.
+            sb.AppendLine("            var localScrollDelta = (_optimisticRandom?.ScrollId ?? 0) - scrollIdBefore;");
+            sb.AppendLine("            var localNamedScrollDeltas = ComputeLocalNamedScrollDeltas(namedScrollsBefore);");
+
+            if (hasDeepDesync)
+            {
+                sb.AppendLine("            uint _ddLocalCrc = 0;");
+                sb.AppendLine("            byte[] _ddLocalPatchBytes = System.Array.Empty<byte>();");
+                sb.AppendLine("            if (ctx.PatchWrapper is SharedMeta.Core.Patch.IPatchWrapper _ddPw && _ddPw.Node != null)");
+                sb.AppendLine("            {");
+                sb.AppendLine("                _ddPw.Node.Prune();");
+                sb.AppendLine("                if (_ddPw.Node.HasChanges)");
+                sb.AppendLine("                {");
+                sb.AppendLine("                    _ddLocalPatchBytes = _serializer.Pack(_ddPw.Node);");
+                sb.AppendLine("                    _ddLocalCrc = SharedMeta.Core.Patch.PatchCrc.Compute(_ddLocalPatchBytes);");
+                sb.AppendLine("                }");
+                sb.AppendLine("            }");
+            }
+            sb.AppendLine();
+
+            GenerateArgumentSerialization(sb, method, paramCount, serializer);
+            sb.AppendLine();
+
+            // Fire-and-forget to server. Identical to the async variant — the Task is discarded
+            // and never awaited, so the server round-trip happens in the background while the
+            // sync method returns immediately.
+            if (isVoidReturn)
+            {
+                sb.AppendLine($"            _ = _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks)");
+                sb.AppendLine("                .ContinueWith(t =>");
+                sb.AppendLine("                {");
+                sb.AppendLine("                    try");
+                sb.AppendLine("                    {");
+                sb.AppendLine("                    if (t.IsCompletedSuccessfully)");
+                sb.AppendLine("                    {");
+                sb.AppendLine("                        if (t.Result.RandomScrollDelta != localScrollDelta)");
+                sb.AppendLine("                        {");
+                sb.AppendLine($"                            _diagnostics?.OnRandomDesync(ServiceName, \"{methodAlias}\", t.Result.RandomScrollDelta, localScrollDelta);");
+                GenerateRandomMismatchReport(sb, methodAlias, "t.Result.RandomScrollDelta", "localScrollDelta", "                            ");
+                sb.AppendLine("                        }");
+                sb.AppendLine($"                        CompareAndReportNamedScrollDesync(\"{methodAlias}\", t.Result.NamedRandomScrollDeltas, localNamedScrollDeltas);");
+                GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", hasDeepDesync);
+                sb.AppendLine("                    }");
+                sb.AppendLine("                    }");
+                sb.AppendLine($"                    catch (Exception _ddEx) {{ SharedMeta.Core.Logging.MetaLog.Error(\"[Optimistic-Continuation] {methodAlias}: \" + _ddEx, _ddEx); }}");
+                sb.AppendLine("                });");
+            }
+            else
+            {
+                sb.AppendLine($"            _ = _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks)");
+                sb.AppendLine("                .ContinueWith(t =>");
+                sb.AppendLine("                {");
+                sb.AppendLine("                    try");
+                sb.AppendLine("                    {");
+                sb.AppendLine("                    if (t.IsCompletedSuccessfully)");
+                sb.AppendLine("                    {");
+                GenerateOptimisticResultDeserialization(sb, returnType, methodAlias, serializer);
+                sb.AppendLine();
+                sb.AppendLine("                        if (t.Result.RandomScrollDelta != localScrollDelta)");
+                sb.AppendLine("                        {");
+                sb.AppendLine($"                            _diagnostics?.OnRandomDesync(ServiceName, \"{methodAlias}\", t.Result.RandomScrollDelta, localScrollDelta);");
+                GenerateRandomMismatchReport(sb, methodAlias, "t.Result.RandomScrollDelta", "localScrollDelta", "                            ");
+                sb.AppendLine("                        }");
+                sb.AppendLine($"                        CompareAndReportNamedScrollDesync(\"{methodAlias}\", t.Result.NamedRandomScrollDeltas, localNamedScrollDeltas);");
                 GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", hasDeepDesync);
                 sb.AppendLine("                    }");
                 sb.AppendLine("                    }");
@@ -784,6 +1050,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            ctx.CrossEntityResolver = _crossEntityResolver;");
             sb.AppendLine("            ctx.Random = _optimisticRandom;");
             sb.AppendLine("            ctx.Config = _config;");
+            sb.AppendLine("            ctx.NamedRandoms = _namedRandoms;");
             sb.AppendLine("            MetaContextAccessor.Current = ctx;");
 
             if (!isVoidReturn)
@@ -794,6 +1061,7 @@ namespace SharedMeta.Generator.Generators
 
             // Capture scrollId before local execution for desync detection
             sb.AppendLine("            var scrollIdBefore = _optimisticRandom?.ScrollId ?? 0;");
+            sb.AppendLine("            var namedScrollsBefore = CaptureNamedScrollSnapshot();");
             sb.AppendLine("            var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
 
             sb.AppendLine("            try");
@@ -816,6 +1084,11 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
+            // Capture local deltas synchronously — MUST happen before the fire-and-forget ContinueWith
+            // or subsequent Optimistic calls on the same ApiClient will race and advance the random
+            // state further by the time this continuation runs, producing a phantom desync.
+            sb.AppendLine("            var localScrollDelta = (_optimisticRandom?.ScrollId ?? 0) - scrollIdBefore;");
+            sb.AppendLine("            var localNamedScrollDeltas = ComputeLocalNamedScrollDeltas(namedScrollsBefore);");
             sb.AppendLine("            localCrossResults = _crossEntityResolver?.TakeRecordedResults() ?? new();");
             // Deep desync: capture local CRC + patch bytes before fire-and-forget
             if (hasDeepDesync)
@@ -848,12 +1121,12 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                    {");
                 sb.AppendLine("                    if (t.IsCompletedSuccessfully)");
                 sb.AppendLine("                    {");
-                sb.AppendLine("                        var localScrollDelta = (_optimisticRandom?.ScrollId ?? 0) - scrollIdBefore;");
                 sb.AppendLine("                        if (t.Result.RandomScrollDelta != localScrollDelta)");
                 sb.AppendLine("                        {");
                 sb.AppendLine($"                            _diagnostics?.OnRandomDesync(ServiceName, \"{methodAlias}\", t.Result.RandomScrollDelta, localScrollDelta);");
                 GenerateRandomMismatchReport(sb, methodAlias, "t.Result.RandomScrollDelta", "localScrollDelta", "                            ");
                 sb.AppendLine("                        }");
+                sb.AppendLine($"                        CompareAndReportNamedScrollDesync(\"{methodAlias}\", t.Result.NamedRandomScrollDeltas, localNamedScrollDeltas);");
                 sb.AppendLine("                        if (t.Result.CrossEntityOperations is { Count: > 0 } serverCrossOps)");
                 sb.AppendLine("                        {");
                 sb.AppendLine("                            for (int i = 0; i < serverCrossOps.Count && i < localCrossResults.Count; i++)");
@@ -889,12 +1162,12 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                            }");
                 sb.AppendLine("                        }");
                 sb.AppendLine();
-                sb.AppendLine("                        var localScrollDelta = (_optimisticRandom?.ScrollId ?? 0) - scrollIdBefore;");
                 sb.AppendLine("                        if (t.Result.RandomScrollDelta != localScrollDelta)");
                 sb.AppendLine("                        {");
                 sb.AppendLine($"                            _diagnostics?.OnRandomDesync(ServiceName, \"{methodAlias}\", t.Result.RandomScrollDelta, localScrollDelta);");
                 GenerateRandomMismatchReport(sb, methodAlias, "t.Result.RandomScrollDelta", "localScrollDelta", "                            ");
                 sb.AppendLine("                        }");
+                sb.AppendLine($"                        CompareAndReportNamedScrollDesync(\"{methodAlias}\", t.Result.NamedRandomScrollDeltas, localNamedScrollDeltas);");
                 GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", hasDeepDesync);
                 sb.AppendLine("                    }");
                 sb.AppendLine("                    }");
@@ -955,6 +1228,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                    var patch = _serializer.Unpack<PatchNode>(patchData);");
             sb.AppendLine($"                    {applierName}.Apply(_state, patch, _serializer);");
             sb.AppendLine("                    _optimisticRandom?.Skip(response.RandomScrollDelta);");
+            sb.AppendLine("                    ApplyNamedScrollSkips(response.NamedRandomScrollDeltas);");
             sb.AppendLine("                }");
             sb.AppendLine("                else");
             sb.AppendLine("                {");
@@ -1039,6 +1313,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                    _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
             sb.AppendLine("                    _crossEntityResolver?.UpdateCachedState(_network.EntityId ?? string.Empty, _state);");
             sb.AppendLine("                    _optimisticRandom?.Skip(response.RandomScrollDelta);");
+            sb.AppendLine("                    ApplyNamedScrollSkips(response.NamedRandomScrollDeltas);");
             sb.AppendLine("                }");
             sb.AppendLine("                else");
             sb.AppendLine("                {");
@@ -1119,6 +1394,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            ctx.Random = _optimisticRandom;");
             sb.AppendLine("            ctx.Config = _config;");
             sb.AppendLine("            ctx.ServerRandom = new MetaRandomReplayer(ctx);");
+            sb.AppendLine("            ctx.NamedRandoms = _namedRandoms;");
             sb.AppendLine("            MetaContextAccessor.Current = ctx;");
             sb.AppendLine("        }");
             sb.AppendLine();
@@ -1202,6 +1478,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                        _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
                 sb.AppendLine("                        _crossEntityResolver?.UpdateCachedState(_network.EntityId ?? string.Empty, _state);");
                 sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
+                sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
                 sb.AppendLine("                    }");
                 // PatchBytes check: apply patch or replay normally
                 sb.AppendLine("                    else if (broadcast.PatchBytes is { Length: > 0 } patchData)");
@@ -1209,6 +1486,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                        var patch = _serializer.Unpack<PatchNode>(patchData);");
                 sb.AppendLine($"                        {applierName}.Apply(_state, patch, _serializer);");
                 sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
+                sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
                 sb.AppendLine("                    }");
                 sb.AppendLine("                    else");
                 sb.AppendLine("                    {");
@@ -1301,6 +1579,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"                        _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
                     sb.AppendLine("                        _crossEntityResolver?.UpdateCachedState(_network.EntityId ?? string.Empty, _state);");
                     sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
+                sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
                     sb.AppendLine("                    }");
                     // Replay the service method to update state
                     sb.AppendLine("                    else if (broadcast.PatchBytes is { Length: > 0 } patchData)");
@@ -1308,6 +1587,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"                        var patch = _serializer.Unpack<PatchNode>(patchData);");
                     sb.AppendLine($"                        {subscriberApplierName}.Apply(_state, patch, _serializer);");
                     sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
+                sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
                     sb.AppendLine("                    }");
                     sb.AppendLine("                    else");
                     sb.AppendLine("                    {");
@@ -1356,12 +1636,14 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                    _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
             sb.AppendLine("                    _crossEntityResolver?.UpdateCachedState(_network.EntityId ?? string.Empty, _state);");
             sb.AppendLine("                    _optimisticRandom?.Skip(triggerOp.Response.RandomScrollDelta);");
+            sb.AppendLine("                    ApplyNamedScrollSkips(triggerOp.Response.NamedRandomScrollDeltas);");
             sb.AppendLine("                }");
             sb.AppendLine("                else if (triggerOp.Response.PatchBytes is { Length: > 0 } patchData)");
             sb.AppendLine("                {");
             sb.AppendLine($"                    var patch = _serializer.Unpack<PatchNode>(patchData);");
             sb.AppendLine($"                    {applierName}.Apply(_state, patch, _serializer);");
             sb.AppendLine("                    _optimisticRandom?.Skip(triggerOp.Response.RandomScrollDelta);");
+            sb.AppendLine("                    ApplyNamedScrollSkips(triggerOp.Response.NamedRandomScrollDeltas);");
             sb.AppendLine("                }");
             sb.AppendLine("                else");
             sb.AppendLine("                {");

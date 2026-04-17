@@ -127,6 +127,7 @@ namespace SharedMeta.Client
                         Network = network,
                         StateBytes = connectResponse.StateBytes,
                         OptimisticRandomBytes = connectResponse.OptimisticRandomBytes,
+                        NamedRandomsBytes = connectResponse.NamedRandomsBytes,
                         ConfigVersion = new MetaConfigVersion(connectResponse.ConfigMajorVersion, connectResponse.ConfigMinorVersion)
                     };
                 },

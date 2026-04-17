@@ -99,10 +99,10 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                ConfigType = typeof({configTypeFullName}),");
                 sb.AppendLine($"                ConfigFactory = () => new {configTypeFullName}(),");
             }
-            sb.AppendLine($"                ApiClientFactory = (network, serializer, state, modeProvider, diagnostics, crossResolver, optimisticRandom, config) =>");
-            sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, ({stateTypeFullName})state, modeProvider, diagnostics, crossResolver, optimisticRandom, config),");
-            sb.AppendLine($"                StateRefresher = (apiClient, state, random) =>");
-            sb.AppendLine($"                    (({baseName}ApiClient)apiClient).RefreshState(({stateTypeFullName})state, random)");
+            sb.AppendLine($"                ApiClientFactory = (network, serializer, state, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms) =>");
+            sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, ({stateTypeFullName})state, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms),");
+            sb.AppendLine($"                StateRefresher = (apiClient, state, random, namedRandoms) =>");
+            sb.AppendLine($"                    (({baseName}ApiClient)apiClient).RefreshState(({stateTypeFullName})state, random, namedRandoms)");
             sb.AppendLine("            });");
             sb.AppendLine("            return resolver;");
             sb.AppendLine("        }");
@@ -123,10 +123,10 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                ConfigType = typeof({configTypeFullName}),");
                 sb.AppendLine($"                ConfigFactory = () => new {configTypeFullName}(),");
             }
-            sb.AppendLine($"                ApiClientFactory = (network, serializer, state, modeProvider, diagnostics, crossResolver, optimisticRandom, config) =>");
-            sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, ({stateTypeFullName})state, modeProvider, diagnostics, crossResolver, optimisticRandom, config),");
-            sb.AppendLine($"                StateRefresher = (apiClient, state, random) =>");
-            sb.AppendLine($"                    (({baseName}ApiClient)apiClient).RefreshState(({stateTypeFullName})state, random)");
+            sb.AppendLine($"                ApiClientFactory = (network, serializer, state, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms) =>");
+            sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, ({stateTypeFullName})state, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms),");
+            sb.AppendLine($"                StateRefresher = (apiClient, state, random, namedRandoms) =>");
+            sb.AppendLine($"                    (({baseName}ApiClient)apiClient).RefreshState(({stateTypeFullName})state, random, namedRandoms)");
             sb.AppendLine("            };");
             sb.AppendLine("        }");
             sb.AppendLine("    }");

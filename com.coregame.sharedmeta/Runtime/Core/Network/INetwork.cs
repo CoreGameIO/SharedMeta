@@ -113,5 +113,8 @@ namespace SharedMeta.Core.Network
 
         /// <summary>Full serialized state for ServerReplace mode.</summary>
         public byte[]? StateBytes { get; set; }
+
+        /// <summary>Per-index scroll deltas for [NamedRandom] streams (positional). Null when none advanced.</summary>
+        public long[]? NamedRandomScrollDeltas { get; set; }
     }
 }

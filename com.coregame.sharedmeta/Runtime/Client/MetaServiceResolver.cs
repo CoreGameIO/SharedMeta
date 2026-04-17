@@ -101,6 +101,7 @@ namespace SharedMeta.Client
             INetwork network;
             object state;
             MetaRandom? optimisticRandom = null;
+            MetaRandom[]? namedRandoms = null;
             object? entityConfig = null;
 
             if (existingConnection != null)
@@ -109,6 +110,7 @@ namespace SharedMeta.Client
                 network = existingConnection.Network;
                 state = existingConnection.State;
                 optimisticRandom = existingConnection.OptimisticRandom;
+                namedRandoms = existingConnection.NamedRandoms;
                 entityConfig = existingConnection.Config;
             }
             else
@@ -140,6 +142,12 @@ namespace SharedMeta.Client
                     optimisticRandom = MetaRandom.FromString(entityId + ":optimistic");
                 }
 
+                // Deserialize named randoms (null when state has no [NamedRandom] declarations)
+                if (subResult.NamedRandomsBytes is { Length: > 0 } nrBytes)
+                {
+                    namedRandoms = _serializer.Unpack<MetaRandom[]>(nrBytes);
+                }
+
                 // Resolve config: check cache → request URL → download → fallback to factory
                 entityConfig = await ResolveConfigAsync(config, subResult, entityId);
             }
@@ -153,7 +161,8 @@ namespace SharedMeta.Client
                 _diagnostics,
                 this,
                 optimisticRandom,
-                entityConfig);
+                entityConfig,
+                namedRandoms);
 
             // Cache connection
             lock (_lock)
@@ -167,6 +176,7 @@ namespace SharedMeta.Client
                         StateType = config.StateType,
                         State = state,
                         OptimisticRandom = optimisticRandom,
+                        NamedRandoms = namedRandoms,
                         Config = entityConfig
                     };
                     _connections[entityId] = connection;
@@ -330,6 +340,10 @@ namespace SharedMeta.Client
             else
                 optimisticRandom = MetaRandom.FromString(entityId + ":optimistic");
 
+            MetaRandom[]? namedRandoms = null;
+            if (subResult.NamedRandomsBytes is { Length: > 0 } nrBytes)
+                namedRandoms = _serializer.Unpack<MetaRandom[]>(nrBytes);
+
             var entityConfig = await ResolveConfigAsync(config, subResult, entityId);
 
             lock (_lock)
@@ -343,6 +357,7 @@ namespace SharedMeta.Client
                         StateType = config.StateType,
                         State = state,
                         OptimisticRandom = optimisticRandom,
+                        NamedRandoms = namedRandoms,
                         Config = entityConfig
                     };
                 }
@@ -419,13 +434,19 @@ namespace SharedMeta.Client
                                 connection.OptimisticRandom = _serializer.Unpack<MetaRandom>(entity.OptimisticRandomBytes);
                             }
 
+                            // Update named randoms
+                            if (entity.NamedRandomsBytes is { Length: > 0 } nrBytes)
+                            {
+                                connection.NamedRandoms = _serializer.Unpack<MetaRandom[]>(nrBytes);
+                            }
+
                             // Refresh state in existing API clients via generated RefreshState method.
                             // This fires OnStateRefreshed event so client code can update Views.
                             foreach (var (clientType, apiClient) in connection.ApiClients)
                             {
                                 if (_serviceConfigs.TryGetValue(clientType, out var config))
                                 {
-                                    config.StateRefresher?.Invoke(apiClient, newState, connection.OptimisticRandom);
+                                    config.StateRefresher?.Invoke(apiClient, newState, connection.OptimisticRandom, connection.NamedRandoms);
                                 }
                             }
                         }
@@ -522,6 +543,7 @@ namespace SharedMeta.Client
             public Type StateType { get; init; } = null!;
             public object State { get; set; } = null!;
             public MetaRandom? OptimisticRandom { get; set; }
+            public MetaRandom[]? NamedRandoms { get; set; }
             public object? Config { get; set; }
             public Dictionary<Type, object> ApiClients { get; } = new();
         }

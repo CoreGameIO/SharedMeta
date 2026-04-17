@@ -188,6 +188,7 @@ namespace SharedMeta.Client
                 StateBytes = result.StateBytes,
                 CurrentSequenceNumber = 0,
                 OptimisticRandomBytes = result.OptimisticRandomBytes,
+                NamedRandomsBytes = result.NamedRandomsBytes,
                 ConfigMajorVersion = result.ConfigVersion.Major,
                 ConfigMinorVersion = result.ConfigVersion.Minor
             };

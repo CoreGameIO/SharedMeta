@@ -25,7 +25,8 @@ public class TestClientSetup : IAsyncDisposable
     public IReadOnlyList<string> DetectedIssues => _issues;
 
     public TestClientSetup(InProcessServer server, string? playerId = null,
-        IDesyncDiagnostics? diagnostics = null)
+        IDesyncDiagnostics? diagnostics = null,
+        IExecutionModeProvider? modeProvider = null)
     {
         diagnostics ??= new TestDesyncDiagnostics(_issues);
 
@@ -35,7 +36,8 @@ public class TestClientSetup : IAsyncDisposable
             new MetaClientOptions
             {
                 PlayerId = playerId,
-                Diagnostics = diagnostics
+                Diagnostics = diagnostics,
+                ModeProvider = modeProvider
             }
         );
 

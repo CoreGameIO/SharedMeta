@@ -46,5 +46,12 @@ namespace SharedMeta.Server.Core.Grains
         /// When present, subscribers replace their entire state with this.
         /// </summary>
         [Id(9)] public byte[]? StateBytes { get; set; }
+
+        /// <summary>
+        /// Per-index scroll deltas for named randoms declared via [NamedRandom] on the state.
+        /// Positional: index corresponds to attribute declaration order. Null when no named
+        /// randoms advanced. Subscribers use these for desync detection and Skip-catchup.
+        /// </summary>
+        [Id(10)] public long[]? NamedRandomScrollDeltas { get; set; }
     }
 }

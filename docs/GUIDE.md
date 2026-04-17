@@ -756,6 +756,38 @@ int secret = Context.ServerRandom!.Next(1000);   // Server generates, client rep
 
 Optimistic random is seeded from the entity ID string (FNV-1a hash). State is transmitted to client on `SubscribeAsync()` and persisted in `EntityGrainState.OptimisticRandomBytes`.
 
+### Named Random Streams
+
+`Context.Random` is a single shared stream. When different game mechanics (combat, loot drops, map generation) share it, advancing one advances the stream seen by the others — which makes changes to one system subtly alter outputs in unrelated ones. Declare independent streams on the state with `[NamedRandom]`:
+
+```csharp
+[SharedState]
+[NamedRandom("Combat")]
+[NamedRandom("Loot")]
+[NamedRandom("MapGen", Seed = "map-v2")]  // explicit seed literal — fixed across entities
+public partial class GameState : ISharedState { ... }
+```
+
+Each attribute generates a typed accessor on the service `Context` partial:
+
+```csharp
+int dmg  = CombatRandom.Next(100);      // independent from Loot and MapGen
+int item = LootRandom.Next(drops.Count);
+float h  = MapGenRandom.NextFloat();
+```
+
+Semantics mirror `Context.Random` — identical algorithm and seed on server and client, so Optimistic/Local methods see the same values both sides. Server-only (`ServerRandom`-style) scope is not yet supported.
+
+**Seed derivation:** default is `entityId + ":" + Name` (FNV-1a). Pass `Seed = "literal"` on the attribute to pin the stream to a fixed seed regardless of entity.
+
+**Persistence:** all named randoms pack into one positional `byte[]` blob (`EntityGrainState.NamedRandomsBytes`, Id 7). Order = attribute declaration order on the state class. Reordering / adding / removing attributes is a code change that reseeds the affected slots from the derived seed — documented and acceptable because this is random state (no meaningful "previous value" to preserve).
+
+**Desync detection:** server emits a per-index `long[] NamedRandomScrollDeltas` on `RpcResponse` and `EntityBroadcast` (null when nothing advanced). Client compares its local deltas and fires `IDesyncDiagnostics.OnRandomDesync` with method name suffixed `[NamedRandom:{i}]`. On `ServerPatch` / `ServerReplace` / broadcast catch-up, the client calls `Skip(delta)` per-index to stay in sync.
+
+**Transport:** `SubscribeResponse`, `ConnectResponse`, `ResubscribedEntityInfo` carry `NamedRandomsBytes` on initial snapshot and re-subscribe after transport reconnect.
+
+**When not to use:** if you only have one logical random stream, `Context.Random` is simpler — no attributes, no per-stream naming. Named streams earn their keep when mechanics must be decoupled.
+
 ---
 
 ## 6. Cross-Entity Calls
@@ -2256,7 +2288,7 @@ There are three independent desync detection layers, each fires its own callback
 | Layer | When it fires | What it catches |
 |-------|---------------|-----------------|
 | **Result** | `OnResultMismatch` — return value bytes differ | Different return values from local vs server execution |
-| **Random** | `OnRandomDesync` — `Context.Random` scroll delta differs | Mismatched number of `Context.Random` calls |
+| **Random** | `OnRandomDesync` — scroll delta differs (method name `"[NamedRandom:{i}]"` suffix for named streams) | Mismatched number of `Context.Random` or `[NamedRandom]` calls |
 | **Patch** (deep desync) | `OnPatchDesync` — patch CRC differs | State mutations differ even when return values match |
 
 Result-level catches the easy cases. Patch-level catches "the method returned `true` on both sides but wrote different values to the state" — for example, `state.Money = rng.Next(100)` with `System.Random`. See [Deep Desync Detection](#deep-desync-detection-070) below.

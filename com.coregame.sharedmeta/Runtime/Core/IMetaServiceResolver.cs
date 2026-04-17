@@ -105,9 +105,10 @@ namespace SharedMeta.Core
 
         /// <summary>
         /// Factory to create the API client.
-        /// Parameters: (network, serializer, state, modeProvider, diagnostics, crossEntityResolver, optimisticRandom, config)
+        /// Parameters: (network, serializer, state, modeProvider, diagnostics, crossEntityResolver, optimisticRandom, config, namedRandoms)
+        /// namedRandoms: positional list of MetaRandom declared via [NamedRandom] on the state, or null if state has none.
         /// </summary>
-        public Func<INetwork, IMetaSerializer, object, IExecutionModeProvider, IDesyncDiagnostics?, ICrossEntityResolver?, MetaRandom?, object?, object> ApiClientFactory { get; init; } = null!;
+        public Func<INetwork, IMetaSerializer, object, IExecutionModeProvider, IDesyncDiagnostics?, ICrossEntityResolver?, MetaRandom?, object?, IReadOnlyList<MetaRandom>?, object> ApiClientFactory { get; init; } = null!;
 
         /// <summary>
         /// Factory to create the local service instance.
@@ -137,8 +138,8 @@ namespace SharedMeta.Core
 
         /// <summary>
         /// Callback to refresh state in an existing API client after reconnect.
-        /// Parameters: (apiClient, newState, newOptimisticRandom)
+        /// Parameters: (apiClient, newState, newOptimisticRandom, newNamedRandoms)
         /// </summary>
-        public Action<object, object, MetaRandom?>? StateRefresher { get; init; }
+        public Action<object, object, MetaRandom?, IReadOnlyList<MetaRandom>?>? StateRefresher { get; init; }
     }
 }

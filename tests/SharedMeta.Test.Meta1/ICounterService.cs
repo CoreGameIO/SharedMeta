@@ -66,5 +66,15 @@ namespace SharedMeta.Test.Meta1
         /// </summary>
         [MetaMethod(Alias = "ReadOtherState", Mode = ExecutionMode.Server)]
         Task<long> ReadOtherEntityState(string targetEntityId);
+
+        /// <summary>
+        /// Draw a random value from one of the named random streams.
+        /// Uses Optimistic mode so client and server both advance their copy of the stream.
+        /// Tests deterministic named-random behavior and stream isolation.
+        /// </summary>
+        /// <param name="which">0 = Combat stream, 1 = Loot stream</param>
+        /// <param name="max">upper bound (exclusive)</param>
+        [MetaMethod(Alias = "DrawFromNamed", Mode = ExecutionMode.Optimistic)]
+        int DrawFromNamed(int which, int max);
     }
 }
