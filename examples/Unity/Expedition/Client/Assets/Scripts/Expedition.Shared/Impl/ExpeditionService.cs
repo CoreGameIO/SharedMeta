@@ -56,7 +56,7 @@ namespace Expedition.Shared
                 // Place walls
                 for (int i = 1; i < totalCells; i++)
                 {
-                    if (Context.Random!.Next(100) < Config.WallPercent)
+                    if (MapGenRandom.Next(100) < Config.WallPercent)
                         state.Cells[i] = (byte)CellType.Wall;
                 }
 
@@ -64,7 +64,7 @@ namespace Expedition.Shared
                 for (int i = 1; i < totalCells; i++)
                 {
                     if (state.Cells[i] != (byte)CellType.Empty) continue;
-                    if (Context.Random!.Next(100) < Config.ObstaclePercent)
+                    if (MapGenRandom.Next(100) < Config.ObstaclePercent)
                         state.Cells[i] = (byte)CellType.Obstacle;
                 }
 
@@ -73,7 +73,7 @@ namespace Expedition.Shared
                 for (int i = 1; i < totalCells; i++)
                 {
                     if (state.Cells[i] != (byte)CellType.Empty) continue;
-                    if (Context.Random!.Next(100) < Config.TreasurePercent)
+                    if (MapGenRandom.Next(100) < Config.TreasurePercent)
                     {
                         state.Cells[i] = (byte)CellType.Treasure;
                         treasureCount++;
@@ -270,14 +270,14 @@ namespace Expedition.Shared
 
             for (int i = 1; i < totalCells; i++)
             {
-                if (Context.Random!.Next(100) < Config.WallPercent)
+                if (MapGenRandom.Next(100) < Config.WallPercent)
                     state.Cells[i] = (byte)CellType.Wall;
             }
 
             for (int i = 1; i < totalCells; i++)
             {
                 if (state.Cells[i] != (byte)CellType.Empty) continue;
-                if (Context.Random!.Next(100) < Config.ObstaclePercent)
+                if (MapGenRandom.Next(100) < Config.ObstaclePercent)
                     state.Cells[i] = (byte)CellType.Obstacle;
             }
 
@@ -285,7 +285,7 @@ namespace Expedition.Shared
             for (int i = 1; i < totalCells; i++)
             {
                 if (state.Cells[i] != (byte)CellType.Empty) continue;
-                if (Context.Random!.Next(100) < Config.TreasurePercent)
+                if (MapGenRandom.Next(100) < Config.TreasurePercent)
                 {
                     state.Cells[i] = (byte)CellType.Treasure;
                     treasureCount++;

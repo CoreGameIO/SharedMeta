@@ -27,6 +27,7 @@ namespace Expedition.Shared
     [MemoryPackable(GenerateType.VersionTolerant)]
     [MessagePackObject(true)]
     [SharedState]
+    [NamedRandom("MapGen")]
     public partial class ExpeditionState : ISharedState
     {
         [Key(0), MemoryPackOrder(0)] public int Width { get; set; }
