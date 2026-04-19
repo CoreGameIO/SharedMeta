@@ -13,6 +13,7 @@ Complete technical reference for the SharedMeta framework. Covers all subsystems
 4. [Execution Modes & Replay](#4-execution-modes--replay)
 5. [Deterministic Random](#5-deterministic-random)
 6. [Cross-Entity Calls](#6-cross-entity-calls)
+6.5. [Server-Only Services (Bridges)](#65-server-only-services-bridges)
 7. [Triggers & Subscribers](#7-triggers--subscribers)
 8. [Push-Based Change Tracking](#8-push-based-change-tracking)
 9. [Argument Transformers](#9-argument-transformers)
@@ -844,6 +845,185 @@ if (neighborState != null)
 - Not supported in `CrossOptimistic` mode (throws `NotSupportedException`)
 - Read-only — you get a deserialized copy, mutations don't affect the target entity
 - Each call is a grain-to-grain hop on the server — for high-frequency reads, consider caching
+
+---
+
+## 6.5. Server-Only Services (Bridges)
+
+`[ServerMetaService]` marks an interface as a **bridge to the server-only world** —
+non-deterministic sources (RNG, wall clock, external HTTP), Orleans grain-to-grain
+calls (lobby, matchmaker, map allocator), or any side-effect that the client cannot
+legitimately re-execute.
+
+A bridge service is **not** an entity. It has no `[SharedState]`, no subscribers, no
+access policy, no RPC dispatcher. Clients never talk to it over the wire. It only
+ever runs on the server; the framework captures each call's return value into the
+replay payload and the client **reads back** that value from the payload during replay
+instead of executing anything. This is the same mechanism that backs `Context.ServerRandom`
+(§5), but generalised to any interface you define.
+
+### When to use it
+
+Reach for `[ServerMetaService]` when the answer to a call is **authoritative on the
+server** and cannot be reproduced deterministically on the client:
+
+- Random sources with server-held seed (`IRandomService`)
+- Orleans grain calls leaving the entity boundary (`ILobbyRequester`, `IMapManager`, `IMatchmakerRequester`)
+- External HTTP / gRPC calls (payment gateway, leaderboard service, push-notification gateway)
+- Any "give me an id / ticket / allocation" pattern where the source of truth lives outside the entity
+
+Reach for `[MetaService]` instead when the logic **is** deterministic and tied to a
+state the client can replay (the full client-side optimistic or patch replay path).
+
+### `[ServerMetaService]` vs `[MetaService]`
+
+| Aspect                    | `[MetaService]`                         | `[ServerMetaService]`                           |
+|---------------------------|-----------------------------------------|-------------------------------------------------|
+| Has `[SharedState]`?      | Yes (required)                          | No                                              |
+| Entity subscribe?         | Yes (`AccessPolicy`, broadcasts)        | No                                              |
+| Client-callable over wire?| Yes (generated `{Name}ApiClient`)       | No (no wire API is generated)                   |
+| Impl class attribute      | `[MetaServiceImpl(iface, stateType)]`   | **No attribute** — plain class, DI-registered   |
+| Client-side behaviour     | Deterministic re-execution / patch apply| **Replayer reads recorded return value**        |
+| Server-side behaviour     | Dispatcher → impl                       | DI-resolved impl (optionally wrapped by Recorder)|
+| Dispatcher generated      | `{Iface}Dispatcher.g.cs`                | None                                            |
+| Recorder/Replayer generated| None                                   | `{Iface}Recorder.g.cs` + `{Iface}Replayer.g.cs` |
+| Consumed from meta method | `Context.GetEntityApi<IT>(entityId)`    | Declared as dependency in `[MetaServiceImpl]`   |
+
+### Pattern (teaching example — `IMapManager`)
+
+Imagine `PlayerProfileService.JoinMap(...)` that must allocate a map slot on the
+server side. Map allocation state lives in an Orleans grain (`IMapAllocatorGrain`),
+not in a `[SharedState]` — the client doesn't need to replay allocation logic, it
+only needs to know the resulting `mapId`.
+
+**Shared layer — interface:**
+
+```csharp
+[ServerMetaService]
+public interface IMapManager
+{
+    Task<string> RequestMap(MapRequest request);
+    Task ReleaseMap(string mapId);
+}
+```
+
+Task-returning methods are typical — bridge work is usually async (grain hops, HTTP).
+
+**Server-only project — plain POCO implementation, NO `[MetaServiceImpl]`:**
+
+```csharp
+public class MapManager : IMapManager
+{
+    private readonly IGrainFactory _grainFactory;
+
+    public MapManager(IGrainFactory grainFactory) => _grainFactory = grainFactory;
+
+    public Task<string> RequestMap(MapRequest request)
+        => _grainFactory.GetGrain<IMapAllocatorGrain>(0).AllocateAsync(request);
+
+    public Task ReleaseMap(string mapId)
+        => _grainFactory.GetGrain<IMapAllocatorGrain>(0).ReleaseAsync(mapId);
+}
+```
+
+**Server DI registration:**
+
+```csharp
+// Program.cs
+services.AddTransient<IMapManager, MapManager>();
+// or AddSingleton if the impl is itself stateless
+```
+
+**Consumption from a meta service — declare as dependency:**
+
+```csharp
+[MetaService(StateType = typeof(ProfileState))]
+public interface IPlayerProfileService : IMetaService
+{
+    [MetaMethod(Mode = ExecutionMode.Server)]
+    Task<string> JoinMap(JoinMapRequest request);
+}
+
+// IMapManager listed as a dependency — generator auto-injects it into Context
+[MetaServiceImpl(typeof(IPlayerProfileService), typeof(ProfileState), typeof(IMapManager))]
+public partial class PlayerProfileService : IPlayerProfileService
+{
+    public async Task<string> JoinMap(JoinMapRequest request)
+    {
+        var mapId = await Context.MapManager.RequestMap(new MapRequest { ... });
+        State.CurrentMapId = mapId;     // state mutation goes into [SharedState]
+        return mapId;
+    }
+}
+```
+
+The `Context.MapManager` getter is produced by the generated `*.Context.g.cs`
+partial. On server it points at your real impl (wrapped by the generated `Recorder`);
+on client it points at the generated `Replayer` that feeds the pre-recorded return
+value back from the replay payload. The same `JoinMap` method body runs on both
+sides with no `#if SERVER` branching.
+
+### How Recorder / Replayer work (user's view)
+
+For every method on a `[ServerMetaService]` interface the generator produces two wrappers:
+
+- **`{Iface}Recorder`** — activated on the server for each `Mode = Server` meta-method
+  invocation. It calls the real impl, serialises the return value with the active
+  `IMetaSerializer`, and appends it to the call's replay payload. Methods returning
+  `Task` (no result) write a zero-byte marker so the Replayer keeps its stream in order.
+- **`{Iface}Replayer`** — activated on the client during replay. Each call reads the
+  next slot from the replay payload, deserialises the return value, and hands it
+  back. Parameters are **ignored** — the value was decided on the server.
+
+Because replay is strictly positional, **call order on the server must match call
+order on the client-side replay**. Normally this is automatic (the client re-runs
+the same deterministic method body), but watch out for:
+
+- Branching on `DateTime.Now` or other non-deterministic globals before a bridge call
+- Client-side code that skips calls due to a local-only short-circuit
+- Adding a new bridge call without a version bump in persisted replay payloads
+
+`Context.ServerRandom` uses this exact plumbing — it's just a specialised
+`[ServerMetaService]` with its own recorder/replayer optimised for numeric output.
+
+### Anti-pattern (the one that bites LLM agents)
+
+Do **not** combine `[ServerMetaService]` with `[MetaServiceImpl]`, and do **not**
+give a bridge service its own `[SharedState]`:
+
+```csharp
+// ❌ BROKEN — this is not a valid combination
+[ServerMetaService]
+public interface IMapManager { ... }
+
+[MetaServiceImpl(typeof(IMapManager), typeof(MapManagerState))]  // ← wrong
+public class MapManager : IMapManager { ... }
+```
+
+This configuration is a category error: `[ServerMetaService]` declares the service
+has no shared state and no wire dispatcher, while `[MetaServiceImpl(..., stateType)]`
+declares it is a state-ful entity service. The source generator detects this exact
+combination and emits a `#error` in the generated `ServerMetaConfiguration.g.cs`
+naming the class — if you see that diagnostic, pick one of two fixes:
+
+- **Keep it as a bridge** (the normal case): drop `[MetaServiceImpl]` from the class,
+  make the impl a plain class, register it in server DI, and reference `IMapManager`
+  as a dependency in the consumer's `[MetaServiceImpl(..., typeof(IMapManager))]`.
+  Any persistent server state lives in Orleans grains.
+- **Turn it into a real entity service**: drop `[ServerMetaService]` from the
+  interface, replace it with `[MetaService(StateType = typeof(MapManagerState), AccessPolicy = …)]`,
+  and accept that clients will be able to subscribe and call it directly (pick the
+  access policy accordingly).
+
+### Checklist — is `[ServerMetaService]` the right choice?
+
+- [ ] The return value is authoritative on the server (random, grain state, external API)
+- [ ] The client does not need to subscribe to this service or receive broadcasts from it
+- [ ] There is no `[SharedState]` that represents the service's data on the client
+- [ ] The impl class is a plain POCO registered in server DI
+- [ ] All `Mode = Server` meta methods that call it can tolerate replaying the recorded return value on the client
+
+If all five are true — `[ServerMetaService]` fits. If any fail, use `[MetaService]`.
 
 ---
 

@@ -469,6 +469,83 @@ if (otherState != null)
 
 ---
 
+## Server-Only Services (`[ServerMetaService]`)
+
+Bridge to the server-only world: non-deterministic sources (RNG, wall clock, external HTTP), Orleans grain-to-grain calls (lobby, matchmaker, map allocator). **Not** an entity — no `[SharedState]`, no subscribe, no wire API, no dispatcher. The server executes the real call, the Recorder writes the return value into the replay payload, the client-side Replayer reads it back during replay instead of re-executing.
+
+### Pattern (mandatory shape)
+
+```csharp
+// Shared — interface
+[ServerMetaService]
+public interface IMapManager
+{
+    Task<string> RequestMap(MapRequest request);
+}
+
+// Server project — plain POCO, NO [MetaServiceImpl]
+public class MapManager : IMapManager
+{
+    private readonly IGrainFactory _grainFactory;
+    public MapManager(IGrainFactory gf) => _grainFactory = gf;
+    public Task<string> RequestMap(MapRequest r) =>
+        _grainFactory.GetGrain<IMapAllocatorGrain>(0).AllocateAsync(r);
+}
+
+// Server DI
+services.AddTransient<IMapManager, MapManager>();
+
+// Consumer — declare as dependency
+[MetaServiceImpl(typeof(IProfileService), typeof(ProfileState), typeof(IMapManager))]
+public partial class ProfileService : IProfileService
+{
+    public async Task<string> JoinMap(JoinMapRequest r)
+    {
+        var mapId = await Context.MapManager.RequestMap(new MapRequest { ... });
+        State.CurrentMapId = mapId;
+        return mapId;
+    }
+}
+```
+
+### `[ServerMetaService]` vs `[MetaService]` — when to pick which
+
+| Question                                | `[MetaService]` | `[ServerMetaService]` |
+|-----------------------------------------|-----------------|-----------------------|
+| Has its own `[SharedState]`?            | Yes             | No                    |
+| Client can subscribe / receive broadcasts? | Yes          | No                    |
+| Client-callable over the wire?          | Yes             | No                    |
+| Impl class has `[MetaServiceImpl]`?     | Yes (required)  | No (plain class)      |
+| How is it consumed from a meta method?  | `Context.GetEntityApi<IT>(entityId)` | Declared as dependency in `[MetaServiceImpl(..., typeof(IBridge))]`; used as `Context.Bridge` |
+| Generated code                          | `{Iface}Dispatcher.g.cs` + `{Iface}ApiClient.g.cs` | `{Iface}Recorder.g.cs` + `{Iface}Replayer.g.cs` |
+
+### Anti-pattern — DO NOT DO THIS
+
+```csharp
+// ❌ Category error — the generator emits a #error naming the class
+[ServerMetaService]
+public interface IMapManager { ... }
+
+[MetaServiceImpl(typeof(IMapManager), typeof(MapManagerState))]  // wrong
+public class MapManager : IMapManager { ... }
+```
+
+`[ServerMetaService]` says "no state, no dispatcher, bridge only". `[MetaServiceImpl(..., stateType)]` says "state-ful entity service". Pick one:
+- **Bridge**: drop `[MetaServiceImpl]`, make impl a plain class, persist real state in Orleans grains
+- **Entity**: drop `[ServerMetaService]`, switch interface to `[MetaService(StateType = ..., AccessPolicy = ...)]` (mind that clients can then call it directly — choose access policy)
+
+### Checklist for `[ServerMetaService]`
+
+- [ ] Return value is authoritative on the server
+- [ ] No client subscribe / broadcast needed
+- [ ] No `[SharedState]` representing this service's data
+- [ ] Impl is a plain POCO in server DI
+- [ ] All callers use `Mode = Server` (Recorder output is only populated on server execution)
+
+Call-order contract: replay is positional. Callers must make the same sequence of bridge calls on both sides — generally automatic for deterministic method bodies, but avoid non-deterministic branching (e.g. `DateTime.Now`) before bridge calls.
+
+---
+
 ## Triggers & Subscribers
 
 ### Triggers
