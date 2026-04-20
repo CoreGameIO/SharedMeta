@@ -38,6 +38,15 @@ namespace SharedMeta.Generator.Generators
         /// Named randoms declared via [NamedRandom] on the state class, in attribute declaration order.
         /// </summary>
         public List<NamedRandomDeclaration> NamedRandoms { get; set; } = new();
+
+        /// <summary>
+        /// True when the impl class carries <c>[MetaServiceImpl]</c> but its declared service interface
+        /// is marked <c>[ServerMetaService]</c> (and NOT <c>[MetaService]</c>) — a category error that
+        /// would otherwise produce a confusing CS0103 on the non-existent dispatcher type.
+        /// When true, the generator emits a <c>#error</c> naming the class and skips dispatcher-map
+        /// emission for this entry.
+        /// </summary>
+        public bool HasInvalidServerMetaServiceCombo { get; set; }
     }
 
     /// <summary>
@@ -96,6 +105,27 @@ namespace SharedMeta.Generator.Generators
             // Get subscriber interfaces from the service interface's [MetaService] attribute
             var metaServiceAttr = serviceInterface.GetAttributes().FirstOrDefault(a =>
                 a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaServiceAttribute");
+
+            // Detect the category error: [MetaServiceImpl(iface, stateType)] on a class whose
+            // iface is [ServerMetaService] (a bridge) rather than [MetaService] (an entity service).
+            // [ServerMetaService] services must be plain POCOs registered in DI — pairing them with
+            // [MetaServiceImpl] + a state type is a semantic mismatch (bridge has no shared state,
+            // no dispatcher, no subscribe). Flagging here lets Generate() emit a clear #error in
+            // ServerMetaConfiguration.g.cs instead of the misleading downstream CS0103 on the
+            // non-existent {Iface}Dispatcher type.
+            if (metaServiceAttr == null)
+            {
+                var hasServerMetaService = serviceInterface.GetAttributes().Any(a =>
+                    a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.ServerMetaServiceAttribute");
+                if (hasServerMetaService)
+                {
+                    info.HasInvalidServerMetaServiceCombo = true;
+                    // Skip the rest of Analyze — downstream reads (SubscriberInterfaces, AccessPolicy,
+                    // ConfigType, MethodSignatures, etc.) all look for [MetaService] which is absent.
+                    // Returning the half-populated info is enough for the diagnostic path.
+                    return info;
+                }
+            }
             if (metaServiceAttr != null)
             {
                 var subscriberArg = metaServiceAttr.NamedArguments.FirstOrDefault(a => a.Key == "SubscriberInterfaces");
@@ -314,13 +344,36 @@ namespace SharedMeta.Generator.Generators
         }
 
         /// <summary>
+        /// Emit one <c>#error</c> directive per misconfigured impl class. Called from both output
+        /// paths (with and without the <c>#if SHAREDMETA_SERVER</c> wrapper) so the diagnostic is
+        /// always visible regardless of how the generator runs.
+        /// Directives are placed before any <c>using</c> / <c>namespace</c> / <c>#if</c> so Roslyn
+        /// surfaces them reliably as CS1029 with the author's message, naming both the impl class
+        /// and the interface that carries the conflicting attributes.
+        /// </summary>
+        private static void EmitServerMetaServiceComboErrors(StringBuilder sb, List<ServiceImplInfo> invalidServices)
+        {
+            if (invalidServices.Count == 0) return;
+            foreach (var bad in invalidServices)
+            {
+                sb.AppendLine($"#error SharedMeta: '{bad.ImplClassFullName}' carries [MetaServiceImpl] but its service interface '{bad.InterfaceFullName}' is marked [ServerMetaService]. These attributes are mutually exclusive — [ServerMetaService] declares a bridge (no state, no dispatcher, no subscribe) and its impl must be a plain class registered in DI. Either drop [MetaServiceImpl] from the class and register it in DI, or replace [ServerMetaService] with [MetaService(StateType = ..., AccessPolicy = ...)] on the interface. See GUIDE.md §6.5.");
+            }
+        }
+
+        /// <summary>
         /// Generate all server-side configuration code for Server projects.
         /// This version does NOT use #if SHAREDMETA_SERVER since it runs directly in the Server project.
         /// </summary>
         public static string? GenerateForServerProject(string rootNamespace, IEnumerable<ServiceImplInfo> serviceImpls)
         {
-            var services = serviceImpls.Where(s => s != null).ToList();
-            if (services.Count == 0) return null;
+            var allServices = serviceImpls.Where(s => s != null).ToList();
+            if (allServices.Count == 0) return null;
+
+            // Split off misconfigured entries. They are emitted as #error directives at the top of the
+            // generated file and excluded from the rest of the pipeline to suppress follow-on errors
+            // (missing dispatcher type, missing state type, etc.) that would otherwise drown the real diagnostic.
+            var invalidServices = allServices.Where(s => s.HasInvalidServerMetaServiceCombo).ToList();
+            var services = allServices.Where(s => !s.HasInvalidServerMetaServiceCombo).ToList();
 
             // Group by state type
             var byStateType = services
@@ -336,6 +389,7 @@ namespace SharedMeta.Generator.Generators
             var sb = new StringBuilder();
             sb.AppendLine("// <auto-generated/>");
             sb.AppendLine("// Server-side meta configuration - generated directly in Server project.");
+            EmitServerMetaServiceComboErrors(sb, invalidServices);
             sb.AppendLine("#nullable enable");
             sb.AppendLine("using System;");
             sb.AppendLine("using System.Collections.Generic;");
@@ -405,8 +459,13 @@ namespace SharedMeta.Generator.Generators
         /// </summary>
         public static string? Generate(string rootNamespace, IEnumerable<ServiceImplInfo> serviceImpls)
         {
-            var services = serviceImpls.Where(s => s != null).ToList();
-            if (services.Count == 0) return null;
+            var allServices = serviceImpls.Where(s => s != null).ToList();
+            if (allServices.Count == 0) return null;
+
+            // Misconfigured entries are surfaced as #error directives at file top and excluded
+            // from the rest of the generation (see GenerateForServerProject for the matching split).
+            var invalidServices = allServices.Where(s => s.HasInvalidServerMetaServiceCombo).ToList();
+            var services = allServices.Where(s => !s.HasInvalidServerMetaServiceCombo).ToList();
 
             // Group by state type
             var byStateType = services
@@ -423,6 +482,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("// <auto-generated/>");
             sb.AppendLine("// Server-side meta configuration - only compiled when SHAREDMETA_SERVER is defined.");
             sb.AppendLine("// Add <DefineConstants>SHAREDMETA_SERVER</DefineConstants> to your server project.");
+            EmitServerMetaServiceComboErrors(sb, invalidServices);
             sb.AppendLine("#if SHAREDMETA_SERVER");
             sb.AppendLine("#nullable enable");
             sb.AppendLine("using System;");
