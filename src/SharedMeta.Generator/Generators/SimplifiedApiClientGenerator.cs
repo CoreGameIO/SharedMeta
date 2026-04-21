@@ -387,6 +387,10 @@ namespace SharedMeta.Generator.Generators
             var methodAlias = GetMethodAlias(method, methodName);
             var defaultMode = "Server";
             bool isQueryMethod = false;
+            bool isSignalMethod = false;
+            bool modeExplicit = false;
+            bool legacyQueryBool = false;
+            bool legacySignalBool = false;
             string syncApi = "None";
             string syncPolicy = "Throw";
 
@@ -400,10 +404,16 @@ namespace SharedMeta.Generator.Generators
                     {
                         var name = arg.NameEquals.Name.Identifier.Text;
                         if (name == "Mode" && arg.Expression is MemberAccessExpressionSyntax modeAccess)
+                        {
                             defaultMode = modeAccess.Name.Identifier.Text;
+                            modeExplicit = true;
+                        }
                         if (name == "Query" && arg.Expression is LiteralExpressionSyntax queryLit
                             && queryLit.Token.Text == "true")
-                            isQueryMethod = true;
+                            legacyQueryBool = true;
+                        if (name == "Signal" && arg.Expression is LiteralExpressionSyntax signalLit
+                            && signalLit.Token.Text == "true")
+                            legacySignalBool = true;
                         if (name == "Sync" && arg.Expression is MemberAccessExpressionSyntax syncAccess)
                             syncApi = syncAccess.Name.Identifier.Text;
                         if (name == "SyncPolicy" && arg.Expression is MemberAccessExpressionSyntax policyAccess)
@@ -412,10 +422,40 @@ namespace SharedMeta.Generator.Generators
                 }
             }
 
+            // Unified Kind detection: new canonical form is Mode = ExecutionMode.Query | Signal,
+            // legacy form is Query = true / Signal = true (bool, [Obsolete]). Accept either; reject
+            // the clash where a method sets both the legacy bool AND an explicit non-matching Mode.
+            bool modeIsQuery = modeExplicit && defaultMode == "Query";
+            bool modeIsSignal = modeExplicit && defaultMode == "Signal";
+            isQueryMethod = modeIsQuery || legacyQueryBool;
+            isSignalMethod = modeIsSignal || legacySignalBool;
+
+            if (legacyQueryBool && modeExplicit && !modeIsQuery)
+                sb.AppendLine($"#error SharedMeta: '{interfaceName}.{methodName}' sets Query = true (deprecated) and Mode = ExecutionMode.{defaultMode} at the same time. Remove the bool and rely on Mode = ExecutionMode.Query.");
+            if (legacySignalBool && modeExplicit && !modeIsSignal)
+                sb.AppendLine($"#error SharedMeta: '{interfaceName}.{methodName}' sets Signal = true (deprecated) and Mode = ExecutionMode.{defaultMode} at the same time. Remove the bool and rely on Mode = ExecutionMode.Signal.");
+            if (isQueryMethod && isSignalMethod)
+                sb.AppendLine($"#error SharedMeta: '{interfaceName}.{methodName}' resolves to both Query and Signal mode. These are mutually exclusive — Query returns a value, Signal is void fire-and-forget.");
+
+            // For the downstream emission paths (which previously branched on bool isQueryMethod /
+            // isSignalMethod), the "explicit mode" flag modeExplicit should NOT be true when the
+            // canonical mode is Query/Signal — otherwise Sync-validation would misfire saying
+            // "Signal with explicit Mode is invalid". Clear the flag for those paths.
+            if (modeIsQuery || modeIsSignal) modeExplicit = false;
+
             // Query methods — execute locally on client state, no network call
             if (isQueryMethod)
             {
                 GenerateLocalQueryMethod(sb, method);
+                return;
+            }
+
+            // Signal methods — fire-and-forget, no response, no RequestId tracking.
+            // Client emits a void {Method}Signal(params) that delegates to INetwork.SendSignalAsync.
+            // Validation: must return void, must not combine with Query/Sync/explicit Mode.
+            if (isSignalMethod)
+            {
+                GenerateSignalMethod(sb, method, methodAlias, isQueryMethod, modeExplicit, syncApi, interfaceName, serializer);
                 return;
             }
 
@@ -1783,6 +1823,60 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
         }
 
+        /// <summary>
+        /// Emit the client-side <c>{Method}Signal(params)</c> for a <c>[MetaMethod(Signal = true)]</c>.
+        /// Fire-and-forget: public method returns <c>void</c>, delegates to
+        /// <see cref="SharedMeta.Core.Network.INetwork.SendSignalAsync"/>. No RequestId, no
+        /// response handling, no broadcast suppression. Invalid attribute combinations and
+        /// non-void return types produce <c>#error</c> at this site.
+        /// </summary>
+        private static void GenerateSignalMethod(StringBuilder sb, MethodDeclarationSyntax method,
+            string methodAlias, bool isQueryCombo, bool modeExplicit, string syncApi, string interfaceName,
+            DetectedSerializer serializer)
+        {
+            var methodName = method.Identifier.Text;
+            var returnType = method.ReturnType.ToString();
+            var parameters = string.Join(", ", method.ParameterList.Parameters);
+            var paramCount = method.ParameterList.Parameters.Count;
+
+            // ---- Compile-time validations ----
+            if (returnType != "void")
+            {
+                sb.AppendLine($"#error SharedMeta: [MetaMethod(Signal = true)] on '{interfaceName}.{methodName}' must return void (got '{returnType}'). Signals are fire-and-forget — no value can flow back to the caller.");
+            }
+            if (isQueryCombo)
+            {
+                sb.AppendLine($"#error SharedMeta: [MetaMethod] on '{interfaceName}.{methodName}' sets both Query = true and Signal = true. These are mutually exclusive — Query returns a value (client awaits), Signal returns nothing (client does not await).");
+            }
+            if (modeExplicit)
+            {
+                sb.AppendLine($"#error SharedMeta: [MetaMethod(Signal = true)] on '{interfaceName}.{methodName}' also specifies Mode. Signal methods ignore execution mode (they always run server-side, read-only). Remove the Mode argument.");
+            }
+            if (syncApi != "None")
+            {
+                sb.AppendLine($"#error SharedMeta: [MetaMethod(Signal = true)] on '{interfaceName}.{methodName}' also specifies Sync = SyncApi.{syncApi}. Signal methods already return synchronously (void) and cannot also use the sync-overload mechanism.");
+            }
+
+            // Use the same serializer selection as the rest of the ApiClient — this is what the
+            // server-side generated SignalDispatcher will mirror for argument deserialization.
+            sb.AppendLine();
+            sb.AppendLine($"        /// <summary>");
+            sb.AppendLine($"        /// Signal: fire-and-forget server call. Returns immediately; server-side errors are logged only.");
+            sb.AppendLine($"        /// </summary>");
+            sb.AppendLine($"        public void {methodName}Signal({parameters})");
+            sb.AppendLine("        {");
+            sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
+
+            // Serialize arguments using the detected serializer (same pattern as Optimistic).
+            GenerateArgumentSerialization(sb, method, paramCount, serializer);
+
+            // Fire-and-forget: discard the ValueTask returned by SendSignalAsync.
+            // Note: _ = (ValueTask) is allowed in C# 7.3+. GetAwaiter().GetResult() not used
+            // because we never want to block or observe completion.
+            sb.AppendLine($"            _ = _network.SendSignalAsync(ServiceName, \"{methodAlias}\", argsBytes);");
+            sb.AppendLine("        }");
+        }
+
         private static bool IsQueryMethod(MethodDeclarationSyntax method)
         {
             var attributes = method.AttributeLists.SelectMany(a => a.Attributes);
@@ -1791,10 +1885,17 @@ namespace SharedMeta.Generator.Generators
             {
                 foreach (var arg in metaMethod.ArgumentList?.Arguments ?? Enumerable.Empty<AttributeArgumentSyntax>())
                 {
-                    if (arg.NameEquals != null
-                        && arg.NameEquals.Name.Identifier.Text == "Query"
+                    if (arg.NameEquals == null) continue;
+                    var name = arg.NameEquals.Name.Identifier.Text;
+                    // Legacy bool form
+                    if (name == "Query"
                         && arg.Expression is LiteralExpressionSyntax lit
                         && lit.Token.Text == "true")
+                        return true;
+                    // Canonical Mode = ExecutionMode.Query form
+                    if (name == "Mode"
+                        && arg.Expression is MemberAccessExpressionSyntax modeAccess
+                        && modeAccess.Name.Identifier.Text == "Query")
                         return true;
                 }
             }

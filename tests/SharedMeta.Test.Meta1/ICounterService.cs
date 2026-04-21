@@ -76,5 +76,12 @@ namespace SharedMeta.Test.Meta1
         /// <param name="max">upper bound (exclusive)</param>
         [MetaMethod(Alias = "DrawFromNamed", Mode = ExecutionMode.Optimistic)]
         int DrawFromNamed(int which, int max);
+
+        /// <summary>
+        /// Fire-and-forget heartbeat. Client does not wait, server does not broadcast.
+        /// Impl writes to a static observer for test verification.
+        /// </summary>
+        [MetaMethod(Alias = "NotifyHeartbeat", Mode = ExecutionMode.Signal)]
+        void NotifyHeartbeat(long clientTicks);
     }
 }

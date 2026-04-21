@@ -84,6 +84,14 @@ namespace SharedMeta.Server.Core.Session
         Task<QueryCallResponse> QueryEntityAsync(string entityId, string serviceName, RpcCall call);
 
         /// <summary>
+        /// Fire a signal call on an entity — fire-and-forget, void return.
+        /// Resolves the entity grain and forwards the call via the grain's <c>[OneWay]</c>
+        /// <c>HandleSignalAsync</c>. No subscription check, no sequence numbers, no broadcasts,
+        /// no response. Server-side errors are logged, not propagated.
+        /// </summary>
+        Task SignalEntityAsync(string entityId, string serviceName, RpcCall call);
+
+        /// <summary>
         /// Acknowledge that all packets up to and including this sequence have been received.
         /// Allows SessionManager to clean up stored packets.
         /// </summary>

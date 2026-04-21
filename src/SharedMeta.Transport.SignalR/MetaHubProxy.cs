@@ -32,6 +32,14 @@ namespace SharedMeta.Transport.SignalR
         public Task<QueryCallResponse> QueryCall(QueryCallRequest request)
             => _connection.InvokeAsync<QueryCallResponse>(nameof(QueryCall), request);
 
+        /// <summary>
+        /// Fire-and-forget signal. Uses <see cref="HubConnection.SendAsync(string, object?, System.Threading.CancellationToken)"/>
+        /// instead of <c>InvokeAsync</c> so the client does not await server-side completion —
+        /// the returned Task resolves as soon as the message is flushed to the wire.
+        /// </summary>
+        public Task SignalCall(SignalCallRequest request)
+            => _connection.SendAsync(nameof(SignalCall), request);
+
         public Task<DebugOptionsResponse> SetDebugOptions(DebugOptionsRequest request)
             => _connection.InvokeAsync<DebugOptionsResponse>(nameof(SetDebugOptions), request);
 

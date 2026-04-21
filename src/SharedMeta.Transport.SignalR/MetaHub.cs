@@ -139,6 +139,18 @@ namespace SharedMeta.Transport.SignalR
         }
 
         /// <summary>
+        /// Fire a signal call — one-way, void. The client invoked us via <c>SendAsync</c>,
+        /// so SignalR does not expect a response on the wire. We still return <see cref="Task"/>
+        /// so the inner handler's async work is observable in the Hub's task scheduler; any
+        /// exception is logged by the handler and never surfaces to the client.
+        /// </summary>
+        public Task SignalCall(SignalCallRequest request)
+        {
+            var handler = GetOrCreateHandler();
+            return handler.SignalCallAsync(request);
+        }
+
+        /// <summary>
         /// Acknowledge received broadcasts up to a sequence number.
         /// </summary>
         public Task<AcknowledgeResponse> AcknowledgeSequence(AcknowledgeRequest request)

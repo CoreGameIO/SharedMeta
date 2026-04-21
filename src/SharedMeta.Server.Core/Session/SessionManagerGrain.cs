@@ -1122,6 +1122,26 @@ namespace SharedMeta.Server.Core.Session
             return await entityGrain.HandleQueryAsync(call);
         }
 
+        public Task SignalEntityAsync(string entityId, string serviceName, RpcCall call)
+        {
+            // Resolve entity grain directly — signal goes through the same grain resolver as queries,
+            // bypasses subscription and the session sequence. The grain method is [OneWay] so Orleans
+            // does not even send an ACK back to this SessionManager; the task completes immediately
+            // after the message is handed to the grain runtime.
+            var entityGrain = _entityGrainResolver.GetEntityGrainByService(
+                GrainFactory, serviceName, entityId);
+
+            if (entityGrain == null)
+            {
+                _logger.LogWarning(
+                    "[SessionManager] Signal on unresolved entity '{ServiceName}/{EntityId}' — dropped",
+                    serviceName, entityId);
+                return Task.CompletedTask;
+            }
+
+            return entityGrain.HandleSignalAsync(call);
+        }
+
         #endregion
 
         #region Acknowledgment

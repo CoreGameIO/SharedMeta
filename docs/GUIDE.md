@@ -693,10 +693,10 @@ Client                          Server
 [MetaService(StateType = typeof(ProfileState))]
 public interface IProfileService
 {
-    [MetaMethod(Query = true)]
+    [MetaMethod(Mode = ExecutionMode.Query)]
     Task<PlayerBriefInfo> GetBriefInfo();
 
-    [MetaMethod(Query = true, OpenAccess = true)]  // bypasses EntityAccessPolicy
+    [MetaMethod(Mode = ExecutionMode.Query, OpenAccess = true)]  // bypasses EntityAccessPolicy
     Task<PlayerBriefInfo> GetPublicInfo();
 
     [MetaMethod(Mode = ExecutionMode.Optimistic)]
@@ -704,10 +704,11 @@ public interface IProfileService
 }
 ```
 
-- `Query = true` — method can be called without subscribing, strictly read-only
+- `Mode = ExecutionMode.Query` — method can be called without subscribing, strictly read-only
 - `OpenAccess = true` — skip EntityAccessPolicy check (for public data readable by anyone)
 - Query methods **must** return a value (void not allowed)
 - Query methods are **not** generated in the regular `ApiClient` — they appear in the separate `QueryApi`
+- **Note:** the legacy `[MetaMethod(Query = true)]` bool flag is still accepted but deprecated (`CS0618`); migrate to `Mode = ExecutionMode.Query`
 
 **Client usage:**
 ```csharp
@@ -724,6 +725,51 @@ var pub = await api.GetPublicInfoAsync();
 **Server routing:** `MetaConnectionHandler` → `SessionManager.QueryEntityAsync` → `EntityGrain.HandleQueryAsync` → `MetaProviderBase.HandleQueryAsync` → `DispatchCall`. Same path as regular RPC but without the subscription/broadcast/sequence machinery.
 
 **Access control:** By default, query calls respect the entity's `EntityAccessPolicy`. Use `OpenAccess = true` to bypass this for public read-only data.
+
+### Signal Methods (Fire-and-Forget)
+
+Sibling to Query. Like Query, runs read-only on the server without sequence/broadcast/replay machinery. Unlike Query, it returns **void** and the client does **not** wait for a result — neither a successful response nor a failure reason ever lands back on the client.
+
+**Use cases:** heartbeat, telemetry pings, notification events that trigger a server-side side-effect (HTTP, matchmaker, push gateway) without mutating entity state.
+
+```csharp
+[MetaService(StateType = typeof(ProfileState))]
+public interface IProfileService : IMetaService
+{
+    [MetaMethod(Mode = ExecutionMode.Signal)]
+    void NotifyHeartbeat(long clientTicks);
+
+    [MetaMethod(Mode = ExecutionMode.Signal)]
+    void RecordTelemetry(string eventName, string payload);
+}
+```
+
+Generated client API is synchronous `void`:
+
+```csharp
+api.NotifyHeartbeatSignal(DateTime.UtcNow.Ticks);   // returns immediately
+api.RecordTelemetrySignal("purchase", jsonBlob);     // same
+```
+
+**Contract:**
+- Return type must be `void` (compile-time `#error` otherwise)
+- Cannot combine with `Query`, explicit `Mode`, `Sync`, `SkipServerOnFalse`, `ForcePersist`
+- Method body must not mutate state — same rule as Query (enforcement is runtime contract today; a compile-time walker is planned)
+- Cross-entity calls (`Context.GetEntityApi<...>`) throw `NotSupportedException` from inside a signal body — use `Mode = Server` if you need to chain into another entity
+- `[ServerMetaService]` bridges **can** be called — the `ServerMetaContext` is flipped to `SignalMode`, which redirects Recorder writes to `NullPayloadWriter` (zero-alloc). Real side-effects (HTTP, Orleans grain hops) run; recording is silently discarded since there is no replay payload consumer
+
+**Server routing:** `Handler.SignalCallAsync` → `SessionManager.SignalEntityAsync` → `[OneWay] EntityGrain.HandleSignalAsync` → `MetaProviderBase.HandleSignalAsync` → generated `{Service}SignalDispatcher.Dispatch`. Orleans treats the grain invocation as one-way — the SessionManager grain does not wait for an ACK from the entity grain.
+
+**Access control:** Standard `EntityAccessPolicy` check is enforced (`UserOwned` / `OwnerOnly` / `Authorized` / `Open`). There is **no** `OpenAccess`-equivalent escape hatch — if you need public signals, use the Query path instead.
+
+**Transport specifics:**
+| Transport | Signal mechanism |
+|-----------|------------------|
+| InProcess | Direct grain invocation, no serialization beyond normal message handling |
+| SignalR | `HubConnection.SendAsync(nameof(SignalCall), request)` — not `InvokeAsync`; no wire-level ACK |
+| HttpPolling | `POST /meta-http/signal` → server returns `202 Accepted` **before** the signal body executes; handler runs in the background task scheduler |
+
+**Error handling:** server-side exceptions are caught in `MetaProviderBase.HandleSignalAsync` and logged via `Logger.ProviderCallError`. They never reach the client. If you need confirmation of delivery, don't use Signal — use a regular method or a Query.
 
 ---
 

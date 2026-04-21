@@ -302,6 +302,38 @@ namespace SharedMeta.Server.Core.Transport
             }
         }
 
+        public async Task SignalCallAsync(SignalCallRequest request)
+        {
+            // Signal is fire-and-forget: validation errors are logged, never surfaced to caller.
+            try
+            {
+                EnsureSessionConnected();
+
+                if (string.IsNullOrEmpty(request.EntityId) || string.IsNullOrEmpty(request.ServiceName))
+                {
+                    _logger.LogWarning("[Handler] Signal rejected — missing EntityId or ServiceName");
+                    return;
+                }
+
+                var call = new RpcCall
+                {
+                    ServiceName = request.ServiceName,
+                    MethodName = request.MethodName,
+                    CallerId = PlayerId,
+                    Payload = request.Payload,
+                    ServerTimeTicks = DateTime.UtcNow.Ticks
+                };
+
+                var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                await grain.SignalEntityAsync(request.EntityId, request.ServiceName, call);
+            }
+            catch (Exception ex)
+            {
+                _logger.HandlerRpcCallError(ex);
+                // No error propagation — fire-and-forget contract.
+            }
+        }
+
         public async Task<AcknowledgeResponse> AcknowledgeSequenceAsync(AcknowledgeRequest request)
         {
             try

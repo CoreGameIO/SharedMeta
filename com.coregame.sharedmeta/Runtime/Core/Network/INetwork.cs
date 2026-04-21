@@ -56,6 +56,21 @@ namespace SharedMeta.Core.Network
         Task<SharedMeta.Core.Transport.DesyncReportResponse?> SendDesyncReportAsync(SharedMeta.Core.Transport.DesyncReportRequest request);
 
         /// <summary>
+        /// Fire a signal — a one-way RPC that produces no response on the wire and bypasses
+        /// the RequestId / auto-retry / connection-health machinery. The server routes the call
+        /// to the target entity's <c>HandleSignalAsync</c>, which executes read-only, skipping
+        /// sequence increments, broadcasts, and persistence. Server-side errors are logged but
+        /// never propagate back — callers must treat this as pure fire-and-forget.
+        /// Typical use: heartbeat, telemetry ping, bridge-driven notification.
+        /// Transports are expected to resolve the returned <see cref="ValueTask"/> as soon as
+        /// the message is handed off to the wire; it does NOT represent server execution.
+        /// Default implementation throws — transports that do not support signals must opt in.
+        /// </summary>
+        ValueTask SendSignalAsync(string serviceName, string methodName, byte[] args)
+            => throw new System.NotSupportedException(
+                "This transport does not support fire-and-forget signals. Use a MetaMethod without [Signal] or switch to a transport that supports signals (InProcess, SignalR, HttpPolling).");
+
+        /// <summary>
         /// Suppress broadcast processing. Must be paired with ResumeBroadcasts().
         /// Used to prevent broadcasts from modifying state between receiving an RPC response
         /// and completing the local replay (which would cause desyncs).

@@ -430,6 +430,49 @@ namespace SharedMeta.Server.Core.Grains
             }
         }
 
+        public async Task HandleSignalAsync(RpcCall call)
+        {
+            if (_provider == null)
+            {
+                _logger.ErrorHandlingCall(new InvalidOperationException("Provider not initialized"));
+                return;
+            }
+
+            // Reject non-signal methods here so mistakes fail loudly on the server instead of
+            // silently falling through to the no-op DispatchSignal default in MetaProviderBase.
+            if (!_provider.IsSignalMethod(call.ServiceName, call.MethodName))
+            {
+                _logger.ErrorHandlingCall(new InvalidOperationException(
+                    $"Method '{call.ServiceName}.{call.MethodName}' is not a signal method"));
+                return;
+            }
+
+            // Access policy check — same rules as regular RPC. UserOwned/OwnerOnly require
+            // the grain key to match CallerId; Authorized delegates to the provider.
+            // We deliberately do NOT expose an "OpenAccess" for signals in the first cut — if
+            // someone wants a public ping endpoint, they can take the Query path.
+            var policy = _provider.AccessPolicy;
+            if (policy != EntityAccessPolicy.Open)
+            {
+                bool allowed;
+                if (policy is EntityAccessPolicy.OwnerOnly or EntityAccessPolicy.UserOwned)
+                    allowed = this.GetPrimaryKeyString() == call.CallerId;
+                else // Authorized
+                    allowed = await _provider.CheckAccessAsync(call.CallerId ?? "");
+
+                if (!allowed)
+                {
+                    _logger.ErrorHandlingCall(new UnauthorizedAccessException(
+                        $"Access denied for signal '{call.ServiceName}.{call.MethodName}' from caller '{call.CallerId}' on entity '{this.GetPrimaryKeyString()}'"));
+                    return;
+                }
+            }
+
+            // Fire-and-forget by contract: any exception from provider is logged inside
+            // MetaProviderBase.HandleSignalAsync and swallowed there. Nothing to return.
+            await _provider.HandleSignalAsync(call);
+        }
+
         public Task<byte[]?> GetEntityStateAsync()
         {
             var userState = _persistentState.State.UserState;

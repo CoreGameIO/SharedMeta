@@ -191,8 +191,123 @@ namespace SharedMeta.Generator.Generators
             sbServer.AppendLine("            }");
             sbServer.AppendLine("        }");
             sbServer.AppendLine("    }");
+
+            // Signal dispatcher companion — only emitted when at least one [MetaMethod(Signal = true)]
+            // is present. Separate static class with its own switch so the main dispatcher stays
+            // focused on regular RPC routing (void return, no DispatchResult, no trigger logic,
+            // no forcePersist flags — signals bypass all of that by contract).
+            GenerateSignalDispatcherClass(sbServer, symbol, methods, serializer);
+
             sbServer.AppendLine("}");
             return sbServer.ToString();
+        }
+
+        /// <summary>
+        /// Emits <c>public static class {Service}SignalDispatcher</c> with a <c>Dispatch(svc, method, payload, serializer)</c>
+        /// that returns <see cref="System.Threading.Tasks.Task"/>. Route target is each interface method
+        /// marked with <c>[MetaMethod(Signal = true)]</c>. Argument deserialization matches the main
+        /// dispatcher's serializer contract so the same bytes shipped by the generated ApiClient land
+        /// as typed parameters in the impl.
+        /// </summary>
+        private static void GenerateSignalDispatcherClass(StringBuilder sb, string symbol,
+            System.Collections.Generic.List<MethodDeclarationSyntax> methods, DetectedSerializer serializer)
+        {
+            var signalMethods = methods.Where(IsSignalMethod).ToList();
+            if (signalMethods.Count == 0) return;
+
+            sb.AppendLine();
+            sb.AppendLine($"    /// <summary>");
+            sb.AppendLine($"    /// Server-side dispatcher for <c>[MetaMethod(Signal = true)]</c> methods on {symbol}.");
+            sb.AppendLine($"    /// Called from the generated MetaProvider's DispatchSignal override.");
+            sb.AppendLine($"    /// </summary>");
+            sb.AppendLine($"    public static class {symbol}SignalDispatcher");
+            sb.AppendLine("    {");
+            sb.AppendLine($"        public static async Task Dispatch({symbol} service, string method, byte[] payload, IMetaSerializer serializer)");
+            sb.AppendLine("        {");
+            // MetaContext must be set by MetaProviderBase.HandleSignalAsync before calling here.
+            sb.AppendLine("            var _ctx = MetaContextAccessor.Current ?? throw new InvalidOperationException(\"MetaContext not set for signal dispatch.\");");
+            sb.AppendLine("            switch (method)");
+            sb.AppendLine("            {");
+
+            foreach (var method in signalMethods)
+            {
+                var methodName = method.Identifier.Text;
+                var paramCount = method.ParameterList.Parameters.Count;
+                var methodAlias = methodName;
+
+                var metaMethod = method.AttributeLists.SelectMany(a => a.Attributes)
+                    .FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
+                if (metaMethod != null)
+                {
+                    var aliasArg = metaMethod.ArgumentList?.Arguments.FirstOrDefault(
+                        arg => arg.NameEquals != null && arg.NameEquals.Name.Identifier.Text == "Alias");
+                    if (aliasArg?.Expression is LiteralExpressionSyntax literal)
+                        methodAlias = literal.Token.ValueText;
+                }
+
+                sb.AppendLine($"                case \"{methodAlias}\":");
+                sb.AppendLine("                {");
+
+                if (paramCount == 0)
+                {
+                    sb.AppendLine($"                    service.{methodName}();");
+                }
+                else
+                {
+                    // Use the generic IPayloadReader path for signal args — simpler, supports any
+                    // serializer impl, and signals are not hot enough to justify MemoryPack fast-path.
+                    // The ApiClient serialization is driven by the same DetectedSerializer, so bytes
+                    // on the wire match either way through IMetaSerializer.CreateReader/CreateWriter.
+                    sb.AppendLine("                    using var reader = serializer.CreateReader(payload);");
+                    var argNames = new System.Collections.Generic.List<string>();
+                    foreach (var param in method.ParameterList.Parameters)
+                    {
+                        var paramType = param.Type!.ToString();
+                        var paramName = param.Identifier.Text;
+                        sb.AppendLine($"                    var {paramName} = reader.Read<{paramType}>();");
+                        argNames.Add(paramName);
+                    }
+                    var callArgs = string.Join(", ", argNames);
+                    sb.AppendLine($"                    service.{methodName}({callArgs});");
+                }
+
+                // Signals are void. If the impl decided to return Task we'd need await — but the
+                // generator's ApiClient-side validator rejected non-void signatures via #error, so
+                // reaching here with a Task-returning service method is impossible in valid code.
+                sb.AppendLine("                    break;");
+                sb.AppendLine("                }");
+            }
+            sb.AppendLine("                default: throw new MissingMethodException(method);");
+            sb.AppendLine("            }");
+            sb.AppendLine("            await Task.CompletedTask;  // keeps the method async for future async bridge calls inside signal bodies");
+            sb.AppendLine("        }");
+            sb.AppendLine("    }");
+        }
+
+        /// <summary>
+        /// True if this interface method is a signal method — either <c>[MetaMethod(Mode = ExecutionMode.Signal)]</c>
+        /// (canonical form) or the legacy <c>[MetaMethod(Signal = true)]</c> bool flag.
+        /// </summary>
+        private static bool IsSignalMethod(MethodDeclarationSyntax method)
+        {
+            var metaMethod = method.AttributeLists.SelectMany(a => a.Attributes)
+                .FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
+            if (metaMethod == null) return false;
+
+            foreach (var arg in metaMethod.ArgumentList?.Arguments ?? Enumerable.Empty<AttributeArgumentSyntax>())
+            {
+                if (arg.NameEquals == null) continue;
+                var name = arg.NameEquals.Name.Identifier.Text;
+                if (name == "Signal"
+                    && arg.Expression is LiteralExpressionSyntax lit
+                    && lit.Token.Text == "true")
+                    return true;
+                if (name == "Mode"
+                    && arg.Expression is MemberAccessExpressionSyntax modeAccess
+                    && modeAccess.Name.Identifier.Text == "Signal")
+                    return true;
+            }
+            return false;
         }
 
         /// <summary>

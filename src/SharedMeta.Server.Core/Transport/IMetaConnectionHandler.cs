@@ -86,6 +86,17 @@ namespace SharedMeta.Server.Core.Transport
         Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request);
 
         /// <summary>
+        /// Fire a signal call — one-way, void return, fire-and-forget. Completes as soon as the
+        /// call is handed off to the target entity grain (Orleans <c>[OneWay]</c> invocation).
+        /// Bypasses SessionManager — calls EntityGrain directly, same as query.
+        /// Server-side errors are logged, not propagated.
+        /// Default throws so transport-layer handlers must explicitly opt in.
+        /// </summary>
+        Task SignalCallAsync(SignalCallRequest request)
+            => throw new System.NotSupportedException(
+                "This handler does not support signal calls.");
+
+        /// <summary>
         /// Acknowledge received broadcasts up to a sequence number.
         /// </summary>
         Task<AcknowledgeResponse> AcknowledgeSequenceAsync(AcknowledgeRequest request);

@@ -203,6 +203,41 @@ namespace SharedMeta.Core.Transport
             return await _inner.QueryCallAsync(request);
         }
 
+        public async Task SignalCallAsync(SignalCallRequest request)
+        {
+            if (!Settings.Enabled)
+            {
+                await _inner.SignalCallAsync(request);
+                return;
+            }
+
+            // Signals are fire-and-forget; simulated packet loss is the realistic failure mode
+            // (they vanish into the network with no retry). Latency is still simulated so tests
+            // can observe ordering behavior with other traffic.
+            if (Settings.PacketLossPercent > 0)
+            {
+                float roll;
+                lock (_rng) { roll = (float)(_rng.NextDouble() * 100.0); }
+                if (roll < Settings.PacketLossPercent)
+                {
+                    MetaLog.Debug("[DebugConnection] Simulating lost signal");
+                    return;  // drop silently — that is the real-world failure mode for signals
+                }
+            }
+
+            var min = Settings.MinLatencyMs;
+            var max = Settings.MaxLatencyMs;
+            if (min > 0 || max > 0)
+            {
+                int delay;
+                lock (_rng) { delay = max > min ? _rng.Next(min, max + 1) : min; }
+                if (delay > 0)
+                    await Task.Delay(delay);
+            }
+
+            await _inner.SignalCallAsync(request);
+        }
+
         // --- Debug controls ---
 
         /// <summary>

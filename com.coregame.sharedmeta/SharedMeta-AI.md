@@ -229,10 +229,10 @@ void GenerateMap(int seed);
 Lightweight read-only RPC to any entity without subscribing. No state sync, broadcasts, replay, or persistence.
 
 ```csharp
-[MetaMethod(Query = true)]
+[MetaMethod(Mode = ExecutionMode.Query)]
 Task<PlayerBriefInfo> GetBriefInfo();
 
-[MetaMethod(Query = true, OpenAccess = true)]  // bypasses EntityAccessPolicy
+[MetaMethod(Mode = ExecutionMode.Query, OpenAccess = true)]  // bypasses EntityAccessPolicy
 Task<PlayerBriefInfo> GetPublicInfo();
 ```
 
@@ -247,9 +247,42 @@ var info = await api.GetBriefInfoAsync();
 
 **Server route:** `SessionManager.QueryEntityAsync` → `EntityGrain.HandleQueryAsync` → `DispatchCall` (read-only).
 
-- `Query = true` — callable without subscription, must return a value
+- `Mode = ExecutionMode.Query` — callable without subscription, must return a value
 - `OpenAccess = true` — skip EntityAccessPolicy check for public data
 - Query methods are not generated in the regular ApiClient
+- Cannot be overridden at runtime via `IExecutionModeProvider` — Query is structural, not routing
+- Legacy `[MetaMethod(Query = true)]` bool is deprecated (`CS0618`); migrate to `Mode = ExecutionMode.Query`
+
+### Signal Methods (Fire-and-Forget)
+
+Sibling to Query but void return and no response on the wire. Used for heartbeat, telemetry, bridge-driven notifications.
+
+```csharp
+[MetaService(StateType = typeof(ProfileState))]
+public interface IProfileService : IMetaService
+{
+    [MetaMethod(Mode = ExecutionMode.Signal)]
+    void NotifyHeartbeat(long clientTicks);
+}
+```
+
+**Client:** generated `{Method}Signal(params)` — synchronous void, fires through `INetwork.SendSignalAsync`, returns immediately. No RequestId tracking, no auto-retry interaction, no connection-health impact.
+
+```csharp
+api.NotifyHeartbeatSignal(DateTime.UtcNow.Ticks);  // returns instantly
+```
+
+**Server route:** `Handler.SignalCallAsync` → `SessionManager.SignalEntityAsync` → `[OneWay] EntityGrain.HandleSignalAsync` → generated `{Service}SignalDispatcher.Dispatch` → impl method. Read-only: no sequence increment, no broadcasts, no persistence, no response. AccessPolicy is still enforced (same as regular methods). Errors are logged server-side and never propagated.
+
+**`[ServerMetaService]` bridges** may be called from inside signal bodies — `ServerMetaContext.SignalMode` is flipped for the call, and Recorder's writes go into `NullServerRecordContext` (no replay payload is produced since there's nothing to replay).
+
+**Constraints (validated via `#error`):**
+- Return type must be `void`
+- Cannot combine with `Query`, explicit `Mode`, `Sync`, `SkipServerOnFalse`, `ForcePersist`
+- Cross-entity calls throw `NotSupportedException` — use `Mode = Server` for chained calls
+- State mutations are a contract violation (like Query); compile-time check is planned but not yet enforced
+
+**Transport shape:** InProcess dispatches directly to the grain; SignalR uses `HubConnection.SendAsync`; HttpPolling POSTs to `/meta-http/signal` and responds `202 Accepted` before execution completes.
 
 ### Runtime Execution Mode Override
 

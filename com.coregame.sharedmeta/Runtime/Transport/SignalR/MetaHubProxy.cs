@@ -32,6 +32,13 @@ namespace SharedMeta.Client.Network
         public Task<QueryCallResponse> QueryCall(QueryCallRequest request)
             => _connection.InvokeAsync<QueryCallResponse>(nameof(QueryCall), request);
 
+        /// <summary>
+        /// Fire-and-forget signal. Uses <c>SendAsync</c> instead of <c>InvokeAsync</c> so the
+        /// client's SignalR pipeline does not await a server response.
+        /// </summary>
+        public Task SignalCall(SignalCallRequest request)
+            => _connection.SendAsync(nameof(SignalCall), request);
+
         public Task<DebugOptionsResponse> SetDebugOptions(DebugOptionsRequest request)
             => _connection.InvokeAsync<DebugOptionsResponse>(nameof(SetDebugOptions), request);
 

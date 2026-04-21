@@ -34,6 +34,7 @@ namespace SharedMeta.Transport.HttpPolling
             group.MapPost("/unsubscribe", HandleUnsubscribe);
             group.MapPost("/rpc", HandleRpcCall);
             group.MapPost("/query", HandleQueryCall);
+            group.MapPost("/signal", HandleSignalCall);
             group.MapPost("/debug-options", HandleSetDebugOptions);
             group.MapPost("/desync-report", HandleSendDesyncReport);
             group.MapPost("/ack", HandleAcknowledge);
@@ -133,6 +134,29 @@ namespace SharedMeta.Transport.HttpPolling
 
             var response = await state.Handler.QueryCallAsync(request);
             return Results.Json(response, MetaJsonContext.Default.QueryCallResponse);
+        }
+
+        /// <summary>
+        /// Fire-and-forget signal endpoint. Accepts the request, schedules handler work on
+        /// the task scheduler, returns <c>202 Accepted</c> immediately — the client is free
+        /// to stop waiting the moment the HTTP response lands (well before server execution
+        /// completes). Server-side errors are caught inside <c>Handler.SignalCallAsync</c>
+        /// and never surfaced back through the HTTP response.
+        /// </summary>
+        private static async Task<IResult> HandleSignalCall(
+            HttpContext ctx,
+            HttpPollingConnectionManager mgr)
+        {
+            var (state, error) = GetExistingConnection(ctx, mgr);
+            if (state == null) return error!;
+
+            var request = await ctx.Request.ReadFromJsonAsync(MetaJsonContext.Default.SignalCallRequest);
+            if (request == null) return Results.BadRequest("Invalid request body");
+
+            // Schedule execution but do not await — HTTP response returns 202 immediately,
+            // server-side work continues on the task scheduler. Handler swallows exceptions.
+            _ = state.Handler.SignalCallAsync(request);
+            return Results.Accepted();
         }
 
         private static async Task<IResult> HandleSetDebugOptions(

@@ -145,5 +145,20 @@ namespace SharedMeta.Test.Meta1
             var rng = which == 0 ? CombatRandom : LootRandom;
             return rng.Next(max);
         }
+
+        /// <summary>
+        /// Server-side observer for signal method verification. Each received heartbeat is
+        /// appended here so integration tests can assert "the signal arrived" without any
+        /// state-mutation side-effect leaking into the shared state replay machinery.
+        /// Static because the impl instance lives inside an Orleans grain we don't control.
+        /// </summary>
+        public static readonly System.Collections.Concurrent.ConcurrentBag<(string CallerId, long Ticks)> HeartbeatLog
+            = new();
+
+        public void NotifyHeartbeat(long clientTicks)
+        {
+            HeartbeatLog.Add((GetCallerId(), clientTicks));
+            Console.WriteLine($"[Counter] NotifyHeartbeat from {GetCallerId()}: ticks={clientTicks}");
+        }
     }
 }

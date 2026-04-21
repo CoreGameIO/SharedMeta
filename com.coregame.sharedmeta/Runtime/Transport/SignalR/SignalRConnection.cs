@@ -175,6 +175,12 @@ namespace SharedMeta.Client.Network
             return await _hub!.QueryCall(request);
         }
 
+        public Task SignalCallAsync(SignalCallRequest request)
+        {
+            EnsureConnected();
+            return _hub!.SignalCall(request);
+        }
+
         public async Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request)
         {
             EnsureConnected();

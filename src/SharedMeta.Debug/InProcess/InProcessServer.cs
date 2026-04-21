@@ -116,6 +116,17 @@ namespace SharedMeta.Debug.InProcess
             return handler.QueryCallAsync(request);
         }
 
+        /// <summary>
+        /// Internal: Handle signal call request (fire-and-forget, no response).
+        /// Completes as soon as the handler accepts the call; server execution is tracked
+        /// independently on the entity grain side.
+        /// </summary>
+        internal Task SignalCallAsync(string connectionId, SignalCallRequest request)
+        {
+            var handler = GetHandler(connectionId);
+            return handler.SignalCallAsync(request);
+        }
+
         internal Task<DesyncReportResponse> SendDesyncReportAsync(string connectionId, DesyncReportRequest request)
         {
             var handler = GetHandler(connectionId);

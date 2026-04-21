@@ -35,6 +35,17 @@ namespace SharedMeta.Transport.BestHttp
         public Task<QueryCallResponse> QueryCall(QueryCallRequest request)
             => InvokeAsync<QueryCallResponse>(nameof(QueryCall), request);
 
+        /// <summary>
+        /// Fire-and-forget signal. BestHTTP SignalRCore's <c>Send</c> returns as soon as the
+        /// frame is queued on the wire — no server ack is awaited, matching the .NET
+        /// SignalR client's <c>SendAsync</c> semantics.
+        /// </summary>
+        public Task SignalCall(SignalCallRequest request)
+        {
+            _hub.Send(nameof(SignalCall), request);
+            return Task.CompletedTask;
+        }
+
         public Task<DebugOptionsResponse> SetDebugOptions(DebugOptionsRequest request)
             => InvokeAsync<DebugOptionsResponse>(nameof(SetDebugOptions), request);
 

@@ -34,9 +34,21 @@ namespace SharedMeta.Server
         public bool DebugEnabled { get; set; } = false;
 
         /// <summary>
-        /// Active payload writer for current operation.
+        /// When true, this context is servicing a <c>[MetaMethod(Signal = true)]</c> call.
+        /// <see cref="Writer"/> returns <see cref="NullPayloadWriter.Instance"/> and Recorder
+        /// writes become no-ops, so signals can freely call <c>[ServerMetaService]</c> bridges
+        /// without producing a replay payload. Set by <see cref="MetaProviderBase{TState}.HandleSignalAsync"/>
+        /// for the duration of the dispatch and cleared in its <c>finally</c>.
         /// </summary>
-        public IPayloadWriter Writer => _writer ?? throw new InvalidOperationException("No operation in progress. Call BeginOperation first.");
+        public bool SignalMode { get; set; } = false;
+
+        /// <summary>
+        /// Active payload writer for current operation. In signal mode, returns the shared
+        /// <see cref="NullPayloadWriter.Instance"/> so bridge Recorders discard their output.
+        /// </summary>
+        public IPayloadWriter Writer => SignalMode
+            ? (IPayloadWriter)NullPayloadWriter.Instance
+            : _writer ?? throw new InvalidOperationException("No operation in progress. Call BeginOperation first.");
 
         /// <summary>
         /// Current debug info (if enabled).

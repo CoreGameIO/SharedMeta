@@ -66,6 +66,17 @@ namespace SharedMeta.Core.Transport
         Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request);
 
         /// <summary>
+        /// Fire a signal call on an entity — one-way, void return. Completes as soon as the
+        /// message is handed off to the wire; the transport never awaits server execution and
+        /// never surfaces a per-call error. Server-side errors are logged, not propagated.
+        /// Bypasses the RequestId / auto-retry / connection-health machinery entirely.
+        /// Default throws — transports that support signals override.
+        /// </summary>
+        Task SignalCallAsync(SignalCallRequest request)
+            => throw new System.NotSupportedException(
+                "This transport does not support fire-and-forget signals.");
+
+        /// <summary>
         /// Set debug options for this session (e.g., enable deep desync detection).
         /// Server may ignore if debug API is disabled in production.
         /// </summary>

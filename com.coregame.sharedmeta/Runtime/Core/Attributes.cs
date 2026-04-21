@@ -162,7 +162,28 @@ namespace SharedMeta.Core
         /// Client replaces its entire state without executing the method or applying patches.
         /// Efficient when state is fully regenerated (e.g., generating a game map).
         /// </summary>
-        ServerReplace
+        ServerReplace,
+
+        /// <summary>
+        /// Read-only request/response method. Must return a value (void not allowed),
+        /// callable without subscribing to the entity, and does not participate in state sync,
+        /// broadcasts, replay, random state, or persistence. Client may generate a
+        /// synchronous local-execution path (post-subscribe) or an async pre-subscribe proxy
+        /// (see generated <c>{Service}QueryApi</c>). Cannot be overridden at runtime via
+        /// <see cref="SharedMeta.Core.Network.IExecutionModeProvider"/> — this is a structural
+        /// trait of the method, not a routing strategy.
+        /// </summary>
+        Query,
+
+        /// <summary>
+        /// Fire-and-forget signal. Method must return <c>void</c>; the client generates a
+        /// synchronous <c>{Method}Signal()</c> that delegates to
+        /// <see cref="SharedMeta.Core.Network.INetwork.SendSignalAsync"/> and never waits for a
+        /// response. Server-side execution is read-only (no state mutation, no broadcast,
+        /// no sequence increment, no persistence); errors are logged and swallowed.
+        /// Cannot be overridden at runtime — this is a structural trait, not a routing strategy.
+        /// </summary>
+        Signal
     }
 
     /// <summary>
@@ -224,10 +245,10 @@ namespace SharedMeta.Core
         public bool ForcePersist { get; set; }
 
         /// <summary>
-        /// If true, this method can be called without subscribing to the entity.
-        /// Query methods are lightweight read-only request/response with no state sync,
-        /// broadcasts, replay, or persistence. Must return a value (void not allowed).
+        /// [DEPRECATED in 0.12.0] Use <c>Mode = ExecutionMode.Query</c> instead. Retained for
+        /// backward compatibility; the generator accepts either form but not both on the same method.
         /// </summary>
+        [System.Obsolete("Use Mode = ExecutionMode.Query instead. This bool flag will be removed in a future major version.")]
         public bool Query { get; set; }
 
         /// <summary>
@@ -251,6 +272,13 @@ namespace SharedMeta.Core
         /// (e.g. execution mode was overridden to Server via config). Defaults to <see cref="SyncPolicy.Throw"/>.
         /// </summary>
         public SyncPolicy SyncPolicy { get; set; } = SyncPolicy.Throw;
+
+        /// <summary>
+        /// [DEPRECATED in 0.12.0] Use <c>Mode = ExecutionMode.Signal</c> instead. Retained for
+        /// backward compatibility; the generator accepts either form but not both on the same method.
+        /// </summary>
+        [System.Obsolete("Use Mode = ExecutionMode.Signal instead. This bool flag will be removed in a future major version.")]
+        public bool Signal { get; set; }
     }
 
     /// <summary>

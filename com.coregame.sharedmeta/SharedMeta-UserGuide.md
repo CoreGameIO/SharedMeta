@@ -348,10 +348,10 @@ Call any entity method without subscribing — lightweight read-only RPC:
 
 ```csharp
 // In service interface:
-[MetaMethod(Query = true)]
+[MetaMethod(Mode = ExecutionMode.Query)]
 Task<PlayerBriefInfo> GetBriefInfo();
 
-[MetaMethod(Query = true, OpenAccess = true)]  // bypasses access policy
+[MetaMethod(Mode = ExecutionMode.Query, OpenAccess = true)]  // bypasses access policy
 Task<PlayerBriefInfo> GetPublicInfo();
 
 // Client usage (generated QueryApi):
@@ -365,6 +365,28 @@ var info = await api.GetBriefInfoAsync();
 - No state sync, broadcasts, replay, or persistence
 - `OpenAccess = true` bypasses EntityAccessPolicy for public data
 - Query methods must return a value (not void)
+
+### Signal Methods (Fire-and-Forget)
+
+One-way RPC — client does not wait, server does not respond. Use for heartbeat, telemetry, and notifications that do not mutate shared state:
+
+```csharp
+// In service interface:
+[MetaMethod(Mode = ExecutionMode.Signal)]
+void NotifyHeartbeat(long clientTicks);
+
+// Client usage (generated synchronous Signal overload):
+api.NotifyHeartbeatSignal(DateTime.UtcNow.Ticks);  // returns instantly, no await
+```
+
+- Void return only; no RequestId tracking, no retry, no broadcast
+- Server executes read-only: no sequence increment, no persistence, no broadcasts
+- `[ServerMetaService]` bridges may be called from signal bodies (real side-effects happen, but recording is silently discarded — there is no replay payload)
+- `EntityAccessPolicy` is still enforced (same as regular methods)
+- Cannot combine with `Query`, explicit non-default `Mode`, or `Sync`
+- Legacy `[MetaMethod(Signal = true)]` bool is deprecated (`CS0618`); migrate to `Mode = ExecutionMode.Signal`
+
+**Transport shape:** InProcess dispatches directly to the grain; SignalR uses `HubConnection.SendAsync` (no wire-level ACK awaited); HttpPolling `POST /meta-http/signal` → `202 Accepted` before execution completes.
 
 ---
 

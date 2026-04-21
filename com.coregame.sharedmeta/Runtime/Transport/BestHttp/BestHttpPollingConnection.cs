@@ -187,6 +187,25 @@ namespace SharedMeta.Transport.BestHttp
             return await PostAsync<QueryCallResponse>("/query", request);
         }
 
+        /// <summary>
+        /// Fire-and-forget signal via HTTP POST to <c>/signal</c>. The server responds 202
+        /// before executing the signal; we log non-success statuses but never throw.
+        /// </summary>
+        public async Task SignalCallAsync(SignalCallRequest request)
+        {
+            EnsureSessionConnected();
+            try
+            {
+                // PostAsync returns a response type but for signals we discard it —
+                // the server returns 202 Accepted with no meaningful body.
+                await PostAsync<object>("/signal", request);
+            }
+            catch (Exception ex)
+            {
+                SharedMeta.Core.Logging.MetaLog.Warning($"[BestHttpPolling] Signal failed: {ex.Message}");
+            }
+        }
+
         public async Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request)
         {
             EnsureSessionConnected();

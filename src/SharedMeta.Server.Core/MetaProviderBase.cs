@@ -187,6 +187,14 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     protected abstract Task<DispatchResult> DispatchCall(string serviceName, string methodName, byte[] payload);
 
     /// <summary>
+    /// Dispatch a signal method call (void return, fire-and-forget). Default no-op;
+    /// generated code overrides when the provider has one or more <c>[MetaMethod(Signal = true)]</c>
+    /// methods and wires them into a generated <c>{Service}SignalDispatcher.Dispatch</c>.
+    /// </summary>
+    protected virtual Task DispatchSignal(string serviceName, string methodName, byte[] payload)
+        => Task.CompletedTask;
+
+    /// <summary>
     /// Dispatch an external event. Override in derived class if needed.
     /// </summary>
     protected virtual Task<DispatchResult> DispatchEvent(string subscriberInterface, string methodName, byte[] eventData)
@@ -470,6 +478,51 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// Check if a query method has OpenAccess. Generated code overrides.
     /// </summary>
     public virtual bool IsOpenAccessQuery(string serviceName, string methodName) => false;
+
+    /// <summary>
+    /// Check if a method is a signal method (fire-and-forget, void return). Generated code overrides.
+    /// </summary>
+    public virtual bool IsSignalMethod(string serviceName, string methodName) => false;
+
+    /// <summary>
+    /// Handle a signal call. Dispatches the method through <see cref="DispatchSignal"/> but skips
+    /// replay recording, broadcasts, random state tracking, persistence, and response generation.
+    /// Bridges called from inside the signal body are wrapped by their normal Recorder, but the
+    /// Recorder writes into <see cref="NullServerRecordContext"/> — real side-effects still happen,
+    /// recording is a no-op.
+    /// Errors are caught and logged — they do not propagate back to the client (fire-and-forget).
+    /// </summary>
+    public async Task HandleSignalAsync(RpcCall call)
+    {
+        if (MetaContext == null || Context == null)
+        {
+            Logger.ProviderCallError(new InvalidOperationException("Provider not initialized"), call.ServiceName, call.MethodName);
+            return;
+        }
+
+        try
+        {
+            MetaContext.CallerId = call.CallerId;
+            MetaContext.ServerTimeTicks = DateTime.UtcNow.Ticks;
+            // Enable signal mode so any bridge Recorder's Writer.Write becomes a no-op
+            // (the payload produced during signal execution has no consumer).
+            MetaContext.SignalMode = true;
+            MetaContextAccessor.Current = MetaContext;
+
+            await DispatchSignal(call.ServiceName, call.MethodName, call.Payload);
+        }
+        catch (Exception ex)
+        {
+            // Signal is fire-and-forget by contract — log and swallow so the entity grain
+            // does not see an exception that would become a transport-level error on the session.
+            Logger.ProviderCallError(ex, call.ServiceName, call.MethodName);
+        }
+        finally
+        {
+            MetaContext.SignalMode = false;
+            MetaContextAccessor.Current = null;
+        }
+    }
 
     public byte[] GetStateBytes()
     {

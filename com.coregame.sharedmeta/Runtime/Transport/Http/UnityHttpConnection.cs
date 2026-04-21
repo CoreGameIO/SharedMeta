@@ -183,6 +183,23 @@ namespace SharedMeta.Client.Network
             return await PostAsync<QueryCallResponse>("/query", request);
         }
 
+        /// <summary>
+        /// Fire-and-forget signal — POST to <c>/signal</c>, server returns 202, we ignore the body.
+        /// Non-success statuses are logged but never surface as exceptions.
+        /// </summary>
+        public async Task SignalCallAsync(SignalCallRequest request)
+        {
+            EnsureSessionConnected();
+            try
+            {
+                await PostAsync<object>("/signal", request);
+            }
+            catch (Exception ex)
+            {
+                SharedMeta.Core.Logging.MetaLog.Warning($"[UnityHttp] Signal failed: {ex.Message}");
+            }
+        }
+
         public async Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request)
         {
             EnsureSessionConnected();

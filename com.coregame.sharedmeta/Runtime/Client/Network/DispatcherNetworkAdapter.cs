@@ -179,6 +179,29 @@ namespace SharedMeta.Client.Network
             };
         }
 
+        /// <summary>
+        /// Fire a signal through the underlying connection — no RequestId, no dispatcher tracking,
+        /// no auto-retry. Completes as soon as the connection hands the message off.
+        /// Server-side errors are never reported back.
+        /// </summary>
+        public ValueTask SendSignalAsync(string serviceName, string methodName, byte[] args)
+        {
+            var request = new SignalCallRequest
+            {
+                EntityId = _entityId,
+                ServiceName = serviceName,
+                MethodName = methodName,
+                Payload = args ?? Array.Empty<byte>()
+            };
+
+            // Fire-and-forget at the dispatcher level too — we do NOT await the Task here.
+            // Returning a completed ValueTask mirrors the "signal leaves immediately" contract;
+            // the actual wire-send runs on the continuation scheduled by SignalCallAsync.
+            // Errors from the transport layer are logged by IConnection implementations if at all.
+            _ = _dispatcher.Connection.SignalCallAsync(request);
+            return default;
+        }
+
         public async Task<DesyncReportResponse?> SendDesyncReportAsync(DesyncReportRequest request)
         {
             try

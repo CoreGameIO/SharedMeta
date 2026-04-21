@@ -17,6 +17,9 @@ namespace SharedMeta.Generator.Generators
         public ulong SignatureHash { get; set; }
         public bool IsQuery { get; set; }
         public bool IsOpenAccess { get; set; }
+
+        /// <summary>True if <c>[MetaMethod(Signal = true)]</c> — fire-and-forget void.</summary>
+        public bool IsSignal { get; set; }
     }
 
     /// <summary>

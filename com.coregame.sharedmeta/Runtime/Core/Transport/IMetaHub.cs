@@ -24,6 +24,15 @@ namespace SharedMeta.Core.Transport
         /// </summary>
         Task<QueryCallResponse> QueryCall(QueryCallRequest request);
 
+        /// <summary>
+        /// Fire a signal call — one-way, void return. Server executes read-only on the target
+        /// entity grain; no response is sent back. Clients typically invoke this via
+        /// <c>HubConnection.SendAsync</c> rather than <c>InvokeAsync</c> to avoid awaiting
+        /// any ack from the SignalR pipeline.
+        /// The server-side hub method still returns <c>Task</c> so both calling paths are supported.
+        /// </summary>
+        Task SignalCall(SignalCallRequest request);
+
         Task<AcknowledgeResponse> AcknowledgeSequence(AcknowledgeRequest request);
 
         /// <summary>

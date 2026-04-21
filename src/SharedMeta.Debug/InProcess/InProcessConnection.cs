@@ -130,6 +130,12 @@ namespace SharedMeta.Debug.InProcess
             return await _server.QueryCallAsync(_connectionId, request);
         }
 
+        public Task SignalCallAsync(SignalCallRequest request)
+        {
+            EnsureConnected();
+            return _server.SignalCallAsync(_connectionId, request);
+        }
+
         public async Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request)
         {
             EnsureConnected();

@@ -21,6 +21,18 @@ namespace SharedMeta.Core.Network
 
     /// <summary>
     /// Default implementation with override support.
+    ///
+    /// <para><b>Query and Signal are structural, not routing.</b> Both <see cref="ExecutionMode.Query"/>
+    /// and <see cref="ExecutionMode.Signal"/> change a method's signature and lifecycle — they cannot
+    /// be overridden at runtime, in either direction:</para>
+    /// <list type="bullet">
+    ///   <item>A method declared <c>Query</c> or <c>Signal</c> ignores any matching entry in the
+    ///   overrides map (<see cref="GetMode"/> short-circuits on the default mode).</item>
+    ///   <item><see cref="SetMode"/> and <see cref="SetServiceMode"/> throw
+    ///   <see cref="System.ArgumentException"/> if asked to apply a <c>Query</c> or <c>Signal</c>
+    ///   override — nothing would consume it, and the asymmetry of allowing it to be set
+    ///   without effect is more confusing than the throw.</item>
+    /// </list>
     /// </summary>
     public class ExecutionModeProvider : IExecutionModeProvider
     {
@@ -28,6 +40,12 @@ namespace SharedMeta.Core.Network
 
         public ExecutionMode GetMode(string serviceName, string methodName, ExecutionMode defaultMode)
         {
+            // Query and Signal are structural traits of the method, not routing strategies:
+            // overriding them would fail to reach generated codegen (Query/Signal methods do not
+            // emit the Mode-switch block), so we short-circuit here for clarity and defense-in-depth.
+            if (defaultMode == ExecutionMode.Query || defaultMode == ExecutionMode.Signal)
+                return defaultMode;
+
             // Check specific method override
             if (_overrides.TryGetValue((serviceName, methodName), out var mode))
                 return mode;
@@ -40,21 +58,35 @@ namespace SharedMeta.Core.Network
         }
 
         /// <summary>
-        /// Override mode for a specific method.
+        /// Override mode for a specific method. Throws if <paramref name="mode"/> is
+        /// <see cref="ExecutionMode.Query"/> or <see cref="ExecutionMode.Signal"/> — these cannot
+        /// be assigned at runtime because they carry method-signature / lifecycle semantics
+        /// that exist only at codegen time.
         /// </summary>
         public ExecutionModeProvider SetMode(string serviceName, string methodName, ExecutionMode mode)
         {
+            EnsureAssignableMode(mode);
             _overrides[(serviceName, methodName)] = mode;
             return this;
         }
 
         /// <summary>
-        /// Override mode for all methods in a service.
+        /// Override mode for all methods in a service. Throws for Query/Signal targets —
+        /// see <see cref="SetMode"/>.
         /// </summary>
         public ExecutionModeProvider SetServiceMode(string serviceName, ExecutionMode mode)
         {
+            EnsureAssignableMode(mode);
             _overrides[(serviceName, "*")] = mode;
             return this;
+        }
+
+        private static void EnsureAssignableMode(ExecutionMode mode)
+        {
+            if (mode == ExecutionMode.Query || mode == ExecutionMode.Signal)
+                throw new System.ArgumentException(
+                    $"ExecutionMode.{mode} cannot be applied as a runtime override — it is a structural trait declared on [MetaMethod] and consumed at code generation time. Declare the method with Mode = ExecutionMode.{mode} instead.",
+                    nameof(mode));
         }
 
         /// <summary>

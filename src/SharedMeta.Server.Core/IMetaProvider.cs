@@ -160,6 +160,19 @@ namespace SharedMeta.Server.Core
         Task<QueryCallResponse> HandleQueryAsync(RpcCall call);
 
         /// <summary>
+        /// Handle a signal call — fire-and-forget, void return, read-only state.
+        /// Dispatches the method but skips replay recording, broadcast creation, random state,
+        /// persistence, and response generation. No value flows back to the caller.
+        /// <para>
+        /// Bridge services (<c>[ServerMetaService]</c>) called from within a signal body are
+        /// wrapped by their normal <c>{Service}Recorder</c>, but the Recorder writes into
+        /// <see cref="SharedMeta.Core.NullServerRecordContext"/> — real side-effects happen,
+        /// recording is a no-op.
+        /// </para>
+        /// </summary>
+        Task HandleSignalAsync(RpcCall call) => Task.CompletedTask;
+
+        /// <summary>
         /// Check if a method is a query method. Generated code implements this.
         /// </summary>
         bool IsQueryMethod(string serviceName, string methodName) => false;
@@ -169,6 +182,12 @@ namespace SharedMeta.Server.Core
         /// Generated code implements this.
         /// </summary>
         bool IsOpenAccessQuery(string serviceName, string methodName) => false;
+
+        /// <summary>
+        /// Check if a method is a signal method (fire-and-forget, void return).
+        /// Generated code overrides this.
+        /// </summary>
+        bool IsSignalMethod(string serviceName, string methodName) => false;
 
         /// <summary>
         /// Config version for this entity. Returns (0,0) if no config.

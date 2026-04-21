@@ -250,13 +250,36 @@ namespace SharedMeta.Generator.Generators
                     }
                 }
 
-                // Read Query and OpenAccess properties
+                // Read Query, Signal (both new Mode-based and legacy bool forms) and OpenAccess.
+                // Canonical form is Mode = ExecutionMode.Query | Signal; legacy bools are kept for
+                // back-compat (marked [Obsolete] on the attribute itself).
                 bool isQuery = false;
                 bool isOpenAccess = false;
+                bool isSignal = false;
                 if (metaMethodAttr != null)
                 {
+                    // Legacy bool form.
                     var queryArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Query");
-                    isQuery = !queryArg.Value.IsNull && queryArg.Value.Value is true;
+                    bool legacyQuery = !queryArg.Value.IsNull && queryArg.Value.Value is true;
+
+                    var signalArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Signal");
+                    bool legacySignal = !signalArg.Value.IsNull && signalArg.Value.Value is true;
+
+                    // Canonical Mode form. Mode is an int (enum value); compare against known positions.
+                    // ExecutionMode layout: Local=0, Optimistic=1, Server=2, CrossOptimistic=3,
+                    // ServerPatch=4, ServerReplace=5, Query=6, Signal=7.
+                    bool modeIsQuery = false;
+                    bool modeIsSignal = false;
+                    var modeArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Mode");
+                    if (!modeArg.Value.IsNull && modeArg.Value.Value is int modeVal)
+                    {
+                        if (modeVal == 6) modeIsQuery = true;
+                        else if (modeVal == 7) modeIsSignal = true;
+                    }
+
+                    isQuery = legacyQuery || modeIsQuery;
+                    isSignal = legacySignal || modeIsSignal;
+
                     var openAccessArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "OpenAccess");
                     isOpenAccess = !openAccessArg.Value.IsNull && openAccessArg.Value.Value is true;
                 }
@@ -271,7 +294,8 @@ namespace SharedMeta.Generator.Generators
                     SignatureString = signatureString,
                     SignatureHash = signatureHash,
                     IsQuery = isQuery,
-                    IsOpenAccess = isOpenAccess
+                    IsOpenAccess = isOpenAccess,
+                    IsSignal = isSignal
                 });
             }
 
@@ -834,6 +858,50 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine("        }");
                     sb.AppendLine();
                 }
+            }
+
+            // IsSignalMethod + DispatchSignal overrides — only emitted when this state's services
+            // contain at least one [MetaMethod(Signal = true)]. The override routes to the generated
+            // {Service}SignalDispatcher companion emitted by ServerDispatcherGenerator.
+            var allSignalMethods = services
+                .SelectMany(s => s.MethodSignatures.Select(m => new { Impl = s, Sig = m }))
+                .Where(x => x.Sig.IsSignal)
+                .ToList();
+            if (allSignalMethods.Count > 0)
+            {
+                sb.AppendLine("        public override bool IsSignalMethod(string serviceName, string methodName)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            return (serviceName, methodName) switch");
+                sb.AppendLine("            {");
+                foreach (var x in allSignalMethods)
+                    sb.AppendLine($"                (\"{x.Sig.ServiceName}\", \"{x.Sig.MethodAlias}\") => true,");
+                sb.AppendLine("                _ => false");
+                sb.AppendLine("            };");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+
+                sb.AppendLine("        protected override async Task DispatchSignal(string serviceName, string methodName, byte[] payload)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            switch (serviceName)");
+                sb.AppendLine("            {");
+                // Group signal methods by interface, one switch arm per service.
+                var signalsByService = allSignalMethods
+                    .GroupBy(x => x.Impl.InterfaceName)
+                    .ToList();
+                foreach (var group in signalsByService)
+                {
+                    var anyImpl = group.First().Impl;
+                    var baseName = GetBaseName(anyImpl.InterfaceName);
+                    // Signal dispatcher is emitted by ServerDispatcherGenerator in the same namespace
+                    // as the main dispatcher — we route by service interface name.
+                    sb.AppendLine($"                case \"{anyImpl.InterfaceName}\":");
+                    sb.AppendLine($"                    await {anyImpl.InterfaceName}SignalDispatcher.Dispatch(Get{baseName}(), methodName, payload, Context.Serializer);");
+                    sb.AppendLine("                    break;");
+                }
+                sb.AppendLine("                default: throw new MissingMethodException($\"Signal service '{serviceName}' not found\");");
+                sb.AppendLine("            }");
+                sb.AppendLine("        }");
+                sb.AppendLine();
             }
 
             // InitializeStateAsync override (if any service has [MetaInit])

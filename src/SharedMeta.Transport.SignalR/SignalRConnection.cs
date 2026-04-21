@@ -191,6 +191,14 @@ namespace SharedMeta.Transport.SignalR
             return await _hub!.QueryCall(request);
         }
 
+        public Task SignalCallAsync(SignalCallRequest request)
+        {
+            EnsureConnected();
+            // _hub.SignalCall uses HubConnection.SendAsync internally — fire-and-forget
+            // from SignalR's perspective, completes when the frame leaves the client.
+            return _hub!.SignalCall(request);
+        }
+
         public async Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request)
         {
             EnsureConnected();

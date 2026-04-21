@@ -177,6 +177,41 @@ namespace SharedMeta.Transport.HttpPolling
             return await PostAsync<QueryCallResponse>("/query", request, MetaJsonContext.Default.QueryCallRequest);
         }
 
+        /// <summary>
+        /// Fire-and-forget signal — POST to <c>/signal</c>. Server returns 202 immediately;
+        /// we do not parse or block on any response body.
+        /// </summary>
+        public async Task SignalCallAsync(SignalCallRequest request)
+        {
+            EnsureSessionConnected();
+            await PostSignalAsync(request);
+        }
+
+        private async Task PostSignalAsync(SignalCallRequest request)
+        {
+            // Reuse CreateRequest so the connection-id header and URL base match every other endpoint.
+            // We don't read the response body — the server returns 202 Accepted and we treat
+            // any transport-level failure as a dropped signal (log + continue).
+            using var httpRequest = CreateRequest(HttpMethod.Post, "/signal");
+            httpRequest.Content = new StringContent(
+                JsonSerializer.Serialize(request, MetaJsonContext.Default.SignalCallRequest),
+                System.Text.Encoding.UTF8,
+                "application/json");
+            try
+            {
+                using var response = await _httpClient.SendAsync(httpRequest);
+                if (!response.IsSuccessStatusCode)
+                {
+                    SharedMeta.Core.Logging.MetaLog.Warning(
+                        $"[HttpPolling] Signal POST returned {(int)response.StatusCode} {response.ReasonPhrase}");
+                }
+            }
+            catch (Exception ex)
+            {
+                SharedMeta.Core.Logging.MetaLog.Warning($"[HttpPolling] Signal POST failed: {ex.Message}");
+            }
+        }
+
         public async Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request)
         {
             EnsureSessionConnected();

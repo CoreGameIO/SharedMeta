@@ -52,6 +52,16 @@ namespace SharedMeta.Server.Core.Grains
         Task<QueryCallResponse> HandleQueryAsync(RpcCall call);
 
         /// <summary>
+        /// Execute a signal call (fire-and-forget, void return).
+        /// Read-only body: no state sync, no broadcasts, no replay, no sequence number changes,
+        /// no persistence. Server-side errors are logged, not propagated — the caller never
+        /// sees a response (by contract). Marked <c>[OneWay]</c> so Orleans does not even send
+        /// an ACK envelope back to the caller grain.
+        /// </summary>
+        [OneWay]
+        Task HandleSignalAsync(RpcCall call);
+
+        /// <summary>
         /// Get the current serialized state of this entity (read-only).
         /// Returns null if the entity hasn't been activated or has no state.
         /// Marked [AlwaysInterleave] to prevent deadlocks in mutual cross-entity reads.

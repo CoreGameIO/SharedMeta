@@ -275,6 +275,12 @@ namespace SharedMeta.Transport.BestHttp
             return await _proxy!.QueryCall(request);
         }
 
+        public Task SignalCallAsync(SignalCallRequest request)
+        {
+            EnsureConnected();
+            return _proxy!.SignalCall(request);
+        }
+
         public async Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request)
         {
             EnsureConnected();
