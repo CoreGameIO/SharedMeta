@@ -1039,7 +1039,7 @@ namespace SharedMeta.Server.Core.Session
                         CallerId = broadcast.ExcludePlayerId,
                         ServerTimeTicks = broadcast.ServerTimeTicks
                     },
-                    Response = new RpcResponse { ReplayPayload = broadcast.ReplayPayload, RandomScrollDelta = broadcast.RandomScrollDelta, PatchBytes = broadcast.PatchBytes, StateBytes = broadcast.StateBytes }
+                    Response = new RpcResponse { ReplayPayload = broadcast.ReplayPayload, RandomScrollDelta = broadcast.RandomScrollDelta, NamedRandomScrollDeltas = broadcast.NamedRandomScrollDeltas, PatchBytes = broadcast.PatchBytes, StateBytes = broadcast.StateBytes }
                 },
                 TriggerOperations = broadcast.TriggerBroadcasts?.Select(t => new OperationResult
                 {
@@ -1050,7 +1050,7 @@ namespace SharedMeta.Server.Core.Session
                         Payload = t.Payload ?? Array.Empty<byte>(),
                         ServerTimeTicks = t.ServerTimeTicks
                     },
-                    Response = new RpcResponse { ReplayPayload = t.ReplayPayload, RandomScrollDelta = t.RandomScrollDelta, PatchBytes = t.PatchBytes, StateBytes = t.StateBytes }
+                    Response = new RpcResponse { ReplayPayload = t.ReplayPayload, RandomScrollDelta = t.RandomScrollDelta, NamedRandomScrollDeltas = t.NamedRandomScrollDeltas, PatchBytes = t.PatchBytes, StateBytes = t.StateBytes }
                 }).ToList()
             };
         }
