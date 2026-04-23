@@ -16,13 +16,13 @@ namespace SharedMeta.Editor
     /// Shared: creates game state/service files in Unity + .NET mirror project.
     /// Server: creates a .NET project (outside Unity).
     /// Client: generates MonoBehaviour scripts (inside Unity project).
-    /// Accessible via SharedMeta > Project Wizard menu.
+    /// Accessible via Tools > SharedMeta > Project Wizard menu.
     /// </summary>
     public class SharedMetaProjectWizard : EditorWindow
     {
         // Common settings
         private string _sharedMetaVersion = "";
-        private string _sharedProjectName = "MyGame.Shared";
+        private string _sharedProjectName = "Meta.Shared";
         private string _sharedStateName = "PlayerProfile";
         private int _transportIndex; // 0 = SignalR, 1 = HTTP Polling
         private int _serializerIndex; // 0 = MemoryPack, 1 = MessagePack
@@ -33,20 +33,20 @@ namespace SharedMeta.Editor
         private string _localNugetPath = "";
 
         // Shared project settings
-        private string _sharedOutputDir = "Assets/Scripts/MyGame.Shared";
+        private string _sharedOutputDir = "Assets/Scripts/Meta.Shared";
 
         // Solution directory (root for .NET projects)
         private string _solutionDir = "../";
 
         // Server settings
-        private string _serverProjectName = "MyGame.Server";
+        private string _serverProjectName = "Meta.Server";
 
         // Derived paths (from solutionDir + project names)
         private string SharedDotnetDir => _solutionDir.TrimEnd('/', '\\') + "/" + _sharedProjectName;
         private string ServerOutputDir => _solutionDir.TrimEnd('/', '\\') + "/" + _serverProjectName;
 
         // Client settings
-        private string _clientOutputDir = "Assets/Scripts/Meta";
+        private string _clientOutputDir = "Assets/Scripts/Meta.Client";
 
         private string ServerUrl => $"http://localhost:{_serverPort}/meta";
 
@@ -96,7 +96,7 @@ namespace SharedMeta.Editor
             "Create Server Project", "Generate Client Scripts", "Setup Scene"
         };
 
-        [MenuItem("SharedMeta/Project Wizard")]
+        [MenuItem("Tools/SharedMeta/Project Wizard")]
         public static void ShowWindow()
         {
             var window = GetWindow<SharedMetaProjectWizard>("SharedMeta Project Wizard");
@@ -1179,6 +1179,10 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             AppendSerializerAttr(sb);
 
+            // Named random streams — independent scroll per mechanic so adding a Loot roll
+            // doesn't shift the Map generation sequence (and vice versa).
+            sb.AppendLine("    [NamedRandom(\"Map\")]");
+            sb.AppendLine("    [NamedRandom(\"Loot\")]");
             sb.AppendLine("    public partial class ExpeditionState : ISharedState");
             sb.AppendLine("    {");
             AppendProp(sb, 0, "string", "OwnerId", "\"\"");
@@ -1214,6 +1218,17 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine("        [MetaMethod(Alias = \"Move\", Mode = ExecutionMode.CrossOptimistic)]");
             sb.AppendLine("        Task<bool> Move(int dx, int dy);");
+            sb.AppendLine();
+            sb.AppendLine("        // Query — read-only, no subscription required on the client.");
+            sb.AppendLine("        // Generated ExpeditionServiceQueryApi lets the client poll entity state");
+            sb.AppendLine("        // (e.g. \"is this expedition still active?\") without subscribing.");
+            sb.AppendLine("        [MetaMethod(Alias = \"IsActive\", Mode = ExecutionMode.Query)]");
+            sb.AppendLine("        bool IsActive();");
+            sb.AppendLine();
+            sb.AppendLine("        // Signal — fire-and-forget, no response, no auto-retry, no broadcast side-effects.");
+            sb.AppendLine("        // Server errors are swallowed. Good fit for heartbeat / telemetry / presence pings.");
+            sb.AppendLine("        [MetaMethod(Alias = \"Ping\", Mode = ExecutionMode.Signal)]");
+            sb.AppendLine("        void Ping(string clientTime);");
             sb.AppendLine("    }");
             sb.AppendLine("}");
             return sb.ToString();
@@ -1245,14 +1260,27 @@ namespace SharedMeta.Editor
             sb.AppendLine("            State.TreasuresFound = 0;");
             sb.AppendLine("            State.IsComplete = false;");
             sb.AppendLine();
-            sb.AppendLine("            // Generate random walls and treasures using deterministic random");
+            sb.AppendLine("            // Use the [NamedRandom(\"Map\")] stream declared on ExpeditionState —");
+            sb.AppendLine("            // the generator emits MapRandom on the Context so Map generation's scroll");
+            sb.AppendLine("            // position is independent of other mechanics' random rolls.");
             sb.AppendLine("            for (int i = 0; i < State.Cells.Length; i++)");
             sb.AppendLine("            {");
             sb.AppendLine("                if (i == 0) continue; // Start cell always empty");
-            sb.AppendLine("                int roll = Context.Random!.Next(100);");
+            sb.AppendLine("                int roll = MapRandom.Next(100);");
             sb.AppendLine("                if (roll < 15) State.Cells[i] = (int)CellType.Wall;");
             sb.AppendLine("                else if (roll < 25) State.Cells[i] = (int)CellType.Treasure;");
             sb.AppendLine("            }");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+            sb.AppendLine("        // Query — read-only view into the entity. The framework wires a transient");
+            sb.AppendLine("        // ServerMetaContext where State is a snapshot; mutations here are discarded.");
+            sb.AppendLine("        public bool IsActive() => !State.IsComplete;");
+            sb.AppendLine();
+            sb.AppendLine("        // Signal — no response, no state mutation. For heartbeat / presence / telemetry.");
+            sb.AppendLine("        // State is read-only inside a signal body; the framework throws if you mutate it.");
+            sb.AppendLine("        public void Ping(string clientTime)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            // Example: forward to logging/metrics here. No persistence or broadcasts.");
             sb.AppendLine("        }");
             sb.AppendLine();
             sb.AppendLine("        public async Task<bool> Move(int dx, int dy)");
@@ -1276,7 +1304,10 @@ namespace SharedMeta.Editor
             sb.AppendLine("            {");
             sb.AppendLine("                State.Cells[idx] = (int)CellType.Empty;");
             sb.AppendLine("                State.TreasuresFound++;");
-            sb.AppendLine("                await profileService.AddMoneyAsync(10);");
+            sb.AppendLine("                // Independent [NamedRandom(\"Loot\")] stream — reward size doesn't");
+            sb.AppendLine("                // shift the Map generator's scroll when you change the loot table.");
+            sb.AppendLine("                int bonus = LootRandom.Next(5, 16);");
+            sb.AppendLine("                await profileService.AddMoneyAsync(bonus);");
             sb.AppendLine("            }");
             sb.AppendLine();
             sb.AppendLine("            return true;");
@@ -1435,7 +1466,13 @@ namespace SharedMeta.Editor
             sb.AppendLine("    <PackageReference Include=\"CoreGame.SharedMeta.Orleans\" />");
 
             if (IsServerSignalR)
+            {
                 sb.AppendLine("    <PackageReference Include=\"CoreGame.SharedMeta.Transport.SignalR\" />");
+                // MessagePack protocol for SignalR lives in a separate optional package —
+                // pulls in AddMetaMessagePackProtocol() used by Program.cs below.
+                if (_serializerIndex == 1)
+                    sb.AppendLine("    <PackageReference Include=\"CoreGame.SharedMeta.Transport.SignalR.MessagePack\" />");
+            }
             else
                 sb.AppendLine("    <PackageReference Include=\"CoreGame.SharedMeta.Transport.HttpPolling\" />");
 
@@ -1506,6 +1543,9 @@ namespace SharedMeta.Editor
             sb.AppendLine();
 
             sb.AppendLine("builder.Host.UseSerilog((ctx, config) => config");
+            sb.AppendLine("    // Surface SharedMeta diagnostic logs ([Desync], [Handler], transport-level info)");
+            sb.AppendLine("    // that would otherwise be filtered by Serilog's default Information threshold.");
+            sb.AppendLine("    .MinimumLevel.Override(\"SharedMeta\", Serilog.Events.LogEventLevel.Debug)");
             sb.AppendLine("    .WriteTo.Console());");
             sb.AppendLine();
 
@@ -1749,6 +1789,8 @@ namespace SharedMeta.Editor
             sb.AppendLine("    {");
             sb.AppendLine("        MetaLog.SetLogger(new UnityMetaLogger());");
             sb.AppendLine();
+            sb.AppendLine("        try");
+            sb.AppendLine("        {");
 
             // Authentication
             if (_enableAuth)
@@ -1852,7 +1894,13 @@ namespace SharedMeta.Editor
                 sb.AppendLine("            PlayerId = playerId,");
             else
                 sb.AppendLine("            PlayerId = SystemInfo.deviceUniqueIdentifier,");
+            sb.AppendLine("            // Optional hooks — implement and uncomment when needed:");
+            sb.AppendLine("            // Diagnostics     = new MyDesyncDiagnostics(),     // IDesyncDiagnostics: OnRandomDesync/OnPatchDesync/OnResultMismatch callbacks");
+            sb.AppendLine("            // ConnectionHealth = new MyConnectionHealth(),     // IConnectionHealth: Healthy ↔ Slow ↔ Unresponsive transitions for UI overlays");
             sb.AppendLine("        });");
+            sb.AppendLine();
+            sb.AppendLine("        // For deep request-lifecycle tracing, assign Client.Dispatcher.DiagnosticsLog");
+            sb.AppendLine("        // to a file writer — it emits SEND/RECV/BATCH/CONFIRMED per request.");
             sb.AppendLine();
             sb.AppendLine("        Client.Resolver.RegisterAllServices();");
             sb.AppendLine();
@@ -1894,13 +1942,29 @@ namespace SharedMeta.Editor
                     sb.AppendLine("        Debug.Log($\"Energy: {profile.State.Energy}/{profile.State.MaxEnergy}, Money: {profile.State.Money}\");");
                     sb.AppendLine();
                     sb.AppendLine("        // Start expedition (returns entity ID for the new expedition)");
-                    sb.AppendLine("        // var result = await profile.ResumeOrStartExpeditionAsync();");
+                    sb.AppendLine("        // var entityId = await profile.StartExpeditionAsync();");
                     sb.AppendLine();
                     sb.AppendLine("        // Authorized service — requires explicit entityId");
-                    sb.AppendLine("        // var expApi = await Client.GetServiceAsync<ExpeditionServiceApiClient>(result.EntityId);");
-                    sb.AppendLine("        // var expState = Client.GetState<ExpeditionState>(result.EntityId);");
+                    sb.AppendLine("        // var expApi = await Client.GetServiceAsync<ExpeditionServiceApiClient>(entityId);");
+                    sb.AppendLine("        // var expState = Client.GetState<ExpeditionState>(entityId);");
+                    sb.AppendLine();
+                    sb.AppendLine("        // Signal (fire-and-forget heartbeat, no response awaited):");
+                    sb.AppendLine("        //   expApi.PingSignal(System.DateTime.UtcNow.ToString(\"O\"));");
+                    sb.AppendLine();
+                    sb.AppendLine("        // Query (read-only, no subscription — useful to check state before subscribing):");
+                    sb.AppendLine("        //   var query = new ExpeditionServiceQueryApi(connection, serializer).EntityApi(entityId);");
+                    sb.AppendLine("        //   bool isActive = await query.IsActiveAsync();");
                     break;
             }
+            sb.AppendLine("        }");
+            sb.AppendLine("        catch (Exception ex)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            Debug.LogError($\"[SharedMeta] Connection failed: {ex.Message}\");");
+            sb.AppendLine("            Debug.LogException(ex);");
+            sb.AppendLine("            // In a production UI: show a modal with a Reconnect button that calls Start()");
+            sb.AppendLine("            // (or a dedicated Reconnect() method) after the player confirms. The");
+            sb.AppendLine("            // Expedition sample under examples/Unity/Expedition demonstrates this pattern.");
+            sb.AppendLine("        }");
             sb.AppendLine("    }");
             sb.AppendLine();
             sb.AppendLine("    private void Update()");
@@ -3096,16 +3160,19 @@ For full documentation see: https://github.com/CoreGameIO/SharedMeta
         }
 
         /// <summary>
-        /// Writes Directory.Packages.props if no parent CPM is detected.
-        /// When a parent CPM exists, adds missing PackageVersion entries to it instead.
+        /// Writes Directory.Packages.props at <paramref name="outputDir"/> if none exists there.
+        /// If the solution root already has a Directory.Packages.props, adds missing
+        /// PackageVersion entries to it instead. Search is capped at <paramref name="outputDir"/>
+        /// — we never walk above the solution boundary, so wizard runs inside unrelated
+        /// repos (e.g. testing from within this SharedMeta repo) cannot accidentally
+        /// mutate the enclosing repo's CPM file.
         /// </summary>
         private void WriteDirectoryPackagesProps(string outputDir, bool isServer)
         {
-            // Walk up to find existing Directory.Packages.props
-            var existingPath = FindDirectoryPackagesProps(outputDir);
-            if (existingPath != null)
+            // Check only the solution root itself — do not walk above.
+            var existingPath = Path.Combine(outputDir, "Directory.Packages.props");
+            if (File.Exists(existingPath))
             {
-                // Parent CPM exists — add missing SharedMeta PackageVersion entries
                 AppendMissingPackageVersions(existingPath, isServer);
                 return;
             }
@@ -3130,7 +3197,11 @@ For full documentation see: https://github.com/CoreGameIO/SharedMeta
                 sb.AppendLine($"    <PackageVersion Include=\"CoreGame.SharedMeta.Orleans\" Version=\"{ver}\" />");
 
                 if (IsServerSignalR)
+                {
                     sb.AppendLine($"    <PackageVersion Include=\"CoreGame.SharedMeta.Transport.SignalR\" Version=\"{ver}\" />");
+                    if (_serializerIndex == 1)
+                        sb.AppendLine($"    <PackageVersion Include=\"CoreGame.SharedMeta.Transport.SignalR.MessagePack\" Version=\"{ver}\" />");
+                }
                 else
                     sb.AppendLine($"    <PackageVersion Include=\"CoreGame.SharedMeta.Transport.HttpPolling\" Version=\"{ver}\" />");
 
@@ -3160,19 +3231,6 @@ For full documentation see: https://github.com/CoreGameIO/SharedMeta
                 Encoding.UTF8);
         }
 
-        private static string? FindDirectoryPackagesProps(string startDir)
-        {
-            var dir = new DirectoryInfo(startDir);
-            while (dir != null)
-            {
-                var propsPath = Path.Combine(dir.FullName, "Directory.Packages.props");
-                if (File.Exists(propsPath))
-                    return propsPath;
-                dir = dir.Parent;
-            }
-            return null;
-        }
-
         private void AppendMissingPackageVersions(string propsPath, bool isServer)
         {
             var content = File.ReadAllText(propsPath);
@@ -3192,9 +3250,16 @@ For full documentation see: https://github.com/CoreGameIO/SharedMeta
                 packages.Add("CoreGame.SharedMeta.Server.Core");
                 packages.Add("CoreGame.SharedMeta.Orleans");
 
-                packages.Add(IsServerSignalR
-                    ? "CoreGame.SharedMeta.Transport.SignalR"
-                    : "CoreGame.SharedMeta.Transport.HttpPolling");
+                if (IsServerSignalR)
+                {
+                    packages.Add("CoreGame.SharedMeta.Transport.SignalR");
+                    if (_serializerIndex == 1)
+                        packages.Add("CoreGame.SharedMeta.Transport.SignalR.MessagePack");
+                }
+                else
+                {
+                    packages.Add("CoreGame.SharedMeta.Transport.HttpPolling");
+                }
 
                 packages.Add(_serializerIndex == 0
                     ? "CoreGame.SharedMeta.Serialization.MemoryPack"

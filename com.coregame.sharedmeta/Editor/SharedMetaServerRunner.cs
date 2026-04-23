@@ -116,7 +116,7 @@ namespace SharedMeta.Editor
         // Menu
         // =====================================================================
 
-        [MenuItem("SharedMeta/Server Runner")]
+        [MenuItem("Tools/SharedMeta/Server Runner")]
         public static void ShowWindow()
         {
             var window = GetWindow<SharedMetaServerRunner>("SharedMeta Server");
