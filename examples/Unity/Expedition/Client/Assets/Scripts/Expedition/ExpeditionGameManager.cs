@@ -6,6 +6,7 @@ using SharedMeta.Client.Auth;
 using SharedMeta.Client.Network;
 using SharedMeta.Core;
 using SharedMeta.Core.Auth;
+using SharedMeta.Core.Logging;
 using SharedMeta.Core.Reactive;
 using SharedMeta.Core.Diagnostics;
 using SharedMeta.Core.Transport;
@@ -45,6 +46,7 @@ public class ExpeditionGameManager : MonoBehaviour
     private bool _pendingRender;
     private ExpeditionDesyncDiagnostics _diagnostics;
     private ExpeditionConnectionHealth _connectionHealth;
+    private System.IO.StreamWriter _diagLogWriter;
 
     // Debug network simulation (editor/dev builds only)
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
@@ -60,12 +62,16 @@ public class ExpeditionGameManager : MonoBehaviour
 
     void Start()
     {
+        MetaLog.SetLogger(new UnityConsoleMetaLogger());
+
         if (string.IsNullOrEmpty(deviceId))
             deviceId = SystemInfo.deviceUniqueIdentifier;
 
         // Show transport choice — ConnectWithTransport will be called from UI
         ui.ShowTransportChoice();
     }
+
+    float _pingTimer = 5f;
 
     void Update()
     {
@@ -94,6 +100,13 @@ public class ExpeditionGameManager : MonoBehaviour
         // Update request tracking display
         if (Client.Dispatcher is SharedMeta.Client.ClientDispatcher cd)
             ui?.UpdateRequestTracking(cd.CurrentRequestId, cd.LastCompletedRequestId, cd.PendingRequestCount);
+
+        _pingTimer -= Time.deltaTime;
+        if (_pingTimer <= 0 && ProfileApi != null)
+        {
+            _pingTimer = 5f;
+            ProfileApi.PingSignal($"Current time: {Time.time}");
+        }
     }
 
     void OnDestroy()
@@ -101,6 +114,11 @@ public class ExpeditionGameManager : MonoBehaviour
         TrackedProfileState.Unregister();
         TrackedExpeditionState.Unregister();
         Client?.Dispose();
+        if (_diagLogWriter != null)
+        {
+            try { _diagLogWriter.Dispose(); } catch { }
+            _diagLogWriter = null;
+        }
     }
 
     /// <summary>
@@ -119,7 +137,14 @@ public class ExpeditionGameManager : MonoBehaviour
     /// </summary>
     public async Task ReconnectAsync()
     {
-        if (Client == null) return;
+        // No client yet — initial ConnectAsync failed. Replay it with the last transport choice.
+        if (Client == null)
+        {
+            ui.SetConnectionHealth("");
+            await ConnectAsync();
+            return;
+        }
+
         try
         {
             ui.SetStatus("Resuming session...");
@@ -223,12 +248,20 @@ public class ExpeditionGameManager : MonoBehaviour
                 }
             );
 
-            // File-based diagnostics log for request lifecycle tracing
+            // File-based diagnostics log for request lifecycle tracing.
+            // Retry after a failed connect would otherwise hit IOException "Sharing violation"
+            // because the previous writer still holds the file; dispose it first.
+            if (_diagLogWriter != null)
+            {
+                try { _diagLogWriter.Dispose(); } catch { }
+                _diagLogWriter = null;
+            }
             var logPath = System.IO.Path.Combine(Application.persistentDataPath, "connection_diag.log");
             Debug.Log($"[Expedition] Diagnostics log: {logPath}");
-            var logWriter = new System.IO.StreamWriter(logPath, append: false) { AutoFlush = true };
+            _diagLogWriter = new System.IO.StreamWriter(logPath, append: false) { AutoFlush = true };
+            var writerCapture = _diagLogWriter;
             if (Client.Dispatcher is SharedMeta.Client.ClientDispatcher cd2)
-                cd2.DiagnosticsLog = msg => { try { logWriter.WriteLine(msg); } catch { } };
+                cd2.DiagnosticsLog = msg => { try { writerCapture.WriteLine(msg); } catch { } };
 
             Client.Resolver.RegisterAllServices();
 
@@ -279,9 +312,34 @@ public class ExpeditionGameManager : MonoBehaviour
         }
         catch (Exception ex)
         {
-            ui.SetStatus($"Error: {ex.Message}");
             Debug.LogException(ex);
+
+            // Tear down the half-initialised client so the retry starts clean.
+            if (Client != null)
+            {
+                try { Client.Dispose(); } catch { }
+                Client = null;
+            }
+
+            var friendly = IsConnectionError(ex)
+                ? $"Server unreachable at {serverUrl}.\nMake sure the server is running, then press Reconnect."
+                : $"Connection failed: {ex.Message}";
+            ui.SetStatus("");
+            // Modal overlay with the existing Reconnect button — click routes back into
+            // ReconnectAsync, which detects Client == null and replays ConnectAsync.
+            ui.SetConnectionHealth(friendly, modal: true);
         }
+    }
+
+    private static bool IsConnectionError(Exception ex)
+    {
+        for (var e = ex; e != null; e = e.InnerException)
+        {
+            if (e is System.Net.Sockets.SocketException) return true;
+            if (e is System.Net.WebException) return true;
+            if (e is System.Net.Http.HttpRequestException) return true;
+        }
+        return false;
     }
 
     private void OnProfileTracked(ChangeTreeArgs args)
@@ -565,5 +623,30 @@ internal class ExpeditionConnectionHealth : IConnectionHealthListener
         }
         _hasPending = true;
         Debug.Log($"[ConnectionHealth] {status}: {pendingCount} pending, oldest={oldestPendingMs}ms");
+    }
+}
+
+internal sealed class UnityConsoleMetaLogger : IMetaLogger
+{
+    public bool IsEnabled(MetaLogLevel level) => true;
+
+    public void Log(MetaLogLevel level, string message)
+    {
+        switch (level)
+        {
+            case MetaLogLevel.Error:   Debug.LogError($"[SharedMeta] {message}");   break;
+            case MetaLogLevel.Warning: Debug.LogWarning($"[SharedMeta] {message}"); break;
+            default:                   Debug.Log($"[SharedMeta] {message}");        break;
+        }
+    }
+
+    public void Log(MetaLogLevel level, string message, Exception exception)
+    {
+        switch (level)
+        {
+            case MetaLogLevel.Error:   Debug.LogError($"[SharedMeta] {message}\n{exception}");   break;
+            case MetaLogLevel.Warning: Debug.LogWarning($"[SharedMeta] {message}\n{exception}"); break;
+            default:                   Debug.Log($"[SharedMeta] {message}\n{exception}");        break;
+        }
     }
 }

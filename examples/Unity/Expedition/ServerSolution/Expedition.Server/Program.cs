@@ -33,6 +33,11 @@ var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseUrls($"http://localhost:{port}");
 
 builder.Host.UseSerilog((ctx, config) => config
+    // Let SharedMeta log at Debug — needed to see [Desync] reports surfaced by
+    // MetaConnectionHandler.LogDesync (which writes at Information level when the server is
+    // configured with DesyncLogLevel.Debug). Serilog's implicit minimum is Information, so
+    // without this override the Desync reports are dropped before reaching the sink.
+    .MinimumLevel.Override("SharedMeta", Serilog.Events.LogEventLevel.Debug)
     .WriteTo.Console());
 
 var serializer = new MemoryPackMetaSerializer();

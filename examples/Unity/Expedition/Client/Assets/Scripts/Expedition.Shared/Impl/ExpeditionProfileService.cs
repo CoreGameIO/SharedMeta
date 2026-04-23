@@ -117,5 +117,10 @@ namespace Expedition.Shared
             state.CurrentExpeditionEntityId = "";
             return true;
         }
+
+        public void Ping(string pingValue)
+        {
+            Context.LogInfo(pingValue);
+        }
     }
 }

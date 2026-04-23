@@ -20,7 +20,7 @@ namespace Expedition.Shared
         Task<bool> RemoveObstacle(int dx, int dy);
 
         /// <summary>Query: check if expedition is active (no subscription needed).</summary>
-        [MetaMethod(Alias = "IsActive", Query = true)]
+        [MetaMethod(Alias = "IsActive", Mode = ExecutionMode.Query)]
         bool IsActive();
 
         /// <summary>Regenerate map — server generates, client receives full state replacement.</summary>

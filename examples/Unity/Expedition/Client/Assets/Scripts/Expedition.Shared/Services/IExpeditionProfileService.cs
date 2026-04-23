@@ -33,5 +33,8 @@ namespace Expedition.Shared
         /// </summary>
         [MetaMethod(Alias = "AbandonExpedition", Mode = ExecutionMode.Server)]
         Task<bool> AbandonExpedition();
+
+        [MetaMethod(Alias = "Ping", Mode = ExecutionMode.Signal)]
+        void Ping(string pingValue);
     }
 }

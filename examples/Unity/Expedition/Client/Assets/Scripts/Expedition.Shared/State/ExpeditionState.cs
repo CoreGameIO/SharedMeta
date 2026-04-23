@@ -41,7 +41,13 @@ namespace Expedition.Shared
         [Key(6), MemoryPackOrder(6)] public bool IsGenerated { get; set; }
         [Key(7), MemoryPackOrder(7)] public string ProfileEntityId { get; set; } = "";
         [Key(8), MemoryPackOrder(8), MemoryPackInclude, Tracked] private int _treasuresCollected;
-        [Key(9), MemoryPackOrder(9)] public int TotalTreasures { get; set; }
+        // TotalTreasures is Tracked so the "Broken" map demo (GenerateNewMapBroken) produces a
+        // detectable divergence: client and server each corrupt cells with their own
+        // System.Random, then recount treasures — the resulting per-side counts differ, and the
+        // patch-based DeepDesync compare picks it up. Without [Tracked] here the divergence is
+        // invisible to the CRC check until a Move happens to land on a treasure on one side but
+        // not the other (fragile).
+        [Key(9), MemoryPackOrder(9), MemoryPackInclude, Tracked] private int _totalTreasures;
         [Key(10), MemoryPackOrder(10), MemoryPackInclude, Tracked] private bool _isComplete;
         [Key(11), MemoryPackOrder(11)] public string OwnerPlayerId { get; set; } = "";
     }
