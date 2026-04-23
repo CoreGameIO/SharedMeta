@@ -365,6 +365,15 @@ namespace SharedMeta.Client
                     _lastServerTimeTicks = result.ServerTimeTicks;
                     _localTimeAtLastSync = DateTime.UtcNow.Ticks;
                 }
+
+                // Server couldn't resume the old session — it created a fresh one and will
+                // number broadcasts from 1. Rewind ordering head to match; otherwise
+                // seq-1 packets would be discarded as duplicates of our stale _nextExpected.
+                if (result.IsNewSession)
+                {
+                    _ordering.Reset(1);
+                    _lastAcknowledgedSequence = 0;
+                }
             }
 
             // Process missed packets — ProcessServerResponse handles its own locking
@@ -735,8 +744,10 @@ namespace SharedMeta.Client
             {
                 MetaLog.Info($"[ClientDispatcher] Disconnected: {reason}, keeping {_pendingRequests.Count} pending requests for reconnect");
 
-                // Keep _subscribedEntities — needed for re-subscribing after reconnect
-                _ordering.Reset(1);
+                // Keep _subscribedEntities — needed for re-subscribing after reconnect.
+                // Clear (not Reset) preserves _nextExpected so resumed-session missed packets
+                // (which continue numbering from lastAcknowledgedSequence+1) drain correctly.
+                _ordering.Clear();
                 IsSessionConnected = false;
             }
 

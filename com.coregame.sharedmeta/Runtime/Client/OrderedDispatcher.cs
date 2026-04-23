@@ -54,8 +54,22 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
+        /// Drop all buffered responses but keep the next expected sequence. Called on
+        /// transient disconnect where the session will resume — server will resend missed
+        /// packets starting after <c>lastAcknowledgedSequence</c>, so we must not rewind
+        /// <see cref="Head"/> or those packets would be dropped as duplicates.
+        /// </summary>
+        public void Clear()
+        {
+            lock (_lock)
+            {
+                _pending.Clear();
+            }
+        }
+
+        /// <summary>
         /// Drop all buffered responses and reset the next expected sequence. Called on
-        /// disconnect / session supersede / reconnect to start fresh.
+        /// session supersede / session restart where the server will renumber from scratch.
         /// </summary>
         public void Reset(long nextExpected = 1)
         {
