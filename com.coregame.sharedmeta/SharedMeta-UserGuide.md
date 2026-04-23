@@ -8,24 +8,24 @@ Quick-start reference for projects using the SharedMeta framework.
 
 Shared project (game logic):
 ```xml
-<PackageReference Include="CoreGame.SharedMeta.Core" Version="0.1.0" />
-<PackageReference Include="CoreGame.SharedMeta.Generator" Version="0.1.0" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+<PackageReference Include="CoreGame.SharedMeta.Core" Version="0.12.3" />
+<PackageReference Include="CoreGame.SharedMeta.Generator" Version="0.12.3" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
 ```
 
 Server project:
 ```xml
-<PackageReference Include="CoreGame.SharedMeta.Server" Version="0.1.0" />
-<PackageReference Include="CoreGame.SharedMeta.Server.Core" Version="0.1.0" />
-<PackageReference Include="CoreGame.SharedMeta.Orleans" Version="0.1.0" />
-<PackageReference Include="CoreGame.SharedMeta.Transport.SignalR" Version="0.1.0" />
-<PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.1.0" />
+<PackageReference Include="CoreGame.SharedMeta.Server" Version="0.12.3" />
+<PackageReference Include="CoreGame.SharedMeta.Server.Core" Version="0.12.3" />
+<PackageReference Include="CoreGame.SharedMeta.Orleans" Version="0.12.3" />
+<PackageReference Include="CoreGame.SharedMeta.Transport.SignalR" Version="0.12.3" />
+<PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.12.3" />
 ```
 
 Client project (.NET console):
 ```xml
-<PackageReference Include="CoreGame.SharedMeta.Client" Version="0.1.0" />
-<PackageReference Include="CoreGame.SharedMeta.Transport.SignalR" Version="0.1.0" />
-<PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.1.0" />
+<PackageReference Include="CoreGame.SharedMeta.Client" Version="0.12.3" />
+<PackageReference Include="CoreGame.SharedMeta.Transport.SignalR" Version="0.12.3" />
+<PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.12.3" />
 ```
 
 ### Unity (UPM)
@@ -39,7 +39,7 @@ Add to `Packages/manifest.json`:
 }
 ```
 
-Use **SharedMeta > Project Wizard** in Unity to scaffold server/client projects.
+Use **Tools > SharedMeta > Project Wizard** in Unity to scaffold server/client projects.
 
 ---
 
@@ -543,7 +543,7 @@ public interface IGameService : IMetaService { ... }
 
 Launch and manage the server directly from Unity without switching to a terminal.
 
-**Open:** `SharedMeta > Server Runner`
+**Open:** `Tools > SharedMeta > Server Runner`
 
 ### Setup
 1. Click **"..."** to browse to your server `.csproj` file (e.g., `MyGame.Server/MyGame.Server.csproj`)

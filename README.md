@@ -58,10 +58,10 @@ Add to `Packages/manifest.json`:
 
 ### 2. Open the Project Wizard
 
-**SharedMeta > Project Wizard** in Unity menu.
+**Tools > SharedMeta > Project Wizard** in Unity menu.
 
 Configure:
-- **Project name** — your shared namespace (e.g. `MyGame.Shared`)
+- **Project name** — your shared namespace (default `Meta.Shared`, e.g. `MyGame.Shared`)
 - **State name** — entity state class (e.g. `PlayerProfile`)
 - **Transport** — SignalR (WebSocket, real-time) or HTTP Polling (universal, no extra DLLs)
 - **Serializer** — MemoryPack (default) or MessagePack
@@ -80,11 +80,11 @@ Use the three generation tabs:
 
 ### 4. Run
 
-Start the server from Unity: **SharedMeta > Server Runner** — click **Start**.
+Start the server from Unity: **Tools > SharedMeta > Server Runner** — click **Start**.
 
 Or from terminal:
 ```bash
-cd MyGame.Server
+cd Meta.Server
 dotnet run
 ```
 
@@ -95,11 +95,11 @@ Press Play in Unity — `MetaGameClient` connects automatically.
 Add NuGet packages to your `.csproj`:
 ```xml
 <ItemGroup>
-  <PackageReference Include="CoreGame.SharedMeta.Core" Version="0.5.1" />
-  <PackageReference Include="CoreGame.SharedMeta.Client" Version="0.5.1" />
-  <PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.5.1" />
-  <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.Client" Version="0.5.1" />
-  <PackageReference Include="CoreGame.SharedMeta.Generator" Version="0.5.1"
+  <PackageReference Include="CoreGame.SharedMeta.Core" Version="0.12.3" />
+  <PackageReference Include="CoreGame.SharedMeta.Client" Version="0.12.3" />
+  <PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.12.3" />
+  <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.Client" Version="0.12.3" />
+  <PackageReference Include="CoreGame.SharedMeta.Generator" Version="0.12.3"
                     PrivateAssets="all" OutputItemType="analyzer" />
 </ItemGroup>
 ```
@@ -108,7 +108,7 @@ Client transport packages have no server dependencies (no Orleans, no ASP.NET). 
 
 For MessagePack SignalR protocol (optional, better performance):
 ```xml
-<PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.MessagePack" Version="0.5.1" />
+<PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.MessagePack" Version="0.12.3" />
 ```
 
 ### Quick Start (examples)
@@ -233,10 +233,10 @@ Read-only calls to any entity without subscribing — useful for checking status
 [MetaService(StateType = typeof(GameState))]
 public interface IGameService : IMetaService
 {
-    [MetaMethod(Query = true)]              // queryable, respects access policy
+    [MetaMethod(Mode = ExecutionMode.Query)]              // queryable, respects access policy
     bool IsActive();
 
-    [MetaMethod(Query = true, OpenAccess = true)]  // queryable, anyone can call
+    [MetaMethod(Mode = ExecutionMode.Query, OpenAccess = true)]  // queryable, anyone can call
     string GetPublicInfo();
 }
 ```
@@ -282,7 +282,7 @@ client.OnStateChanged += state => UpdateUI((GameState)state);
 
 ### From Unity (recommended)
 
-Open **SharedMeta > Server Runner** in the Unity menu. This opens an Editor window where you can:
+Open **Tools > SharedMeta > Server Runner** in the Unity menu. This opens an Editor window where you can:
 
 - **Select your server .csproj** — auto-detected from Wizard settings, or pick manually
 - **Start / Stop** the server with one click

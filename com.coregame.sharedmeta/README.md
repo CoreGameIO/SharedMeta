@@ -45,10 +45,10 @@ public partial class PlayerState : ISharedState
     [MemoryPackOrder(1)] public int Level { get; set; }
 }
 
-[MetaService("IPlayerService")]
-public interface IPlayerService
+[MetaService(StateType = typeof(PlayerState), AccessPolicy = EntityAccessPolicy.UserOwned)]
+public interface IPlayerService : IMetaService
 {
-    [MetaMethod(ExecutionMode.Optimistic)]
+    [MetaMethod(Mode = ExecutionMode.Optimistic)]
     Task SetName(string name);
 }
 ```

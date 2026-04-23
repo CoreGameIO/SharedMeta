@@ -115,7 +115,7 @@ var result = await api.IncrementAsync(5);     // Executes locally + sends to ser
 Console.WriteLine($"Counter: {result}");      // Counter: 5
 ```
 
-**Unity?** Use **SharedMeta > Project Wizard** — it generates all of the above in one click. See [Tutorial](#24-tutorial-building-your-first-service) for a detailed walkthrough.
+**Unity?** Use **Tools > SharedMeta > Project Wizard** — it generates all of the above in one click. See [Tutorial](#24-tutorial-building-your-first-service) for a detailed walkthrough.
 
 ---
 
@@ -2294,20 +2294,20 @@ builder.Host.UseSerilog((ctx, config) => config
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="CoreGame.SharedMeta.Core" Version="0.2.0" />
-  <PackageReference Include="CoreGame.SharedMeta.Client" Version="0.2.0" />
-  <PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.2.0" />
-  <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.Client" Version="0.2.0" />
-  <PackageReference Include="CoreGame.SharedMeta.Generator" Version="0.2.0"
+  <PackageReference Include="CoreGame.SharedMeta.Core" Version="0.12.3" />
+  <PackageReference Include="CoreGame.SharedMeta.Client" Version="0.12.3" />
+  <PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.12.3" />
+  <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.Client" Version="0.12.3" />
+  <PackageReference Include="CoreGame.SharedMeta.Generator" Version="0.12.3"
                     PrivateAssets="all" OutputItemType="analyzer" />
   <!-- Optional: MessagePack protocol for SignalR (better performance) -->
-  <!-- <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.MessagePack" Version="0.2.0" /> -->
+  <!-- <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.MessagePack" Version="0.12.3" /> -->
 </ItemGroup>
 ```
 
 ### Unity Client (BestHTTP)
 
-For Unity projects, transports are included in the UPM package (`com.coregame.sharedmeta`). Use the **SharedMeta Project Wizard** (Window > SharedMeta > Project Wizard) to generate client code with the correct transport configuration.
+For Unity projects, transports are included in the UPM package (`com.coregame.sharedmeta`). Use the **SharedMeta Project Wizard** (Tools > SharedMeta > Project Wizard) to generate client code with the correct transport configuration.
 
 Available Unity transports:
 - **BestHTTP SignalR** — WebSocket-based, works on all platforms including WebGL. Requires BestHTTP asset.
