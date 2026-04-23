@@ -51,6 +51,11 @@ public class NamedRandomTests
         // Streams must not share state — independent seeds and independent advancement
         Assert.NotEqual(draw0a, draw1a);
 
+        // Barrier: Ping is Server-mode; when it returns, the server has processed all five
+        // Optimistic draws and their fire-and-forget ContinueWith callbacks have completed.
+        // Without this, Assert.Empty could race ahead of the scroll-desync checks.
+        await api.PingAsync();
+
         Assert.Empty(client.DetectedIssues);
     }
 
@@ -69,7 +74,8 @@ public class NamedRandomTests
             var api1 = await resolver1.GetServiceAsync<CounterServiceApiClient>(entityId);
             first0 = await api1.DrawFromNamedAsync(0, 1_000_000_000);
             first1 = await api1.DrawFromNamedAsync(0, 1_000_000_000);
-            // DrawFromNamed is Server-mode, so the two awaits above have already flushed
+            await api1.PingAsync();
+            // Ping is Server-mode, so the two awaits above have already flushed
             // both draws through the grain. No extra barrier needed before the client disposes.
             Assert.Empty(client1.DetectedIssues);
         }
@@ -158,6 +164,10 @@ public class NamedRandomTests
 
         // Extremely unlikely to collide with a uniform range of 1M.
         Assert.NotEqual(drawA, drawB);
+
+        // Barrier: ensure both Optimistic ContinueWith callbacks have run before checking issues.
+        await apiA.PingAsync();
+        await apiB.PingAsync();
 
         Assert.Empty(client.DetectedIssues);
     }
