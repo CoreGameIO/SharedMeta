@@ -7,6 +7,11 @@ namespace SharedMeta.Debug.InProcess
     /// <summary>
     /// In-process client connection for testing.
     /// Implements IConnection to provide the same interface as SignalRConnection.
+    ///
+    /// InProcess does not provide wire-level FIFO between RPC-reply delivery and
+    /// broadcast observer delivery — responses can arrive in any order. Ordering
+    /// is reconstructed on the client side by ClientDispatcher / OrderedDispatcher
+    /// via SessionResponse.SequenceNumber (see docs/ORDERING-GUARANTEES.md).
     /// </summary>
     public class InProcessConnection : IConnection
     {

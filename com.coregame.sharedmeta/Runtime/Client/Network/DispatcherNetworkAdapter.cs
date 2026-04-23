@@ -131,17 +131,18 @@ namespace SharedMeta.Client.Network
                 throw new InvalidOperationException($"RPC call failed: {rpcOp.ErrorMessage}");
             }
 
+            var respNoResult = rpcOp.MainOperation.Response;
             return new VoidCallResponse
             {
-                ReplayContext = rpcOp.MainOperation.Response.ReplayPayload ?? Array.Empty<byte>(),
+                ReplayContext = respNoResult.ReplayPayload ?? Array.Empty<byte>(),
                 TriggerOperations = rpcOp.TriggerOperations,
                 CrossEntityOperations = rpcOp.CrossEntityOperations,
                 ServerTimeTicks = rpcOp.MainOperation.Call.ServerTimeTicks,
-                RandomScrollDelta = rpcOp.MainOperation.Response.RandomScrollDelta,
-                NamedRandomScrollDeltas = rpcOp.MainOperation.Response.NamedRandomScrollDeltas,
-                PatchBytes = rpcOp.MainOperation.Response.PatchBytes,
-                StateBytes = rpcOp.MainOperation.Response.StateBytes,
-                DeepDesyncCrc = rpcOp.MainOperation.Response.DeepDesyncCrc
+                RandomScrollDelta = respNoResult.RandomScrollDelta,
+                NamedRandomScrollDeltas = respNoResult.NamedRandomScrollDeltas,
+                PatchBytes = respNoResult.PatchBytes,
+                StateBytes = respNoResult.StateBytes,
+                DeepDesyncCrc = respNoResult.DeepDesyncCrc
             };
         }
 

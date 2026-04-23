@@ -58,6 +58,7 @@ namespace SharedMeta.Client.Network
         };
 
         private readonly UnityHttpConnectionOptions _options;
+        private readonly SynchronizationContext? _mainThread;
         private string _connectionId = "";
         private bool _isConnected;
         private bool _isSessionConnected;
@@ -75,6 +76,10 @@ namespace SharedMeta.Client.Network
         public UnityHttpConnection(UnityHttpConnectionOptions? options = null)
         {
             _options = options ?? new UnityHttpConnectionOptions();
+            // UnityWebRequest construction requires the main thread. Capture the
+            // creating thread's sync context so background continuations
+            // (e.g. fire-and-forget desync reports from .ContinueWith) can marshal onto it.
+            _mainThread = SynchronizationContext.Current;
         }
 
         public Task ConnectAsync()
@@ -209,8 +214,19 @@ namespace SharedMeta.Client.Network
 
         public async Task<DesyncReportResponse> SendDesyncReportAsync(DesyncReportRequest request)
         {
-            EnsureSessionConnected();
-            return await PostAsync<DesyncReportResponse>("/desync-report", request);
+            MetaLog.Debug($"[UnityHttp] SendDesyncReport enter: kind={request.MismatchKind} entity={request.EntityId} {request.ServiceName}.{request.MethodName} clientPatch={request.ClientPatchBytes?.Length ?? 0}B");
+            try
+            {
+                EnsureSessionConnected();
+                var resp = await PostAsync<DesyncReportResponse>("/desync-report", request);
+                MetaLog.Debug($"[UnityHttp] SendDesyncReport response: status={resp.Status} error={resp.Error}");
+                return resp;
+            }
+            catch (Exception ex)
+            {
+                MetaLog.Error($"[UnityHttp] SendDesyncReport FAILED: {ex.GetType().Name}: {ex.Message}", ex);
+                throw;
+            }
         }
 
         public async Task AcknowledgeSequenceAsync(long sequenceNumber)
@@ -335,15 +351,48 @@ namespace SharedMeta.Client.Network
 
         private Task<string> PostRawAsync(string path, object? body, int timeoutSeconds = 0)
         {
+            // Serialize body off the main thread (json work is CPU-bound), then
+            // marshal UnityWebRequest construction onto the main thread.
             var url = _options.ServerUrl.TrimEnd('/') + path;
-            var request = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST);
-            request.downloadHandler = new DownloadHandlerBuffer();
-            request.timeout = timeoutSeconds > 0 ? timeoutSeconds : _options.RequestTimeoutSeconds;
-
+            byte[]? bodyBytes = null;
             if (body != null)
             {
                 var json = JsonConvert.SerializeObject(body, JsonSettings);
-                var bodyBytes = Encoding.UTF8.GetBytes(json);
+                bodyBytes = Encoding.UTF8.GetBytes(json);
+            }
+            var effectiveTimeout = timeoutSeconds > 0 ? timeoutSeconds : _options.RequestTimeoutSeconds;
+
+            if (_mainThread == null || SynchronizationContext.Current == _mainThread)
+            {
+                return BuildAndSend(url, bodyBytes, effectiveTimeout);
+            }
+
+            var tcs = new TaskCompletionSource<string>();
+            _mainThread.Post(_ =>
+            {
+                try
+                {
+                    var task = BuildAndSend(url, bodyBytes, effectiveTimeout);
+                    task.ContinueWith(t =>
+                    {
+                        if (t.IsFaulted) tcs.TrySetException(t.Exception!.InnerExceptions);
+                        else if (t.IsCanceled) tcs.TrySetCanceled();
+                        else tcs.TrySetResult(t.Result);
+                    }, TaskContinuationOptions.ExecuteSynchronously);
+                }
+                catch (Exception ex) { tcs.TrySetException(ex); }
+            }, null);
+            return tcs.Task;
+        }
+
+        private Task<string> BuildAndSend(string url, byte[]? bodyBytes, int timeout)
+        {
+            var request = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST);
+            request.downloadHandler = new DownloadHandlerBuffer();
+            request.timeout = timeout;
+
+            if (bodyBytes != null)
+            {
                 request.uploadHandler = new UploadHandlerRaw(bodyBytes);
                 request.SetRequestHeader("Content-Type", "application/json");
             }

@@ -146,6 +146,11 @@ namespace SharedMeta.Test.Meta1
             return rng.Next(max);
         }
 
+        public void Ping()
+        {
+            // Empty Server-mode barrier — see interface doc for ordering rationale.
+        }
+
         /// <summary>
         /// Server-side observer for signal method verification. Each received heartbeat is
         /// appended here so integration tests can assert "the signal arrived" without any

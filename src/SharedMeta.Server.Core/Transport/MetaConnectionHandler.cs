@@ -362,6 +362,8 @@ namespace SharedMeta.Server.Core.Transport
 
         public async Task<DesyncReportResponse> SendDesyncReportAsync(DesyncReportRequest request)
         {
+            _logger.LogDebug("[Handler] SendDesyncReport kind={Kind} entity={Entity} {Service}.{Method} from {Player}",
+                (DesyncMismatchKind)request.MismatchKind, request.EntityId, request.ServiceName, request.MethodName, PlayerId);
             try
             {
                 if (_transportOptions?.DesyncReportingEnabled != true)

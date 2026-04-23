@@ -69,13 +69,27 @@ namespace SharedMeta.Test.Meta1
 
         /// <summary>
         /// Draw a random value from one of the named random streams.
-        /// Uses Optimistic mode so client and server both advance their copy of the stream.
-        /// Tests deterministic named-random behavior and stream isolation.
+        /// Optimistic: the client advances its local stream and sends the call to server
+        /// for verification; server broadcasts the advance (NamedRandomScrollDeltas) to
+        /// subscribers. Used by broadcast-propagation tests.
         /// </summary>
         /// <param name="which">0 = Combat stream, 1 = Loot stream</param>
         /// <param name="max">upper bound (exclusive)</param>
         [MetaMethod(Alias = "DrawFromNamed", Mode = ExecutionMode.Optimistic)]
         int DrawFromNamed(int which, int max);
+
+        /// <summary>
+        /// Empty Server-mode method used as a barrier in broadcast-propagation tests.
+        /// Two facts make it a reliable barrier:
+        ///   1. Grain single-threading — Ping from client A is serialized after any prior
+        ///      call on the same entity, so when A's Ping returns, A's preceding call has
+        ///      finished server-side and its broadcast has been dispatched.
+        ///   2. Per-connection FIFO — any broadcast enqueued to client B before B's Ping
+        ///      response arrives in front of it on B's receive queue, so by the time B's
+        ///      Ping await returns, B has processed all earlier broadcasts.
+        /// </summary>
+        [MetaMethod(Alias = "Ping", Mode = ExecutionMode.Server)]
+        void Ping();
 
         /// <summary>
         /// Fire-and-forget heartbeat. Client does not wait, server does not broadcast.

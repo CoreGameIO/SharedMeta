@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using SharedMeta.Core;
 using SharedMeta.Core.Diagnostics;
@@ -59,8 +60,10 @@ namespace SharedMeta.Client
         private Guid _sessionId;
         private long _lastAcknowledgedSequence;
 
-        // Broadcast buffering with ordering
-        private readonly MessageBuffer _broadcastBuffer = new();
+        // Ordering: all seq>0 SessionResponses drain through this dispatcher in sequence
+        // order. It absorbs the reassembly logic, re-entrant handler detection, and
+        // single-thread dispatch invariant that the client cares about.
+        private readonly OrderedDispatcher _ordering;
 
         // Broadcast suppression: prevents ProcessPendingBroadcasts from draining
         // during the window between receiving an RPC response and completing the local replay.
@@ -146,16 +149,17 @@ namespace SharedMeta.Client
         /// <summary>
         /// Next expected broadcast sequence number.
         /// </summary>
-        public long NextExpectedSequence { get { lock (_lock) return _broadcastBuffer.Head; } }
+        public long NextExpectedSequence => _ordering.Head;
 
         /// <summary>
         /// True if there's a gap in received broadcasts.
         /// </summary>
-        public bool HasSequenceGap { get { lock (_lock) return _broadcastBuffer.HasGap; } }
+        public bool HasSequenceGap => _ordering.HasGap;
 
         public ClientDispatcher(IConnection connection)
         {
             _connection = connection ?? throw new ArgumentNullException(nameof(connection));
+            _ordering = new OrderedDispatcher(DispatchResponseOps);
             _connection.OnBatch += HandleBatch;
             _connection.OnDisconnected += HandleDisconnected;
             _connection.OnSessionTerminated += HandleSessionTerminated;
@@ -246,15 +250,9 @@ namespace SharedMeta.Client
         {
             try
             {
-                MetaLog.Debug($"[ClientDispatcher] SendAndCompleteAsync: reqId={pending.RequestId}, " +
-                    $"entity={pending.EntityId}, method={pending.ServiceName}.{pending.MethodName}");
-
                 var response = await _connection.RpcCallAsync(BuildRequest(pending));
 
                 LogDiag($"RECV reqId={pending.RequestId} seq={response.SequenceNumber} ops={response.Operations?.Count ?? 0} err={response.HasError}");
-
-                MetaLog.Debug($"[ClientDispatcher] RPC response: reqId={pending.RequestId}, " +
-                    $"seq={response.SequenceNumber}, opsCount={response.Operations?.Count ?? 0}, hasError={response.HasError}");
 
                 if (response.HasError)
                 {
@@ -491,42 +489,19 @@ namespace SharedMeta.Client
         /// <summary>
         /// Process pending broadcasts. Call this once per frame from game loop.
         /// Drains all ready broadcasts (those without gaps before them) and delivers to handlers.
-        /// Lock is held only during drain; handlers are invoked outside lock.
+        /// Respects broadcast suppression: returns without draining while inside a local replay
+        /// window (see <see cref="SuppressBroadcasts"/>).
         /// </summary>
-        /// <returns>Number of broadcasts processed.</returns>
+        /// <returns>Unused — retained for binary compat with older frame loops. Always 0.</returns>
         public int ProcessPendingBroadcasts()
         {
             // Check client-side response timeouts FIRST — must run every frame regardless
             // of broadcast suppression, otherwise auto-retry stops while waiting for RPC replay.
             CheckConnectionHealth();
 
-            int totalCount = 0;
-
-            // Loop to pick up messages that handlers may have pushed during delivery
-            while (true)
-            {
-                var buffer = new List<SessionResponse>();
-                lock (_lock)
-                {
-                    // While broadcast processing is suppressed, don't drain.
-                    // This prevents broadcasts from modifying state between receiving an RPC response
-                    // and completing the local replay (which would cause desyncs).
-                    if (_broadcastSuppressCount > 0)
-                        return totalCount;
-
-                    var count = _broadcastBuffer.DrainReady(buffer);
-                    if (count == 0) break;
-                    totalCount += count;
-                }
-
-                // Outside lock: deliver to handlers
-                foreach (var response in buffer)
-                {
-                    DeliverResponseBroadcasts(response);
-                }
-            }
-
-            return totalCount;
+            if (Volatile.Read(ref _broadcastSuppressCount) > 0) return 0;
+            _ordering.Drain();
+            return 0;
         }
 
         /// <summary>
@@ -603,15 +578,28 @@ namespace SharedMeta.Client
         private void HandleBatch(SessionResponse response)
         {
             LogDiag($"BATCH seq={response.SequenceNumber} ops={response.Operations?.Count ?? 0} stall={response.StallNotification?.Stage}");
-            MetaLog.Debug($"[ClientDispatcher] HandleBatch: seq={response.SequenceNumber}, opsCount={response.Operations?.Count ?? 0}");
             // ProcessServerResponse handles its own locking
             ProcessServerResponse(response);
         }
 
         /// <summary>
-        /// Unified processing for all server responses (RPC results, deferred results, broadcasts).
-        /// Categorizes ops by RequestId: matches pending RPC requests or collects as broadcasts.
-        /// A single response can contain a mix of RPC results for different RequestIds and broadcasts.
+        /// Unified processing for all server responses (RPC results, broadcasts, bundles of both).
+        ///
+        /// Every seq>0 SessionResponse is pushed into <see cref="_ordering"/> keyed by
+        /// SequenceNumber — responses are drained in strict sequence order regardless of which
+        /// transport channel delivered them. This is required because transports without wire
+        /// FIFO (HTTP polling, InProcess, anything with a separate RPC-reply channel plus a
+        /// broadcast observer channel) can deliver responses out of order. By unifying both
+        /// channels through the buffer, the client always observes server state transitions in
+        /// the same order the SessionManager grain committed them: broadcasts that were
+        /// produced before an RPC reply are applied before that reply's pending TCS is
+        /// resolved.
+        ///
+        /// Drain handles ops by RequestId: RequestId>0 matches a pending request and resolves
+        /// its TCS; RequestId==0 is a pure broadcast dispatched to its entity handlers. A
+        /// single SessionResponse can carry a mix (server bundles preceding broadcasts with
+        /// an RPC reply during active RPC) — all ops inside it share one SequenceNumber, and
+        /// drain delivers them in the order they appear in Operations.
         ///
         /// State mutations happen under _lock; callbacks (handlers, TCS) happen outside _lock.
         /// </summary>
@@ -639,155 +627,82 @@ namespace SharedMeta.Client
                 return;
             }
 
-            List<(SessionOp op, PendingRequest pending)>? resolvedRequests = null;
-            List<SessionOp>? broadcastOps = null;
-            bool isPureBroadcast;
-
-            // Phase 1: Under lock — state mutations only
-            lock (_lock)
+            // Update server clock from every response.
+            if (response.ServerTimeTicks > 0)
             {
-                // Update server clock from every response
-                if (response.ServerTimeTicks > 0)
+                lock (_lock)
                 {
                     _lastServerTimeTicks = response.ServerTimeTicks;
                     _localTimeAtLastSync = DateTime.UtcNow.Ticks;
                 }
-
-                // Categorize ops: match pending requests by RequestId, collect broadcasts
-                if (response.Operations != null)
-                {
-                    foreach (var op in response.Operations)
-                    {
-                        if (op.RequestId > 0 && _pendingRequests.Remove(op.RequestId, out var pending))
-                        {
-                            resolvedRequests ??= new();
-                            resolvedRequests.Add((op, pending));
-                        }
-                        else if (op.RequestId == 0)
-                        {
-                            broadcastOps ??= new();
-                            broadcastOps.Add(op);
-                        }
-                        // else: RequestId > 0 but no matching pending request — ignore (duplicate or stale)
-                    }
-                }
-
-                if (resolvedRequests != null)
-                {
-                    // Response contains RPC result(s).
-
-                    // 1. Mark this sequence as direct FIRST.
-                    //    The server bundles broadcasts with the RPC response (fast path) and
-                    //    does NOT send a separate observer notification for this sequence.
-                    //    Marking as direct tells the buffer to skip this sequence if a stale
-                    //    broadcast duplicate arrives later.
-                    if (response.SequenceNumber > 0)
-                    {
-                        _broadcastBuffer.MarkDirectResponse(response.SequenceNumber);
-                    }
-
-                    isPureBroadcast = false;
-                }
-                else
-                {
-                    // Pure broadcast — push whole response to buffer for ordered delivery
-                    _broadcastBuffer.Push(response);
-                    isPureBroadcast = true;
-                }
             }
 
-            // Phase 2: Outside lock — callbacks
-            if (!isPureBroadcast)
+            // Seq==0 responses (errors, empty acks, stall-less empty responses) don't
+            // participate in sequence ordering — dispatch ops directly, if any. Seq>0
+            // responses are handed to the ordered dispatcher; it reassembles by seq and
+            // calls DispatchResponseOps in order.
+            if (response.SequenceNumber <= 0)
             {
-                // 2. Force-drain preceding broadcasts that are ready.
-                //    MarkDirectResponse may have advanced past a gap, unblocking
-                //    broadcasts that were waiting after the direct sequence.
-                ForceDrainPendingBroadcasts();
-
-                // 3. Deliver accompanying broadcast ops DIRECTLY to handlers.
-                //    These ops arrived bundled with the RPC response (server fast-path
-                //    bundles all broadcasts received during the RPC into one SessionResponse).
-                //    They will NOT arrive again as a separate broadcast.
-                //
-                //    Previously, these were pushed to the buffer at the response's sequence
-                //    number and then MarkDirectResponse would cause them to be skipped when
-                //    a gap existed — losing broadcast ops (e.g., operations from other clients
-                //    that happened during this RPC).
-                if (broadcastOps is { Count: > 0 })
-                {
-                    foreach (var op in broadcastOps)
-                    {
-                        DeliverBroadcast(op.EntityId, op);
-                    }
-                }
-
-                // 4. Complete the TCS(es) — caller continues with local replay.
-                foreach (var (op, pending) in resolvedRequests!)
-                {
-                    LogDiag($"CONFIRMED reqId={pending.RequestId} {pending.ServiceName}.{pending.MethodName}");
-                    MetaLog.Debug($"[ClientDispatcher] Resolved reqId={pending.RequestId}, method={pending.ServiceName}.{pending.MethodName}");
-                    if (pending.RequestId > _lastCompletedRequestId)
-                        _lastCompletedRequestId = pending.RequestId;
-                    pending.Tcs.TrySetResult(op);
-                }
+                if (response.Operations is { Count: > 0 })
+                    DispatchResponseOps(response);
+                return;
             }
-            else if (ImmediateMode)
-            {
-                // In immediate mode, process broadcasts right away
-                ProcessPendingBroadcasts();
-            }
+
+            _ordering.Push(response);
+            _ordering.Drain();
         }
 
         /// <summary>
-        /// Drain and deliver all ready broadcasts, bypassing the suppression check.
-        /// Used for PrecedingBroadcasts that must be applied before local replay.
-        /// Lock is held only during drain; handlers are invoked outside lock.
+        /// Dispatch every op in a drained response in order. RPC results (RequestId > 0)
+        /// are matched against <see cref="_pendingRequests"/> and their TCS resolved;
+        /// broadcast ops (RequestId == 0) are routed to the entity's handlers.
+        ///
+        /// Ordering within the response is preserved: the server bundles preceding broadcasts
+        /// BEFORE the RPC result op inside <see cref="SessionResponse.Operations"/>, so the
+        /// client's local state reflects those broadcasts before the RPC awaiter's continuation
+        /// gets to run.
         /// </summary>
-        private void ForceDrainPendingBroadcasts()
-        {
-            while (true)
-            {
-                var buffer = new List<SessionResponse>();
-                lock (_lock)
-                {
-                    var count = _broadcastBuffer.DrainReady(buffer);
-                    if (count == 0) break;
-                }
-
-                foreach (var response in buffer)
-                {
-                    DeliverResponseBroadcasts(response);
-                }
-            }
-        }
-
-        /// <summary>
-        /// Deliver all broadcast ops from a SessionResponse to handlers by entityId.
-        /// </summary>
-        private void DeliverResponseBroadcasts(SessionResponse response)
+        private void DispatchResponseOps(SessionResponse response)
         {
             if (response.Operations == null) return;
 
             foreach (var op in response.Operations)
             {
-                DeliverBroadcast(op.EntityId, op);
+                if (op.RequestId > 0)
+                {
+                    ResolvePending(op);
+                }
+                else
+                {
+                    InvokeBroadcastHandlers(op);
+                }
             }
         }
 
-        /// <summary>
-        /// Deliver a single broadcast op to registered handlers.
-        /// Snapshots handlers under lock, invokes them outside lock.
-        /// </summary>
-        private void DeliverBroadcast(string entityId, SessionOp op)
+        private void ResolvePending(SessionOp op)
         {
-            MetaLog.Debug($"[ClientDispatcher] DeliverBroadcast: entityId={entityId}, method={op.ServiceName}.{op.MethodName}");
+            PendingRequest? pending;
+            lock (_lock)
+            {
+                _pendingRequests.Remove(op.RequestId, out pending);
+            }
 
+            if (pending == null) return; // duplicate / stale / RequestId with no matching pending
+
+            LogDiag($"CONFIRMED reqId={pending.RequestId} {pending.ServiceName}.{pending.MethodName}");
+            if (pending.RequestId > _lastCompletedRequestId)
+                _lastCompletedRequestId = pending.RequestId;
+            pending.Tcs.TrySetResult(op);
+        }
+
+        private void InvokeBroadcastHandlers(SessionOp op)
+        {
             List<Action<SessionOp>>? handlersCopy;
             lock (_lock)
             {
-                if (!_broadcastHandlers.TryGetValue(entityId, out var handlers))
+                if (!_broadcastHandlers.TryGetValue(op.EntityId, out var handlers))
                 {
-                    MetaLog.Warning($"[ClientDispatcher] No handlers for entityId={entityId}, registered entities: {string.Join(", ", _broadcastHandlers.Keys)}");
+                    MetaLog.Warning($"[ClientDispatcher] No handlers for entityId={op.EntityId}, registered entities: {string.Join(", ", _broadcastHandlers.Keys)}");
                     return;
                 }
 
@@ -795,8 +710,12 @@ namespace SharedMeta.Client
                 handlersCopy = new List<Action<SessionOp>>(handlers);
             }
 
-            MetaLog.Debug($"[ClientDispatcher] Calling {handlersCopy.Count} handlers for {entityId}");
-
+            // EnterHandlerScope marks the current async context as nested inside a handler
+            // invocation. The flag propagates via ExecutionContext into any RPC the handler
+            // fires (including through Task.Run) — see
+            // CounterServiceTests.BroadcastHandler_RpcFromBackgroundThread_ShouldNotDeadlock.
+            // The re-entrant RPC reply's Drain call then bypasses dispatcher ownership.
+            using var _ = _ordering.EnterHandlerScope();
             foreach (var handler in handlersCopy)
             {
                 try
@@ -817,7 +736,7 @@ namespace SharedMeta.Client
                 MetaLog.Info($"[ClientDispatcher] Disconnected: {reason}, keeping {_pendingRequests.Count} pending requests for reconnect");
 
                 // Keep _subscribedEntities — needed for re-subscribing after reconnect
-                _broadcastBuffer.Clear();
+                _ordering.Reset(1);
                 IsSessionConnected = false;
             }
 
@@ -921,7 +840,7 @@ namespace SharedMeta.Client
 
                 MetaLog.Warning($"[ClientDispatcher] Session terminated: {reason}");
                 _subscribedEntities.Clear();
-                _broadcastBuffer.Clear();
+                _ordering.Reset(1);
                 IsSessionConnected = false;
 
                 pendingToFail = _pendingRequests.Values.ToList();
@@ -1001,7 +920,7 @@ namespace SharedMeta.Client
             {
                 _subscribedEntities.Clear();
                 _broadcastHandlers.Clear();
-                _broadcastBuffer.Reset(1);
+                _ordering.Reset(1);
                 pendingToFail = _pendingRequests.Values.ToList();
                 _pendingRequests.Clear();
                 _lastAcknowledgedSequence = 0;
@@ -1032,7 +951,7 @@ namespace SharedMeta.Client
                 pendingToFail = _pendingRequests.Values.ToList();
                 _pendingRequests.Clear();
                 _broadcastHandlers.Clear();
-                _broadcastBuffer.Clear();
+                _ordering.Reset(1);
                 _lastHealthStatus = ConnectionHealthStatus.Healthy;
             }
 

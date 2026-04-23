@@ -69,10 +69,8 @@ public class NamedRandomTests
             var api1 = await resolver1.GetServiceAsync<CounterServiceApiClient>(entityId);
             first0 = await api1.DrawFromNamedAsync(0, 1_000_000_000);
             first1 = await api1.DrawFromNamedAsync(0, 1_000_000_000);
-            // Sync barrier: DrawFromNamed is Optimistic (fire-and-forget to server).
-            // AddValue is Server-mode → awaiting it blocks until the grain has FIFO-processed
-            // both prior DrawFromNamed RPCs, so the next client's snapshot reflects the advanced state.
-            await api1.AddValueAsync(0, 0);
+            // DrawFromNamed is Server-mode, so the two awaits above have already flushed
+            // both draws through the grain. No extra barrier needed before the client disposes.
             Assert.Empty(client1.DetectedIssues);
         }
 
@@ -95,8 +93,20 @@ public class NamedRandomTests
     [Fact(Timeout = 60_000)]
     public async Task NamedStream_BroadcastAdvancesSubscribers()
     {
-        // Client1 makes a call; broadcast reaches Client2; Client2's local named random must
-        // advance by the server-reported delta so its subsequent draw matches the server's.
+        // Invariant under test: when server advances a [NamedRandom] stream because of Client1's
+        // Optimistic call, the resulting broadcast carries NamedRandomScrollDeltas[i] = 1 and
+        // every other subscriber's local copy of that stream advances by the same amount — so
+        // Client2's next draw continues from the advanced position instead of restarting at the
+        // initial seed.
+        //
+        // The broadcast path to Client2 is asynchronous; without an explicit barrier, Client2's
+        // own Draw can race ahead of the broadcast delivery. Two empty Server-mode Ping calls
+        // pin the order deterministically:
+        //   1. api1.PingAsync — by grain single-threading, the Ping turn runs after Client1's
+        //      Draw turn; when it returns, Client1's Draw broadcast has been dispatched.
+        //   2. api2.PingAsync — by per-connection FIFO, Client2's Ping response arrives behind
+        //      every broadcast already enqueued for Client2; when it returns, Client2 has
+        //      applied the Draw broadcast locally.
         var server = new InProcessServer(_fixture.CreateHandlerFactory());
         await using var client1 = new TestClientSetup(server, "p1");
         await using var client2 = new TestClientSetup(server, "p2");
@@ -109,14 +119,15 @@ public class NamedRandomTests
         var api1 = await resolver1.GetServiceAsync<CounterServiceApiClient>(entityId);
         var api2 = await resolver2.GetServiceAsync<CounterServiceApiClient>(entityId);
 
-        // Client1 draws once — broadcast fires, Client2 sees NamedRandomScrollDeltas=[1,0] and skips.
+        // Client1 draws — Optimistic: local stream advances, server verifies and broadcasts.
         var client1Draw = await api1.DrawFromNamedAsync(0, 1_000_000_000);
-        // Sync barrier: DrawFromNamed is Optimistic (fire-and-forget). AddValue is Server-mode,
-        // so its await guarantees the grain has processed the prior DrawFromNamed AND broadcast
-        // has been dispatched to Client2 before we continue.
-        await api1.AddValueAsync(0, 0);
 
-        // Now Client2 draws — must continue from advanced stream, not from stale pre-broadcast state.
+        // Barrier 1: Client1 round-trips to server → Draw's broadcast is dispatched.
+        await api1.PingAsync();
+        // Barrier 2: Client2 round-trips to server → Client2 has drained preceding broadcasts.
+        await api2.PingAsync();
+
+        // Client2 draws — must continue from advanced stream (position 1), not the fresh seed.
         var client2Draw = await api2.DrawFromNamedAsync(0, 1_000_000_000);
 
         Assert.NotEqual(client1Draw, client2Draw);
