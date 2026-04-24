@@ -62,11 +62,6 @@ namespace SharedMeta.Client
             return Task.FromResult<TEntityState?>(_serializer.Unpack<TEntityState>(stateBytes));
         }
 
-        public override TInterface GetEntityApi<TInterface>(string id)
-        {
-            throw new NotImplementedException("GetEntityApi requires generated replayer.");
-        }
-
         public override void Observe<TInterface>(string id)
         {
             // Client observation logic (subscription)

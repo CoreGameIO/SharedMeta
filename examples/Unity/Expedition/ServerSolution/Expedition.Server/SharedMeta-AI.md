@@ -381,12 +381,26 @@ Available via Context:
 
 ## Cross-Entity Calls
 
-Service methods can call other entities via generated entity API:
+Declare the target service as a dependency in `[MetaServiceImpl]` — the generator injects a
+typed `GetI{Service}(entityId)` accessor into the partial impl:
 
 ```csharp
-// In a CrossOptimistic service method:
-var result = await Context.GetEntityApi<ITargetService>(targetEntityId).MethodAsync(args);
+[MetaServiceImpl(typeof(IExpeditionService), typeof(ExpeditionState), typeof(IProfileService))]
+public partial class ExpeditionService : IExpeditionService
+{
+    // Generator injects: GetIProfileService(string entityId).
+
+    public async Task<MoveResult> Move(int dx, int dy)
+    {
+        var profile = GetIProfileService(State.ProfileEntityId!);
+        bool spent = await profile.SpendEnergyAsync(Config.MoveCost);
+        // ...
+    }
+}
 ```
+
+> **Do not use `Context.GetEntityApi<T>(id)`** — removed in 0.12.4. The generated
+> `GetI{Service}` method is the only supported entry point.
 
 **On server:** `MetaProviderBase.EntityCallHandler` resolves target grain, calls `HandleCallFromEntityAsync`. Target entity executes, broadcasts to ITS subscribers, returns result.
 

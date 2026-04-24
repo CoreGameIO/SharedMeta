@@ -469,11 +469,24 @@ Available via Context:
 
 ## Cross-Entity Calls
 
-Service methods can call other entities via generated entity API:
+Declare the target service as a dependency in `[MetaServiceImpl]` — the source generator
+injects a typed `GetI{Service}(entityId)` method into the service's partial class. **This
+is the only supported way to call another entity from a meta method.**
 
 ```csharp
-// In a CrossOptimistic service method:
-var result = await Context.GetEntityApi<ITargetService>(targetEntityId).MethodAsync(args);
+[MetaServiceImpl(typeof(IExpeditionService), typeof(ExpeditionState), typeof(IProfileService))]
+public partial class ExpeditionService : IExpeditionService
+{
+    // Generator injects: GetIProfileService(string entityId) into this partial class.
+
+    public async Task<MoveResult> Move(int dx, int dy)
+    {
+        var profile = GetIProfileService(State.ProfileEntityId!);
+        bool spent = await profile.SpendEnergyAsync(Config.MoveCost);
+        if (!spent) return MoveResult.NoEnergy;
+        // ...
+    }
+}
 ```
 
 **On server:** `MetaProviderBase.EntityCallHandler` resolves target grain, calls `HandleCallFromEntityAsync`. Target entity executes, broadcasts to ITS subscribers, returns result.
@@ -481,6 +494,8 @@ var result = await Context.GetEntityApi<ITargetService>(targetEntityId).MethodAs
 **On client (CrossOptimistic):** Uses `CrossOptimisticMetaContext<TState>` for local execution on cached target state.
 
 **Broadcast Suppression:** When Entity A calls Entity B, SessionManager prevents duplicate broadcasts for players subscribed to both.
+
+> **Do not use `Context.GetEntityApi<T>(id)`.** That method no longer exists on `MetaContext` (removed in 0.12.4). Cross-entity access goes strictly through declared dependencies and the generated `GetI{Service}` accessor — the typed name makes the dependency explicit in `[MetaServiceImpl]`, which is required for the generator to wire up real/replay/cross-optimistic routing.
 
 ### Read-Only State Access
 
@@ -549,7 +564,7 @@ public partial class ProfileService : IProfileService
 | Client can subscribe / receive broadcasts? | Yes          | No                    |
 | Client-callable over the wire?          | Yes             | No                    |
 | Impl class has `[MetaServiceImpl]`?     | Yes (required)  | No (plain class)      |
-| How is it consumed from a meta method?  | `Context.GetEntityApi<IT>(entityId)` | Declared as dependency in `[MetaServiceImpl(..., typeof(IBridge))]`; used as `Context.Bridge` |
+| How is it consumed from a meta method?  | Declared as dependency in `[MetaServiceImpl(..., typeof(IT))]`; used as `GetIT(entityId)` | Declared as dependency in `[MetaServiceImpl(..., typeof(IBridge))]`; used as `Context.Bridge` |
 | Generated code                          | `{Iface}Dispatcher.g.cs` + `{Iface}ApiClient.g.cs` | `{Iface}Recorder.g.cs` + `{Iface}Replayer.g.cs` |
 
 ### Anti-pattern — DO NOT DO THIS

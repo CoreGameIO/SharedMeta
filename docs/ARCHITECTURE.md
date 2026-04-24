@@ -385,7 +385,7 @@ Fields marked with `[Tracked]` get generated property setters that record mutati
 
 Two patterns for entity-to-entity interaction:
 
-1. **Cross-entity calls** — `Context.GetEntityApi<TInterface>(entityId)` returns proxy. Call records result into replay payload. Server resolves to grain reference via `IEntityGrainResolver`
+1. **Cross-entity calls** — declare the target as a dependency in `[MetaServiceImpl(..., typeof(ITargetService))]`; the generator injects a typed `GetITargetService(entityId)` accessor into the service partial that returns the correct proxy for each mode (Server grain call, CrossOptimistic `LocalEntityCaller`, client replayer). Call results are recorded into the replay payload. Server resolves to grain reference via `IEntityGrainResolver`
 2. **Cross-entity state reads** — `Context.GetState<TState>(entityId)` returns read-only snapshot. Recorded for replay consistency
 
 **CrossOptimistic mode:** Client executes on locally cached cross-entity state, server executes with real grain calls. Broadcast suppression prevents duplicate notifications to the caller.

@@ -755,7 +755,7 @@ api.RecordTelemetrySignal("purchase", jsonBlob);     // same
 - Return type must be `void` (compile-time `#error` otherwise)
 - Cannot combine with `Query`, explicit `Mode`, `Sync`, `SkipServerOnFalse`, `ForcePersist`
 - Method body must not mutate state — same rule as Query (enforcement is runtime contract today; a compile-time walker is planned)
-- Cross-entity calls (`Context.GetEntityApi<...>`) throw `NotSupportedException` from inside a signal body — use `Mode = Server` if you need to chain into another entity
+- Cross-entity calls (via generated `GetI{Service}(entityId)`) throw `NotSupportedException` from inside a signal body — use `Mode = Server` if you need to chain into another entity
 - `[ServerMetaService]` bridges **can** be called — the `ServerMetaContext` is flipped to `SignalMode`, which redirects Recorder writes to `NullPayloadWriter` (zero-alloc). Real side-effects (HTTP, Orleans grain hops) run; recording is silently discarded since there is no replay payload consumer
 
 **Server routing:** `Handler.SignalCallAsync` → `SessionManager.SignalEntityAsync` → `[OneWay] EntityGrain.HandleSignalAsync` → `MetaProviderBase.HandleSignalAsync` → generated `{Service}SignalDispatcher.Dispatch`. Orleans treats the grain invocation as one-way — the SessionManager grain does not wait for an ACK from the entity grain.
@@ -841,10 +841,28 @@ Semantics mirror `Context.Random` — identical algorithm and seed on server and
 
 ### How It Works
 
-1. Service method calls generated entity API:
+1. Declare the target service as a dependency in `[MetaServiceImpl]`. The source generator
+   injects a typed `GetI{Service}(entityId)` accessor into the consumer's partial class:
+
    ```csharp
-   var result = await Context.GetEntityApi<ITargetService>(targetEntityId).MethodAsync(args);
+   [MetaServiceImpl(typeof(IExpeditionService), typeof(ExpeditionState), typeof(IProfileService))]
+   public partial class ExpeditionService : IExpeditionService
+   {
+       // Generator injects: GetIProfileService(string entityId) into this partial class.
+
+       public async Task<MoveResult> Move(int dx, int dy)
+       {
+           var profile = GetIProfileService(State.ProfileEntityId!);
+           bool spent = await profile.SpendEnergyAsync(Config.MoveCost);
+           // ...
+       }
+   }
    ```
+
+   > **Do not use `Context.GetEntityApi<T>(id)`** — removed in 0.12.4. The typed
+   > `GetI{Service}` method is the only supported entry point; the dependency entry in
+   > `[MetaServiceImpl(..., typeof(IService))]` is what tells the generator to emit it
+   > and to wire the server/replay/cross-optimistic routing.
 
 2. On server: `MetaProviderBase.EntityCallHandler` resolves target grain, calls `HandleCallFromEntityAsync`
 
@@ -933,7 +951,7 @@ state the client can replay (the full client-side optimistic or patch replay pat
 | Server-side behaviour     | Dispatcher → impl                       | DI-resolved impl (optionally wrapped by Recorder)|
 | Dispatcher generated      | `{Iface}Dispatcher.g.cs`                | None                                            |
 | Recorder/Replayer generated| None                                   | `{Iface}Recorder.g.cs` + `{Iface}Replayer.g.cs` |
-| Consumed from meta method | `Context.GetEntityApi<IT>(entityId)`    | Declared as dependency in `[MetaServiceImpl]`   |
+| Consumed from meta method | Declared as dependency in `[MetaServiceImpl(..., typeof(IT))]`; used as `GetIT(entityId)` | Declared as dependency in `[MetaServiceImpl]` |
 
 ### Pattern (teaching example — `IMapManager`)
 
@@ -2109,11 +2127,13 @@ Use for: purchases, currency operations, inventory changes, and any operation wh
 `ForcePersist` saves state **after** the method returns. When you need a checkpoint **during** execution — e.g., before sending an acknowledgement to another entity — use `Context.SaveStateAsync()`:
 
 ```csharp
+// IRoomService must be declared as a dependency on this impl:
+//   [MetaServiceImpl(typeof(IPlayerService), typeof(PlayerState), typeof(IRoomService))]
 [MetaMethod(Mode = ExecutionMode.Server)]
 async Task<ResolveResult> ResolveSessionResources(string blockUid)
 {
     // 1. Query room for actual resources
-    var roomApi = Context.GetEntityApi<IRoomService>(roomId);
+    var roomApi = GetIRoomService(roomId);
     var resources = await roomApi.GetResources(Context.CallerId, blockUid);
 
     // 2. Apply to own state

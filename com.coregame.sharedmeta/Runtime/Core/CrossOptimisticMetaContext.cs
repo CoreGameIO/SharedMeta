@@ -33,11 +33,6 @@ namespace SharedMeta.Core
                 "Use Server or Optimistic mode for cross-entity state reading.");
         }
 
-        public override TInterface GetEntityApi<TInterface>(string id)
-        {
-            throw new NotImplementedException("GetEntityApi requires generated caller.");
-        }
-
         public override void Observe<TInterface>(string id)
         {
             // Not supported in cross-entity context

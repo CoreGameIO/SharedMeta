@@ -20,14 +20,6 @@ namespace SharedMeta.Core
         public abstract object StateObject { get; }
 
         /// <summary>
-        /// Access a remote entity API.
-        /// </summary>
-        /// <typeparam name="TInterface">The service interface.</typeparam>
-        /// <param name="id">The entity ID.</param>
-        /// <returns>A proxy (Real or Replay) to the entity.</returns>
-        public abstract TInterface GetEntityApi<TInterface>(string id) where TInterface : class, IMetaService;
-
-        /// <summary>
         /// Read-only access to another entity's state.
         /// On Server: calls target entity grain ([AlwaysInterleave]), records bytes for replay.
         /// On Client (replay): reads pre-recorded bytes from replay payload.

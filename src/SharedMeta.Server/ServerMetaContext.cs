@@ -111,11 +111,6 @@ namespace SharedMeta.Server
             return _serializer.Unpack<TEntityState>(stateBytes);
         }
 
-        public override TInterface GetEntityApi<TInterface>(string id)
-        {
-            throw new NotImplementedException("GetEntityApi requires generated recorder.");
-        }
-
         public override void Observe<TInterface>(string id)
         {
              // TODO
