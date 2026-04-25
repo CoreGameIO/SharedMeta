@@ -322,6 +322,11 @@ Generated API clients also fire `OnStateMutated` after any state change — use 
 api.OnStateMutated += () => UpdateUI(api.State);
 ```
 
+For a polling signal instead of a subscription, use `int MutationCount` (0.13.1+) — bumped on every mutation including Optimistic / CrossOptimistic (which `OnStateMutated` skips):
+```csharp
+if (api.MutationCount != _lastSeen) { _lastSeen = api.MutationCount; Refresh(); }
+```
+
 ### 3. Access config from client
 
 ```csharp

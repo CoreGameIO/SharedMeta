@@ -1292,6 +1292,24 @@ api.OnStateMutated += () => UpdateUI(api.State);
 
 This fires in addition to `Tracked{State}.OnChanged` — use whichever granularity fits your UI pattern.
 
+### MutationCount (0.13.1+)
+
+Each generated API client also exposes `int MutationCount` — a local-only counter bumped on every state-mutating operation: Optimistic / CrossOptimistic local execution, Server / ServerPatch / ServerReplace result application, incoming broadcasts (regular and subscriber-event), and reconnect refresh.
+
+Use it when you want a polling signal instead of an event subscription:
+
+```csharp
+int lastSeen = api.MutationCount;
+// ... game loop ...
+if (api.MutationCount != lastSeen)
+{
+    lastSeen = api.MutationCount;
+    InvalidateCache();
+}
+```
+
+`MutationCount` covers Optimistic and CrossOptimistic — `OnStateMutated` does not. Reach for `MutationCount` when you want a single signal that catches every modification regardless of execution mode. The counter is local to the client process: not synchronized across clients, not persisted, not coordinated with the network sequence number.
+
 ### Service Error Handling
 
 Generated API clients catch exceptions during shared method execution (optimistic, server replay, broadcast replay) at the framework level. When a service method throws:

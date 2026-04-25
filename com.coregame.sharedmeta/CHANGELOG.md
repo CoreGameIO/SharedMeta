@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.13.1] - 2026-04-25
+
+### Added
+
+- **`MutationCount` property on generated API clients** — local-only `int` counter incremented on every state mutation: Optimistic / CrossOptimistic local execution, Server / ServerPatch / ServerReplace result application, incoming broadcasts (regular and subscriber-event), and reconnect refresh. Cheap polling alternative to the `OnStateMutated` event for flows that just want to ask "did anything modify my state since I last checked?" — e.g. cache invalidation, idempotent re-renders. Fires in more places than `OnStateMutated` (which intentionally skips Optimistic/CrossOptimistic), so prefer `MutationCount` when you want a unified "state was touched" signal. Not synchronized across clients, not persisted, not coordinated with the network sequence number.
+
+### Internal
+
+- `ClientVersionPolicy` refactor — single public method `Task<ClientVersionValidationResult> ValidateAsync(string?)` encapsulates TTL caching, grain refresh, and version parsing. `IsCacheExpired` and `RefreshFromGrainAsync` are no longer part of the public surface; `ValidateClientVersion` / `TryParseVersion` moved out of `MetaConnectionHandler`. Generator updated to inject `IGrainFactory` into the policy at construction time. No behavior change for consumers — the connect-path version gate still enforces the same rules.
+
 ## [0.13.0] - 2026-04-25
 
 ### Added

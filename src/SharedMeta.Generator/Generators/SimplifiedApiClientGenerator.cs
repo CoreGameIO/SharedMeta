@@ -223,8 +223,18 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        /// <summary>Fired after state is replaced on reconnect. Use to update Views.</summary>");
             sb.AppendLine($"        public event Action<{stateTypeName}>? OnStateRefreshed;");
             sb.AppendLine();
-            sb.AppendLine($"        /// <summary>Fired after any state mutation (broadcast replay, subscriber event, reconnect).</summary>");
+            sb.AppendLine($"        /// <summary>Fired after any state mutation (broadcast replay, subscriber event, reconnect). See <see cref=\"MutationCount\"/> for a polling alternative that also covers Optimistic / Server / CrossOptimistic / ServerPatch.</summary>");
             sb.AppendLine($"        public event Action? OnStateMutated;");
+            sb.AppendLine();
+            sb.AppendLine($"        /// <summary>");
+            sb.AppendLine($"        /// Per-state mutation counter — bumped every time the state is touched on this client:");
+            sb.AppendLine($"        /// Optimistic / CrossOptimistic local execution, Server / ServerPatch / ServerReplace result");
+            sb.AppendLine($"        /// application, incoming broadcasts (regular and subscriber-event), and reconnect refresh.");
+            sb.AppendLine($"        /// Local-only — not synchronized across clients, not persisted, not coordinated with the");
+            sb.AppendLine($"        /// server's <see cref=\"_network\"/> sequence number. Use it as a cheap polling signal of");
+            sb.AppendLine($"        /// \"did anything modify my state since I last checked?\" — e.g. cache invalidation.");
+            sb.AppendLine($"        /// </summary>");
+            sb.AppendLine($"        public int MutationCount {{ get; private set; }}");
             sb.AppendLine();
             sb.AppendLine($"        /// <summary>Fired when a service method throws. Parameters: serviceName, exception.</summary>");
             sb.AppendLine($"        public event Action<string, Exception>? OnServiceError;");
@@ -357,6 +367,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            _optimisticRandom = newRandom;");
             sb.AppendLine("            if (newNamedRandoms != null) _namedRandoms = newNamedRandoms;");
             sb.AppendLine("            _errorException = null;");
+            sb.AppendLine("            MutationCount++;");
             sb.AppendLine("            OnStateRefreshed?.Invoke(newState);");
             sb.AppendLine("            OnStateMutated?.Invoke();");
             sb.AppendLine("        }");
@@ -696,11 +707,13 @@ namespace SharedMeta.Generator.Generators
             {
                 sb.AppendLine();
                 sb.AppendLine("                _tracker.FlushAndNotify();");
+            sb.AppendLine("                MutationCount++;");
                 sb.AppendLine("                return localResult;");
             }
             else
             {
                 sb.AppendLine("                _tracker.FlushAndNotify();");
+            sb.AppendLine("                MutationCount++;");
             }
             sb.AppendLine("                }");
             sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
@@ -854,6 +867,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
+            sb.AppendLine("            MutationCount++;");
             // Capture local deltas synchronously — MUST happen before the fire-and-forget ContinueWith
             // or subsequent Optimistic calls on the same ApiClient will race and advance the random
             // state further by the time this continuation runs, producing a phantom desync.
@@ -989,6 +1003,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
+            sb.AppendLine("            MutationCount++;");
             // Capture local deltas synchronously — MUST happen before the fire-and-forget ContinueWith
             // or subsequent Optimistic calls on the same ApiClient will race and advance the random
             // state further by the time this continuation runs, producing a phantom desync.
@@ -1124,6 +1139,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
+            sb.AppendLine("            MutationCount++;");
             // Capture local deltas synchronously — MUST happen before the fire-and-forget ContinueWith
             // or subsequent Optimistic calls on the same ApiClient will race and advance the random
             // state further by the time this continuation runs, producing a phantom desync.
@@ -1289,6 +1305,7 @@ namespace SharedMeta.Generator.Generators
             // Replay trigger operations (may also have patches)
             sb.AppendLine($"                ReplayTriggerOperations(response.TriggerOperations, _network.PlayerId, response.ServerTimeTicks);");
             sb.AppendLine("                _tracker.FlushAndNotify();");
+            sb.AppendLine("                MutationCount++;");
             sb.AppendLine("                }");
             sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
 
@@ -1366,6 +1383,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
 
             sb.AppendLine("                _tracker.FlushAndNotify();");
+            sb.AppendLine("                MutationCount++;");
             sb.AppendLine($"                OnStateRefreshed?.Invoke(_state);");
             sb.AppendLine($"                OnStateMutated?.Invoke();");
             sb.AppendLine("                }");
@@ -1581,6 +1599,7 @@ namespace SharedMeta.Generator.Generators
 
             sb.AppendLine("            }");
             sb.AppendLine("            _tracker.FlushAndNotify();");
+            sb.AppendLine("            MutationCount++;");
             sb.AppendLine("            OnStateMutated?.Invoke();");
             sb.AppendLine("            }");
             sb.AppendLine("            catch (Exception ex) { _tracker.Discard(); SetError(ex, broadcast.MethodName); throw; }");
@@ -1653,6 +1672,7 @@ namespace SharedMeta.Generator.Generators
 
                 sb.AppendLine("            }");
                 sb.AppendLine("            _tracker.FlushAndNotify();");
+            sb.AppendLine("            MutationCount++;");
                 sb.AppendLine("            OnStateMutated?.Invoke();");
                 sb.AppendLine("            }");
                 sb.AppendLine("            catch (Exception ex) { _tracker.Discard(); SetError(ex, broadcast.MethodName); throw; }");
