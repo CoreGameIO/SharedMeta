@@ -139,6 +139,10 @@ namespace SharedMeta.Core.Transport
         public List<SessionResponse> MissedPackets { get; set; } = new();
         public long ServerTimeTicks { get; set; }
         public List<ResubscribedEntityInfo>? ResubscribedEntities { get; set; }
+        /// <summary>Server version reported during handshake. Null if server does not send version info.</summary>
+        public string? ServerVersion { get; set; }
+        /// <summary>Minimum client version required. Populated only when connection was rejected due to version mismatch.</summary>
+        public string? MinClientVersion { get; set; }
     }
 
     /// <summary>

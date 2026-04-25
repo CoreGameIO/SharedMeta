@@ -46,6 +46,18 @@ namespace SharedMeta.Core.Transport
         /// Contains fresh state for each entity the client was subscribed to before disconnect.
         /// </summary>
         [Id(7), Key(7)] public List<ResubscribedEntityInfo>? ResubscribedEntities { get; set; }
+
+        /// <summary>
+        /// Server's current version. Populated when version checking is configured.
+        /// Useful for displaying upgrade prompts on the client.
+        /// </summary>
+        [Id(8), Key(8)] public string? ServerVersion { get; set; }
+
+        /// <summary>
+        /// Minimum client version required by the server. Populated when the connection
+        /// is rejected due to an incompatible client version.
+        /// </summary>
+        [Id(9), Key(9)] public string? MinClientVersion { get; set; }
     }
 
     /// <summary>

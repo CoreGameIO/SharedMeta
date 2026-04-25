@@ -2011,6 +2011,77 @@ MetaAuth.ClearToken(storage);
 
 > **Migration from `MetaClient.LoginAsync`**: `MetaClient.LoginAsync` is still available on .NET but `MetaAuth.LoginAsync` is preferred — it works on all platforms and supports cancellation tokens.
 
+### Client Version Enforcement
+
+The server can reject clients whose version is incompatible before they establish a session.
+
+**Compatibility rules** (checked on every `SessionConnect`):
+
+| Condition | Result |
+|---|---|
+| Client did not send a version | Allowed through (backward compat) |
+| `clientMajor ≠ serverMajor` | Rejected — breaking change, hard upgrade required |
+| `clientVersion < MinClientVersion` | Rejected — client too old, soft upgrade required |
+| Otherwise | Accepted |
+
+**Server static config** (`appsettings`-level, set at startup):
+
+```csharp
+builder.Services.AddSingleton(new MetaTransportOptions
+{
+    RequireAuthentication = true,
+    ServerVersion    = "1.3.0",   // this silo's version — sent to every client
+    MinClientVersion = "1.2.0",   // oldest client version accepted
+});
+```
+
+**Client** — pass the game's version string when creating the connection:
+
+```csharp
+// Unity
+var connection = new SignalRConnection(serverUrl, accessToken, clientVersion: Application.version);
+
+// .NET
+var connection = new SignalRConnection(serverUrl, accessToken, clientVersion: "1.3.0");
+
+// HTTP polling (.NET)
+var connection = new HttpPollingConnection(new HttpPollingConnectionOptions
+{
+    ServerUrl = serverUrl,
+    ClientVersion = "1.3.0"
+});
+```
+
+When the connection is rejected, `MetaClient.ConnectAsync()` throws `InvalidOperationException` with the server's error message. Handle it to show an upgrade prompt:
+
+```csharp
+try
+{
+    await client.ConnectAsync();
+}
+catch (InvalidOperationException ex)
+{
+    Debug.LogError($"[Meta] Connection refused: {ex.Message}");
+    // Show "Please update your game" UI, redirect to store, etc.
+}
+```
+
+**Runtime update without restart** — `MinClientVersion` lives on `IVersionPolicyGrain`, a persisted Orleans singleton (key `"global"`) shared across the whole cluster. Push from any process — a dedicated admin service, an in-process `MapPost`, etc. — and every silo's `ClientVersionPolicy` picks the new value up within its 60-second TTL window:
+
+```csharp
+app.MapPost("/admin/min-client-version", async (string? version, IGrainFactory grains) =>
+{
+    await grains.GetGrain<IVersionPolicyGrain>("global").SetMinClientVersionAsync(version);
+    return Results.Ok();
+});
+```
+
+Pass `null` to clear the override and fall back to `MetaTransportOptions.MinClientVersion`.
+
+**How the gate works on connect** — `MetaConnectionHandler` calls `ClientVersionPolicy.ValidateAsync(request.ClientVersion)` once per `SessionConnect`. The policy refreshes its grain cache when stale, runs the major/minor/patch comparison, and returns a `ClientVersionValidationResult { ServerVersion, MinClientVersion, Error }`. Non-null `Error` ⇒ the handler rejects the session and echoes both versions back so the client can show an actionable upgrade prompt.
+
+Precedence (highest → lowest): grain override → `MetaTransportOptions.MinClientVersion`.
+
 **Unity architecture**: Auth code is split into two assemblies due to `noEngineReferences`:
 
 | Assembly | `noEngineReferences` | Contents |

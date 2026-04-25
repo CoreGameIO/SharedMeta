@@ -34,6 +34,13 @@ namespace SharedMeta.Client.Network
 
         /// <summary>Maximum retry delay for exponential backoff.</summary>
         public TimeSpan MaxRetryDelay { get; set; } = TimeSpan.FromSeconds(10);
+
+        /// <summary>
+        /// Client application version in "major.minor.patch" format (e.g. "1.2.3").
+        /// Sent to the server during SessionConnect for compatibility checking.
+        /// Null to skip version reporting.
+        /// </summary>
+        public string? ClientVersion { get; set; }
     }
 
     /// <summary>
@@ -123,7 +130,8 @@ namespace SharedMeta.Client.Network
             {
                 PlayerId = playerId,
                 SessionId = sessionId,
-                LastAcknowledgedSequence = lastAcknowledgedSequence
+                LastAcknowledgedSequence = lastAcknowledgedSequence,
+                ClientVersion = _options.ClientVersion
             };
 
             var response = await PostAsync<SessionConnectResponse>("/session-connect", body);
@@ -142,7 +150,9 @@ namespace SharedMeta.Client.Network
                 IsNewSession = response.IsNewSession,
                 MissedPackets = response.MissedPackets ?? new List<SessionResponse>(),
                 ServerTimeTicks = response.ServerTimeTicks,
-                ResubscribedEntities = response.ResubscribedEntities
+                ResubscribedEntities = response.ResubscribedEntities,
+                ServerVersion = response.ServerVersion,
+                MinClientVersion = response.MinClientVersion
             };
         }
 

@@ -8,24 +8,24 @@ Quick-start reference for projects using the SharedMeta framework.
 
 Shared project (game logic):
 ```xml
-<PackageReference Include="CoreGame.SharedMeta.Core" Version="0.12.3" />
-<PackageReference Include="CoreGame.SharedMeta.Generator" Version="0.12.3" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+<PackageReference Include="CoreGame.SharedMeta.Core" Version="0.13.0" />
+<PackageReference Include="CoreGame.SharedMeta.Generator" Version="0.13.0" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
 ```
 
 Server project:
 ```xml
-<PackageReference Include="CoreGame.SharedMeta.Server" Version="0.12.3" />
-<PackageReference Include="CoreGame.SharedMeta.Server.Core" Version="0.12.3" />
-<PackageReference Include="CoreGame.SharedMeta.Orleans" Version="0.12.3" />
-<PackageReference Include="CoreGame.SharedMeta.Transport.SignalR" Version="0.12.3" />
-<PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.12.3" />
+<PackageReference Include="CoreGame.SharedMeta.Server" Version="0.13.0" />
+<PackageReference Include="CoreGame.SharedMeta.Server.Core" Version="0.13.0" />
+<PackageReference Include="CoreGame.SharedMeta.Orleans" Version="0.13.0" />
+<PackageReference Include="CoreGame.SharedMeta.Transport.SignalR" Version="0.13.0" />
+<PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.13.0" />
 ```
 
 Client project (.NET console):
 ```xml
-<PackageReference Include="CoreGame.SharedMeta.Client" Version="0.12.3" />
-<PackageReference Include="CoreGame.SharedMeta.Transport.SignalR" Version="0.12.3" />
-<PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.12.3" />
+<PackageReference Include="CoreGame.SharedMeta.Client" Version="0.13.0" />
+<PackageReference Include="CoreGame.SharedMeta.Transport.SignalR" Version="0.13.0" />
+<PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.13.0" />
 ```
 
 ### Unity (UPM)

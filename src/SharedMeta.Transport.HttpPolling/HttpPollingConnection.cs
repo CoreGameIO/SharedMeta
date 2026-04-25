@@ -109,7 +109,8 @@ namespace SharedMeta.Transport.HttpPolling
             {
                 PlayerId = playerId,
                 SessionId = sessionId,
-                LastAcknowledgedSequence = lastAcknowledgedSequence
+                LastAcknowledgedSequence = lastAcknowledgedSequence,
+                ClientVersion = _options.ClientVersion
             };
 
             var response = await PostAsync<SessionConnectResponse>(
@@ -129,7 +130,9 @@ namespace SharedMeta.Transport.HttpPolling
                 IsNewSession = response.IsNewSession,
                 MissedPackets = response.MissedPackets,
                 ServerTimeTicks = response.ServerTimeTicks,
-                ResubscribedEntities = response.ResubscribedEntities
+                ResubscribedEntities = response.ResubscribedEntities,
+                ServerVersion = response.ServerVersion,
+                MinClientVersion = response.MinClientVersion
             };
         }
 

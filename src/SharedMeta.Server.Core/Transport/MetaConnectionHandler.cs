@@ -26,6 +26,7 @@ namespace SharedMeta.Server.Core.Transport
         private readonly SignatureValidator? _signatureValidator;
         private readonly ILogger _logger;
         private readonly MetaTransportOptions? _transportOptions;
+        private readonly ClientVersionPolicy? _versionPolicy;
         private readonly IMetaSerializer? _serializer;
         private readonly SharedMeta.Core.Patch.IPatchSchemaRegistry? _schemaRegistry;
         private ISessionObserver? _observerRef;
@@ -59,7 +60,8 @@ namespace SharedMeta.Server.Core.Transport
             SignatureValidator? signatureValidator = null,
             MetaTransportOptions? transportOptions = null,
             IMetaSerializer? serializer = null,
-            SharedMeta.Core.Patch.IPatchSchemaRegistry? schemaRegistry = null)
+            SharedMeta.Core.Patch.IPatchSchemaRegistry? schemaRegistry = null,
+            ClientVersionPolicy? versionPolicy = null)
         {
             _connectionId = connectionId ?? throw new ArgumentNullException(nameof(connectionId));
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
@@ -70,6 +72,7 @@ namespace SharedMeta.Server.Core.Transport
             _transportOptions = transportOptions;
             _serializer = serializer;
             _schemaRegistry = schemaRegistry;
+            _versionPolicy = versionPolicy;
         }
 
         #region IMetaConnectionHandler
@@ -81,6 +84,24 @@ namespace SharedMeta.Server.Core.Transport
                 if (string.IsNullOrEmpty(request.PlayerId))
                 {
                     return new SessionConnectResponse { Success = false, Error = "PlayerId is required" };
+                }
+
+                // Version gate — policy encapsulates TTL caching, grain refresh, and parsing.
+                if (_versionPolicy != null)
+                {
+                    var versionResult = await _versionPolicy.ValidateAsync(request.ClientVersion);
+                    if (!versionResult.IsAllowed)
+                    {
+                        _logger.LogWarning("[Handler] Version rejected for {PlayerId}: {Error}",
+                            request.PlayerId, versionResult.Error);
+                        return new SessionConnectResponse
+                        {
+                            Success = false,
+                            Error = versionResult.Error,
+                            ServerVersion = versionResult.ServerVersion,
+                            MinClientVersion = versionResult.MinClientVersion
+                        };
+                    }
                 }
 
                 PlayerId = request.PlayerId;
@@ -134,6 +155,7 @@ namespace SharedMeta.Server.Core.Transport
                     MissedPackets = result.MissedPackets,
                     SignatureMismatches = signatureMismatches,
                     ServerTimeTicks = result.ServerTimeTicks,
+                    ServerVersion = _versionPolicy?.ServerVersion ?? _transportOptions?.ServerVersion,
                     ResubscribedEntities = result.ResubscribedEntities?.Select(e => new ResubscribedEntityInfo
                     {
                         EntityId = e.EntityId,
@@ -664,6 +686,7 @@ namespace SharedMeta.Server.Core.Transport
         private readonly MetaTransportOptions? _transportOptions;
         private readonly IMetaSerializer? _serializer;
         private readonly SharedMeta.Core.Patch.IPatchSchemaRegistry? _schemaRegistry;
+        private readonly ClientVersionPolicy? _versionPolicy;
 
         public MetaConnectionHandlerFactory(
             IGrainFactory grainFactory,
@@ -672,7 +695,8 @@ namespace SharedMeta.Server.Core.Transport
             SignatureValidator? signatureValidator = null,
             MetaTransportOptions? transportOptions = null,
             IMetaSerializer? serializer = null,
-            SharedMeta.Core.Patch.IPatchSchemaRegistry? schemaRegistry = null)
+            SharedMeta.Core.Patch.IPatchSchemaRegistry? schemaRegistry = null,
+            ClientVersionPolicy? versionPolicy = null)
         {
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
@@ -681,13 +705,14 @@ namespace SharedMeta.Server.Core.Transport
             _transportOptions = transportOptions;
             _serializer = serializer;
             _schemaRegistry = schemaRegistry;
+            _versionPolicy = versionPolicy;
         }
 
         public IMetaConnectionHandler Create(string connectionId, IBroadcastSender broadcastSender)
         {
             var logger = _loggerFactory.CreateLogger<MetaConnectionHandler>();
             return new MetaConnectionHandler(connectionId, _grainFactory, _entityGrainResolver, broadcastSender, logger,
-                _signatureValidator, _transportOptions, _serializer, _schemaRegistry);
+                _signatureValidator, _transportOptions, _serializer, _schemaRegistry, _versionPolicy);
         }
     }
 }

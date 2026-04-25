@@ -43,6 +43,21 @@ namespace SharedMeta.Server.Core.Transport
         /// - Debug: full text diff with field paths and values
         /// </summary>
         public DesyncLogLevel DesyncLogLevel { get; set; } = DesyncLogLevel.Warning;
+
+        /// <summary>
+        /// Current server application version in "major.minor.patch" format (e.g. "1.2.3").
+        /// Sent to clients in every SessionConnectResponse when set.
+        /// Required for version checking to work — used to enforce major version compatibility.
+        /// </summary>
+        public string? ServerVersion { get; set; }
+
+        /// <summary>
+        /// Minimum client version the server will accept, in "major.minor.patch" format (e.g. "1.2.0").
+        /// When set along with <see cref="ServerVersion"/>, clients that send a version below this
+        /// or with a different major are rejected with a descriptive error.
+        /// Clients that do not send a version at all are allowed through (backward compatibility).
+        /// </summary>
+        public string? MinClientVersion { get; set; }
     }
 
     /// <summary>

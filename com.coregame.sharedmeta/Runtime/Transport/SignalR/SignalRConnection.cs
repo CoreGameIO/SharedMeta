@@ -20,6 +20,7 @@ namespace SharedMeta.Client.Network
     {
         private readonly string _serverUrl;
         private readonly string? _accessToken;
+        private readonly string? _clientVersion;
         private HubConnection? _hubConnection;
         private IMetaHub? _hub;
         private string _connectionId = "";
@@ -35,10 +36,12 @@ namespace SharedMeta.Client.Network
 
         /// <param name="serverUrl">SignalR hub URL.</param>
         /// <param name="accessToken">Optional JWT access token for authentication.</param>
-        public SignalRConnection(string serverUrl, string? accessToken = null)
+        /// <param name="clientVersion">Optional client version in "major.minor.patch" format for server-side compatibility checking.</param>
+        public SignalRConnection(string serverUrl, string? accessToken = null, string? clientVersion = null)
         {
             _serverUrl = serverUrl ?? throw new ArgumentNullException(nameof(serverUrl));
             _accessToken = accessToken;
+            _clientVersion = clientVersion;
         }
 
         public async Task ConnectAsync()
@@ -115,7 +118,8 @@ namespace SharedMeta.Client.Network
             {
                 PlayerId = playerId,
                 SessionId = sessionId,
-                LastAcknowledgedSequence = lastAcknowledgedSequence
+                LastAcknowledgedSequence = lastAcknowledgedSequence,
+                ClientVersion = _clientVersion
             });
 
             return new ConnectionSessionConnectResult
@@ -126,7 +130,9 @@ namespace SharedMeta.Client.Network
                 IsNewSession = response.IsNewSession,
                 MissedPackets = response.MissedPackets ?? new List<SessionResponse>(),
                 ServerTimeTicks = response.ServerTimeTicks,
-                ResubscribedEntities = response.ResubscribedEntities
+                ResubscribedEntities = response.ResubscribedEntities,
+                ServerVersion = response.ServerVersion,
+                MinClientVersion = response.MinClientVersion
             };
         }
 

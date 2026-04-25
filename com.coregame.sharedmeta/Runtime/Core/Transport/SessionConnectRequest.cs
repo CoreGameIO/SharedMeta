@@ -33,5 +33,12 @@ namespace SharedMeta.Core.Transport
         /// Use GameServiceDiscoveryBase.GetMethodSignatures() to populate.
         /// </summary>
         [Id(3), Key(3)] public Dictionary<string, ulong>? MethodSignatures { get; set; }
+
+        /// <summary>
+        /// Client's application version in "major.minor.patch" format (e.g. "1.2.3").
+        /// Used by the server to enforce minimum version compatibility.
+        /// Null if the client does not send version information.
+        /// </summary>
+        [Id(4), Key(4)] public string? ClientVersion { get; set; }
     }
 }

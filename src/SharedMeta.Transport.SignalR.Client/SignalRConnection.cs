@@ -16,6 +16,7 @@ namespace SharedMeta.Transport.SignalR
         private readonly string _serverUrl;
         private readonly string? _accessToken;
         private readonly Action<IHubConnectionBuilder>? _configureBuilder;
+        private readonly string? _clientVersion;
         private HubConnection? _hubConnection;
         private IMetaHub? _hub;
         private string _connectionId = "";
@@ -32,11 +33,13 @@ namespace SharedMeta.Transport.SignalR
         /// <param name="serverUrl">SignalR hub URL (e.g., "http://localhost:5000/meta").</param>
         /// <param name="accessToken">Optional JWT access token for authentication.</param>
         /// <param name="configureBuilder">Optional callback to configure HubConnectionBuilder (e.g., add MessagePack protocol).</param>
-        public SignalRConnection(string serverUrl, string? accessToken = null, Action<IHubConnectionBuilder>? configureBuilder = null)
+        /// <param name="clientVersion">Optional client version in "major.minor.patch" format for server-side compatibility checking.</param>
+        public SignalRConnection(string serverUrl, string? accessToken = null, Action<IHubConnectionBuilder>? configureBuilder = null, string? clientVersion = null)
         {
             _serverUrl = serverUrl ?? throw new ArgumentNullException(nameof(serverUrl));
             _accessToken = accessToken;
             _configureBuilder = configureBuilder;
+            _clientVersion = clientVersion;
         }
 
         public async Task ConnectAsync()
@@ -115,7 +118,8 @@ namespace SharedMeta.Transport.SignalR
             {
                 PlayerId = playerId,
                 SessionId = sessionId,
-                LastAcknowledgedSequence = lastAcknowledgedSequence
+                LastAcknowledgedSequence = lastAcknowledgedSequence,
+                ClientVersion = _clientVersion
             });
 
             return new ConnectionSessionConnectResult
@@ -126,7 +130,9 @@ namespace SharedMeta.Transport.SignalR
                 IsNewSession = response.IsNewSession,
                 MissedPackets = response.MissedPackets,
                 ServerTimeTicks = response.ServerTimeTicks,
-                ResubscribedEntities = response.ResubscribedEntities
+                ResubscribedEntities = response.ResubscribedEntities,
+                ServerVersion = response.ServerVersion,
+                MinClientVersion = response.MinClientVersion
             };
         }
 

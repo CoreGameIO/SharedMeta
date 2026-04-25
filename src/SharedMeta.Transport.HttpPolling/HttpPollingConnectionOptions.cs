@@ -36,5 +36,12 @@ namespace SharedMeta.Transport.HttpPolling
         /// When set, adds Authorization: Bearer header to all requests.
         /// </summary>
         public string? AccessToken { get; set; }
+
+        /// <summary>
+        /// Client application version in "major.minor.patch" format (e.g. "1.2.3").
+        /// Sent to the server during SessionConnect for compatibility checking.
+        /// Null to skip version reporting.
+        /// </summary>
+        public string? ClientVersion { get; set; }
     }
 }

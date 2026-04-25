@@ -835,6 +835,8 @@ await MetaAuth.ResetDeviceAsync($"{serverUrl}/meta/auth", deviceId, accessToken,
 
 **Enforcing auth:** `MetaTransportOptions.RequireAuthentication = true` rejects anonymous connections at SessionConnect. Additionally, you can add `[Authorize]` on a hub subclass or `.RequireAuthorization()` on endpoint mapping for middleware-level protection.
 
+**Client version enforcement (0.13.0+):** `MetaTransportOptions.ServerVersion` and `MinClientVersion` enforce version compatibility at connect time. Major version mismatch → always rejected. Minor/patch mismatch → rejected if client is below `MinClientVersion`. `MinClientVersion` can be overridden cluster-wide at runtime via `IVersionPolicyGrain` (Orleans grain singleton, key `"global"`) — cached per silo with a 60-second TTL. Clients pass `Application.version` via `SignalRConnection(url, token, clientVersion: Application.version)` or `HttpPollingConnectionOptions.ClientVersion`. On rejection, the `SessionConnectResponse` carries `ServerVersion` and `MinClientVersion` so the client can surface an actionable upgrade prompt.
+
 ---
 
 ## Persistence

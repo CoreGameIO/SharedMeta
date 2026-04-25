@@ -417,6 +417,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("#nullable enable");
             sb.AppendLine("using System;");
             sb.AppendLine("using System.Collections.Generic;");
+            sb.AppendLine("using System.Linq;");
             sb.AppendLine("using System.Threading.Tasks;");
             sb.AppendLine("using Microsoft.Extensions.DependencyInjection;");
             sb.AppendLine("using SharedMeta.Core;");
@@ -511,6 +512,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("#nullable enable");
             sb.AppendLine("using System;");
             sb.AppendLine("using System.Collections.Generic;");
+            sb.AppendLine("using System.Linq;");
             sb.AppendLine("using System.Threading.Tasks;");
             sb.AppendLine("using Microsoft.Extensions.DependencyInjection;");
             sb.AppendLine("using SharedMeta.Core;");
@@ -1048,7 +1050,19 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                return new SharedMeta.Core.Patch.PatchSchemaRegistry(byState, byService);");
             sb.AppendLine("            });");
             sb.AppendLine();
-            sb.AppendLine("            // Register MetaConnectionHandlerFactory with signature validator + transport options + serializer + schema registry");
+            sb.AppendLine("            // Register ClientVersionPolicy (runtime-mutable version gate)");
+            sb.AppendLine("            // Initialized from MetaTransportOptions; update MinClientVersion at runtime without restart.");
+            sb.AppendLine("            if (!services.Any(s => s.ServiceType == typeof(SharedMeta.Server.Core.Transport.ClientVersionPolicy)))");
+            sb.AppendLine("            {");
+            sb.AppendLine("                services.AddSingleton(sp =>");
+            sb.AppendLine("                {");
+            sb.AppendLine("                    var opts = sp.GetService<SharedMeta.Server.Core.Transport.MetaTransportOptions>();");
+            sb.AppendLine("                    var grainFactory = sp.GetService<Orleans.IGrainFactory>();");
+            sb.AppendLine("                    return new SharedMeta.Server.Core.Transport.ClientVersionPolicy(opts?.ServerVersion, opts?.MinClientVersion, grainFactory);");
+            sb.AppendLine("                });");
+            sb.AppendLine("            }");
+            sb.AppendLine();
+            sb.AppendLine("            // Register MetaConnectionHandlerFactory with signature validator + transport options + serializer + schema registry + version policy");
             sb.AppendLine("            services.AddSingleton<SharedMeta.Server.Core.Transport.IMetaConnectionHandlerFactory>(sp =>");
             sb.AppendLine("                new SharedMeta.Server.Core.Transport.MetaConnectionHandlerFactory(");
             sb.AppendLine("                    sp.GetRequiredService<Orleans.IGrainFactory>(),");
@@ -1057,7 +1071,8 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                    MetaMethodSignatureValidator.ValidateClientSignatures,");
             sb.AppendLine("                    sp.GetService<SharedMeta.Server.Core.Transport.MetaTransportOptions>(),");
             sb.AppendLine("                    sp.GetService<SharedMeta.Core.IMetaSerializer>(),");
-            sb.AppendLine("                    sp.GetService<SharedMeta.Core.Patch.IPatchSchemaRegistry>()));");
+            sb.AppendLine("                    sp.GetService<SharedMeta.Core.Patch.IPatchSchemaRegistry>(),");
+            sb.AppendLine("                    sp.GetService<SharedMeta.Server.Core.Transport.ClientVersionPolicy>()));");
             sb.AppendLine();
 
             sb.AppendLine("            return services;");

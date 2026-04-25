@@ -35,6 +35,13 @@ namespace SharedMeta.Transport.BestHttp
         public TimeSpan PingInterval { get; set; } = TimeSpan.FromSeconds(15);
 
         /// <summary>
+        /// Client application version in "major.minor.patch" format (e.g. "1.2.3").
+        /// Sent to the server during SessionConnect for compatibility checking.
+        /// Null to skip version reporting.
+        /// </summary>
+        public string? ClientVersion { get; set; }
+
+        /// <summary>
         /// Maximum number of automatic reconnect attempts. 0 = no reconnect.
         /// </summary>
         public int MaxReconnectAttempts { get; set; } = 5;
@@ -215,7 +222,8 @@ namespace SharedMeta.Transport.BestHttp
             {
                 PlayerId = playerId,
                 SessionId = sessionId,
-                LastAcknowledgedSequence = lastAcknowledgedSequence
+                LastAcknowledgedSequence = lastAcknowledgedSequence,
+                ClientVersion = _options.ClientVersion
             });
 
             return new ConnectionSessionConnectResult
@@ -226,7 +234,9 @@ namespace SharedMeta.Transport.BestHttp
                 IsNewSession = response.IsNewSession,
                 MissedPackets = response.MissedPackets ?? new List<SessionResponse>(),
                 ServerTimeTicks = response.ServerTimeTicks,
-                ResubscribedEntities = response.ResubscribedEntities
+                ResubscribedEntities = response.ResubscribedEntities,
+                ServerVersion = response.ServerVersion,
+                MinClientVersion = response.MinClientVersion
             };
         }
 
