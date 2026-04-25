@@ -95,7 +95,9 @@ builder.Services.AddSingleton(new MetaTransportOptions
     RequireAuthentication = true,
     AllowDebugApi = true,             // example project — debug API always available
     DesyncReportingEnabled = true,    // accept client follow-up reports
-    DesyncLogLevel = DesyncLogLevel.Debug  // log full text diff for inspection
+    DesyncLogLevel = DesyncLogLevel.Debug,  // log full text diff for inspection
+    ServerVersion = "0.13.0",
+    MinClientVersion = "0.13.0",
 });
 
 // HTTP Polling connection manager (for /meta-http transport)

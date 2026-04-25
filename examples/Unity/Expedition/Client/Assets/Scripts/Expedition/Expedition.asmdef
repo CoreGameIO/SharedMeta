@@ -2,13 +2,10 @@
     "name": "Expedition",
     "rootNamespace": "",
     "references": [
-        "SharedMeta.Runtime",
-        "SharedMeta.Transport.SignalR.Client",
-        "SharedMeta.Serialization.MemoryPack",
-        "SharedMeta.Auth.Client",
-        "Expedition.Shared",
         "Unity.InputSystem",
-        "SharedMeta.Transport.Http"
+        "SharedMeta.Runtime",
+        "Expedition.Shared",
+        "Expedition.Client"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
@@ -17,6 +14,12 @@
     "precompiledReferences": [],
     "autoReferenced": true,
     "defineConstraints": [],
-    "versionDefines": [],
+    "versionDefines": [
+        {
+            "name": "com.coregame.sharedmeta.backend.local",
+            "expression": "0.0.0",
+            "define": "SHAREDMETA_BACKEND_LOCAL"
+        }
+    ],
     "noEngineReferences": false
 }

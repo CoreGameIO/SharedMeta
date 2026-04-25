@@ -4,9 +4,11 @@
     "references": [
         "SharedMeta.Runtime",
         "SharedMeta.Transport.SignalR.Client",
+        "SharedMeta.Transport.Http",
         "SharedMeta.Serialization.MemoryPack",
         "Expedition.Shared",
-        "SharedMeta.Auth.Client"
+        "SharedMeta.Auth.Client",
+        "SharedMeta.Backend.Local.Runtime"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
@@ -15,6 +17,12 @@
     "precompiledReferences": [],
     "autoReferenced": true,
     "defineConstraints": [],
-    "versionDefines": [],
+    "versionDefines": [
+        {
+            "name": "com.coregame.sharedmeta.backend.local",
+            "expression": "0.0.0",
+            "define": "SHAREDMETA_BACKEND_LOCAL"
+        }
+    ],
     "noEngineReferences": false
 }

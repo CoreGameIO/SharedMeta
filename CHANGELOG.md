@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.13.0] - 2026-04-25
+
 ### Added
 
 - **Client version checking on `SessionConnect`** — the server can now enforce a minimum client version and reject incompatible clients before they establish a session.

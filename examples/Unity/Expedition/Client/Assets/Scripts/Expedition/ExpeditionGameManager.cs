@@ -2,15 +2,13 @@ using System;
 using System.Threading.Tasks;
 using UnityEngine;
 using SharedMeta.Client;
-using SharedMeta.Client.Auth;
 using SharedMeta.Client.Network;
 using SharedMeta.Core;
-using SharedMeta.Core.Auth;
 using SharedMeta.Core.Logging;
 using SharedMeta.Core.Reactive;
 using SharedMeta.Core.Diagnostics;
 using SharedMeta.Core.Transport;
-using SharedMeta.Serialization.MemoryPack;
+using SharedMeta.Core.Network;
 using Expedition.Shared;
 using Expedition.Shared.Client;
 
@@ -26,11 +24,19 @@ public class ExpeditionGameManager : MonoBehaviour
     [SerializeField] private string serverUrl = "http://localhost:5000";
     [SerializeField] private string deviceId = "";
 
+#if SHAREDMETA_BACKEND_LOCAL
+    [Header("Local Backend")]
+    [Tooltip("Run entirely in-process via SharedMeta.Backend.Local — no network, no server. Install the com.coregame.sharedmeta.backend.local UPM package to enable this section.")]
+    [SerializeField] private bool useLocalBackend = false;
+    [Tooltip("Persist local state to disk under Application.persistentDataPath/expedition-saves.")]
+    [SerializeField] private bool localPersistToDisk = true;
+#endif
+
     [Header("References")]
     [SerializeField] private ExpeditionUIGenerator ui;
     [SerializeField] private ExpeditionMapView mapView;
 
-    public MetaClient Client { get; private set; }
+    public MetaClient Client => _metaClient?.Client;
     public ProfileState ProfileState => Client?.GetProfileState();
     public ExpeditionState ExpeditionState => _expeditionEntityId != null ? Client?.GetState<ExpeditionState>(_expeditionEntityId) : null;
     public ExpeditionConfig Config => Client?.GetEntityConfig<ExpeditionConfig>(Client.PlayerId) ?? _defaultConfig;
@@ -39,6 +45,7 @@ public class ExpeditionGameManager : MonoBehaviour
     /// <summary>Fired when any tracked field changes or a broadcast is processed.</summary>
     public event Action OnStateUpdated;
 
+    private MetaGameClient _metaClient;
     private string _expeditionEntityId;
     private ExpeditionProfileServiceApiClient _profileApi;
     private ExpeditionServiceApiClient _expApi;
@@ -46,12 +53,12 @@ public class ExpeditionGameManager : MonoBehaviour
     private bool _pendingRender;
     private ExpeditionDesyncDiagnostics _diagnostics;
     private ExpeditionConnectionHealth _connectionHealth;
-    private System.IO.StreamWriter _diagLogWriter;
+    private bool _trackedRegistered;
 
-    // Debug network simulation (editor/dev builds only)
+    // Debug network simulation (editor/dev builds only) — forwarded from _metaClient
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
-    public DebugConnectionSettings DebugNetworkSettings { get; private set; }
-    public DebugConnectionWrapper DebugConnection { get; private set; }
+    public DebugConnectionSettings DebugNetworkSettings => _metaClient?.DebugNetworkSettings;
+    public DebugConnectionWrapper DebugConnection => _metaClient?.DebugConnection;
 #endif
 
     public ExpeditionProfileServiceApiClient ProfileApi => _profileApi;
@@ -67,6 +74,16 @@ public class ExpeditionGameManager : MonoBehaviour
         if (string.IsNullOrEmpty(deviceId))
             deviceId = SystemInfo.deviceUniqueIdentifier;
 
+#if SHAREDMETA_BACKEND_LOCAL
+        if (useLocalBackend)
+        {
+            // Local backend has no network transport — skip the SignalR/HTTP choice UI
+            // and go straight to ConnectAsync, which branches on useLocalBackend.
+            _ = ConnectAsync();
+            return;
+        }
+#endif
+
         // Show transport choice — ConnectWithTransport will be called from UI
         ui.ShowTransportChoice();
     }
@@ -78,7 +95,7 @@ public class ExpeditionGameManager : MonoBehaviour
         if (Client == null) return;
 
         // Process pending server broadcasts
-        if (Client.Dispatcher.ProcessPendingBroadcasts() > 0)
+        if (_metaClient.ProcessPendingBroadcasts() > 0)
             _pendingRender = true;
 
         if (_pendingRender)
@@ -109,16 +126,25 @@ public class ExpeditionGameManager : MonoBehaviour
         }
     }
 
+#if SHAREDMETA_BACKEND_LOCAL
+    async void OnDestroy()
+#else
     void OnDestroy()
+#endif
     {
-        TrackedProfileState.Unregister();
-        TrackedExpeditionState.Unregister();
-        Client?.Dispose();
-        if (_diagLogWriter != null)
+        if (_trackedRegistered)
         {
-            try { _diagLogWriter.Dispose(); } catch { }
-            _diagLogWriter = null;
+            TrackedProfileState.Unregister();
+            TrackedExpeditionState.Unregister();
         }
+#if SHAREDMETA_BACKEND_LOCAL
+        if (_metaClient?.LocalServer != null)
+        {
+            try { await _metaClient.LocalServer.SaveAllAsync(); }
+            catch (Exception ex) { Debug.LogException(ex); }
+        }
+#endif
+        _metaClient?.Dispose();
     }
 
     /// <summary>
@@ -196,91 +222,38 @@ public class ExpeditionGameManager : MonoBehaviour
     {
         try
         {
-            ui.SetStatus("Authenticating...");
-
-            var tokenStorage = new PlayerPrefsTokenStorage();
-            var login = await MetaAuth.EnsureAuthenticatedAsync(
-                $"{serverUrl}/meta/auth", deviceId, tokenStorage);
-            ui.SetStatus($"Authenticated: {login.PlayerId}");
-
-            var serializer = new MemoryPackMetaSerializer();
-
-            IConnection connection;
-            if (_useHttpPolling)
-            {
-#if HAS_NEWTONSOFT_JSON
-                connection = new UnityHttpConnection(new UnityHttpConnectionOptions
-                {
-                    ServerUrl = $"{serverUrl}/meta-http",
-                    AccessToken = login.Token
-                });
-#else
-                Debug.LogError("HTTP polling requires com.unity.nuget.newtonsoft-json package. Falling back to SignalR.");
-                _useHttpPolling = false;
-                connection = new SignalRConnection($"{serverUrl}/meta", login.Token);
-#endif
-            }
-            else
-            {
-                connection = new SignalRConnection($"{serverUrl}/meta", login.Token);
-            }
-
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-            DebugNetworkSettings = new DebugConnectionSettings
-            {
-                Enabled = false,
-                // HTTP polling can lose individual requests; SignalR is all-or-nothing
-                LossMode = _useHttpPolling ? PacketLossMode.RequestHang : PacketLossMode.ConnectionDrop
-            };
-            DebugConnection = new DebugConnectionWrapper(connection, DebugNetworkSettings);
-            connection = DebugConnection;
-#endif
+            // Dispose any previous client before creating a new one (e.g. retry after failure)
+            _metaClient?.Dispose();
 
             _diagnostics = new ExpeditionDesyncDiagnostics(ui);
             _connectionHealth = new ExpeditionConnectionHealth(ui);
-            Client = new MetaClient(
-                connection, serializer,
-                new MetaClientOptions
-                {
-                    PlayerId = login.PlayerId,
-                    Diagnostics = _diagnostics,
-                    ConnectionHealth = _connectionHealth
-                }
-            );
+            _metaClient = new MetaGameClient(_diagnostics, _connectionHealth);
 
-            // File-based diagnostics log for request lifecycle tracing.
-            // Retry after a failed connect would otherwise hit IOException "Sharing violation"
-            // because the previous writer still holds the file; dispose it first.
-            if (_diagLogWriter != null)
+            var useLocalBackendOpt = false;
+            var localPersistToDiskOpt = true;
+#if SHAREDMETA_BACKEND_LOCAL
+            useLocalBackendOpt = useLocalBackend;
+            localPersistToDiskOpt = localPersistToDisk;
+#endif
+            await _metaClient.ConnectAsync(serverUrl, deviceId, _useHttpPolling, ui.SetStatus, useLocalBackendOpt, localPersistToDiskOpt);
+
+
+            // Register tracked field subscriptions once — static, survive reconnects
+            if (!_trackedRegistered)
             {
-                try { _diagLogWriter.Dispose(); } catch { }
-                _diagLogWriter = null;
+                TrackedProfileState.Register();
+                TrackedProfileState.OnChanged += OnProfileTracked;
+                TrackedExpeditionState.Register();
+                TrackedExpeditionState.OnChanged += OnExpeditionTracked;
+                _trackedRegistered = true;
             }
-            var logPath = System.IO.Path.Combine(Application.persistentDataPath, "connection_diag.log");
-            Debug.Log($"[Expedition] Diagnostics log: {logPath}");
-            _diagLogWriter = new System.IO.StreamWriter(logPath, append: false) { AutoFlush = true };
-            var writerCapture = _diagLogWriter;
-            if (Client.Dispatcher is SharedMeta.Client.ClientDispatcher cd2)
-                cd2.DiagnosticsLog = msg => { try { writerCapture.WriteLine(msg); } catch { } };
-
-            Client.Resolver.RegisterAllServices();
-
-            // Create query API (no subscription needed)
-            _expeditionQuery = new ExpeditionServiceQueryApi(connection, serializer);
-
-            // Register tracked field subscriptions BEFORE connecting
-            TrackedProfileState.Register();
-            TrackedProfileState.OnChanged += OnProfileTracked;
-
-            TrackedExpeditionState.Register();
-            TrackedExpeditionState.OnChanged += OnExpeditionTracked;
 
             Client.Dispatcher.OnConnectionStatusChanged += OnConnectionStatusChanged;
 
-            ui.SetStatus("Connecting...");
-            await Client.ConnectAsync();
-            ui.SetStatus("Connected! Loading profile...");
+            // Create query API using the established connection and serializer
+            _expeditionQuery = new ExpeditionServiceQueryApi(_metaClient.Connection, _metaClient.Serializer);
 
+            ui.SetStatus("Connected! Loading profile...");
             _profileApi = await Client.GetExpeditionProfileServiceAsync();
             await _profileApi.UpdateEnergyAsync();
 
@@ -293,7 +266,8 @@ public class ExpeditionGameManager : MonoBehaviour
                     .EntityApi(currentExpId)
                     .IsActiveAsync();
 
-                if (active) {
+                if (active)
+                {
                     // Resume — subscribe to existing expedition
                     _expeditionEntityId = currentExpId;
                     _expApi = await Client.GetServiceAsync<ExpeditionServiceApiClient>(_expeditionEntityId);
@@ -315,10 +289,10 @@ public class ExpeditionGameManager : MonoBehaviour
             Debug.LogException(ex);
 
             // Tear down the half-initialised client so the retry starts clean.
-            if (Client != null)
+            if (_metaClient != null)
             {
-                try { Client.Dispose(); } catch { }
-                Client = null;
+                try { _metaClient.Dispose(); } catch { }
+                _metaClient = null;
             }
 
             var friendly = IsConnectionError(ex)
