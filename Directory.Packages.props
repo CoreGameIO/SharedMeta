@@ -9,43 +9,43 @@
     <PackageVersion Include="MessagePack" Version="3.1.4" />
 
     <!-- Code Analysis (generators) -->
-    <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.3.4" />
-    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.9.2" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
 
     <!-- Orleans -->
-    <PackageVersion Include="Microsoft.Orleans.Core.Abstractions" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.Orleans.Runtime" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.Orleans.Sdk" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.Orleans.Serialization.Abstractions" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.Orleans.Server" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.Orleans.Streaming" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.Orleans.TestingHost" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Orleans.Core.Abstractions" Version="10.1.0" />
+    <PackageVersion Include="Microsoft.Orleans.Runtime" Version="10.1.0" />
+    <PackageVersion Include="Microsoft.Orleans.Sdk" Version="10.1.0" />
+    <PackageVersion Include="Microsoft.Orleans.Serialization.Abstractions" Version="10.1.0" />
+    <PackageVersion Include="Microsoft.Orleans.Server" Version="10.1.0" />
+    <PackageVersion Include="Microsoft.Orleans.Streaming" Version="10.1.0" />
+    <PackageVersion Include="Microsoft.Orleans.TestingHost" Version="10.1.0" />
 
     <!-- Microsoft Extensions -->
-    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.3" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.3" />
-    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.3" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.7" />
 
     <!-- SignalR -->
-    <PackageVersion Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.3" />
-    <PackageVersion Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.3" />
+    <PackageVersion Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.7" />
+    <PackageVersion Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.7" />
 
     <!-- Authentication -->
-    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.24" />
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.26" />
 
     <!-- Logging & Observability -->
     <PackageVersion Include="Serilog.AspNetCore" Version="10.0.0" />
-    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.15.0" />
-    <PackageVersion Include="OpenTelemetry.Exporter.Console" Version="1.15.0" />
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
+    <PackageVersion Include="OpenTelemetry.Exporter.Console" Version="1.15.3" />
 
     <!-- Testing -->
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.3.0" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.4.0" />
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
-    <PackageVersion Include="coverlet.collector" Version="8.0.0" />
+    <PackageVersion Include="coverlet.collector" Version="8.0.1" />
 
     <!-- UI -->
-    <PackageVersion Include="Spectre.Console" Version="0.54.0" />
+    <PackageVersion Include="Spectre.Console" Version="0.55.2" />
   </ItemGroup>
 </Project>

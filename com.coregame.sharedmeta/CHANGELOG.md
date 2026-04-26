@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.14.0] - 2026-04-26
+
+### Added — multi-service-on-entity state propagation
+
+- **`EntityStateContainer<TState>` — shared state holder per entity** (`Runtime/Core/Client/EntityStateContainer.cs`). Owns the current state object, the `MutationCount` counter, and the `OnMutated` event. Every API client subscribed to the same entity now points at the same container, so:
+  - **Foreign-service broadcasts update local state for ALL execution modes** — `Optimistic`, `Server`, `CrossOptimistic`, `ServerPatch`, `ServerReplace`. The entity-level handler in `MetaServiceResolver` applies state-data when the broadcast carries it; for pure replay broadcasts (Optimistic / Server / CrossOptimistic without state-data) it falls back to a generator-emitted `EntityReplayDispatcher` that spins up the foreign service's impl class on the fly and re-runs the method against the shared state. **No matching ApiClient required on the receiver.** Pre-0.14.0 the per-ApiClient `ServiceName` filter silently dropped foreign broadcasts in every mode; that gate is gone.
+  - **No drift after `ServerReplace`.** When one ApiClient's wholesale-replace path swaps the state instance, every other ApiClient on the entity sees the new instance through the shared container — pre-0.14.0 the non-receiving ApiClients kept pointing at the stale instance.
+  - **`MutationCount` is now shared per entity**, not per ApiClient. Every API client subscribed to the entity returns the same value; the counter bumps exactly once per mutation regardless of how many ApiClients are subscribed. The 0.13.1 polling semantic is preserved but more useful — `if (api.MutationCount != lastSeen) Invalidate();` now catches mutations from any service on the entity.
+  - **`OnStateMutated` fires on every API client on the entity in lock-step** — sourced from `EntityStateContainer.OnMutated`. Fires on the same set of mutations as `MutationCount` bumps (foreign-service broadcasts included).
+
+- **`MetaServiceResolver.GetStateContainer<TState>(entityId)`** — direct access to the shared container. Useful for entity-only consumers (e.g. UI views) that don't need a full ApiClient.
+
+- **`IEntityStateContainer`** — non-generic surface so the resolver can drive the container without knowing `TState` at runtime. Exposes `State`, `MutationCount`, `OnMutated`, `NotifyMutated`, `ReplaceObject`.
+
+- **`MetaServiceConfig.StateContainerFactory` / `PatchApplier` / `EntityReplayDispatcher`** — generator-emitted callbacks. `StateContainerFactory` wraps a deserialized state into a typed container without reflection. `PatchApplier` applies ServerPatch byte payloads to the shared state; the entity-level handler in `MetaServiceResolver` activates `ChangeTracker` around the call so `[Tracked]` field setters touched by the patch fire `Tracked{State}.OnChanged`. `EntityReplayDispatcher` is the foreign-service replay path — it instantiates the service's impl class, sets up `ClientMetaContext` with replay context (random + named randoms + config), activates `ChangeTracker`, dispatches the broadcast's method against the shared state, and `FlushAndNotify`s. Skips Query/Signal methods (they don't broadcast).
+
+### Changed (breaking for generated code only)
+
+- Generated `*ApiClient.g.cs` constructor signature: third positional parameter is now `EntityStateContainer<TState>` instead of `TState`. Source-compatible for callers because nobody constructs API clients directly — `MetaServiceResolver.GetServiceAsync` does it via the generated factory. Rebuild with the new generator DLL and any consumer code keeps working.
+- `MetaServiceConfig.ApiClientFactory` third positional parameter now receives an `IEntityStateContainer` (boxed) instead of the raw state object. Generator-emitted lambdas cast inside.
+- `MutationCount` is no longer per-ApiClient (`int { get; private set; }`) — it now delegates to the shared container.
+- `OnStateMutated` is no longer fired manually from per-method code paths; it sources from `EntityStateContainer.OnMutated`. Firing order is preserved everywhere a setter actually runs (per-method paths, foreign-service replay, ServerPatch application): `Tracked{State}.OnChanged` first via `_tracker.FlushAndNotify()`, `OnStateMutated` after via `container.NotifyMutated()`. The one path that differs is `ServerReplace` wholesale-replace at entity level — the container is replaced with a freshly deserialized instance (no setter calls happen on the old one), so only `OnStateMutated` fires and `Tracked{State}.OnChanged` has nothing to notify (same as pre-0.14.0).
+
+### Notes
+
+- The foreign-service replay path requires that the impl class for the foreign service is reachable from the client assembly (it lives in shared code) and that its constructor is parameterless. Cross-entity calls (`Context.GetI{Service}(otherEntityId)`) inside foreign-service methods are not replayed during entity-level dispatch — that scenario still requires the matching service to be subscribed locally so its ApiClient handles the cascade.
+
 ## [0.13.1] - 2026-04-25
 
 ### Added

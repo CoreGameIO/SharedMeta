@@ -141,5 +141,42 @@ namespace SharedMeta.Core
         /// Parameters: (apiClient, newState, newOptimisticRandom, newNamedRandoms)
         /// </summary>
         public Action<object, object, MetaRandom?, IReadOnlyList<MetaRandom>?>? StateRefresher { get; init; }
+
+        /// <summary>
+        /// Factory to wrap a deserialized state into a typed
+        /// <see cref="SharedMeta.Client.EntityStateContainer{TState}"/>.
+        /// Optional — the resolver falls back to reflection if not provided.
+        /// Generator-emitted; allows the resolver to construct a typed container without
+        /// knowing TState at compile time.
+        /// </summary>
+        public Func<object, SharedMeta.Client.IEntityStateContainer>? StateContainerFactory { get; init; }
+
+        /// <summary>
+        /// Centralized patch applier so the resolver's entity-level broadcast handler can
+        /// apply ServerPatch byte payloads to the shared state without going through any
+        /// individual ApiClient. Parameters: (currentState, patchBytes, serializer).
+        /// Generator-emitted; absent when the state has no PatchSchema.
+        /// </summary>
+        public Action<object, byte[], IMetaSerializer>? PatchApplier { get; init; }
+
+        /// <summary>
+        /// Foreign-service replay dispatcher (0.14.0+). Lets the resolver's entity-level
+        /// broadcast handler reconstruct an Optimistic / Server / CrossOptimistic mutation
+        /// for a service the receiver doesn't have an ApiClient for — by instantiating the
+        /// shared impl class on the fly and invoking the broadcast's method against the
+        /// shared state container.
+        /// <para>
+        /// Each <see cref="MetaServiceConfig"/> emits the dispatcher for its own service —
+        /// the resolver routes incoming broadcasts to the matching config by
+        /// <c>ServiceName</c>. Closes the gap where Optimistic / Server broadcasts carry
+        /// only replay-context (no state-data), so foreign-service ApiClients used to drop
+        /// the mutation entirely.
+        /// </para>
+        /// <para>
+        /// Parameters: (state, methodName, argsBytes, replayContext, callerId, serverTimeTicks,
+        /// serializer, optimisticRandom, namedRandoms, config, crossEntityResolver).
+        /// </para>
+        /// </summary>
+        public Action<object, string, byte[], byte[], string?, long, IMetaSerializer, SharedMeta.Core.Random.MetaRandom?, IReadOnlyList<SharedMeta.Core.Random.MetaRandom>?, object?, ICrossEntityResolver?>? EntityReplayDispatcher { get; init; }
     }
 }

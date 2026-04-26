@@ -21,6 +21,9 @@ namespace SharedMeta.Client
         private readonly IDesyncDiagnostics? _diagnostics;
         private readonly Dictionary<Type, MetaServiceConfig> _serviceConfigs = new();
         private readonly Dictionary<string, MetaServiceConfig> _configsByStateTypeName = new();
+        // Indexed by ServiceName ("ICounterService" etc.) so the entity-level broadcast handler
+        // can look up a foreign service's EntityReplayDispatcher when no state-data was sent.
+        private readonly Dictionary<string, MetaServiceConfig> _configsByServiceName = new();
         private readonly Dictionary<string, EntityConnection> _connections = new();
         private readonly object _lock = new();
         private List<CrossEntityLocalResult>? _recordedResults;
@@ -69,6 +72,13 @@ namespace SharedMeta.Client
             _serviceConfigs[typeof(TApiClient)] = config;
             var stateTypeName = config.StateType.FullName ?? config.StateType.Name;
             _configsByStateTypeName[stateTypeName] = config;
+            if (!string.IsNullOrEmpty(config.ServiceName))
+                _configsByServiceName[config.ServiceName] = config;
+        }
+
+        private MetaServiceConfig? LookupConfigByServiceName(string serviceName)
+        {
+            return _configsByServiceName.TryGetValue(serviceName, out var c) ? c : null;
         }
 
         public async Task<TApiClient> GetServiceAsync<TApiClient>(string entityId) where TApiClient : class
@@ -99,16 +109,18 @@ namespace SharedMeta.Client
 
             // Get or create network connection
             INetwork network;
-            object state;
+            IEntityStateContainer stateContainer;
             MetaRandom? optimisticRandom = null;
             MetaRandom[]? namedRandoms = null;
             object? entityConfig = null;
+            EntityConnection? newConnection = null;
 
             if (existingConnection != null)
             {
-                // Reuse existing network, state, random, and config
+                // Reuse existing network, container, random, and config — every API client on this
+                // entity must observe the same state, even after a wholesale ServerReplace.
                 network = existingConnection.Network;
-                state = existingConnection.State;
+                stateContainer = existingConnection.StateContainer;
                 optimisticRandom = existingConnection.OptimisticRandom;
                 namedRandoms = existingConnection.NamedRandoms;
                 entityConfig = existingConnection.Config;
@@ -120,17 +132,19 @@ namespace SharedMeta.Client
                 var subResult = await _networkFactory(entityId, stateTypeName);
                 network = subResult.Network;
 
-                // Deserialize state from server, or create empty if no state bytes
+                object initialState;
                 if (subResult.StateBytes != null && subResult.StateBytes.Length > 0)
                 {
-                    state = _serializer.Unpack(config.StateType, subResult.StateBytes)
+                    initialState = _serializer.Unpack(config.StateType, subResult.StateBytes)
                         ?? throw new InvalidOperationException($"Failed to deserialize state of type '{config.StateType.Name}'");
                 }
                 else
                 {
-                    state = Activator.CreateInstance(config.StateType)
+                    initialState = Activator.CreateInstance(config.StateType)
                         ?? throw new InvalidOperationException($"Failed to create state of type '{config.StateType.Name}'");
                 }
+
+                stateContainer = CreateContainer(config, initialState);
 
                 // Deserialize optimistic random, or create from entityId seed
                 if (subResult.OptimisticRandomBytes != null && subResult.OptimisticRandomBytes.Length > 0)
@@ -150,13 +164,31 @@ namespace SharedMeta.Client
 
                 // Resolve config: check cache → request URL → download → fallback to factory
                 entityConfig = await ResolveConfigAsync(config, subResult, entityId);
+
+                newConnection = new EntityConnection
+                {
+                    EntityId = entityId,
+                    Network = network,
+                    StateType = config.StateType,
+                    StateContainer = stateContainer,
+                    OptimisticRandom = optimisticRandom,
+                    NamedRandoms = namedRandoms,
+                    Config = entityConfig
+                };
+
+                // Entity-level broadcast handler: applies state-data (StateBytes / PatchBytes) to the
+                // shared container regardless of which service the broadcast came from. This is what
+                // lets a client that subscribed to only one of several services on the entity still
+                // receive every state update.
+                newConnection.SubscribeBroadcasts(_serializer, config.PatchApplier, LookupConfigByServiceName, this);
             }
 
-            // Create API client using factory
+            // Create API client using factory — pass the container as the third positional arg.
+            // The generated client casts it to EntityStateContainer<TState> internally.
             var apiClient = (TApiClient)config.ApiClientFactory(
                 network,
                 _serializer,
-                state,
+                stateContainer,
                 _modeProvider,
                 _diagnostics,
                 this,
@@ -169,20 +201,20 @@ namespace SharedMeta.Client
             {
                 if (!_connections.TryGetValue(entityId, out var connection))
                 {
-                    connection = new EntityConnection
-                    {
-                        EntityId = entityId,
-                        Network = network,
-                        StateType = config.StateType,
-                        State = state,
-                        OptimisticRandom = optimisticRandom,
-                        NamedRandoms = namedRandoms,
-                        Config = entityConfig
-                    };
+                    connection = newConnection ?? throw new InvalidOperationException(
+                        "Internal: connection went missing between subscribe and cache.");
                     _connections[entityId] = connection;
+                }
+                else if (newConnection != null && !ReferenceEquals(connection, newConnection))
+                {
+                    // Lost a race — another caller cached a connection while we were subscribing.
+                    // Tear down our orphan handler so the network doesn't get a duplicate listener.
+                    newConnection.Dispose();
                 }
 
                 connection.ApiClients[typeof(TApiClient)] = apiClient;
+                if (!string.IsNullOrEmpty(config.ServiceName))
+                    connection.LocalServiceNames.Add(config.ServiceName);
             }
 
             return apiClient;
@@ -199,15 +231,7 @@ namespace SharedMeta.Client
                 _connections.Remove(entityId);
             }
 
-            // Dispose any disposable API clients
-            foreach (var apiClient in connection.ApiClients.Values)
-            {
-                if (apiClient is IDisposable disposable)
-                {
-                    disposable.Dispose();
-                }
-            }
-
+            connection.Dispose();
             return Task.CompletedTask;
         }
 
@@ -217,10 +241,32 @@ namespace SharedMeta.Client
             {
                 if (_connections.TryGetValue(entityId, out var connection))
                 {
-                    return (TState)connection.State;
+                    return (TState)connection.StateContainer.State;
                 }
             }
 
+            throw new InvalidOperationException($"Not connected to entity '{entityId}'");
+        }
+
+        /// <summary>
+        /// Returns the shared state container for an entity, exposing the joint
+        /// <see cref="EntityStateContainer{TState}.MutationCount"/> /
+        /// <see cref="EntityStateContainer{TState}.OnMutated"/> surface even when no
+        /// API client for the entity has been requested yet (or when only one of
+        /// several services on the entity has been resolved).
+        /// </summary>
+        public EntityStateContainer<TState> GetStateContainer<TState>(string entityId) where TState : class, ISharedState
+        {
+            lock (_lock)
+            {
+                if (_connections.TryGetValue(entityId, out var connection))
+                {
+                    if (connection.StateContainer is EntityStateContainer<TState> typed)
+                        return typed;
+                    throw new InvalidOperationException(
+                        $"Entity '{entityId}' state container is of type '{connection.StateType.Name}', not '{typeof(TState).Name}'.");
+                }
+            }
             throw new InvalidOperationException($"Not connected to entity '{entityId}'");
         }
 
@@ -295,6 +341,19 @@ namespace SharedMeta.Client
             return config;
         }
 
+        private static IEntityStateContainer CreateContainer(MetaServiceConfig config, object initialState)
+        {
+            // Generator-emitted typed factory is the fast path; otherwise fall back to reflection.
+            if (config.StateContainerFactory != null)
+                return config.StateContainerFactory(initialState);
+
+            var containerType = typeof(EntityStateContainer<>).MakeGenericType(config.StateType);
+            var instance = Activator.CreateInstance(containerType, initialState)
+                ?? throw new InvalidOperationException(
+                    $"Failed to create EntityStateContainer<{config.StateType.Name}>.");
+            return (IEntityStateContainer)instance;
+        }
+
         #region ICrossEntityResolver
 
         bool ICrossEntityResolver.IsSubscribed(string entityId)
@@ -322,17 +381,19 @@ namespace SharedMeta.Client
             // Create connection (subscribe to entity)
             var subResult = await _networkFactory(entityId, stateTypeName);
 
-            object state;
+            object initialState;
             if (subResult.StateBytes != null && subResult.StateBytes.Length > 0)
             {
-                state = _serializer.Unpack(config.StateType, subResult.StateBytes)
+                initialState = _serializer.Unpack(config.StateType, subResult.StateBytes)
                     ?? throw new InvalidOperationException($"Failed to deserialize state of type '{config.StateType.Name}'");
             }
             else
             {
-                state = Activator.CreateInstance(config.StateType)
+                initialState = Activator.CreateInstance(config.StateType)
                     ?? throw new InvalidOperationException($"Failed to create state of type '{config.StateType.Name}'");
             }
+
+            var stateContainer = CreateContainer(config, initialState);
 
             MetaRandom? optimisticRandom = null;
             if (subResult.OptimisticRandomBytes != null && subResult.OptimisticRandomBytes.Length > 0)
@@ -346,22 +407,29 @@ namespace SharedMeta.Client
 
             var entityConfig = await ResolveConfigAsync(config, subResult, entityId);
 
+            EntityConnection? newConnection = new EntityConnection
+            {
+                EntityId = entityId,
+                Network = subResult.Network,
+                StateType = config.StateType,
+                StateContainer = stateContainer,
+                OptimisticRandom = optimisticRandom,
+                NamedRandoms = namedRandoms,
+                Config = entityConfig
+            };
+            newConnection.SubscribeBroadcasts(_serializer, config.PatchApplier, LookupConfigByServiceName, this);
+
             lock (_lock)
             {
                 if (!_connections.ContainsKey(entityId))
                 {
-                    _connections[entityId] = new EntityConnection
-                    {
-                        EntityId = entityId,
-                        Network = subResult.Network,
-                        StateType = config.StateType,
-                        State = state,
-                        OptimisticRandom = optimisticRandom,
-                        NamedRandoms = namedRandoms,
-                        Config = entityConfig
-                    };
+                    _connections[entityId] = newConnection;
+                    newConnection = null;
                 }
             }
+
+            // Lost the race — another caller already cached a connection. Drop the orphan.
+            newConnection?.Dispose();
         }
 
         object ICrossEntityResolver.GetEntityState(string entityId)
@@ -369,7 +437,7 @@ namespace SharedMeta.Client
             lock (_lock)
             {
                 if (_connections.TryGetValue(entityId, out var connection))
-                    return connection.State;
+                    return connection.StateContainer.State;
             }
             throw new InvalidOperationException($"Not connected to entity '{entityId}'. Call EnsureSubscribedAsync first.");
         }
@@ -379,7 +447,7 @@ namespace SharedMeta.Client
             lock (_lock)
             {
                 if (_connections.TryGetValue(entityId, out var connection))
-                    connection.State = newState;
+                    connection.StateContainer.ReplaceObject(newState);
             }
         }
 
@@ -409,7 +477,8 @@ namespace SharedMeta.Client
         /// <summary>
         /// Refresh entity states from server-provided resubscription data.
         /// Called after transport reconnect when the server re-subscribed entities automatically.
-        /// Uses StateRefresher to update state in-place — existing API client references stay valid.
+        /// Updates the shared container (so every API client sees the new state) and notifies
+        /// each registered API client via its StateRefresher for OnStateRefreshed-style hooks.
         /// </summary>
         public void RefreshEntityStates(List<Core.Transport.ResubscribedEntityInfo> resubscribedEntities)
         {
@@ -426,7 +495,9 @@ namespace SharedMeta.Client
                         var newState = _serializer.Unpack(connection.StateType, entity.StateBytes);
                         if (newState != null)
                         {
-                            connection.State = newState;
+                            // Replace through the container — this bumps MutationCount and fires
+                            // OnMutated, which the API clients are subscribed to.
+                            connection.StateContainer.ReplaceObject(newState);
 
                             // Update optimistic random
                             if (entity.OptimisticRandomBytes is { Length: > 0 })
@@ -440,8 +511,9 @@ namespace SharedMeta.Client
                                 connection.NamedRandoms = _serializer.Unpack<MetaRandom[]>(nrBytes);
                             }
 
-                            // Refresh state in existing API clients via generated RefreshState method.
-                            // This fires OnStateRefreshed event so client code can update Views.
+                            // Refresh state in existing API clients via generated StateRefresher.
+                            // This fires OnStateRefreshed event so client code can update Views;
+                            // the underlying state field was already swapped through the container.
                             foreach (var (clientType, apiClient) in connection.ApiClients)
                             {
                                 if (_serviceConfigs.TryGetValue(clientType, out var config))
@@ -465,13 +537,7 @@ namespace SharedMeta.Client
             {
                 foreach (var connection in _connections.Values)
                 {
-                    foreach (var apiClient in connection.ApiClients.Values)
-                    {
-                        if (apiClient is IDisposable disposable)
-                            disposable.Dispose();
-                    }
-                    if (connection.Network is IDisposable networkDisposable)
-                        networkDisposable.Dispose();
+                    connection.Dispose();
                 }
                 _connections.Clear();
             }
@@ -536,16 +602,151 @@ namespace SharedMeta.Client
             ClearAllConnections();
         }
 
-        private class EntityConnection
+        private class EntityConnection : IDisposable
         {
             public string EntityId { get; init; } = "";
             public INetwork Network { get; init; } = null!;
             public Type StateType { get; init; } = null!;
-            public object State { get; set; } = null!;
+            public IEntityStateContainer StateContainer { get; init; } = null!;
             public MetaRandom? OptimisticRandom { get; set; }
             public MetaRandom[]? NamedRandoms { get; set; }
             public object? Config { get; set; }
             public Dictionary<Type, object> ApiClients { get; } = new();
+            // ServiceNames that have an ApiClient registered locally — entity handler skips
+            // EntityReplayDispatcher for these to avoid double-application (the matching
+            // ApiClient's own DispatchServiceBroadcast already replays the method).
+            public HashSet<string> LocalServiceNames { get; } = new();
+
+            private Action<NetworkBroadcast>? _broadcastHandler;
+            private IMetaSerializer? _serializer;
+            private Action<object, byte[], IMetaSerializer>? _patchApplier;
+            private Func<string, MetaServiceConfig?>? _configByServiceName;
+            private ICrossEntityResolver? _crossEntityResolver;
+
+            /// <summary>
+            /// Registers a single entity-level handler that applies state mutations to the
+            /// shared container before any API client's own broadcast handler runs. Three
+            /// paths in priority order:
+            /// <list type="number">
+            ///   <item>StateBytes (ServerReplace) → wholesale container replace.</item>
+            ///   <item>PatchBytes (ServerPatch) → apply patch in place via PatchApplier.</item>
+            ///   <item>Pure replay (Optimistic / Server / CrossOptimistic) → look up the
+            ///   broadcast's service config and run its <see cref="MetaServiceConfig.EntityReplayDispatcher"/>
+            ///   to spin up the impl class on the fly and replay the method on the shared state.
+            ///   Without this third path, broadcasts from services the receiver doesn't
+            ///   subscribe to (e.g. SocialService.SendGift while the client only holds
+            ///   ProfileServiceApiClient) would silently disappear.</item>
+            /// </list>
+            /// </summary>
+            public void SubscribeBroadcasts(
+                IMetaSerializer serializer,
+                Action<object, byte[], IMetaSerializer>? patchApplier,
+                Func<string, MetaServiceConfig?> configByServiceName,
+                ICrossEntityResolver? crossEntityResolver)
+            {
+                _serializer = serializer;
+                _patchApplier = patchApplier;
+                _configByServiceName = configByServiceName;
+                _crossEntityResolver = crossEntityResolver;
+                _broadcastHandler = HandleEntityBroadcast;
+                Network.OnBroadcast += _broadcastHandler;
+            }
+
+            private void HandleEntityBroadcast(NetworkBroadcast broadcast)
+            {
+                // Echoed broadcast for our own RPC — server-side replay already happened locally
+                // through the optimistic / cross-optimistic / server-replace path.
+                if (broadcast.CallerId == Network.PlayerId) return;
+
+                if (broadcast.StateBytes is { Length: > 0 } sb)
+                {
+                    var newState = _serializer!.Unpack(StateType, sb);
+                    if (newState != null)
+                        StateContainer.ReplaceObject(newState);
+                    return;
+                }
+
+                if (broadcast.PatchBytes is { Length: > 0 } pb)
+                {
+                    if (_patchApplier != null)
+                    {
+                        // ChangeTracker has to be active or [Tracked] field setters touched
+                        // by the patch applier won't notify subscribers — UIs wired to
+                        // Tracked{State}.OnChanged would silently miss ServerPatch broadcasts.
+                        var tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();
+                        try
+                        {
+                            _patchApplier(StateContainer.State, pb, _serializer!);
+                            tracker.FlushAndNotify();
+                        }
+                        catch
+                        {
+                            tracker.Discard();
+                            throw;
+                        }
+                        StateContainer.NotifyMutated();
+                    }
+                    return;
+                }
+
+                // No state-data — pure replay broadcast (Optimistic / Server / CrossOptimistic).
+                // If the broadcast's service has an ApiClient registered locally, that client's
+                // own DispatchServiceBroadcast will replay the method (per-method events fire,
+                // _service field is reused). Skip here to avoid double-application.
+                if (LocalServiceNames.Contains(broadcast.ServiceName)) return;
+
+                // Foreign service — look up its config and use the EntityReplayDispatcher to
+                // instantiate the impl class on the fly and invoke the method against our state.
+                // Closes the gap pre-0.14.0 where foreign-service Optimistic / Server broadcasts
+                // were silently dropped by the per-ApiClient ServiceName filter.
+                var foreignConfig = _configByServiceName?.Invoke(broadcast.ServiceName);
+                if (foreignConfig?.EntityReplayDispatcher == null) return;
+                if (foreignConfig.StateType != StateType) return; // service targets different state type
+
+                try
+                {
+                    foreignConfig.EntityReplayDispatcher(
+                        StateContainer.State,
+                        broadcast.MethodName,
+                        broadcast.ArgsBytes ?? Array.Empty<byte>(),
+                        broadcast.ReplayContext ?? Array.Empty<byte>(),
+                        broadcast.CallerId,
+                        broadcast.ServerTimeTicks,
+                        _serializer!,
+                        OptimisticRandom,
+                        NamedRandoms,
+                        Config,
+                        _crossEntityResolver);
+                    StateContainer.NotifyMutated();
+                }
+                catch (Exception ex)
+                {
+                    Core.Logging.MetaLog.Error(
+                        $"[EntityReplay] {broadcast.ServiceName}.{broadcast.MethodName} on entity '{EntityId}' failed: {ex.Message}",
+                        ex);
+                }
+            }
+
+            public void Dispose()
+            {
+                if (_broadcastHandler != null && Network != null)
+                {
+                    try { Network.OnBroadcast -= _broadcastHandler; } catch { }
+                    _broadcastHandler = null;
+                }
+                foreach (var apiClient in ApiClients.Values)
+                {
+                    if (apiClient is IDisposable disposable)
+                    {
+                        try { disposable.Dispose(); } catch { }
+                    }
+                }
+                ApiClients.Clear();
+                if (Network is IDisposable networkDisposable)
+                {
+                    try { networkDisposable.Dispose(); } catch { }
+                }
+            }
         }
 
         /// <summary>

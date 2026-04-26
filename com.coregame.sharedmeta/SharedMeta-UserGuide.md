@@ -322,10 +322,11 @@ Generated API clients also fire `OnStateMutated` after any state change — use 
 api.OnStateMutated += () => UpdateUI(api.State);
 ```
 
-For a polling signal instead of a subscription, use `int MutationCount` (0.13.1+) — bumped on every mutation including Optimistic / CrossOptimistic (which `OnStateMutated` skips):
+For a polling signal instead of a subscription, use `int MutationCount` (0.13.1+) — bumped on every mutation across every execution mode (Optimistic, CrossOptimistic, Server, ServerPatch, ServerReplace, broadcast, subscriber-event broadcast, reconnect). Since 0.14.0 the counter is **shared across every API client on the same entity** and tracks "anything happened to this entity" regardless of which service triggered it:
 ```csharp
 if (api.MutationCount != _lastSeen) { _lastSeen = api.MutationCount; Refresh(); }
 ```
+`OnStateMutated` fires on the same set of events; pick whichever fits — event for push, counter for polling. Without an ApiClient: `client.Resolver.GetStateContainer<TState>(entityId).MutationCount` exposes the same value, and `.OnMutated` exposes the same event.
 
 ### 3. Access config from client
 

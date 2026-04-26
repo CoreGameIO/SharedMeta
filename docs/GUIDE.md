@@ -1283,20 +1283,20 @@ Changes are stored as `ChangeNode` structs in a pooled flat list, forming a tree
 
 ### OnStateMutated event
 
-Generated API clients fire `OnStateMutated` after any state mutation — broadcast replay, subscriber event, or reconnect. Use it as a general-purpose "state changed" signal when you don't need per-field granularity:
+Generated API clients fire `OnStateMutated` after every state mutation — local Optimistic / CrossOptimistic / Server / ServerPatch / ServerReplace execution, incoming broadcasts (including foreign-service ones — see *Multi-service-on-entity* below), subscriber events, and reconnect refresh. Sourced from `EntityStateContainer.OnMutated` since 0.14.0, so every API client subscribed to the same entity fires in lock-step. Use it as a general-purpose "state changed" signal when you don't need per-field granularity:
 
 ```csharp
 var api = await client.GetServiceAsync<GameServiceApiClient>(entityId);
 api.OnStateMutated += () => UpdateUI(api.State);
 ```
 
-This fires in addition to `Tracked{State}.OnChanged` — use whichever granularity fits your UI pattern.
+This fires alongside `Tracked{State}.OnChanged`. Order is preserved everywhere a setter actually runs: `Tracked` first, `OnStateMutated` after. The one exception is `ServerReplace` wholesale-replace at entity level — the container is replaced with a fresh deserialized instance (no setters called), so only `OnStateMutated` fires.
 
-### MutationCount (0.13.1+)
+### MutationCount (0.13.1+, redesigned in 0.14.0)
 
-Each generated API client also exposes `int MutationCount` — a local-only counter bumped on every state-mutating operation: Optimistic / CrossOptimistic local execution, Server / ServerPatch / ServerReplace result application, incoming broadcasts (regular and subscriber-event), and reconnect refresh.
+Each generated API client exposes `int MutationCount` — a local counter bumped on every state-mutating operation. **Shared per entity since 0.14.0:** every API client subscribed to the same entity returns the same value, and the counter increments exactly once per mutation regardless of how many ApiClients are subscribed. Backed by `EntityStateContainer<TState>.MutationCount` on the resolver side.
 
-Use it when you want a polling signal instead of an event subscription:
+Use it as a cheap polling signal — "did anything modify this entity since I last looked?":
 
 ```csharp
 int lastSeen = api.MutationCount;
@@ -1308,7 +1308,49 @@ if (api.MutationCount != lastSeen)
 }
 ```
 
-`MutationCount` covers Optimistic and CrossOptimistic — `OnStateMutated` does not. Reach for `MutationCount` when you want a single signal that catches every modification regardless of execution mode. The counter is local to the client process: not synchronized across clients, not persisted, not coordinated with the network sequence number.
+For polling without an ApiClient (e.g. UI views that only need to know "something changed"), use `MetaServiceResolver.GetStateContainer<TState>(entityId)` to access the same container directly, then poll `container.MutationCount` or subscribe to `container.OnMutated`.
+
+Counter is local to the client process: not synchronized across clients, not persisted, not coordinated with the network sequence number.
+
+### Multi-service-on-entity (0.14.0+) — shared state container
+
+Multiple `[MetaService]` interfaces can target the same `ISharedState` (e.g. `IInventoryService` + `IShopService` both annotated `[MetaService(StateType = typeof(PlayerState))]`). Since 0.14.0:
+
+- **One container per entity, regardless of how many services live on it.** `MetaServiceResolver` creates a single `EntityStateContainer<TState>` when the entity is first subscribed and hands the same container to every API client created against that entity. `apiInventory.State` and `apiShop.State` always return the same instance, even after `ServerReplace` swaps the wholesale state object.
+- **Foreign-service broadcasts update local state — for ALL execution modes.** When the server broadcasts a mutation from `ISocialService.SendGift`, a client that holds only `IProfileServiceApiClient` still receives the broadcast and applies it locally. The entity-level handler chooses one of three paths automatically based on what the broadcast carries:
+  - **`ServerReplace` (`StateBytes`)** — handler deserializes a fresh state object and replaces the container's reference via `IEntityStateContainer.ReplaceObject`. Wholesale swap; no setter calls happen on the old instance, so only `OnStateMutated` fires (`Tracked{State}.OnChanged` has nothing to fire).
+  - **`ServerPatch` (`PatchBytes`)** — handler activates `ChangeTracker`, calls `MetaServiceConfig.PatchApplier` (which mutates the existing state through `[Tracked]` field setters), then `tracker.FlushAndNotify()`. `Tracked{State}.OnChanged` fires for every touched field, then `OnStateMutated` fires.
+  - **`Optimistic` / `Server` / `CrossOptimistic` (no state-data)** — handler invokes `MetaServiceConfig.EntityReplayDispatcher`. The dispatcher spins up the foreign service's impl class on the fly, sets up `ClientMetaContext` with the replay context, activates `ChangeTracker`, runs the method against the shared state, and `FlushAndNotify`s. `Tracked` events then `OnStateMutated`, same order as a per-method ApiClient call.
+
+  In all three cases `MutationCount` bumps and `OnStateMutated` fires on every API client subscribed to the entity, regardless of which (or how many) services they hold.
+
+```csharp
+// Two services on the same state.
+[MetaService(StateType = typeof(PlayerState))]
+public interface IProfileService : IMetaService { ... }
+
+[MetaService(StateType = typeof(PlayerState))]
+public interface ISocialService : IMetaService
+{
+    [MetaMethod(Mode = ExecutionMode.Server)]
+    void ReceiveGift(string fromPlayerId, int amount);
+}
+
+// Client side — only IProfileService is subscribed.
+var profile = await client.GetServiceAsync<ProfileServiceApiClient>(playerId);
+profile.OnStateMutated += () => RefreshProfileView(profile.State);
+
+// Another player calls ISocialService.ReceiveGift on this player's profile entity
+// (cross-entity from sender). Server broadcasts to the receiver. Receiver's
+// MetaServiceResolver finds ISocialService in its config registry, instantiates
+// SocialService impl, replays ReceiveGift against the shared container.
+// State.Money increments, [Tracked] subscribers fire, OnStateMutated fires.
+```
+
+**What's required for foreign-service replay to work:**
+- The foreign service's impl class is referenced from the client assembly (lives in shared code) and has a parameterless constructor.
+- The foreign service is registered in the resolver via `RegisterAllServices()` so `MetaServiceConfig.EntityReplayDispatcher` is reachable. (The generator emits this for every `[MetaService]` in the assembly, so the typical `client.Resolver.RegisterAllServices()` call covers it.)
+- Methods that make cross-entity calls (`Context.GetI{Service}(otherEntityId)`) inside the foreign service body still need the matching service subscribed locally — entity-level dispatch can't recursively chase cross-entity records. For pure local-state mutations the entity dispatcher is enough.
 
 ### Service Error Handling
 

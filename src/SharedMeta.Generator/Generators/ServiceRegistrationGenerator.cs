@@ -73,6 +73,8 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("using SharedMeta.Core.Network;");
             sb.AppendLine("using SharedMeta.Core.Diagnostics;");
             sb.AppendLine("using SharedMeta.Core.Random;");
+            sb.AppendLine("using SharedMeta.Core.Patch;");
+            sb.AppendLine("using SharedMeta.Client;");
             sb.AppendLine($"using {namespaceName};");
             sb.AppendLine($"using {namespaceName}.Client;");
             sb.AppendLine();
@@ -90,19 +92,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        {");
             sb.AppendLine($"            resolver.RegisterService<{baseName}ApiClient>(new MetaServiceConfig");
             sb.AppendLine("            {");
-            sb.AppendLine($"                ServiceName = \"{interfaceName}\",");
-            sb.AppendLine($"                ApiClientType = typeof({baseName}ApiClient),");
-            sb.AppendLine($"                StateType = typeof({stateTypeFullName}),");
-            sb.AppendLine($"                LocalServiceType = typeof({baseName}),");
-            if (configTypeFullName != null)
-            {
-                sb.AppendLine($"                ConfigType = typeof({configTypeFullName}),");
-                sb.AppendLine($"                ConfigFactory = () => new {configTypeFullName}(),");
-            }
-            sb.AppendLine($"                ApiClientFactory = (network, serializer, state, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms) =>");
-            sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, ({stateTypeFullName})state, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms),");
-            sb.AppendLine($"                StateRefresher = (apiClient, state, random, namedRandoms) =>");
-            sb.AppendLine($"                    (({baseName}ApiClient)apiClient).RefreshState(({stateTypeFullName})state, random, namedRandoms)");
+            EmitConfigBody(sb, node, baseName, stateTypeFullName, stateTypeName, configTypeFullName, interfaceName, namespaceName);
             sb.AppendLine("            });");
             sb.AppendLine("            return resolver;");
             sb.AppendLine("        }");
@@ -114,6 +104,25 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        {");
             sb.AppendLine($"            return new MetaServiceConfig");
             sb.AppendLine("            {");
+            EmitConfigBody(sb, node, baseName, stateTypeFullName, stateTypeName, configTypeFullName, interfaceName, namespaceName);
+            sb.AppendLine("            };");
+            sb.AppendLine("        }");
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
+
+            return sb.ToString();
+        }
+
+        private static void EmitConfigBody(
+            StringBuilder sb,
+            InterfaceDeclarationSyntax node,
+            string baseName,
+            string stateTypeFullName,
+            string stateTypeName,
+            string? configTypeFullName,
+            string interfaceName,
+            string namespaceName)
+        {
             sb.AppendLine($"                ServiceName = \"{interfaceName}\",");
             sb.AppendLine($"                ApiClientType = typeof({baseName}ApiClient),");
             sb.AppendLine($"                StateType = typeof({stateTypeFullName}),");
@@ -123,16 +132,169 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                ConfigType = typeof({configTypeFullName}),");
                 sb.AppendLine($"                ConfigFactory = () => new {configTypeFullName}(),");
             }
-            sb.AppendLine($"                ApiClientFactory = (network, serializer, state, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms) =>");
-            sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, ({stateTypeFullName})state, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms),");
+            sb.AppendLine($"                ApiClientFactory = (network, serializer, stateContainer, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms) =>");
+            sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, (EntityStateContainer<{stateTypeFullName}>)stateContainer, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms),");
+            sb.AppendLine($"                StateContainerFactory = state => new EntityStateContainer<{stateTypeFullName}>(({stateTypeFullName})state),");
+            sb.AppendLine($"                PatchApplier = (state, patchBytes, ser) =>");
+            sb.AppendLine($"                {{");
+            sb.AppendLine($"                    var patch = ser.Unpack<PatchNode>(patchBytes);");
+            sb.AppendLine($"                    {stateTypeName}PatchApplier.Apply(({stateTypeFullName})state, patch, ser);");
+            sb.AppendLine($"                }},");
+            EmitEntityReplayDispatcher(sb, node, baseName, stateTypeFullName, namespaceName);
             sb.AppendLine($"                StateRefresher = (apiClient, state, random, namedRandoms) =>");
             sb.AppendLine($"                    (({baseName}ApiClient)apiClient).RefreshState(({stateTypeFullName})state, random, namedRandoms)");
-            sb.AppendLine("            };");
-            sb.AppendLine("        }");
-            sb.AppendLine("    }");
-            sb.AppendLine("}");
+        }
 
-            return sb.ToString();
+        /// <summary>
+        /// Generates the EntityReplayDispatcher lambda — invoked by MetaServiceResolver's
+        /// entity-level broadcast handler when a foreign-service Optimistic / Server / etc.
+        /// broadcast arrives for this service. Spins up a fresh impl instance, replays the
+        /// method against the shared state container — same effect as the matching ApiClient's
+        /// own DispatchServiceBroadcast replay path, but doesn't require the foreign ApiClient
+        /// to be subscribed locally.
+        /// Skips Query/Signal methods (no broadcasts).
+        /// </summary>
+        private static void EmitEntityReplayDispatcher(
+            StringBuilder sb,
+            InterfaceDeclarationSyntax node,
+            string baseName,
+            string stateTypeFullName,
+            string namespaceName)
+        {
+            sb.AppendLine($"                EntityReplayDispatcher = (state, methodName, argsBytes, replayContext, callerId, serverTimeTicks, ser, optRandom, namedRandoms, cfg, crossResolver) =>");
+            sb.AppendLine($"                {{");
+            sb.AppendLine($"                    var ctx = new SharedMeta.Client.ClientMetaContext<{stateTypeFullName}>(({stateTypeFullName})state, ser);");
+            sb.AppendLine($"                    ctx.CallerId = callerId;");
+            sb.AppendLine($"                    ctx.ServerTimeTicks = serverTimeTicks;");
+            sb.AppendLine($"                    ctx.BeginReplay(replayContext ?? System.Array.Empty<byte>());");
+            sb.AppendLine($"                    ctx.Random = optRandom;");
+            sb.AppendLine($"                    ctx.Config = cfg;");
+            sb.AppendLine($"                    ctx.ServerRandom = new SharedMeta.Core.Random.MetaRandomReplayer(ctx);");
+            sb.AppendLine($"                    ctx.NamedRandoms = namedRandoms;");
+            sb.AppendLine($"                    var prev = SharedMeta.Core.MetaContextAccessor.Current;");
+            sb.AppendLine($"                    SharedMeta.Core.MetaContextAccessor.Current = ctx;");
+            // Activate ChangeTracker so [Tracked] field setters fired during the replay
+            // notify their per-state subscribers (Tracked{State}.OnChanged). Without this,
+            // foreign-service replay would silently mutate state but UIs wired to Tracked
+            // events wouldn't refresh — that's the gift-demo regression.
+            sb.AppendLine($"                    var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
+            sb.AppendLine($"                    try");
+            sb.AppendLine($"                    {{");
+            sb.AppendLine($"                        var svc = new {baseName}();");
+            sb.AppendLine($"                        switch (methodName)");
+            sb.AppendLine($"                        {{");
+
+            foreach (var member in node.Members)
+            {
+                if (member is not MethodDeclarationSyntax method) continue;
+                if (IsQueryOrSignalMethod(method)) continue;
+
+                var methodName = method.Identifier.Text;
+                var alias = GetMethodAlias(method, methodName);
+                var paramCount = method.ParameterList.Parameters.Count;
+                var returnType = method.ReturnType.ToString();
+                bool isAsync = returnType.StartsWith("Task");
+                bool isVoid = returnType == "void" || returnType == "Task";
+
+                sb.AppendLine($"                            case \"{alias}\":");
+                sb.AppendLine($"                            {{");
+
+                string callArgs;
+                if (paramCount == 0)
+                {
+                    callArgs = "";
+                }
+                else
+                {
+                    // Args are written via _serializer.CreateWriter().Write(...) (length-prefixed
+                    // payload format), so the matching read path is CreateReader().Read<T>().
+                    // Direct ser.Unpack<T>(argsBytes) would consume the length prefix as data.
+                    sb.AppendLine($"                                using var rdr = ser.CreateReader(argsBytes);");
+                    var argNames = new System.Collections.Generic.List<string>();
+                    foreach (var param in method.ParameterList.Parameters)
+                    {
+                        var paramType = param.Type!.ToString();
+                        var paramName = param.Identifier.Text;
+                        sb.AppendLine($"                                var {paramName} = rdr.Read<{paramType}>()!;");
+                        argNames.Add(paramName);
+                    }
+                    callArgs = string.Join(", ", argNames);
+                }
+
+                if (isVoid && !isAsync)
+                {
+                    sb.AppendLine($"                                svc.{methodName}({callArgs});");
+                }
+                else if (isVoid && isAsync)
+                {
+                    sb.AppendLine($"                                SharedMeta.Core.BroadcastValidator.EnsureSyncCompletion(svc.{methodName}({callArgs}), \"{baseName}\", \"{alias}\");");
+                }
+                else
+                {
+                    // Non-void return — ignore the result during replay (caller already saw it).
+                    sb.AppendLine($"                                _ = svc.{methodName}({callArgs});");
+                }
+
+                sb.AppendLine($"                                break;");
+                sb.AppendLine($"                            }}");
+            }
+
+            sb.AppendLine($"                        }}");
+            sb.AppendLine($"                        _tracker.FlushAndNotify();");
+            sb.AppendLine($"                    }}");
+            sb.AppendLine($"                    catch");
+            sb.AppendLine($"                    {{");
+            sb.AppendLine($"                        _tracker.Discard();");
+            sb.AppendLine($"                        throw;");
+            sb.AppendLine($"                    }}");
+            sb.AppendLine($"                    finally");
+            sb.AppendLine($"                    {{");
+            sb.AppendLine($"                        ctx.EndReplay();");
+            sb.AppendLine($"                        SharedMeta.Core.MetaContextAccessor.Current = prev;");
+            sb.AppendLine($"                    }}");
+            sb.AppendLine($"                }},");
+        }
+
+        private static bool IsQueryOrSignalMethod(MethodDeclarationSyntax method)
+        {
+            foreach (var attrList in method.AttributeLists)
+            {
+                foreach (var attr in attrList.Attributes)
+                {
+                    if (!attr.Name.ToString().Contains("MetaMethod")) continue;
+                    if (attr.ArgumentList == null) continue;
+                    foreach (var arg in attr.ArgumentList.Arguments)
+                    {
+                        if (arg.NameEquals == null) continue;
+                        var name = arg.NameEquals.Name.Identifier.Text;
+                        var expr = arg.Expression.ToString();
+                        if (name == "Mode" && (expr.EndsWith(".Query") || expr.EndsWith(".Signal"))) return true;
+                        if ((name == "Query" || name == "Signal") && expr == "true") return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static string GetMethodAlias(MethodDeclarationSyntax method, string defaultName)
+        {
+            foreach (var attrList in method.AttributeLists)
+            {
+                foreach (var attr in attrList.Attributes)
+                {
+                    if (!attr.Name.ToString().Contains("MetaMethod")) continue;
+                    if (attr.ArgumentList == null) continue;
+                    foreach (var arg in attr.ArgumentList.Arguments)
+                    {
+                        if (arg.NameEquals?.Name.Identifier.Text == "Alias" &&
+                            arg.Expression is LiteralExpressionSyntax lit)
+                        {
+                            return lit.Token.ValueText;
+                        }
+                    }
+                }
+            }
+            return defaultName;
         }
 
         private static string? FindDefaultConfigType(Compilation compilation, INamespaceSymbol serviceNamespace)

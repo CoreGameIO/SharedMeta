@@ -159,7 +159,10 @@ namespace SharedMeta.Generator.Generators
             // Fields
             sb.AppendLine("        private readonly INetwork _network;");
             sb.AppendLine("        private readonly IMetaSerializer _serializer;");
-            sb.AppendLine($"        private {stateTypeName} _state;");
+            sb.AppendLine($"        private readonly EntityStateContainer<{stateTypeName}> _stateContainer;");
+            sb.AppendLine($"        // _state delegates to the shared container so all API clients on the same entity");
+            sb.AppendLine($"        // observe the same instance — including after a wholesale ServerReplace.");
+            sb.AppendLine($"        private {stateTypeName} _state => _stateContainer.State;");
             sb.AppendLine($"        private readonly {namespaceName}.{implClassName} _service;");
             if (hasDeepDesync)
                 sb.AppendLine($"        private readonly {namespaceName}.{patchTrackedClassName} _patchTrackedService;");
@@ -223,18 +226,20 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        /// <summary>Fired after state is replaced on reconnect. Use to update Views.</summary>");
             sb.AppendLine($"        public event Action<{stateTypeName}>? OnStateRefreshed;");
             sb.AppendLine();
-            sb.AppendLine($"        /// <summary>Fired after any state mutation (broadcast replay, subscriber event, reconnect). See <see cref=\"MutationCount\"/> for a polling alternative that also covers Optimistic / Server / CrossOptimistic / ServerPatch.</summary>");
+            sb.AppendLine($"        /// <summary>Fired after any state mutation on this entity, including foreign-service broadcasts. Sourced from the shared <see cref=\"EntityStateContainer{{TState}}.OnMutated\"/> — every API client on the entity fires in lock-step. Polling alternative: <see cref=\"MutationCount\"/>.</summary>");
             sb.AppendLine($"        public event Action? OnStateMutated;");
             sb.AppendLine();
             sb.AppendLine($"        /// <summary>");
-            sb.AppendLine($"        /// Per-state mutation counter — bumped every time the state is touched on this client:");
-            sb.AppendLine($"        /// Optimistic / CrossOptimistic local execution, Server / ServerPatch / ServerReplace result");
-            sb.AppendLine($"        /// application, incoming broadcasts (regular and subscriber-event), and reconnect refresh.");
-            sb.AppendLine($"        /// Local-only — not synchronized across clients, not persisted, not coordinated with the");
-            sb.AppendLine($"        /// server's <see cref=\"_network\"/> sequence number. Use it as a cheap polling signal of");
-            sb.AppendLine($"        /// \"did anything modify my state since I last checked?\" — e.g. cache invalidation.");
+            sb.AppendLine($"        /// Shared per-entity mutation counter — bumped every time the state is touched on this");
+            sb.AppendLine($"        /// client, regardless of which service triggered the change. Increments on Optimistic /");
+            sb.AppendLine($"        /// CrossOptimistic local execution, Server / ServerPatch / ServerReplace result application,");
+            sb.AppendLine($"        /// incoming broadcasts (own service AND foreign-service broadcasts on the same entity),");
+            sb.AppendLine($"        /// and reconnect refresh. Backed by the entity's <see cref=\"EntityStateContainer{{TState}}\"/>");
+            sb.AppendLine($"        /// — every API client subscribed to this entity returns the same value.");
+            sb.AppendLine($"        /// Local-only: not synchronized across clients, not persisted, not coordinated with the");
+            sb.AppendLine($"        /// network sequence number.");
             sb.AppendLine($"        /// </summary>");
-            sb.AppendLine($"        public int MutationCount {{ get; private set; }}");
+            sb.AppendLine($"        public int MutationCount => _stateContainer.MutationCount;");
             sb.AppendLine();
             sb.AppendLine($"        /// <summary>Fired when a service method throws. Parameters: serviceName, exception.</summary>");
             sb.AppendLine($"        public event Action<string, Exception>? OnServiceError;");
@@ -261,7 +266,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        public {baseName2}ApiClient(");
             sb.AppendLine($"            INetwork network,");
             sb.AppendLine($"            IMetaSerializer serializer,");
-            sb.AppendLine($"            {stateTypeName} state,");
+            sb.AppendLine($"            EntityStateContainer<{stateTypeName}> stateContainer,");
             sb.AppendLine($"            IExecutionModeProvider modeProvider,");
             sb.AppendLine($"            IDesyncDiagnostics? diagnostics = null,");
             sb.AppendLine($"            ICrossEntityResolver? crossEntityResolver = null,");
@@ -271,7 +276,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        {");
             sb.AppendLine("            _network = network;");
             sb.AppendLine("            _serializer = serializer;");
-            sb.AppendLine("            _state = state;");
+            sb.AppendLine("            _stateContainer = stateContainer;");
             sb.AppendLine("            _modeProvider = modeProvider;");
             sb.AppendLine("            _diagnostics = diagnostics;");
             sb.AppendLine("            _crossEntityResolver = crossEntityResolver;");
@@ -283,7 +288,12 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"            _patchTrackedService = new {namespaceName}.{patchTrackedClassName}();");
             sb.AppendLine();
             sb.AppendLine("            _network.OnBroadcast += HandleBroadcast;");
+            sb.AppendLine("            // Container fires OnMutated whenever any source (entity-level handler, this");
+            sb.AppendLine("            // ApiClient's own methods, or another ApiClient on the same entity) mutates state.");
+            sb.AppendLine("            _stateContainer.OnMutated += FireOnStateMutated;");
             sb.AppendLine("        }");
+            sb.AppendLine();
+            sb.AppendLine("        private void FireOnStateMutated() => OnStateMutated?.Invoke();");
             sb.AppendLine();
 
             // Named-random scroll helpers — mirror MetaProviderBase captures on the server side.
@@ -363,13 +373,13 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        /// </summary>");
             sb.AppendLine($"        public void RefreshState({stateTypeName} newState, MetaRandom? newRandom, IReadOnlyList<MetaRandom>? newNamedRandoms = null)");
             sb.AppendLine("        {");
-            sb.AppendLine("            _state = newState;");
+            sb.AppendLine("            // Replace through the container — bumps MutationCount and fires OnMutated,");
+            sb.AppendLine("            // which our subscription forwards to OnStateMutated for every API client on this entity.");
+            sb.AppendLine("            _stateContainer.Replace(newState);");
             sb.AppendLine("            _optimisticRandom = newRandom;");
             sb.AppendLine("            if (newNamedRandoms != null) _namedRandoms = newNamedRandoms;");
             sb.AppendLine("            _errorException = null;");
-            sb.AppendLine("            MutationCount++;");
             sb.AppendLine("            OnStateRefreshed?.Invoke(newState);");
-            sb.AppendLine("            OnStateMutated?.Invoke();");
             sb.AppendLine("        }");
             sb.AppendLine();
 
@@ -707,13 +717,13 @@ namespace SharedMeta.Generator.Generators
             {
                 sb.AppendLine();
                 sb.AppendLine("                _tracker.FlushAndNotify();");
-            sb.AppendLine("                MutationCount++;");
+            sb.AppendLine("                _stateContainer.NotifyMutated();");
                 sb.AppendLine("                return localResult;");
             }
             else
             {
                 sb.AppendLine("                _tracker.FlushAndNotify();");
-            sb.AppendLine("                MutationCount++;");
+            sb.AppendLine("                _stateContainer.NotifyMutated();");
             }
             sb.AppendLine("                }");
             sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
@@ -867,7 +877,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
-            sb.AppendLine("            MutationCount++;");
+            sb.AppendLine("            _stateContainer.NotifyMutated();");
             // Capture local deltas synchronously — MUST happen before the fire-and-forget ContinueWith
             // or subsequent Optimistic calls on the same ApiClient will race and advance the random
             // state further by the time this continuation runs, producing a phantom desync.
@@ -1003,7 +1013,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
-            sb.AppendLine("            MutationCount++;");
+            sb.AppendLine("            _stateContainer.NotifyMutated();");
             // Capture local deltas synchronously — MUST happen before the fire-and-forget ContinueWith
             // or subsequent Optimistic calls on the same ApiClient will race and advance the random
             // state further by the time this continuation runs, producing a phantom desync.
@@ -1139,7 +1149,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
-            sb.AppendLine("            MutationCount++;");
+            sb.AppendLine("            _stateContainer.NotifyMutated();");
             // Capture local deltas synchronously — MUST happen before the fire-and-forget ContinueWith
             // or subsequent Optimistic calls on the same ApiClient will race and advance the random
             // state further by the time this continuation runs, producing a phantom desync.
@@ -1283,6 +1293,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                {");
             sb.AppendLine($"                    var patch = _serializer.Unpack<PatchNode>(patchData);");
             sb.AppendLine($"                    {applierName}.Apply(_state, patch, _serializer);");
+            sb.AppendLine($"                    _stateContainer.NotifyMutated();");
             sb.AppendLine("                    _optimisticRandom?.Skip(response.RandomScrollDelta);");
             sb.AppendLine("                    ApplyNamedScrollSkips(response.NamedRandomScrollDeltas);");
             sb.AppendLine("                }");
@@ -1305,7 +1316,7 @@ namespace SharedMeta.Generator.Generators
             // Replay trigger operations (may also have patches)
             sb.AppendLine($"                ReplayTriggerOperations(response.TriggerOperations, _network.PlayerId, response.ServerTimeTicks);");
             sb.AppendLine("                _tracker.FlushAndNotify();");
-            sb.AppendLine("                MutationCount++;");
+            sb.AppendLine("                _stateContainer.NotifyMutated();");
             sb.AppendLine("                }");
             sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
 
@@ -1367,8 +1378,8 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                {");
             sb.AppendLine("                if (response.StateBytes is { Length: > 0 } stateData)");
             sb.AppendLine("                {");
-            sb.AppendLine($"                    _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
-            sb.AppendLine("                    _crossEntityResolver?.UpdateCachedState(_network.EntityId ?? string.Empty, _state);");
+            sb.AppendLine($"                    // Replace through the container — bumps MutationCount, fires OnMutated.");
+            sb.AppendLine($"                    _stateContainer.Replace(_serializer.Unpack<{stateTypeName}>(stateData)!);");
             sb.AppendLine("                    _optimisticRandom?.Skip(response.RandomScrollDelta);");
             sb.AppendLine("                    ApplyNamedScrollSkips(response.NamedRandomScrollDeltas);");
             sb.AppendLine("                }");
@@ -1379,13 +1390,12 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                    {awaitPrefix}_service.{methodName}({callArgs});");
             sb.AppendLine("                    ClearContext();");
             sb.AppendLine($"                    ReplayTriggerOperations(response.TriggerOperations, _network.PlayerId, response.ServerTimeTicks);");
+            sb.AppendLine($"                    _stateContainer.NotifyMutated();");
             sb.AppendLine("                }");
             sb.AppendLine();
 
             sb.AppendLine("                _tracker.FlushAndNotify();");
-            sb.AppendLine("                MutationCount++;");
             sb.AppendLine($"                OnStateRefreshed?.Invoke(_state);");
-            sb.AppendLine($"                OnStateMutated?.Invoke();");
             sb.AppendLine("                }");
             sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
 
@@ -1530,26 +1540,24 @@ namespace SharedMeta.Generator.Generators
                     : new List<string>();
                 var callArgsStr = string.Join(", ", argNames);
 
-                // StateBytes check (ServerReplace): replace state wholesale
-                sb.AppendLine("                    if (broadcast.StateBytes is { Length: > 0 } stateData)");
+                // State-data paths: state was already applied centrally by EntityConnection's
+                // entity-level handler (so foreign-service ApiClients also see the change).
+                // We only refresh per-ApiClient bookkeeping (random skip) here.
+                sb.AppendLine("                    if (broadcast.StateBytes is { Length: > 0 })");
                 sb.AppendLine("                    {");
-                sb.AppendLine($"                        _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
-                sb.AppendLine("                        _crossEntityResolver?.UpdateCachedState(_network.EntityId ?? string.Empty, _state);");
                 sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
                 sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
                 sb.AppendLine("                    }");
-                // PatchBytes check: apply patch or replay normally
-                sb.AppendLine("                    else if (broadcast.PatchBytes is { Length: > 0 } patchData)");
+                sb.AppendLine("                    else if (broadcast.PatchBytes is { Length: > 0 })");
                 sb.AppendLine("                    {");
-                sb.AppendLine($"                        var patch = _serializer.Unpack<PatchNode>(patchData);");
-                sb.AppendLine($"                        {applierName}.Apply(_state, patch, _serializer);");
                 sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
                 sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
                 sb.AppendLine("                    }");
                 sb.AppendLine("                    else");
                 sb.AppendLine("                    {");
-
-                // Normal replay
+                // Pure replay path: no state-data on the wire, we run the method body here to
+                // mutate state in place. Foreign-service ApiClients can't take this path —
+                // documented limitation when the server emits Optimistic broadcasts without state-data.
                 sb.AppendLine("                        SetContext(broadcast.ReplayContext, broadcast.CallerId, broadcast.ServerTimeTicks);");
                 if (paramCount == 0)
                 {
@@ -1574,6 +1582,7 @@ namespace SharedMeta.Generator.Generators
                     }
                 }
                 sb.AppendLine("                        ClearContext();");
+                sb.AppendLine($"                        _stateContainer.NotifyMutated();");
                 sb.AppendLine("                    }");
 
                 // Trigger replay (always, may also have their own patches)
@@ -1599,8 +1608,8 @@ namespace SharedMeta.Generator.Generators
 
             sb.AppendLine("            }");
             sb.AppendLine("            _tracker.FlushAndNotify();");
-            sb.AppendLine("            MutationCount++;");
-            sb.AppendLine("            OnStateMutated?.Invoke();");
+            sb.AppendLine("            // MutationCount / OnStateMutated already fired by entity-level handler (state-data");
+            sb.AppendLine("            // path) or by the explicit NotifyMutated above (pure replay path).");
             sb.AppendLine("            }");
             sb.AppendLine("            catch (Exception ex) { _tracker.Discard(); SetError(ex, broadcast.MethodName); throw; }");
             sb.AppendLine("        }");
@@ -1632,21 +1641,17 @@ namespace SharedMeta.Generator.Generators
                         sb.AppendLine($"                    var @event = _serializer.Unpack<{method.EventTypeName}>(broadcast.ArgsBytes)!;");
                     }
 
-                    // StateBytes check (ServerReplace): replace state wholesale
-                    sb.AppendLine("                    if (broadcast.StateBytes is { Length: > 0 } stateData)");
+                    // State-data paths: state already applied by EntityConnection's entity-level handler.
+                    // Per-ApiClient bookkeeping (random skip) still happens here.
+                    sb.AppendLine("                    if (broadcast.StateBytes is { Length: > 0 })");
                     sb.AppendLine("                    {");
-                    sb.AppendLine($"                        _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
-                    sb.AppendLine("                        _crossEntityResolver?.UpdateCachedState(_network.EntityId ?? string.Empty, _state);");
                     sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
-                sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
+                    sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
                     sb.AppendLine("                    }");
-                    // Replay the service method to update state
-                    sb.AppendLine("                    else if (broadcast.PatchBytes is { Length: > 0 } patchData)");
+                    sb.AppendLine("                    else if (broadcast.PatchBytes is { Length: > 0 })");
                     sb.AppendLine("                    {");
-                    sb.AppendLine($"                        var patch = _serializer.Unpack<PatchNode>(patchData);");
-                    sb.AppendLine($"                        {subscriberApplierName}.Apply(_state, patch, _serializer);");
                     sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
-                sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
+                    sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
                     sb.AppendLine("                    }");
                     sb.AppendLine("                    else");
                     sb.AppendLine("                    {");
@@ -1660,6 +1665,7 @@ namespace SharedMeta.Generator.Generators
                         sb.AppendLine($"                        _service.{method.MethodName}(@event);");
                     }
                     sb.AppendLine("                        ClearContext();");
+                    sb.AppendLine($"                        _stateContainer.NotifyMutated();");
                     sb.AppendLine("                    }");
 
                     // Replay trigger operations if any
@@ -1672,8 +1678,8 @@ namespace SharedMeta.Generator.Generators
 
                 sb.AppendLine("            }");
                 sb.AppendLine("            _tracker.FlushAndNotify();");
-            sb.AppendLine("            MutationCount++;");
-                sb.AppendLine("            OnStateMutated?.Invoke();");
+                sb.AppendLine("            // MutationCount / OnStateMutated already fired by entity-level handler (state-data");
+                sb.AppendLine("            // path) or by the explicit NotifyMutated above (pure replay path).");
                 sb.AppendLine("            }");
                 sb.AppendLine("            catch (Exception ex) { _tracker.Discard(); SetError(ex, broadcast.MethodName); throw; }");
                 sb.AppendLine("        }");
@@ -1693,8 +1699,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            {");
             sb.AppendLine("                if (triggerOp.Response.StateBytes is { Length: > 0 } stateData)");
             sb.AppendLine("                {");
-            sb.AppendLine($"                    _state = _serializer.Unpack<{stateTypeName}>(stateData)!;");
-            sb.AppendLine("                    _crossEntityResolver?.UpdateCachedState(_network.EntityId ?? string.Empty, _state);");
+            sb.AppendLine($"                    _stateContainer.Replace(_serializer.Unpack<{stateTypeName}>(stateData)!);");
             sb.AppendLine("                    _optimisticRandom?.Skip(triggerOp.Response.RandomScrollDelta);");
             sb.AppendLine("                    ApplyNamedScrollSkips(triggerOp.Response.NamedRandomScrollDeltas);");
             sb.AppendLine("                }");
@@ -1702,6 +1707,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                {");
             sb.AppendLine($"                    var patch = _serializer.Unpack<PatchNode>(patchData);");
             sb.AppendLine($"                    {applierName}.Apply(_state, patch, _serializer);");
+            sb.AppendLine($"                    _stateContainer.NotifyMutated();");
             sb.AppendLine("                    _optimisticRandom?.Skip(triggerOp.Response.RandomScrollDelta);");
             sb.AppendLine("                    ApplyNamedScrollSkips(triggerOp.Response.NamedRandomScrollDeltas);");
             sb.AppendLine("                }");
@@ -1710,6 +1716,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                    SetContext(triggerOp.Response.ReplayPayload ?? Array.Empty<byte>(), callerId, serverTimeTicks);");
             sb.AppendLine("                    DispatchTrigger(triggerOp.Call.MethodName);");
             sb.AppendLine("                    ClearContext();");
+            sb.AppendLine($"                    _stateContainer.NotifyMutated();");
             sb.AppendLine("                }");
             sb.AppendLine("            }");
             sb.AppendLine("        }");
