@@ -63,8 +63,17 @@ var client = new MetaClient(
     }
 );
 var resolver = (MetaServiceResolver)client.Resolver;
-resolver.ConfigCache = new FileConfigCache("./config-cache", client.Serializer);
-resolver.ConfigDownloader = new HttpConfigDownloader();
+
+// Wire a downloading provider for ExpeditionConfig before registering services so the
+// generator-emitted default StaticConfigProvider doesn't take precedence. The provider
+// caches downloaded configs to disk so subsequent sessions skip the network round-trip.
+using var http = new HttpClient();
+resolver.RegisterConfigProvider<ExpeditionConfig>(new DownloadingConfigProvider<ExpeditionConfig>(
+    urlResolver: client.ConfigDownloadUrlResolver(typeof(ExpeditionState).FullName!),
+    downloader: url => http.GetByteArrayAsync(url),
+    serializer: client.Serializer,
+    cache: new FileConfigCache<ExpeditionConfig>("./config-cache", client.Serializer)));
+
 resolver.RegisterAllServices();
 
 // Track connection status for UI
