@@ -1,100 +1,88 @@
 using System;
 using System.IO;
-using System.Linq;
 using SharedMeta.Core;
 using SharedMeta.Core.Logging;
 
 namespace SharedMeta.Client
 {
     /// <summary>
-    /// File-based config cache. Stores serialized config bytes on disk
-    /// with version in the filename: {TypeName}.v{Major}.{Minor}.bin.
-    /// Old versions are automatically cleaned up when a new version is stored.
+    /// File-based config cache for <see cref="DownloadingConfigProvider{TConfig}"/>.
+    /// Stores serialized config bytes on disk with version in the filename
+    /// (<c>{TConfigFullName}.v{Major}.{Minor}.bin</c>); on <see cref="Put"/> the previous
+    /// version files for this config type are deleted so the cache directory doesn't grow
+    /// unbounded across releases.
     /// </summary>
-    public class FileConfigCache : IMetaConfigCache
+    public sealed class FileConfigCache<TConfig> : IClientMetaConfigCache<TConfig> where TConfig : class
     {
         private readonly string _cacheDir;
         private readonly IMetaSerializer _serializer;
+        private readonly string _safeName;
 
         public FileConfigCache(string cacheDir, IMetaSerializer serializer)
         {
             _cacheDir = cacheDir ?? throw new ArgumentNullException(nameof(cacheDir));
             _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
+            _safeName = (typeof(TConfig).FullName ?? typeof(TConfig).Name).Replace('.', '_');
             Directory.CreateDirectory(cacheDir);
         }
 
-        public object? TryGet(string configTypeName, MetaConfigVersion version)
+        public TConfig? TryGet(MetaConfigVersion version)
         {
-            var path = GetFilePath(configTypeName, version);
+            var path = GetFilePath(version);
             if (!File.Exists(path))
             {
-                MetaLog.Debug($"[FileConfigCache] MISS: {configTypeName} v{version.Major}.{version.Minor}");
+                MetaLog.Debug($"[FileConfigCache<{typeof(TConfig).Name}>] MISS v{version.Major}.{version.Minor}");
                 return null;
             }
-
             try
             {
-                var type = AppDomain.CurrentDomain.GetAssemblies()
-                    .Select(a => a.GetType(configTypeName))
-                    .FirstOrDefault(t => t != null);
-                if (type == null)
-                {
-                    MetaLog.Warning($"[FileConfigCache] Type not found: {configTypeName}");
-                    return null;
-                }
-
                 var bytes = File.ReadAllBytes(path);
-                var config = _serializer.Unpack(type, bytes);
-                MetaLog.Debug($"[FileConfigCache] HIT: {configTypeName} v{version.Major}.{version.Minor} ({bytes.Length} bytes)");
+                var config = _serializer.Unpack<TConfig>(bytes);
+                MetaLog.Debug($"[FileConfigCache<{typeof(TConfig).Name}>] HIT v{version.Major}.{version.Minor} ({bytes.Length} bytes)");
                 return config;
             }
             catch (Exception ex)
             {
-                MetaLog.Warning($"[FileConfigCache] Read error for {configTypeName}: {ex.Message}");
+                MetaLog.Warning($"[FileConfigCache<{typeof(TConfig).Name}>] Read error: {ex.Message}");
                 return null;
             }
         }
 
-        public void Put(string configTypeName, MetaConfigVersion version, object config)
+        public void Put(MetaConfigVersion version, TConfig config)
         {
             try
             {
-                var path = GetFilePath(configTypeName, version);
+                var path = GetFilePath(version);
                 var bytes = _serializer.Pack(config);
                 File.WriteAllBytes(path, bytes);
-                MetaLog.Debug($"[FileConfigCache] Stored: {configTypeName} v{version.Major}.{version.Minor} ({bytes.Length} bytes)");
-
-                CleanOldVersions(configTypeName, path);
+                MetaLog.Debug($"[FileConfigCache<{typeof(TConfig).Name}>] Stored v{version.Major}.{version.Minor} ({bytes.Length} bytes)");
+                CleanOldVersions(path);
             }
             catch (Exception ex)
             {
-                MetaLog.Warning($"[FileConfigCache] Write error for {configTypeName}: {ex.Message}");
+                MetaLog.Warning($"[FileConfigCache<{typeof(TConfig).Name}>] Write error: {ex.Message}");
             }
         }
 
-        private string GetFilePath(string configTypeName, MetaConfigVersion version)
-        {
-            var safeName = configTypeName.Replace('.', '_');
-            return Path.Combine(_cacheDir, $"{safeName}.v{version.Major}.{version.Minor}.bin");
-        }
+        private string GetFilePath(MetaConfigVersion version) =>
+            Path.Combine(_cacheDir, $"{_safeName}.v{version.Major}.{version.Minor}.bin");
 
-        private void CleanOldVersions(string configTypeName, string currentPath)
+        private void CleanOldVersions(string currentPath)
         {
-            var safeName = configTypeName.Replace('.', '_');
             try
             {
-                foreach (var file in Directory.GetFiles(_cacheDir, $"{safeName}.v*.bin"))
+                foreach (var file in Directory.GetFiles(_cacheDir, $"{_safeName}.v*.bin"))
                 {
                     if (file != currentPath)
                     {
                         File.Delete(file);
-                        MetaLog.Debug($"[FileConfigCache] Removed old: {Path.GetFileName(file)}");
+                        MetaLog.Debug($"[FileConfigCache<{typeof(TConfig).Name}>] Removed old {Path.GetFileName(file)}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                MetaLog.Warning($"[FileConfigCache] Cleanup error: {ex.Message}");
+                MetaLog.Warning($"[FileConfigCache<{typeof(TConfig).Name}>] Cleanup error: {ex.Message}");
             }
         }
     }

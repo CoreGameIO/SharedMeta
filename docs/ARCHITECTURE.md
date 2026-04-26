@@ -376,7 +376,7 @@ Fields marked with `[Tracked]` get generated property setters that record mutati
 - `IMetaConfigProvider<TConfig>` on server — versioned config storage
 - `IConfigVersionResolver` — A/B testing, gradual rollouts
 - Config version pinned per entity on first activation
-- Sent to client on subscribe, cached via `IMetaConfigCache` / `IMetaConfigDownloader`
+- Sent to client on subscribe, materialized by `IClientMetaConfigProvider<TConfig>` registered on the resolver (built-ins: `StaticConfigProvider`, `DownloadingConfigProvider`, `CompositeConfigProvider`; optional `IClientMetaConfigCache<TConfig>` for disk caching)
 - Available in `Context.Config` during all execution modes including `[MetaInit]`
 
 ---

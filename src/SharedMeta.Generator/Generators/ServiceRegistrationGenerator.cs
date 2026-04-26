@@ -94,6 +94,14 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            {");
             EmitConfigBody(sb, node, baseName, stateTypeFullName, stateTypeName, configTypeFullName, interfaceName, namespaceName);
             sb.AppendLine("            });");
+            if (configTypeFullName != null)
+            {
+                // Install a default StaticConfigProvider so out-of-the-box bundled config still
+                // works without the user wiring a provider. TryRegister is non-clobbering — if
+                // the user already registered a custom provider (e.g. DownloadingConfigProvider)
+                // via resolver.RegisterConfigProvider<TConfig>(...), this call is a no-op.
+                sb.AppendLine($"            resolver.TryRegisterConfigProvider<{configTypeFullName}>(new StaticConfigProvider<{configTypeFullName}>(new {configTypeFullName}()));");
+            }
             sb.AppendLine("            return resolver;");
             sb.AppendLine("        }");
             sb.AppendLine();
@@ -130,7 +138,6 @@ namespace SharedMeta.Generator.Generators
             if (configTypeFullName != null)
             {
                 sb.AppendLine($"                ConfigType = typeof({configTypeFullName}),");
-                sb.AppendLine($"                ConfigFactory = () => new {configTypeFullName}(),");
             }
             sb.AppendLine($"                ApiClientFactory = (network, serializer, stateContainer, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms) =>");
             sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, (EntityStateContainer<{stateTypeFullName}>)stateContainer, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms),");

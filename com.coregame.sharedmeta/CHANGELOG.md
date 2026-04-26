@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.15.0] - 2026-04-26
+
+### Changed — client config delivery rewritten around `IClientMetaConfigProvider<TConfig>`
+
+The pre-0.15.0 chain of four cooperating knobs — `MetaServiceConfig.ConfigFactory` + `MetaServiceResolver.ConfigCache` + `MetaServiceResolver.ConfigDownloader` + `MetaServiceResolver.ConfigDownloadUrlFactory` — collapsed into a single registration point per config type:
+
+```csharp
+// Before (0.14.x): three properties on the resolver, plus generator-emitted ConfigFactory
+resolver.ConfigCache = new FileConfigCache("./cache", serializer);   // untyped
+resolver.ConfigDownloader = new HttpConfigDownloader();
+resolver.ConfigDownloadUrlFactory = (typeName, ver) => connection.GetConfigDownloadUrlAsync(typeName, ver);
+// + generator-emitted MetaServiceConfig.ConfigFactory = () => new ExpeditionConfig();
+
+// After (0.15.0): one provider per TConfig
+resolver.RegisterConfigProvider<ExpeditionConfig>(new DownloadingConfigProvider<ExpeditionConfig>(
+    urlResolver: client.ConfigDownloadUrlResolver(typeof(ExpeditionState).FullName!),
+    downloader: url => http.GetByteArrayAsync(url),
+    serializer: client.Serializer,
+    cache: new FileConfigCache<ExpeditionConfig>("./cache", client.Serializer)));
+```
+
+Generator-emitted `Add{Service}Services()` extensions now also call `resolver.TryRegisterConfigProvider<TConfig>(new StaticConfigProvider<TConfig>(new TConfig()))` — non-clobbering, so an explicit `RegisterConfigProvider` call placed **before** `RegisterAllServices()` wins. Out of the box, services that declare a `[MetaService(ConfigType=...)]` or `[MetaConfig(Default=true)]` get a bundled-config provider for free without any wiring.
+
+### Added
+
+- **`IClientMetaConfigProvider<TConfig>`** ([Runtime/Core/Config/IClientMetaConfigProvider.cs](com.coregame.sharedmeta/Runtime/Core/Config/IClientMetaConfigProvider.cs)) — single point of materialization. `Task<TConfig> GetConfigAsync(MetaConfigVersion version)`. Three built-ins:
+  - `StaticConfigProvider<TConfig>(TConfig instance)` — returns a fixed preloaded instance regardless of version. Use when the client has the config in hand (loaded from disk, bundled with the app, fetched outside SharedMeta).
+  - `DownloadingConfigProvider<TConfig>(urlResolver, downloader, serializer, cache?)` — fetches bytes from a server-issued URL, deserializes via `IMetaSerializer`, optionally caches. The `urlResolver` is a `Func<MetaConfigVersion, Task<string?>>` (typically wrapping `IConnection.GetConfigDownloadUrlAsync`); `downloader` is a `Func<string, Task<byte[]>>` so callers pick the HTTP stack (`HttpClient`, `UnityWebRequest`, BestHTTP, …).
+  - `CompositeConfigProvider<TConfig>(primary, fallback, onPrimaryFailed?)` — tries primary first, falls back on exception. Typical use: `new CompositeConfigProvider(downloading, static)` — try the network, fall back to a bundled snapshot when the server is unreachable.
+- **`IClientMetaConfigCache<TConfig>`** — typed cache surface. Replaces the untyped `IMetaConfigCache`. `FileConfigCache<TConfig>` is the bundled disk-backed implementation; the cache directory is per-config-type (filename `{TConfigFullName}.v{Major}.{Minor}.bin`) and old version files are pruned on `Put`.
+- **`MetaClient.ConfigDownloadUrlResolver(string stateTypeName)`** — convenience helper that returns a `Func<MetaConfigVersion, Task<string?>>` wrapping `Connection.GetConfigDownloadUrlAsync(stateTypeName, version)`. Drop-in for the `urlResolver` argument of `DownloadingConfigProvider<TConfig>`.
+- **`UnityConfigDownloader.DownloadAsync(string url)`** — Unity-friendly `Func<string, Task<byte[]>>` over `UnityWebRequest`. Pass directly as the `downloader` argument when constructing `DownloadingConfigProvider<TConfig>` in Unity projects (raw `HttpClient` is unreliable on WebGL/IL2CPP).
+- **`IMetaServiceResolver.RegisterConfigProvider<TConfig>` / `TryRegisterConfigProvider<TConfig>`** — overwriting and non-clobbering registration on the resolver interface. Internally stored as a typed closure built once at registration time so the hot path stays reflection-free (the resolver's no-reflection rule still applies).
+
+### Removed (hard-deleted, no `[Obsolete]` shim)
+
+- `IMetaConfigCache` and `IMetaConfigDownloader` interfaces (replaced by `IClientMetaConfigCache<TConfig>` and a plain `Func<string, Task<byte[]>>`).
+- `MetaServiceResolver.ConfigCache`, `.ConfigDownloader`, `.ConfigDownloadUrlFactory` properties.
+- `MetaServiceConfig.ConfigFactory` field.
+- `HttpConfigDownloader` class — fold into `DownloadingConfigProvider<TConfig>` by passing `url => httpClient.GetByteArrayAsync(url)` as the `downloader` argument.
+- `UnityConfigDownloader` is no longer a `class : IMetaConfigDownloader` — same name now scopes a single `static DownloadAsync(string url)` helper. Migration: pass `UnityConfigDownloader.DownloadAsync` directly instead of `new UnityConfigDownloader()`.
+
+### Migration
+
+| Before | After |
+| --- | --- |
+| `resolver.ConfigCache = new FileConfigCache(dir, ser);` | `cache: new FileConfigCache<TConfig>(dir, ser)` argument to `DownloadingConfigProvider<TConfig>` |
+| `resolver.ConfigDownloader = new HttpConfigDownloader();` | `downloader: url => http.GetByteArrayAsync(url)` argument |
+| `resolver.ConfigDownloadUrlFactory = (n,v) => connection.GetConfigDownloadUrlAsync(n,v);` | `urlResolver: client.ConfigDownloadUrlResolver(stateTypeName)` |
+| Default bundled config came from generator-emitted `ConfigFactory` | Generator now emits `TryRegisterConfigProvider<TConfig>(new StaticConfigProvider<TConfig>(new TConfig()))` — same effect, but the fallback chain runs through the provider |
+
+The `ConfigType` field on `MetaServiceConfig` stays — it's now used to route to the registered provider.
+
 ## [0.14.1] - 2026-04-26
 
 ### Fixed

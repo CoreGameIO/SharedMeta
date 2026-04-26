@@ -90,6 +90,14 @@ namespace SharedMeta.Server.Core.Transport
                 if (_versionPolicy != null)
                 {
                     var versionResult = await _versionPolicy.ValidateAsync(request.ClientVersion);
+                    _logger.LogInformation(
+                        "[Handler] SessionConnect version check player={PlayerId} client={ClientVersion} server={ServerVersion} min={MinClientVersion} allowed={Allowed} error={Error}",
+                        request.PlayerId,
+                        request.ClientVersion ?? "<null>",
+                        versionResult.ServerVersion ?? "<null>",
+                        versionResult.MinClientVersion ?? "<null>",
+                        versionResult.IsAllowed,
+                        versionResult.Error ?? "<none>");
                     if (!versionResult.IsAllowed)
                     {
                         _logger.LogWarning("[Handler] Version rejected for {PlayerId}: {Error}",
@@ -102,6 +110,12 @@ namespace SharedMeta.Server.Core.Transport
                             MinClientVersion = versionResult.MinClientVersion
                         };
                     }
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "[Handler] SessionConnect: ClientVersionPolicy is null — version gate is OFF. " +
+                        "Check that ConfigureMeta() / AddMetaServices() was called so the policy gets registered.");
                 }
 
                 PlayerId = request.PlayerId;

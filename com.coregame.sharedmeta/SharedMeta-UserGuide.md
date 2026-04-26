@@ -219,9 +219,22 @@ services.AddSingleton<IMetaConfigProvider<GameConfig>>(new GameConfigProvider())
 
 Each entity persists its config version on first activation. Subsequent activations reuse the pinned version until explicitly upgraded. This supports gradual rollouts and A/B tests via `IConfigVersionResolver`.
 
-### Client-Side Config
+### Client-Side Config (0.15.0+)
 
-Config is sent to the client on subscribe. The client can cache configs locally (`IMetaConfigCache`) and download new versions via `IMetaConfigDownloader`. Without cache/downloader, the bundled config from shared code is used.
+Each `[MetaConfig]` type is materialized by an `IClientMetaConfigProvider<TConfig>` registered on the resolver. The generator-emitted `Add{Service}Services()` extension installs a `StaticConfigProvider<TConfig>(new TConfig())` by default — out of the box, the client receives the bundled config compiled into shared code.
+
+To override (download from server with disk caching), register a custom provider **before** `RegisterAllServices()`:
+
+```csharp
+resolver.RegisterConfigProvider<GameConfig>(new DownloadingConfigProvider<GameConfig>(
+    urlResolver: client.ConfigDownloadUrlResolver(typeof(GameState).FullName!),
+    downloader: UnityConfigDownloader.DownloadAsync,
+    serializer: client.Serializer,
+    cache: new FileConfigCache<GameConfig>(Application.persistentDataPath + "/cfg", client.Serializer)));
+resolver.RegisterAllServices();
+```
+
+`CompositeConfigProvider<TConfig>(primary, fallback)` chains two providers — typical use is to fall back to the bundled snapshot when the server is unreachable.
 
 ---
 

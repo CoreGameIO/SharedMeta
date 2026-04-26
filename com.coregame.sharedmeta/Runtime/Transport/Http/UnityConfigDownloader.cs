@@ -1,18 +1,19 @@
 using System;
 using System.Threading.Tasks;
-using SharedMeta.Core;
 using SharedMeta.Core.Logging;
 using UnityEngine.Networking;
 
 namespace SharedMeta.Client
 {
     /// <summary>
-    /// Downloads config bytes using UnityWebRequest.
-    /// Use this instead of HttpConfigDownloader in Unity projects.
+    /// UnityWebRequest-based byte downloader for <see cref="DownloadingConfigProvider{TConfig}"/>.
+    /// Pass <see cref="DownloadAsync"/> as the <c>downloader</c> argument when constructing
+    /// the provider — Unity projects can't use raw <see cref="System.Net.Http.HttpClient"/>
+    /// reliably across all platforms (WebGL, IL2CPP), so this routes through Unity's HTTP stack.
     /// </summary>
-    public class UnityConfigDownloader : IMetaConfigDownloader
+    public static class UnityConfigDownloader
     {
-        public Task<byte[]> DownloadAsync(string url)
+        public static Task<byte[]> DownloadAsync(string url)
         {
             var tcs = new TaskCompletionSource<byte[]>();
             var request = UnityWebRequest.Get(url);

@@ -134,11 +134,17 @@ namespace SharedMeta.Client
                 Serializer,
                 modeProvider,
                 diagnostics
-            )
-            {
-                ConfigDownloadUrlFactory = (stateTypeName, version) => connection.GetConfigDownloadUrlAsync(stateTypeName, version)
-            };
+            );
         }
+
+        /// <summary>
+        /// Convenience helper for <see cref="DownloadingConfigProvider{TConfig}"/>: maps a
+        /// <see cref="MetaConfigVersion"/> to the server-issued download URL by calling
+        /// <see cref="IConnection.GetConfigDownloadUrlAsync"/>. The <paramref name="stateTypeName"/>
+        /// must match the state that owns the config (the server keys URLs by state type).
+        /// </summary>
+        public Func<MetaConfigVersion, Task<string?>> ConfigDownloadUrlResolver(string stateTypeName) =>
+            version => Connection.GetConfigDownloadUrlAsync(stateTypeName, version);
 
         /// <summary>
         /// Connect transport and establish session with the server.

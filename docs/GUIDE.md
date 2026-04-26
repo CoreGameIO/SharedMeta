@@ -426,21 +426,33 @@ public class AbTestConfigResolver : IConfigVersionResolver
 services.AddSingleton<IConfigVersionResolver>(new AbTestConfigResolver());
 ```
 
-### Client-Side Config Flow
+### Client-Side Config Flow (0.15.0+)
 
-1. Client subscribes to entity → server includes `ConfigVersion` in the response
-2. Client checks local cache (`IMetaConfigCache`) for this version
-3. If not cached, client requests download URL via `GetConfigDownloadUrlAsync(stateTypeName, version)`
-4. Client downloads config bytes via `IMetaConfigDownloader`, deserializes, and caches
-5. If download fails, client falls back to bundled config from shared code
+1. Client subscribes to entity → server includes `ConfigVersion` in the response.
+2. Resolver looks up the `IClientMetaConfigProvider<TConfig>` registered for the service's `ConfigType`.
+3. The provider materializes the config for that version — caching, downloading, fallback are all internal to the provider.
+4. The resolved instance is cached on the entity's `EntityConnection` and surfaced to all API clients on the entity (`Context.Config`, `client.GetEntityConfig<TConfig>(entityId)`).
+
+The generator-emitted `Add{Service}Services()` extension installs a default `StaticConfigProvider<TConfig>(new TConfig())` via `TryRegisterConfigProvider` — so out of the box you get the bundled config. To override (e.g. download from server with disk caching), register **before** `RegisterAllServices()`:
 
 ```csharp
-// Optional: set up config cache and downloader on client
-client.Resolver.ConfigCache = new InMemoryConfigCache();
-client.Resolver.ConfigDownloader = new HttpConfigDownloader();
+// Override default with a downloading provider that caches to disk
+using var http = new HttpClient();
+resolver.RegisterConfigProvider<GameConfig>(new DownloadingConfigProvider<GameConfig>(
+    urlResolver: client.ConfigDownloadUrlResolver(typeof(GameState).FullName!),
+    downloader: url => http.GetByteArrayAsync(url),
+    serializer: client.Serializer,
+    cache: new FileConfigCache<GameConfig>("./config-cache", client.Serializer)));
+
+// Or chain with fallback to the bundled snapshot if the network is down:
+resolver.RegisterConfigProvider<GameConfig>(new CompositeConfigProvider<GameConfig>(
+    primary: new DownloadingConfigProvider<GameConfig>(...),
+    fallback: new StaticConfigProvider<GameConfig>(new GameConfig())));
+
+resolver.RegisterAllServices();
 ```
 
-Without cache/downloader configured, the client always uses the bundled config factory from shared code.
+In Unity, replace `http.GetByteArrayAsync` with `UnityConfigDownloader.DownloadAsync` for IL2CPP/WebGL compatibility.
 
 ### Accessing Config from Client Code
 

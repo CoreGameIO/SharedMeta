@@ -24,25 +24,20 @@ namespace SharedMeta.Client
         // Indexed by ServiceName ("ICounterService" etc.) so the entity-level broadcast handler
         // can look up a foreign service's EntityReplayDispatcher when no state-data was sent.
         private readonly Dictionary<string, MetaServiceConfig> _configsByServiceName = new();
+        // Per-state-type callbacks. Multiple services on the same state generate functionally
+        // equivalent factories; we keep the first non-null one we see, so a hand-rolled config
+        // that drops these fields doesn't clobber the generator-emitted ones registered earlier.
+        private readonly Dictionary<string, Func<object, IEntityStateContainer>> _stateContainerFactoriesByStateType = new();
+        private readonly Dictionary<string, Action<object, byte[], IMetaSerializer>> _patchAppliersByStateType = new();
         private readonly Dictionary<string, EntityConnection> _connections = new();
+        // Provider registered per TConfig type — single point of materialization for entity
+        // configs at subscribe time. Replaces the pre-0.14.0 cache + downloader + URL factory +
+        // bundled-factory chain. Keyed by typeof(TConfig); values are typed closures that the
+        // generic Register{Try}ConfigProvider<TConfig> methods build at registration time so the
+        // hot path stays reflection-free.
+        private readonly Dictionary<Type, Func<MetaConfigVersion, Task<object?>>> _configProviders = new();
         private readonly object _lock = new();
         private List<CrossEntityLocalResult>? _recordedResults;
-
-        /// <summary>
-        /// Optional config cache for versioned configs.
-        /// </summary>
-        public IMetaConfigCache? ConfigCache { get; set; }
-
-        /// <summary>
-        /// Optional config downloader for fetching configs from server.
-        /// </summary>
-        public IMetaConfigDownloader? ConfigDownloader { get; set; }
-
-        /// <summary>
-        /// Factory to request config download URL from server.
-        /// Parameters: (stateTypeName, version). Set by MetaClient to call IConnection.GetConfigDownloadUrlAsync.
-        /// </summary>
-        public Func<string, MetaConfigVersion, Task<string?>>? ConfigDownloadUrlFactory { get; set; }
 
         /// <summary>
         /// Creates a MetaServiceResolver.
@@ -74,11 +69,50 @@ namespace SharedMeta.Client
             _configsByStateTypeName[stateTypeName] = config;
             if (!string.IsNullOrEmpty(config.ServiceName))
                 _configsByServiceName[config.ServiceName] = config;
+
+            // Cache per-state-type callbacks. First non-null wins so a later hand-rolled
+            // config with these fields dropped doesn't override an earlier generator-emitted one.
+            if (config.StateContainerFactory != null && !_stateContainerFactoriesByStateType.ContainsKey(stateTypeName))
+                _stateContainerFactoriesByStateType[stateTypeName] = config.StateContainerFactory;
+            if (config.PatchApplier != null && !_patchAppliersByStateType.ContainsKey(stateTypeName))
+                _patchAppliersByStateType[stateTypeName] = config.PatchApplier;
+        }
+
+        public void RegisterConfigProvider<TConfig>(IClientMetaConfigProvider<TConfig> provider) where TConfig : class
+        {
+            if (provider == null) throw new ArgumentNullException(nameof(provider));
+            _configProviders[typeof(TConfig)] = BuildInvoker(provider);
+        }
+
+        public void TryRegisterConfigProvider<TConfig>(IClientMetaConfigProvider<TConfig> provider) where TConfig : class
+        {
+            if (provider == null) throw new ArgumentNullException(nameof(provider));
+            if (!_configProviders.ContainsKey(typeof(TConfig)))
+                _configProviders[typeof(TConfig)] = BuildInvoker(provider);
+        }
+
+        // Closure built once per Register call — captures TConfig statically so the resolver's
+        // hot path can call provider.GetConfigAsync without any reflection.
+        private static Func<MetaConfigVersion, Task<object?>> BuildInvoker<TConfig>(IClientMetaConfigProvider<TConfig> provider) where TConfig : class
+        {
+            return async version => await provider.GetConfigAsync(version).ConfigureAwait(false);
         }
 
         private MetaServiceConfig? LookupConfigByServiceName(string serviceName)
         {
             return _configsByServiceName.TryGetValue(serviceName, out var c) ? c : null;
+        }
+
+        /// <summary>
+        /// Pick the best PatchApplier for the config's state type — calling service's first,
+        /// else any service registered against the same state. Lets a hand-rolled config that
+        /// drops PatchApplier still benefit from a generator-emitted applier on a sibling service.
+        /// </summary>
+        private Action<object, byte[], IMetaSerializer>? ResolvePatchApplier(MetaServiceConfig config)
+        {
+            if (config.PatchApplier != null) return config.PatchApplier;
+            var stateTypeName = config.StateType.FullName ?? config.StateType.Name;
+            return _patchAppliersByStateType.TryGetValue(stateTypeName, out var applier) ? applier : null;
         }
 
         public async Task<TApiClient> GetServiceAsync<TApiClient>(string entityId) where TApiClient : class
@@ -180,7 +214,7 @@ namespace SharedMeta.Client
                 // shared container regardless of which service the broadcast came from. This is what
                 // lets a client that subscribed to only one of several services on the entity still
                 // receive every state update.
-                newConnection.SubscribeBroadcasts(_serializer, config.PatchApplier, LookupConfigByServiceName, this);
+                newConnection.SubscribeBroadcasts(_serializer, ResolvePatchApplier(config), LookupConfigByServiceName, this);
             }
 
             // Create API client using factory — pass the container as the third positional arg.
@@ -341,17 +375,19 @@ namespace SharedMeta.Client
             return config;
         }
 
-        private static IEntityStateContainer CreateContainer(MetaServiceConfig config, object initialState)
+        private IEntityStateContainer CreateContainer(MetaServiceConfig config, object initialState)
         {
-            // Generator-emitted typed factory is the fast path; otherwise fall back to reflection.
-            if (config.StateContainerFactory != null)
-                return config.StateContainerFactory(initialState);
-
-            var containerType = typeof(EntityStateContainer<>).MakeGenericType(config.StateType);
-            var instance = Activator.CreateInstance(containerType, initialState)
-                ?? throw new InvalidOperationException(
-                    $"Failed to create EntityStateContainer<{config.StateType.Name}>.");
-            return (IEntityStateContainer)instance;
+            // Prefer the calling service's factory; fall back to any other service registered
+            // for the same state type. All such factories are functionally equivalent (they all
+            // wrap the state in the same EntityStateContainer<TState>), so picking any non-null
+            // one works. No reflection fallback — strictly typed lambdas, AOT-safe.
+            var factory = config.StateContainerFactory;
+            if (factory == null)
+            {
+                var stateTypeName = config.StateType.FullName ?? config.StateType.Name;
+                _stateContainerFactoriesByStateType.TryGetValue(stateTypeName, out factory);
+            }
+            return factory!(initialState);
         }
 
         #region ICrossEntityResolver
@@ -544,57 +580,25 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
-        /// Resolve config for an entity subscription.
-        /// Priority: cache → download → bundled factory.
+        /// Resolve config for an entity subscription via the registered
+        /// <see cref="IClientMetaConfigProvider{TConfig}"/>. The provider owns caching,
+        /// downloading, and fallback logic — the resolver just hands it the server-pinned
+        /// version and awaits the materialized config.
         /// </summary>
         private async Task<object?> ResolveConfigAsync(MetaServiceConfig config, NetworkSubscribeResult subResult, string entityId)
         {
-            if (config.ConfigType == null || config.ConfigFactory == null)
+            if (config.ConfigType == null) return null;
+
+            if (!_configProviders.TryGetValue(config.ConfigType, out var invoker))
+            {
+                Core.Logging.MetaLog.Warning(
+                    $"[MetaServiceResolver] No IClientMetaConfigProvider registered for '{config.ConfigType.Name}'. " +
+                    $"Service '{config.ServiceName}' on entity '{entityId}' will receive null config. " +
+                    $"Register one via resolver.RegisterConfigProvider<{config.ConfigType.Name}>(...) before subscribing.");
                 return null;
-
-            var serverVersion = subResult.ConfigVersion;
-
-            // No version from server (0,0) → use bundled config
-            if (serverVersion.Major == 0)
-                return config.ConfigFactory.Invoke();
-
-            var configTypeName = config.ConfigType.FullName ?? config.ConfigType.Name;
-
-            // Check cache
-            if (ConfigCache != null)
-            {
-                var cached = ConfigCache.TryGet(configTypeName, serverVersion);
-                if (cached != null)
-                    return cached;
             }
 
-            // Try download: request URL from server, then download
-            if (ConfigDownloader != null && ConfigDownloadUrlFactory != null)
-            {
-                try
-                {
-                    var downloadUrl = await ConfigDownloadUrlFactory(configTypeName, serverVersion);
-                    if (downloadUrl != null)
-                    {
-                        var bytes = await ConfigDownloader.DownloadAsync(downloadUrl);
-                        var downloaded = _serializer.Unpack(config.ConfigType, bytes);
-                        if (downloaded != null)
-                        {
-                            ConfigCache?.Put(configTypeName, serverVersion, downloaded);
-                            return downloaded;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Core.Logging.MetaLog.Warning($"[MetaServiceResolver] Config download failed: {ex.Message}. Using bundled config.");
-                }
-            }
-
-            // Fallback: use bundled config from shared code
-            var bundled = config.ConfigFactory.Invoke();
-            ConfigCache?.Put(configTypeName, serverVersion, bundled);
-            return bundled;
+            return await invoker(subResult.ConfigVersion).ConfigureAwait(false);
         }
 
         public void Dispose()

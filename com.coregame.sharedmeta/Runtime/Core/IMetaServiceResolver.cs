@@ -42,6 +42,24 @@ namespace SharedMeta.Core
         void RegisterService<TApiClient>(MetaServiceConfig config);
 
         /// <summary>
+        /// Register a config provider for <typeparamref name="TConfig"/>. The resolver invokes
+        /// <see cref="SharedMeta.Client.IClientMetaConfigProvider{TConfig}.GetConfigAsync"/>
+        /// during entity subscribe to materialize the config for the version pinned by the
+        /// server. Subsequent calls overwrite the previously registered provider for the same
+        /// type — register your provider before <c>RegisterAllServices()</c> if you want it to
+        /// take effect over the generator's default <see cref="SharedMeta.Client.StaticConfigProvider{TConfig}"/>.
+        /// </summary>
+        void RegisterConfigProvider<TConfig>(SharedMeta.Client.IClientMetaConfigProvider<TConfig> provider) where TConfig : class;
+
+        /// <summary>
+        /// Register a config provider only if no provider has been registered for
+        /// <typeparamref name="TConfig"/> yet. Used by generator-emitted
+        /// <c>Add{Service}Services()</c> to install a default provider without clobbering a
+        /// user-supplied one.
+        /// </summary>
+        void TryRegisterConfigProvider<TConfig>(SharedMeta.Client.IClientMetaConfigProvider<TConfig> provider) where TConfig : class;
+
+        /// <summary>
         /// Get the resolved config for a connected entity.
         /// Returns null if the entity is not connected or has no config.
         /// </summary>
@@ -67,8 +85,12 @@ namespace SharedMeta.Core
     /// <summary>
     /// Configuration for a meta service API client.
     /// Used by code generators to register service configurations.
+    /// Declared as a <c>record</c> (i.e. record class — the C# 9 form, equivalent to the C# 10
+    /// explicit <c>record class</c>) so consumers can use <c>with</c> expressions to clone a
+    /// generator-emitted base config and override individual fields without hand-copying every
+    /// property. Adding a new field to the framework no longer breaks call sites that clone.
     /// </summary>
-    public class MetaServiceConfig
+    public record MetaServiceConfig
     {
         /// <summary>
         /// The service interface name (e.g., "IProfileService")
@@ -93,15 +115,12 @@ namespace SharedMeta.Core
 
         /// <summary>
         /// The config type for this service (from [MetaService(ConfigType=...)] or DefaultConfig).
-        /// Null if no config is configured.
+        /// Null if no config is configured. The resolver looks up an
+        /// <see cref="SharedMeta.Client.IClientMetaConfigProvider{TConfig}"/> registered for
+        /// this type via <see cref="IMetaServiceResolver.RegisterConfigProvider{TConfig}"/>
+        /// to materialize the config when subscribing to entities.
         /// </summary>
         public Type? ConfigType { get; init; }
-
-        /// <summary>
-        /// Factory to create the default config instance on the client.
-        /// Config is shared code — no need to send bytes from server.
-        /// </summary>
-        public Func<object>? ConfigFactory { get; init; }
 
         /// <summary>
         /// Factory to create the API client.
