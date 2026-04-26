@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.14.1] - 2026-04-26
+
+### Fixed
+
+- **`*ServiceExtensions.g.cs` no longer fails to compile when the state type and the service interface live in different namespaces.** `ServiceRegistrationGenerator` was emitting the `PatchApplier` lambda with an unqualified `{StateName}PatchApplier` reference. The applier class is generated in the *state's* namespace, while the extensions file only `using`s the *service interface's* namespace — so when the two namespaces differed, the build broke with `CS0103: The name '{State}PatchApplier' does not exist in the current context`. The bundled CardGame example colocates state and services in one namespace, which masked the bug. The reference is now fully qualified as `{stateTypeFullName}PatchApplier` ([ServiceRegistrationGenerator.cs:141](src/SharedMeta.Generator/Generators/ServiceRegistrationGenerator.cs#L141)).
+
 ## [0.14.0] - 2026-04-26
 
 ### Added — multi-service-on-entity state propagation

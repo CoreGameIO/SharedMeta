@@ -138,7 +138,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                PatchApplier = (state, patchBytes, ser) =>");
             sb.AppendLine($"                {{");
             sb.AppendLine($"                    var patch = ser.Unpack<PatchNode>(patchBytes);");
-            sb.AppendLine($"                    {stateTypeName}PatchApplier.Apply(({stateTypeFullName})state, patch, ser);");
+            sb.AppendLine($"                    {stateTypeFullName}PatchApplier.Apply(({stateTypeFullName})state, patch, ser);");
             sb.AppendLine($"                }},");
             EmitEntityReplayDispatcher(sb, node, baseName, stateTypeFullName, namespaceName);
             sb.AppendLine($"                StateRefresher = (apiClient, state, random, namedRandoms) =>");
