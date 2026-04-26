@@ -30,9 +30,11 @@ namespace SharedMeta.Generator.Generators
                 stateTypeFullName = stateType.ToDisplayString();
             }
 
-            // If no state type in attribute, we can't generate registration
-            // The service registration will need to be done manually
-            if (stateTypeName == null)
+            // If no state type in attribute, we can't generate registration.
+            // The service registration will need to be done manually.
+            // stateTypeName and stateTypeFullName are set together inside the `is INamedTypeSymbol`
+            // branch above; checking both keeps the nullable analyzer happy at the call sites below.
+            if (stateTypeName == null || stateTypeFullName == null)
             {
                 return null;
             }
