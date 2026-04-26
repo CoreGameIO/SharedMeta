@@ -27,6 +27,13 @@ public class ExpeditionUIGenerator : MonoBehaviour
     private Button _abandonButton;
     private GameObject _completeBanner;
 
+    // Gift demo (multi-service-on-entity / foreign-service replay)
+    private InputField _giftTargetInput;
+    private InputField _giftAmountInput;
+    private Button _sendGiftButton;
+    private Button _myPlayerIdButton;
+    private Text _myPlayerIdText;
+
     // Generation mode choice
     private GameObject _generationChoicePanel;
     private Button _serverReplaceButton;
@@ -182,6 +189,41 @@ public class ExpeditionUIGenerator : MonoBehaviour
             new Vector2(0.68f, 0), new Vector2(1f, 1), new Color(0.6f, 0.2f, 0.2f));
         _abandonButton.onClick.AddListener(() => _ = gameManager.AbandonExpedition());
 
+        // Gift demo panel — sits just above the action button row.
+        // Demonstrates the 0.14.0 foreign-service replay path: this client only holds
+        // IExpeditionProfileServiceApiClient locally, but a "Send Gift" call goes through
+        // ISocialService on the target entity. The receiver's profile UI updates live via
+        // the [Tracked] Money setter even though they have no ISocialServiceApiClient.
+        var giftPanel = CreatePanel(canvasGo.transform, "GiftPanel",
+            new Vector2(1, 0), new Vector2(1, 0), new Vector2(-460, 60), new Vector2(-10, 95));
+        giftPanel.GetComponent<Image>().color = new Color(0.1f, 0.15f, 0.25f, 0.85f);
+
+        // Click-to-copy button: shows local PlayerId, click copies it to the system clipboard
+        // so the other player can paste it into their target field on a second device / window.
+        _myPlayerIdButton = CreateButton(giftPanel.transform, "MyIdBtn", "Me: --",
+            new Vector2(0, 0), new Vector2(0.32f, 1), new Color(0.15f, 0.25f, 0.4f));
+        _myPlayerIdText = _myPlayerIdButton.GetComponentInChildren<Text>();
+        _myPlayerIdText.color = new Color(0.7f, 0.9f, 1f);
+        _myPlayerIdText.alignment = TextAnchor.MiddleLeft;
+        _myPlayerIdText.fontSize = 12;
+        _myPlayerIdButton.onClick.AddListener(CopyPlayerIdToClipboard);
+
+        _giftTargetInput = CreateInputField(giftPanel.transform, "GiftTarget", "target playerId",
+            new Vector2(0.33f, 0.05f), new Vector2(0.65f, 0.95f));
+
+        _giftAmountInput = CreateInputField(giftPanel.transform, "GiftAmount", "10",
+            new Vector2(0.66f, 0.05f), new Vector2(0.78f, 0.95f));
+        _giftAmountInput.text = "10";
+        _giftAmountInput.contentType = InputField.ContentType.IntegerNumber;
+
+        _sendGiftButton = CreateButton(giftPanel.transform, "SendGiftBtn", "Send Gift",
+            new Vector2(0.79f, 0.05f), new Vector2(1f, 0.95f), new Color(0.6f, 0.4f, 0.7f));
+        _sendGiftButton.onClick.AddListener(() =>
+        {
+            int amount = int.TryParse(_giftAmountInput.text, out var a) ? a : 0;
+            _ = gameManager.SendGift(_giftTargetInput.text?.Trim() ?? "", amount);
+        });
+
         // New expedition button (hidden until complete) — overlays the row, shows generation mode choice
         _newExpeditionButton = CreateButton(btnPanel.transform, "NewExpBtn", "New Expedition",
             new Vector2(0, 0), new Vector2(1f, 1), new Color(0.7f, 0.5f, 0.1f));
@@ -308,6 +350,18 @@ public class ExpeditionUIGenerator : MonoBehaviour
         _transportChoicePanel.SetActive(true);
     }
 
+    private void CopyPlayerIdToClipboard()
+    {
+        var id = gameManager?.Client?.PlayerId;
+        if (string.IsNullOrEmpty(id))
+        {
+            SetStatus("No player ID yet — connect first.");
+            return;
+        }
+        GUIUtility.systemCopyBuffer = id;
+        SetStatus($"Copied {id} to clipboard.");
+    }
+
     private void OnTransportChosen(bool useHttpPolling)
     {
         _transportChoicePanel.SetActive(false);
@@ -399,6 +453,8 @@ public class ExpeditionUIGenerator : MonoBehaviour
         {
             _energyText.text = $"Energy: {profile.Energy}/{config.MaxEnergy}";
             _moneyText.text = $"Money: {profile.Money}";
+            if (_myPlayerIdText != null && gameManager.Client != null)
+                _myPlayerIdText.text = $"Me: {gameManager.Client.PlayerId}";
 
             // Update energy bar fill
             float ratio = config.MaxEnergy > 0 ? (float)profile.Energy / config.MaxEnergy : 0f;
@@ -622,6 +678,56 @@ public class ExpeditionUIGenerator : MonoBehaviour
         txt.fontSize = 14;
         txt.alignment = TextAnchor.MiddleCenter;
         return btn;
+    }
+
+    private static InputField CreateInputField(Transform parent, string name, string placeholder,
+        Vector2 anchorMin, Vector2 anchorMax)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(parent);
+        var rt = go.AddComponent<RectTransform>();
+        rt.anchorMin = anchorMin;
+        rt.anchorMax = anchorMax;
+        rt.offsetMin = new Vector2(2, 2);
+        rt.offsetMax = new Vector2(-2, -2);
+        var img = go.AddComponent<Image>();
+        img.color = new Color(0.95f, 0.95f, 0.95f, 0.95f);
+        var input = go.AddComponent<InputField>();
+        input.targetGraphic = img;
+
+        var textGo = new GameObject("Text");
+        textGo.transform.SetParent(go.transform);
+        var textRt = textGo.AddComponent<RectTransform>();
+        textRt.anchorMin = Vector2.zero;
+        textRt.anchorMax = Vector2.one;
+        textRt.offsetMin = new Vector2(6, 2);
+        textRt.offsetMax = new Vector2(-6, -2);
+        var text = textGo.AddComponent<Text>();
+        text.color = Color.black;
+        text.font = GetFont();
+        text.fontSize = 13;
+        text.alignment = TextAnchor.MiddleLeft;
+        text.supportRichText = false;
+        input.textComponent = text;
+
+        var phGo = new GameObject("Placeholder");
+        phGo.transform.SetParent(go.transform);
+        var phRt = phGo.AddComponent<RectTransform>();
+        phRt.anchorMin = Vector2.zero;
+        phRt.anchorMax = Vector2.one;
+        phRt.offsetMin = new Vector2(6, 2);
+        phRt.offsetMax = new Vector2(-6, -2);
+        var phText = phGo.AddComponent<Text>();
+        phText.text = placeholder;
+        phText.color = new Color(0.4f, 0.4f, 0.4f);
+        phText.font = GetFont();
+        phText.fontSize = 13;
+        phText.alignment = TextAnchor.MiddleLeft;
+        phText.supportRichText = false;
+        phText.fontStyle = FontStyle.Italic;
+        input.placeholder = phText;
+
+        return input;
     }
 
     private static Button CreateDPadButton(Transform parent, string name, string label,

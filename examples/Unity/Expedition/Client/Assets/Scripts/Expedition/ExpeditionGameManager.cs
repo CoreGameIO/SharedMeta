@@ -503,6 +503,39 @@ public class ExpeditionGameManager : MonoBehaviour
             ui.SetStatus($"Error: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// Sends <paramref name="amount"/> coins to <paramref name="targetPlayerId"/>'s profile.
+    /// Demonstrates the 0.14.0 foreign-service-replay path: the server-side mutation runs
+    /// through ISocialService, which the receiver's client typically does NOT subscribe to.
+    /// The receiver's profile UI updates live via the [Tracked] Money setter, applied by
+    /// the entity-level handler in MetaServiceResolver.
+    /// </summary>
+    public async Task SendGift(string targetPlayerId, int amount)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(targetPlayerId))
+            {
+                ui.SetStatus("Enter a target player ID.");
+                return;
+            }
+            if (amount <= 0)
+            {
+                ui.SetStatus("Amount must be positive.");
+                return;
+            }
+
+            ui.SetStatus($"Sending {amount} to {targetPlayerId}...");
+            bool ok = await _profileApi.SendGiftAsync(targetPlayerId, amount);
+            ui.SetStatus(ok ? $"Sent {amount} to {targetPlayerId}." : "Not enough money or invalid target.");
+        }
+        catch (Exception ex)
+        {
+            ui.SetStatus($"SendGift failed: {ex.Message}");
+            Debug.LogException(ex);
+        }
+    }
 }
 
 /// <summary>

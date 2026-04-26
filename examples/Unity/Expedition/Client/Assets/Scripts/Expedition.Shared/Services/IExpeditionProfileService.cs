@@ -36,5 +36,15 @@ namespace Expedition.Shared
 
         [MetaMethod(Alias = "Ping", Mode = ExecutionMode.Signal)]
         void Ping(string pingValue);
+
+        /// <summary>
+        /// Send <paramref name="amount"/> coins to another player's profile entity.
+        /// Spends sender's money, then cross-entity-calls <see cref="ISocialService.ReceiveGift"/>
+        /// on the target. The target's client doesn't need an <c>ISocialServiceApiClient</c> —
+        /// 0.14.0's foreign-service replay path applies the mutation through the shared
+        /// state container, and the receiver's profile UI updates via the [Tracked] Money setter.
+        /// </summary>
+        [MetaMethod(Alias = "SendGift", Mode = ExecutionMode.Server)]
+        Task<bool> SendGift(string targetPlayerId, int amount);
     }
 }

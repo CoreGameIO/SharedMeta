@@ -4,7 +4,7 @@ using SharedMeta.Core;
 
 namespace Expedition.Shared
 {
-    [MetaServiceImpl(typeof(IExpeditionProfileService), typeof(ProfileState), typeof(IExpeditionService))]
+    [MetaServiceImpl(typeof(IExpeditionProfileService), typeof(ProfileState), typeof(IExpeditionService), typeof(ISocialService))]
     public partial class ExpeditionProfileService : IExpeditionProfileService
     {
         private ProfileState state => Context.State;
@@ -121,6 +121,22 @@ namespace Expedition.Shared
         public void Ping(string pingValue)
         {
             Context.LogInfo(pingValue);
+        }
+
+        public async Task<bool> SendGift(string targetPlayerId, int amount)
+        {
+            if (amount <= 0) return false;
+            if (state.Money < amount) return false;
+
+            // Charge sender first so a slow target entity can't double-debit on retry.
+            state.Money -= amount;
+
+            // Cross-entity to the target player's social service. The target may not have an
+            // ISocialServiceApiClient subscribed locally — 0.14.0's foreign-service replay path
+            // ensures the mutation still reaches them via the shared state container.
+            var social = GetISocialService(targetPlayerId);
+            await social.ReceiveGiftAsync(state.PlayerId, amount);
+            return true;
         }
     }
 }

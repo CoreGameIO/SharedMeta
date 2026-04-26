@@ -165,6 +165,8 @@ public class MetaGameClient : IDisposable
             .SetMode("IExpeditionProfileService", "AddMoney", ExecutionMode.Server)
             .SetMode("IExpeditionProfileService", "StartNewExpedition", ExecutionMode.Server)
             .SetMode("IExpeditionProfileService", "AbandonExpedition", ExecutionMode.Server)
+            .SetMode("IExpeditionProfileService", "SendGift", ExecutionMode.Server)
+            .SetMode("ISocialService", "ReceiveGift", ExecutionMode.Server)
             .SetMode("IExpeditionService", "Init", ExecutionMode.Server)
             .SetMode("IExpeditionService", "MarkAbandoned", ExecutionMode.Server)
             .SetMode("IExpeditionService", "Move", ExecutionMode.CrossOptimistic)
@@ -210,8 +212,22 @@ public class MetaGameClient : IDisposable
             try { _diagLogWriter.Dispose(); } catch { }
             _diagLogWriter = null;
         }
-        var logPath = Path.Combine(Application.persistentDataPath, "connection_diag.log");
+        // Per-process log file — running two Unity instances side by side (the gift demo) means
+        // two writers want the same path; without a unique suffix the second one hits a sharing
+        // violation. ProcessId keeps it deterministic across reconnects within the same instance.
+        var pid = System.Diagnostics.Process.GetCurrentProcess().Id;
+        var logPath = Path.Combine(Application.persistentDataPath, $"connection_diag-{pid}.log");
         Debug.Log($"[Expedition] Diagnostics log: {logPath}");
-        _diagLogWriter = new StreamWriter(logPath, append: false) { AutoFlush = true };
+        try
+        {
+            _diagLogWriter = new StreamWriter(logPath, append: false) { AutoFlush = true };
+        }
+        catch (IOException ex)
+        {
+            // Fallback for the rare case where even the per-pid path is locked (e.g. recycled pid).
+            // Diagnostics-only signal — never fail Connect because of it.
+            Debug.LogWarning($"[Expedition] Diagnostics log unavailable: {ex.Message}");
+            _diagLogWriter = null;
+        }
     }
 }
