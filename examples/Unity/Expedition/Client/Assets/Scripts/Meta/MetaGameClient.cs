@@ -74,7 +74,9 @@ public class MetaGameClient : IDisposable
     private async Task ConnectRemoteAsync(string serverUrl, string deviceId, bool useHttpPolling, Action<string> onStatus)
     {
         onStatus?.Invoke("Authenticating...");
-        var tokenStorage = new PlayerPrefsTokenStorage();
+        // Scope token cache by deviceId so dev builds with random/per-instance deviceIds
+        // each get their own JWT slot and can't pick up a token cached for a different PlayerId.
+        var tokenStorage = new PlayerPrefsTokenStorage(deviceId);
         var login = await MetaAuth.EnsureAuthenticatedAsync($"{serverUrl}/meta/auth", deviceId, tokenStorage);
         onStatus?.Invoke($"Authenticated: {login.PlayerId}");
 
@@ -175,7 +177,7 @@ public class MetaGameClient : IDisposable
             .SetMode("IExpeditionService", "GenerateNewMapOptimistic", ExecutionMode.Optimistic)
             .SetMode("IExpeditionService", "GenerateNewMapBroken", ExecutionMode.Optimistic);
 
-        var tokenStorage = new PlayerPrefsTokenStorage();
+        var tokenStorage = new PlayerPrefsTokenStorage(deviceId);
         var login = await MetaAuth.EnsureAuthenticatedAsync("local://", deviceId, tokenStorage);
         Connection = LocalServer.CreateConnection();
 

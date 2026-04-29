@@ -219,9 +219,9 @@ services.AddSingleton<IMetaConfigProvider<GameConfig>>(new GameConfigProvider())
 
 Each entity persists its config version on first activation. Subsequent activations reuse the pinned version until explicitly upgraded. This supports gradual rollouts and A/B tests via `IConfigVersionResolver`.
 
-### Client-Side Config
+### Client-Side Config (0.15.0+)
 
-Config is sent to the client on subscribe. The client can cache configs locally (`IMetaConfigCache`) and download new versions via `IMetaConfigDownloader`. Without cache/downloader, the bundled config from shared code is used.
+Each `[MetaConfig]` type is materialized by an `IClientMetaConfigProvider<TConfig>` registered on the resolver. The generator emits a `StaticConfigProvider<TConfig>(new TConfig())` default; override with `RegisterConfigProvider<TConfig>(...)` (e.g. `DownloadingConfigProvider<TConfig>` with a `FileConfigCache<TConfig>`) **before** `RegisterAllServices()` to fetch from server with disk caching.
 
 ---
 
@@ -255,8 +255,10 @@ var client = new MetaClient(connection, serializer, new MetaClientOptions { Play
 Reuse tokens across app sessions with `ITokenStorage`:
 
 ```csharp
-// Unity: PlayerPrefsTokenStorage stores token in PlayerPrefs
-ITokenStorage storage = new PlayerPrefsTokenStorage();
+// Unity: PlayerPrefsTokenStorage stores token in PlayerPrefs.
+// Pass deviceId so dev builds running multiple instances on one device — or with random/
+// rotating deviceIds (UseRandomDeviceId) — each get their own token slot.
+ITokenStorage storage = new PlayerPrefsTokenStorage(deviceId);
 
 // Returns cached token if still valid, otherwise makes login request
 var login = await MetaAuth.EnsureAuthenticatedAsync($"{serverUrl}/meta/auth", deviceId, storage);

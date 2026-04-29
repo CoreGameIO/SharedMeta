@@ -599,7 +599,8 @@ var connection = new SignalRConnection($"{serverUrl}/meta", accessToken: login.T
 var client = new MetaClient(connection, serializer, new MetaClientOptions { PlayerId = login.PlayerId });
 
 // With token caching (reuse token across sessions)
-ITokenStorage storage = new PlayerPrefsTokenStorage(); // Unity; implement ITokenStorage for other platforms
+// Unity; pass deviceId so multi-instance / random-deviceId dev builds get isolated token slots.
+ITokenStorage storage = new PlayerPrefsTokenStorage(deviceId);
 var login = await MetaAuth.EnsureAuthenticatedAsync($"{serverUrl}/meta/auth", deviceId, storage);
 MetaAuth.ClearToken(storage); // logout
 ```
