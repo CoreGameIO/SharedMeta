@@ -1798,10 +1798,13 @@ namespace SharedMeta.Editor
                 sb.AppendLine("        // Authenticate — reuses cached token if still valid");
                 sb.AppendLine("        // Auth URL uses server root (serverUrl points to hub path /meta)");
                 sb.AppendLine("        var baseUrl = serverUrl.EndsWith(\"/meta\") ? serverUrl.Substring(0, serverUrl.Length - 5) : serverUrl;");
-                sb.AppendLine("        var tokenStorage = new PlayerPrefsTokenStorage();");
+                sb.AppendLine("        var deviceId = SystemInfo.deviceUniqueIdentifier;");
+                sb.AppendLine("        // Scope token storage by deviceId so multi-instance / random-deviceId dev builds");
+                sb.AppendLine("        // don't share a JWT cached for a different PlayerId.");
+                sb.AppendLine("        var tokenStorage = new PlayerPrefsTokenStorage(deviceId);");
                 sb.AppendLine("        var login = await MetaAuth.EnsureAuthenticatedAsync(");
                 sb.AppendLine("            baseUrl.TrimEnd('/') + \"/meta/auth\",");
-                sb.AppendLine("            SystemInfo.deviceUniqueIdentifier,");
+                sb.AppendLine("            deviceId,");
                 sb.AppendLine("            tokenStorage);");
                 sb.AppendLine("        var accessToken = login.Token;");
                 sb.AppendLine("        var playerId = login.PlayerId;");

@@ -2067,8 +2067,10 @@ var client = new MetaClient(connection, serializer, new MetaClientOptions { Play
 **Token caching** — reuse tokens across sessions with `ITokenStorage`:
 
 ```csharp
-// Unity: use PlayerPrefsTokenStorage
-ITokenStorage storage = new PlayerPrefsTokenStorage();
+// Unity: use PlayerPrefsTokenStorage. Pass the deviceId so dev builds running multiple
+// instances on one device (or with random/rotating deviceIds) each get their own token slot —
+// without scoping, a fresh deviceId picks up a JWT cached for a previous PlayerId.
+ITokenStorage storage = new PlayerPrefsTokenStorage(deviceId);
 
 // Login or reuse cached token (skips network call if token is still valid)
 var login = await MetaAuth.EnsureAuthenticatedAsync($"{serverUrl}/meta/auth", deviceId, storage);

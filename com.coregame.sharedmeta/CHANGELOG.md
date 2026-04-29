@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.15.1] - 2026-04-29
+
+### Fixed
+
+- **`PlayerPrefsTokenStorage` now scopes its keys by deviceId** ([Runtime/Auth/PlayerPrefsTokenStorage.cs](com.coregame.sharedmeta/Runtime/Auth/PlayerPrefsTokenStorage.cs)). Previously every instance keyed PlayerPrefs only by `Application.identifier`, so two clients running on one machine — or one client with `UseRandomDeviceId` — saw a shared "current token" slot. The first client cached a JWT for its PlayerId; the second `EnsureAuthenticatedAsync` call read that JWT back and reused the wrong PlayerId, even though it was passing a fresh deviceId to the auth flow. The server then dropped the second connection because both clients were trying to claim the same Player. Pass the deviceId to the new ctor (`new PlayerPrefsTokenStorage(deviceId)`) and each unique deviceId gets its own slot. The parameterless ctor still works and produces the same keys as before — backward compatible for projects with one stable deviceId.
+- Wizard-emitted client and the Expedition Unity example now use the scoped form.
+
+### Migration
+
+```csharp
+// Before: one slot per project — wrong PlayerId on multi-instance / UseRandomDeviceId
+var storage = new PlayerPrefsTokenStorage();
+
+// After: one slot per (project, deviceId)
+var storage = new PlayerPrefsTokenStorage(deviceId);
+```
+
 ## [0.15.0] - 2026-04-26
 
 ### Changed — client config delivery rewritten around `IClientMetaConfigProvider<TConfig>`

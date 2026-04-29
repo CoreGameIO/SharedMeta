@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1] - 2026-04-29
+
+### Fixed
+
+- **`PlayerPrefsTokenStorage` now scopes its keys by deviceId.** Previously every instance keyed PlayerPrefs only by `Application.identifier`, so two clients on one machine — or one client with `UseRandomDeviceId` — shared a single "current token" slot, and the second `EnsureAuthenticatedAsync` call would reuse the JWT cached for the first PlayerId. New ctor: `new PlayerPrefsTokenStorage(deviceId)`. Parameterless ctor still works and produces the same keys as before — backward compatible.
+- Wizard-emitted client and the Expedition Unity example updated to use the scoped form.
+
 ## [0.15.0] - 2026-04-26
 
 ### Changed — client config delivery rewritten around `IClientMetaConfigProvider<TConfig>`

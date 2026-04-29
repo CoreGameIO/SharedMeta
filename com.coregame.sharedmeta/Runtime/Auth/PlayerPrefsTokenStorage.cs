@@ -19,15 +19,41 @@ namespace SharedMeta.Client.Auth
         private readonly string _expiryKey;
 
         /// <summary>
-        /// Create token storage isolated by Application.identifier (bundle ID).
-        /// Each Unity project gets its own cached token automatically.
+        /// Create token storage isolated by <see cref="Application.identifier"/> (bundle ID).
+        /// Each Unity project gets its own cached token slot automatically.
         /// </summary>
-        public PlayerPrefsTokenStorage()
+        public PlayerPrefsTokenStorage() : this(scope: null) { }
+
+        /// <summary>
+        /// Create token storage isolated by both <see cref="Application.identifier"/> and the
+        /// supplied <paramref name="scope"/>. Pass the deviceId here when running multiple
+        /// instances of the same project on one device (e.g. dev builds with
+        /// <c>UseRandomDeviceId</c>) — each unique scope gets its own PlayerPrefs slot, so a
+        /// fresh deviceId can't accidentally pick up a JWT cached for a previous deviceId and
+        /// reuse the wrong PlayerId. With <paramref name="scope"/> null or empty, the keys are
+        /// identical to the parameterless ctor (one slot per project).
+        /// </summary>
+        public PlayerPrefsTokenStorage(string? scope)
         {
             var prefix = Application.identifier;
-            _tokenKey = $"{prefix}_Auth_Token";
-            _playerIdKey = $"{prefix}_Auth_PlayerId";
-            _expiryKey = $"{prefix}_Auth_Expiry";
+            var suffix = string.IsNullOrEmpty(scope) ? "" : "_" + Sanitize(scope!);
+            _tokenKey = $"{prefix}_Auth_Token{suffix}";
+            _playerIdKey = $"{prefix}_Auth_PlayerId{suffix}";
+            _expiryKey = $"{prefix}_Auth_Expiry{suffix}";
+        }
+
+        // PlayerPrefs keys are free-form strings, but keep the scope conservative to avoid
+        // surprises on platforms that round-trip prefs through registry/plist storage.
+        private static string Sanitize(string s)
+        {
+            var chars = s.ToCharArray();
+            for (int i = 0; i < chars.Length; i++)
+            {
+                var c = chars[i];
+                if (!(char.IsLetterOrDigit(c) || c == '-' || c == '_'))
+                    chars[i] = '_';
+            }
+            return new string(chars);
         }
 
         public CachedToken? Load()
