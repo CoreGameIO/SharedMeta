@@ -82,6 +82,10 @@ await api.SetName("Alice");
 
 - Unity 6000.0+ (UPM) or .NET 8.0+ (NuGet)
 
+## Tooling
+
+**Rider plugin** — [`SharedLibs/RiderPlugin`](https://github.com/CoreGameIO/SharedLibs/tree/main/RiderPlugin) extends Find Usages and Go to Declaration so they walk both the user-authored `[MetaMethod]` and every generated counterpart (`*ApiClient`, `*EntityQueryApi`, cross-entity callers). Requires SharedMeta ≥ 0.16.0 — uses the `[GeneratedFromMetaMethod]` attribute that the generator now stamps on every emitted client-side mirror.
+
 ## Documentation
 
 See the [full guide](https://github.com/CoreGameIO/SharedMeta) for detailed documentation.

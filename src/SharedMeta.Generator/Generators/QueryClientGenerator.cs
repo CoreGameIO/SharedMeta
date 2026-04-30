@@ -125,7 +125,7 @@ namespace SharedMeta.Generator.Generators
             foreach (var method in queryMethods)
             {
                 sb.AppendLine();
-                GenerateQueryMethod(sb, method, serializer);
+                GenerateQueryMethod(sb, method, namespaceName, interfaceName, serializer);
             }
 
             sb.AppendLine("    }");
@@ -135,7 +135,7 @@ namespace SharedMeta.Generator.Generators
         }
 
         private static void GenerateQueryMethod(StringBuilder sb, QueryMethodInfo method,
-            DetectedSerializer serializer)
+            string namespaceName, string interfaceName, DetectedSerializer serializer)
         {
             // Extract inner type from Task<T>
             var returnTypeStr = method.ReturnType.ToDisplayString();
@@ -154,6 +154,7 @@ namespace SharedMeta.Generator.Generators
             var paramList = string.Join(", ", method.Parameters.Select(p =>
                 $"{p.Type.ToDisplayString()} {p.Name}"));
 
+            sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{namespaceName}.{interfaceName}), \"{method.Name}\")]");
             sb.AppendLine($"        public async {asyncReturnType} {method.Name}Async({paramList})");
             sb.AppendLine("        {");
 

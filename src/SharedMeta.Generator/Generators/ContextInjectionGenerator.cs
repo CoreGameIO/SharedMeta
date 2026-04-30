@@ -302,6 +302,7 @@ namespace SharedMeta.Generator.Generators
         private static void GenerateEntityCallerInterface(StringBuilder sb, INamedTypeSymbol interfaceSymbol, string containingNamespace)
         {
             var interfaceName = interfaceSymbol.Name;
+            var interfaceFqn = interfaceSymbol.ToDisplayString();
             var entityCallerInterface = $"{interfaceName}EntityCaller";
 
             sb.AppendLine();
@@ -316,14 +317,14 @@ namespace SharedMeta.Generator.Generators
             {
                 if (member.MethodKind == MethodKind.Ordinary)
                 {
-                    GenerateEntityCallerInterfaceMethod(sb, member);
+                    GenerateEntityCallerInterfaceMethod(sb, member, interfaceFqn);
                 }
             }
 
             sb.AppendLine("    }");
         }
 
-        private static void GenerateEntityCallerInterfaceMethod(StringBuilder sb, IMethodSymbol method)
+        private static void GenerateEntityCallerInterfaceMethod(StringBuilder sb, IMethodSymbol method, string interfaceFqn)
         {
             var methodName = method.Name;
             var returnType = method.ReturnType.ToDisplayString();
@@ -354,6 +355,7 @@ namespace SharedMeta.Generator.Generators
                 asyncMethodName = methodName + "Async";
             }
 
+            sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
             sb.AppendLine($"        {asyncReturnType} {asyncMethodName}({parameters});");
         }
 
@@ -364,6 +366,7 @@ namespace SharedMeta.Generator.Generators
         private static void GenerateEntityRecorderClass(StringBuilder sb, INamedTypeSymbol interfaceSymbol, string containingNamespace, DetectedSerializer serializer)
         {
             var interfaceName = interfaceSymbol.Name;
+            var interfaceFqn = interfaceSymbol.ToDisplayString();
             var entityCallerInterface = $"{interfaceName}EntityCaller";
 
             var baseName = interfaceName;
@@ -393,14 +396,14 @@ namespace SharedMeta.Generator.Generators
             {
                 if (member.MethodKind == MethodKind.Ordinary)
                 {
-                    GenerateEntityRecorderMethod(sb, member, interfaceName, serializer);
+                    GenerateEntityRecorderMethod(sb, member, interfaceName, interfaceFqn, serializer);
                 }
             }
 
             sb.AppendLine("    }");
         }
 
-        private static void GenerateEntityRecorderMethod(StringBuilder sb, IMethodSymbol method, string interfaceName, DetectedSerializer serializer)
+        private static void GenerateEntityRecorderMethod(StringBuilder sb, IMethodSymbol method, string interfaceName, string interfaceFqn, DetectedSerializer serializer)
         {
             var methodName = method.Name;
             var returnType = method.ReturnType.ToDisplayString();
@@ -446,6 +449,7 @@ namespace SharedMeta.Generator.Generators
             }
 
             sb.AppendLine();
+            sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
             sb.AppendLine($"        public async {asyncReturnType} {asyncMethodName}({parameters})");
             sb.AppendLine("        {");
 
@@ -493,6 +497,7 @@ namespace SharedMeta.Generator.Generators
         private static void GenerateEntityReplayerClass(StringBuilder sb, INamedTypeSymbol interfaceSymbol, string containingNamespace)
         {
             var interfaceName = interfaceSymbol.Name;
+            var interfaceFqn = interfaceSymbol.ToDisplayString();
             var entityCallerInterface = $"{interfaceName}EntityCaller";
 
             var baseName = interfaceName;
@@ -520,14 +525,14 @@ namespace SharedMeta.Generator.Generators
             {
                 if (member.MethodKind == MethodKind.Ordinary)
                 {
-                    GenerateEntityReplayerMethod(sb, member);
+                    GenerateEntityReplayerMethod(sb, member, interfaceFqn);
                 }
             }
 
             sb.AppendLine("    }");
         }
 
-        private static void GenerateEntityReplayerMethod(StringBuilder sb, IMethodSymbol method)
+        private static void GenerateEntityReplayerMethod(StringBuilder sb, IMethodSymbol method, string interfaceFqn)
         {
             var methodName = method.Name;
             var returnType = method.ReturnType.ToDisplayString();
@@ -557,6 +562,7 @@ namespace SharedMeta.Generator.Generators
             }
 
             sb.AppendLine();
+            sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
             sb.AppendLine($"        public {asyncReturnType} {asyncMethodName}({parameters})");
             sb.AppendLine("        {");
 
@@ -582,6 +588,7 @@ namespace SharedMeta.Generator.Generators
         private static void GenerateLocalEntityCallerClass(StringBuilder sb, INamedTypeSymbol interfaceSymbol, string containingNamespace, string callerStateTypeName)
         {
             var interfaceName = interfaceSymbol.Name;
+            var interfaceFqn = interfaceSymbol.ToDisplayString();
             var entityCallerInterface = $"{interfaceName}EntityCaller";
 
             var baseName = interfaceName;
@@ -640,7 +647,7 @@ namespace SharedMeta.Generator.Generators
             {
                 if (member.MethodKind == MethodKind.Ordinary)
                 {
-                    GenerateLocalEntityCallerMethod(sb, member, interfaceName, baseName, targetStateType, implNamespace);
+                    GenerateLocalEntityCallerMethod(sb, member, interfaceName, interfaceFqn, baseName, targetStateType, implNamespace);
                 }
             }
 
@@ -648,7 +655,7 @@ namespace SharedMeta.Generator.Generators
         }
 
         private static void GenerateLocalEntityCallerMethod(StringBuilder sb, IMethodSymbol method,
-            string interfaceName, string baseName, string targetStateType, string implNamespace)
+            string interfaceName, string interfaceFqn, string baseName, string targetStateType, string implNamespace)
         {
             var methodName = method.Name;
             var returnType = method.ReturnType.ToDisplayString();
@@ -694,6 +701,7 @@ namespace SharedMeta.Generator.Generators
             }
 
             sb.AppendLine();
+            sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
             sb.AppendLine($"        public {asyncReturnType} {asyncMethodName}({parameters})");
             sb.AppendLine("        {");
 

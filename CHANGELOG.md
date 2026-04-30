@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.16.0] - 2026-04-30
+
+### Added
+
+- **`[GeneratedFromMetaMethod(typeof(IFoo), "Bar")]` on every generated client method** ([Runtime/Core/Attributes.cs](com.coregame.sharedmeta/Runtime/Core/Attributes.cs)). All four generators that produce client-side mirrors of `[MetaMethod]` now stamp this attribute on each emitted method, providing a stable, name-convention-independent link back to the original interface method:
+  - `SimplifiedApiClientGenerator` — `*ApiClient.{Name}Async` / `*ApiClient.{Name}Sync` / `*ApiClient.{Name}Signal`
+  - `QueryClientGenerator` — `*EntityQueryApi.{Name}Async`
+  - `ContextInjectionGenerator` — `{Interface}EntityCaller.{Name}Async`, `{Service}EntityRecorder.{Name}Async`, `{Service}EntityReplayer.{Name}Async`, `{Service}LocalEntityCaller.{Name}Async`
+- The attribute exposes `ServiceInterface` (`Type`) and `MethodName` (`string`), giving downstream tooling a `typeof()`-anchored identity that follows refactor-rename of the interface type. The SharedMeta Rider plugin (≥ 0.2.0) consumes this to bridge **Find Usages** between the user-authored `[MetaMethod]` and every generated counterpart, including cross-entity callers — the previous naming-heuristic approach missed `EntityCaller` because those types live in the consuming impl class's namespace, which the plugin couldn't predict.
+
+### Migration
+
+No source changes required — the attribute is purely additive on generated code. Old `.g.cs` regenerates with the attribute on next build. Tooling that depends on it (Rider plugin) must be ≥ 0.3.1.
+
 ## [0.15.1] - 2026-04-29
 
 ### Fixed

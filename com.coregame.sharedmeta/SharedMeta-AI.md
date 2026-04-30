@@ -1341,3 +1341,9 @@ new MetaClient(connection, serializer, new MetaClientOptions
 8. **Using `float`/`double` in Optimistic logic** — platform-dependent, causes desync
 9. **Using `DateTime.Now`** — clock difference between client and server
 10. **Dictionary iteration in deterministic logic** — order is not guaranteed across platforms
+
+---
+
+## Generated-Code Marker (`[GeneratedFromMetaMethod]`, 0.16.0+)
+
+Every method emitted as a mirror of a `[MetaMethod]` is stamped with `[GeneratedFromMetaMethod(typeof(IFoo), "Bar")]`. Appears on `*ApiClient.{Name}Async/Sync/Signal`, `*EntityQueryApi.{Name}Async`, the `{I}EntityCaller` cross-entity proxy interface, and its `*EntityRecorder` / `*EntityReplayer` / `*LocalEntityCaller` runtime implementations. Carries `(Type ServiceInterface, string MethodName)` — a `typeof()` reference so it survives interface rename. Runtime-inert; consumed only by tooling such as the [Rider plugin in `SharedLibs/RiderPlugin`](https://github.com/CoreGameIO/SharedLibs/tree/main/RiderPlugin), which uses it to bridge Find Usages and Go to Declaration between the user-authored `[MetaMethod]` and every generated counterpart.

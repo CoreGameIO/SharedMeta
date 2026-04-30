@@ -589,6 +589,19 @@ Launch and manage the server directly from Unity without switching to a terminal
 
 ---
 
+## Rider Plugin (optional)
+
+[`SharedLibs/RiderPlugin`](https://github.com/CoreGameIO/SharedLibs/tree/main/RiderPlugin) is a Rider plugin that links each `[MetaMethod]` on a `[MetaService]` interface to every method generated for it (`*ApiClient.{Name}Async / Sync / Signal`, `*EntityQueryApi.{Name}Async`, the `{I}EntityCaller` cross-entity proxy and its three runtime impls). With it installed:
+
+- **Find Usages** on the interface method also returns every call site that goes through any generated layer — and vice versa.
+- **Ctrl+Click / Go to Declaration** offers the original `[MetaMethod]` as an additional jump target on generated client methods.
+
+Discovery is attribute-driven via `[GeneratedFromMetaMethod]`, which the SharedMeta source generator emits on every mirror starting with version 0.16.0 — so older generated code is invisible to the plugin until you rebuild.
+
+**Install:** grab the pre-built zip from [`SharedLibs/RiderPlugin/dist/`](https://github.com/CoreGameIO/SharedLibs/tree/main/RiderPlugin/dist) (or build it locally with `./gradlew buildPlugin` per the project README), then **Settings → Plugins → ⚙ → Install Plugin from Disk…** and restart Rider.
+
+---
+
 ## Checklist: Adding a New Method
 
 1. Add method to `[MetaService]` interface with `[MetaMethod(Mode = ...)]`

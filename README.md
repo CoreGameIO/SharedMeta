@@ -311,6 +311,19 @@ To test multiplayer locally (e.g. matchmaking), you need two Unity clients conne
 
 All clients connect to the same server URL. The server handles session management and entity routing via Orleans grains.
 
+## Tooling
+
+### Rider plugin — Find Usages across generated code
+
+[`SharedLibs/RiderPlugin`](https://github.com/CoreGameIO/SharedLibs/tree/main/RiderPlugin) at the [CoreGameIO/SharedLibs](https://github.com/CoreGameIO/SharedLibs) repo is a Rider plugin that bridges `[MetaService]` interface methods with every method generated for them by `SharedMeta.Generator`:
+
+* **Find Usages** on a `[MetaMethod]` walks both the interface itself **and** the generated `*ApiClient`, `*EntityQueryApi`, `{I}EntityCaller`, `*EntityRecorder`, `*EntityReplayer`, `*LocalEntityCaller` counterparts in one pass — call sites that go through any generated layer end up in the same results window.
+* **Ctrl+Click / Go to Declaration** on a generated method (or on a call site of one) offers the originating `[MetaMethod]` as an additional jump target alongside the standard one.
+
+The plugin matches by reading `[GeneratedFromMetaMethod(typeof(IFoo), "Bar")]` — emitted on every generated mirror by SharedMeta ≥ 0.16.0 — so there is no naming-convention guesswork. Older generated code is invisible to the plugin; regenerate against the new SharedMeta version.
+
+Install: grab the pre-built zip from [`SharedLibs/RiderPlugin/dist/`](https://github.com/CoreGameIO/SharedLibs/tree/main/RiderPlugin/dist) (or build it yourself with `./gradlew buildPlugin`), then **Settings → Plugins → ⚙ → Install Plugin from Disk…** in Rider.
+
 ## Examples
 
 ### CardGame "The Fool"

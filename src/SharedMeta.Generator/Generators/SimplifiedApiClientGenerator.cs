@@ -476,7 +476,7 @@ namespace SharedMeta.Generator.Generators
             // Validation: must return void, must not combine with Query/Sync/explicit Mode.
             if (isSignalMethod)
             {
-                GenerateSignalMethod(sb, method, methodAlias, isQueryMethod, modeExplicit, syncApi, interfaceName, serializer);
+                GenerateSignalMethod(sb, method, methodAlias, isQueryMethod, modeExplicit, syncApi, interfaceName, namespaceName, serializer);
                 return;
             }
 
@@ -514,6 +514,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"        /// <summary>");
                 sb.AppendLine($"        /// {methodName} - Default mode: {defaultMode}");
                 sb.AppendLine($"        /// </summary>");
+                sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{namespaceName}.{interfaceName}), \"{methodName}\")]");
                 sb.AppendLine($"        public {asyncReturnType} {methodName}Async({parameters})");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
@@ -544,6 +545,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"        /// Synchronous overload of {methodName}. Executes locally and fires the server round-trip in the background.");
                 sb.AppendLine($"        /// SyncPolicy on runtime mode override: {syncPolicy}.");
                 sb.AppendLine($"        /// </summary>");
+                sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{namespaceName}.{interfaceName}), \"{methodName}\")]");
                 sb.AppendLine($"        public {syncRet} {methodName}Sync({parameters})");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
@@ -1859,7 +1861,7 @@ namespace SharedMeta.Generator.Generators
         /// </summary>
         private static void GenerateSignalMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, bool isQueryCombo, bool modeExplicit, string syncApi, string interfaceName,
-            DetectedSerializer serializer)
+            string namespaceName, DetectedSerializer serializer)
         {
             var methodName = method.Identifier.Text;
             var returnType = method.ReturnType.ToString();
@@ -1890,6 +1892,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        /// <summary>");
             sb.AppendLine($"        /// Signal: fire-and-forget server call. Returns immediately; server-side errors are logged only.");
             sb.AppendLine($"        /// </summary>");
+            sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{namespaceName}.{interfaceName}), \"{methodName}\")]");
             sb.AppendLine($"        public void {methodName}Signal({parameters})");
             sb.AppendLine("        {");
             sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");

@@ -3093,6 +3093,28 @@ The server dispatcher receives `MethodVersion` and can route to different implem
 1. **Signature validation** catches accidental breaking changes at connection time
 2. **MethodVersion** enables intentional coexistence of old and new method signatures
 
+### `[GeneratedFromMetaMethod]` — IDE-tool linkback (0.16.0+)
+
+Every method emitted as a mirror of a `[MetaMethod]` is stamped with `[GeneratedFromMetaMethod(typeof(IFoo), "Bar")]`. The attribute appears on:
+
+* `*ApiClient.{Name}Async` / `{Name}Sync` / `{Name}Signal`
+* `*EntityQueryApi.{Name}Async`
+* `{I}EntityCaller.{Name}Async` (the cross-entity caller interface)
+* `{Service}EntityRecorder.{Name}Async`, `{Service}EntityReplayer.{Name}Async`, `{Service}LocalEntityCaller.{Name}Async` (its three runtime implementations)
+
+It captures `(ServiceInterface : Type, MethodName : string)` — a `typeof()` reference rather than a string FQN, so it follows refactor-rename of the interface type.
+
+```csharp
+[global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::CardGame.Shared.ICardGameService), "RegisterPlayer")]
+public Task RegisterPlayerAsync(string playerName, string profileEntityId) { ... }
+```
+
+**Tooling that consumes this attribute:**
+
+* **Rider plugin** at [`SharedLibs/RiderPlugin`](https://github.com/CoreGameIO/SharedLibs/tree/main/RiderPlugin) — extends Find Usages and Go to Declaration so a single action covers the user-authored `[MetaMethod]` and every generated counterpart. See the project README for install instructions.
+
+The runtime ignores the attribute. It is purely a marker for downstream tooling.
+
 ---
 
 ## 21. Attribute Reference
