@@ -9,7 +9,7 @@ namespace Expedition.Shared
         [MetaMethod(Alias = "UpdateEnergy")]
         int UpdateEnergy();
 
-        [MetaMethod(Alias = "BuyEnergy")]
+        [MetaMethod(Alias = "BuyEnergy", Mode = ExecutionMode.Optimistic, SkipServerOnFalse = true)]
         bool BuyEnergy();
 
         [MetaMethod(Alias = "SpendEnergy", Mode = ExecutionMode.Server, GenerateClientApi = false)]

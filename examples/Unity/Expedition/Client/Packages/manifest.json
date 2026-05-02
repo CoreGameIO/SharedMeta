@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "com.coregame.sharedmeta": "https://github.com/CoreGameIO/SharedMeta.git?path=com.coregame.sharedmeta#v0.15.1",
+    "com.coregame.sharedmeta": "https://github.com/CoreGameIO/SharedMeta.git?path=com.coregame.sharedmeta#v0.17.0",
     "com.unity.nuget.newtonsoft-json": "3.2.1",
     "com.github-glitchenzo.nugetforunity": "https://github.com/GlitchEnzo/NuGetForUnity.git?path=/src/NuGetForUnity",
     "com.unity.ai.navigation": "2.0.10",
