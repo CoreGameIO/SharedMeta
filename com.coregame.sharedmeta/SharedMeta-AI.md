@@ -438,6 +438,34 @@ Config version is **pinned per entity** on first activation and persisted in `En
 
 Client access: `client.GetEntityConfig<GameConfig>(entityId)` — returns resolved config after subscribing.
 
+#### Client config provider — required setup (0.17.0+)
+
+The client materializes config via an `IClientMetaConfigProvider<TConfig>` registered on the resolver. **Failing to register one for any service that declares `ConfigType = typeof(X)` (without `DefaultConfig = true`) throws `InvalidOperationException` at the first subscribe.** Pre-0.17.0 the generator silently auto-registered `StaticConfigProvider<T>(new T())` for everyone — that hid wiring bugs and was removed; auto-register is now opt-in via `[MetaService(..., DefaultConfig = true)]`.
+
+Three built-in providers cover all flows:
+
+```csharp
+// (A) Preloaded instance — LocalBackend, single-player, bundled snapshot
+client.Resolver.RegisterConfigProvider<GameConfig>(
+    new StaticConfigProvider<GameConfig>(loadedConfig));
+
+// (B) Server-pushed bytes — real-server live ops, with optional disk cache
+client.Resolver.RegisterConfigProvider<GameConfig>(new DownloadingConfigProvider<GameConfig>(
+    urlResolver: client.ConfigDownloadUrlResolver(typeof(GameState).FullName!),
+    downloader:  UnityConfigDownloader.DownloadAsync,   // Unity-friendly UnityWebRequest
+    serializer:  client.Serializer,
+    cache:       new FileConfigCache<GameConfig>(cacheDir, client.Serializer)));
+
+// (C) Composite — try server, fall back to bundled when offline
+client.Resolver.RegisterConfigProvider<GameConfig>(new CompositeConfigProvider<GameConfig>(
+    primary:  new DownloadingConfigProvider<GameConfig>(/* ...as in (B)... */),
+    fallback: new StaticConfigProvider<GameConfig>(bundledSnapshot)));
+```
+
+`RegisterConfigProvider<T>` (without "Try") clobbers any auto-emitted default — order relative to `client.Resolver.RegisterAllServices()` doesn't matter. One provider per `TConfig` type covers all services that share that config.
+
+Set `DefaultConfig = true` on `[MetaService]` only when `new TConfig()` produces gameplay-correct fallback values; for typical configs (item registries, balance numbers, level data) leave it off and register an explicit provider.
+
 ### Context Properties
 
 Inside `[MetaServiceImpl]` classes, the source generator injects:
@@ -968,7 +996,7 @@ bool PlayCardV2(Card card, bool autoDefend);
 |----------|------|---------|-------------|
 | `StateType` | Type | required | State class type |
 | `ConfigType` | Type | null | Explicit config type for this service |
-| `DefaultConfig` | bool | false | Use the config class marked with `[MetaConfig(Default = true)]` |
+| `DefaultConfig` | bool | false | Use config class with `[MetaConfig(Default = true)]`. Also opts the service into the generator's auto-`StaticConfigProvider<T>(new T())` fallback on the client (0.17.0+); without this flag, an explicit `RegisterConfigProvider<T>` is required and a missing one throws at first subscribe |
 | `AccessPolicy` | EntityAccessPolicy | Open | Subscribe access control |
 | `SubscriberInterfaces` | Type[] | empty | Framework event subscriptions (e.g. ILobbySubscriber) |
 

@@ -47,11 +47,16 @@ namespace SharedMeta.Generator.Generators
                 configTypeFullName = configType.ToDisplayString();
             }
 
-            // Handle DefaultConfig = true
-            if (configTypeFullName == null)
+            // Handle DefaultConfig = true. Tracked separately from configTypeFullName because
+            // it gates the opt-in auto-default-StaticConfigProvider emission below — explicit
+            // ConfigType = typeof(X) requires a user-registered provider, DefaultConfig = true
+            // is the explicit "I'm OK with new TConfig() as fallback" opt-in.
+            bool usesDefaultConfig = false;
+            var defaultConfigArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "DefaultConfig");
+            if (defaultConfigArg.Value.Value is true)
             {
-                var defaultConfigArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "DefaultConfig");
-                if (defaultConfigArg.Value.Value is true && compilation != null)
+                usesDefaultConfig = true;
+                if (configTypeFullName == null && compilation != null)
                 {
                     configTypeFullName = FindDefaultConfigType(compilation, symbol.ContainingNamespace);
                 }
@@ -96,12 +101,16 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            {");
             EmitConfigBody(sb, node, baseName, stateTypeFullName, stateTypeName, configTypeFullName, interfaceName, namespaceName);
             sb.AppendLine("            });");
-            if (configTypeFullName != null)
+            if (configTypeFullName != null && usesDefaultConfig)
             {
-                // Install a default StaticConfigProvider so out-of-the-box bundled config still
-                // works without the user wiring a provider. TryRegister is non-clobbering — if
-                // the user already registered a custom provider (e.g. DownloadingConfigProvider)
-                // via resolver.RegisterConfigProvider<TConfig>(...), this call is a no-op.
+                // Auto-default-StaticConfigProvider is opt-in via [MetaService(DefaultConfig = true)].
+                // The flag is the explicit "I am OK with new TConfig() as a fallback" contract —
+                // for services that don't ask for it, MetaServiceResolver throws on first subscribe
+                // when no provider is registered. This used to fire unconditionally for any
+                // ConfigType, which silently substituted an empty default and hid wiring bugs.
+                // TryRegister is non-clobbering — if the user already registered a custom provider
+                // (e.g. DownloadingConfigProvider) via resolver.RegisterConfigProvider<TConfig>(...),
+                // this call is a no-op.
                 sb.AppendLine($"            resolver.TryRegisterConfigProvider<{configTypeFullName}>(new StaticConfigProvider<{configTypeFullName}>(new {configTypeFullName}()));");
             }
             sb.AppendLine("            return resolver;");

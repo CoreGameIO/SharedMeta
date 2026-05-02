@@ -165,5 +165,30 @@ namespace SharedMeta.Test.Meta1
             HeartbeatLog.Add((GetCallerId(), clientTicks));
             Console.WriteLine($"[Counter] NotifyHeartbeat from {GetCallerId()}: ticks={clientTicks}");
         }
+
+        /// <summary>
+        /// Server-side observer for SkipServerOnFalse — every TryAdd that lands on the server
+        /// records its caller + amount. The integration test asserts the bag contains only
+        /// the calls whose local return value was true; false-return calls must never reach the
+        /// server (the generator's `if (!default-equals)` guard short-circuits them).
+        /// </summary>
+        public static readonly System.Collections.Concurrent.ConcurrentBag<(string CallerId, int Amount)> SkipServerOnFalseLog
+            = new();
+
+        public bool TryAdd(int amount)
+        {
+            // Optimistic methods run on BOTH sides — record only on the server, otherwise
+            // local-exec on the client (which happens regardless of skipServerOnFalse) would
+            // contaminate the bag and turn the integration test into a false positive
+            // (single-AppDomain shared static collection).
+            var ctx = MetaContextAccessor.Current;
+            if (ctx?.IsServer == true)
+                SkipServerOnFalseLog.Add((GetCallerId(), amount));
+            // Validation contract: must NOT mutate state when returning false.
+            if (amount <= 0) return false;
+            var state = GetState();
+            state.Sum += amount;
+            return true;
+        }
     }
 }

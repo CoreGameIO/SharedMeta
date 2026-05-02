@@ -591,11 +591,29 @@ namespace SharedMeta.Client
 
             if (!_configProviders.TryGetValue(config.ConfigType, out var invoker))
             {
-                Core.Logging.MetaLog.Warning(
-                    $"[MetaServiceResolver] No IClientMetaConfigProvider registered for '{config.ConfigType.Name}'. " +
-                    $"Service '{config.ServiceName}' on entity '{entityId}' will receive null config. " +
-                    $"Register one via resolver.RegisterConfigProvider<{config.ConfigType.Name}>(...) before subscribing.");
-                return null;
+                // Fail loud at the first subscribe instead of silently propagating a null
+                // config and detonating later inside service code with an opaque NRE on
+                // Context.Config.X. Pre-0.17.0 returned null + Warning, and the generator
+                // also auto-emitted a default-constructed StaticConfigProvider for any
+                // service with a ConfigType — together those two hid wiring bugs across
+                // entire game projects. The auto-default is now opt-in via
+                // [MetaService(DefaultConfig = true)] only, and a missing provider is an
+                // error, not a warning.
+                throw new InvalidOperationException(
+                    $"[SharedMeta] No IClientMetaConfigProvider<{config.ConfigType.Name}> registered " +
+                    $"for service '{config.ServiceName}' on entity '{entityId}'. Register before subscribing:\n\n" +
+                    $"    resolver.RegisterConfigProvider<{config.ConfigType.Name}>(\n" +
+                    $"        new StaticConfigProvider<{config.ConfigType.Name}>(yourLoadedConfig));\n\n" +
+                    $"or for server-driven configs (recommended for real servers):\n\n" +
+                    $"    resolver.RegisterConfigProvider<{config.ConfigType.Name}>(\n" +
+                    $"        new DownloadingConfigProvider<{config.ConfigType.Name}>(\n" +
+                    $"            urlResolver: client.ConfigDownloadUrlResolver(stateTypeName),\n" +
+                    $"            downloader:  UnityConfigDownloader.DownloadAsync,\n" +
+                    $"            serializer:  client.Serializer));\n\n" +
+                    $"As of SharedMeta 0.17.0 the generator no longer silently registers a default-" +
+                    $"constructed StaticConfigProvider; opt in by adding DefaultConfig = true on the " +
+                    $"[MetaService] attribute if an empty {config.ConfigType.Name}() is intentionally " +
+                    $"acceptable as a fallback.");
             }
 
             return await invoker(subResult.ConfigVersion).ConfigureAwait(false);

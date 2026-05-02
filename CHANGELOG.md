@@ -1,5 +1,59 @@
 # Changelog
 
+## [0.17.0] - 2026-05-02
+
+### ⚠ Breaking — config delivery is now fail-loud
+
+Pre-0.17.0 the generator unconditionally emitted `resolver.TryRegisterConfigProvider<TConfig>(new StaticConfigProvider<TConfig>(new TConfig()))` for every service that declared a config type, and `MetaServiceResolver.ResolveConfigAsync` returned `null` (with a warning) when no provider was registered. Together these two behaviors silently substituted an empty default-constructed config — bugs hid for hours: `Context.Config.X` looked legitimate but contained zeroed fields, NREs detonated deep inside service code, the warning got drowned in regular console output. Two changes close that:
+
+1. **Generator no longer auto-registers a default-constructed `StaticConfigProvider<TConfig>` unconditionally.** Auto-registration is now opt-in via `[MetaService(DefaultConfig = true)]` — the flag is the explicit "I am OK with `new TConfig()` as a fallback" contract. Services that declare `ConfigType = typeof(X)` without `DefaultConfig = true` require an explicit `resolver.RegisterConfigProvider<X>(...)` call from the host.
+2. **`MetaServiceResolver.ResolveConfigAsync` now throws `InvalidOperationException` when no provider is registered**, instead of warning-and-returning-null. The exception text names the missing config type, the failing service, the entity, and prints the two recommended registration recipes (`StaticConfigProvider` for preloaded instances, `DownloadingConfigProvider` for server-pushed bytes).
+
+Failure now happens at the **first subscribe** — easy to spot, exact stack trace, actionable message. No more silent zeroed config.
+
+### Migration
+
+If your build broke after the bump, you have two paths depending on intent:
+
+**(A) You always want the explicit registration** (recommended — works for both LocalBackend and real servers):
+
+```csharp
+// Before RegisterAllServices() is fine; RegisterConfigProvider is clobbering — order
+// relative to RegisterAllServices doesn't matter, the explicit call always wins over
+// any auto-emitted default that DefaultConfig = true might add.
+client.Resolver.RegisterConfigProvider<MyConfig>(
+    new StaticConfigProvider<MyConfig>(loadedConfig));
+
+// or for server-driven configs:
+client.Resolver.RegisterConfigProvider<MyConfig>(
+    new DownloadingConfigProvider<MyConfig>(
+        urlResolver: client.ConfigDownloadUrlResolver(typeof(MyState).FullName!),
+        downloader:  UnityConfigDownloader.DownloadAsync,
+        serializer:  client.Serializer,
+        cache:       new FileConfigCache<MyConfig>(cacheDir, client.Serializer)));
+```
+
+**(B) An empty `new MyConfig()` truly is acceptable as a fallback** (the legacy behavior — opt in explicitly):
+
+```csharp
+[MetaService(StateType = typeof(MyState), DefaultConfig = true)]
+//                                        ^^^^^^^^^^^^^^^^^^^
+//        the generator sees this and emits TryRegisterConfigProvider<MyConfig>(...)
+//        with new MyConfig() as before — same auto-default, but now requested.
+public interface IMyService : IMetaService { ... }
+```
+
+If you're seeing the new exception and `MyConfig`'s ctor genuinely produces a usable default — option (B) is one attribute change. If `MyConfig` requires actual data (most cases) — option (A) is the right answer.
+
+### Changed
+
+- **`ServiceRegistrationGenerator`** — `Generate` now tracks `usesDefaultConfig` separately from `configTypeFullName`. Emission of `TryRegisterConfigProvider<TConfig>(new StaticConfigProvider<TConfig>(new TConfig()))` is gated by `usesDefaultConfig`; explicit `ConfigType = typeof(X)` without `DefaultConfig = true` produces no auto-fallback.
+- **`MetaServiceResolver.ResolveConfigAsync`** — missing provider raises `InvalidOperationException` with an actionable message and registration recipes; the previous `MetaLog.Warning` + `return null` path is gone.
+
+### Fixed
+
+- **`[MetaMethod(SkipServerOnFalse = true)]` was silently ignored by `SimplifiedApiClientGenerator`** since the generator was rewritten — the attribute parsed and the docs described it, but the codegen always emitted an unconditional `_ = _network.CallBytesAsync(...)` for Optimistic methods. Old `XApiClientGenerator` had it; the rewrite lost it. Now `SimplifiedApiClientGenerator.GenerateMethod` parses `SkipServerOnFalse`, threads it into `GenerateOptimisticMethod` / `GenerateOptimisticMethodSync`, and wraps the fire-and-forget RPC in `if (!EqualityComparer<T>.Default.Equals(localResult, default!)) { ... }` for both async and sync overloads — when local impl returns the default value (typically `false` for validation-style methods), the RPC is short-circuited entirely. Compile-time validation (`#error`) now also rejects: (a) `SkipServerOnFalse = true` on a `void` method (no return value to compare against `default`), and (b) `SkipServerOnFalse = true` combined with an explicit non-Optimistic `Mode`. Coverage: new `SkipServerOnFalseTests` integration class with three scenarios (true → server receives, false → server skipped, mixed → only the trues land).
+
 ## [0.16.0] - 2026-04-30
 
 ### Added

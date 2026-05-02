@@ -414,6 +414,7 @@ namespace SharedMeta.Generator.Generators
             bool legacySignalBool = false;
             string syncApi = "None";
             string syncPolicy = "Throw";
+            bool skipServerOnFalse = false;
 
             var attributes = method.AttributeLists.SelectMany(a => a.Attributes);
             var metaMethod = attributes.FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
@@ -439,6 +440,9 @@ namespace SharedMeta.Generator.Generators
                             syncApi = syncAccess.Name.Identifier.Text;
                         if (name == "SyncPolicy" && arg.Expression is MemberAccessExpressionSyntax policyAccess)
                             syncPolicy = policyAccess.Name.Identifier.Text;
+                        if (name == "SkipServerOnFalse" && arg.Expression is LiteralExpressionSyntax skipLit
+                            && skipLit.Token.Text == "true")
+                            skipServerOnFalse = true;
                     }
                 }
             }
@@ -505,6 +509,26 @@ namespace SharedMeta.Generator.Generators
                 if (isAsync)
                 {
                     sb.AppendLine($"#error SharedMeta: [MetaMethod] on '{interfaceName}.{methodName}' has Sync = SyncApi.{syncApi} but the service signature is async (return type '{returnType}'). Change the return type to a non-Task type, or remove Sync.");
+                }
+            }
+
+            // SkipServerOnFalse validation. The flag has no meaning without a return value to
+            // compare against `default`, and the only execution mode that runs the impl locally
+            // first (so the return value is available before the RPC) is Optimistic. Silently
+            // ignoring — as pre-0.17.0 did for every Optimistic method too — is the original
+            // footgun; surface misuse loudly. Mode validation only fires when Mode is set
+            // EXPLICITLY to a non-Optimistic value: methods without an explicit Mode default to
+            // Optimistic at runtime (per MetaMethodAttribute.Mode default), so the flag is valid
+            // there even though our generator's local `defaultMode` initial value is "Server".
+            if (skipServerOnFalse)
+            {
+                if (isVoidReturn)
+                {
+                    sb.AppendLine($"#error SharedMeta: [MetaMethod] on '{interfaceName}.{methodName}' has SkipServerOnFalse = true but the method is void. The flag compares the local return value against default(T) — there is no return value to compare. Remove SkipServerOnFalse, or change the return type to bool/int/enum/etc.");
+                }
+                if (modeExplicit && defaultMode != "Optimistic")
+                {
+                    sb.AppendLine($"#error SharedMeta: [MetaMethod] on '{interfaceName}.{methodName}' has SkipServerOnFalse = true but Mode = ExecutionMode.{defaultMode}. The flag is meaningful only for Optimistic methods, where the impl runs locally first and the result decides whether the server RPC fires. Other modes don't have a local-first phase.");
                 }
             }
 
@@ -579,7 +603,7 @@ namespace SharedMeta.Generator.Generators
             if (!onlySync)
             {
                 GenerateServerMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync);
-                GenerateOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync);
+                GenerateOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync, skipServerOnFalse);
                 GenerateCrossOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync);
                 GenerateServerPatchMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName);
                 GenerateServerReplaceMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName);
@@ -588,7 +612,7 @@ namespace SharedMeta.Generator.Generators
             // Private sync-optimistic body — only emitted when the public sync method was emitted above.
             if (wantsSync && !isAsync && (defaultMode == "Optimistic" || defaultMode == "Local"))
             {
-                GenerateOptimisticMethodSync(sb, method, methodAlias, innerReturnType, isVoidReturn, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync);
+                GenerateOptimisticMethodSync(sb, method, methodAlias, innerReturnType, isVoidReturn, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync, skipServerOnFalse);
             }
         }
 
@@ -822,7 +846,7 @@ namespace SharedMeta.Generator.Generators
 
         private static void GenerateOptimisticMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
-            DetectedSerializer serializer, string? stateTypeName, bool hasDeepDesync = false)
+            DetectedSerializer serializer, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false)
         {
             var methodName = method.Identifier.Text;
             var parameters = string.Join(", ", method.ParameterList.Parameters);
@@ -930,6 +954,17 @@ namespace SharedMeta.Generator.Generators
             }
             else
             {
+                if (skipServerOnFalse)
+                {
+                    // [MetaMethod(SkipServerOnFalse = true)] — skip the server round-trip when the
+                    // local impl returned default(T) (e.g. a validation method that returned false
+                    // without mutating state). The server would replay the same logic and return
+                    // the same default; saving the trip preserves semantics and cuts traffic for
+                    // no-op calls. The contract is "if you return default, you must not have
+                    // mutated state" — same client/server replay assumption Optimistic always made.
+                    sb.AppendLine($"            if (!System.Collections.Generic.EqualityComparer<{returnType}>.Default.Equals(localResult, default!))");
+                    sb.AppendLine("            {");
+                }
                 sb.AppendLine($"            _ = _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks)");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
@@ -950,6 +985,10 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                    }");
                 sb.AppendLine($"                    catch (Exception _ddEx) {{ SharedMeta.Core.Logging.MetaLog.Error(\"[Optimistic-Continuation] {methodAlias}: \" + _ddEx, _ddEx); }}");
                 sb.AppendLine("                });");
+                if (skipServerOnFalse)
+                {
+                    sb.AppendLine("            }");
+                }
                 sb.AppendLine();
                 sb.AppendLine("            return localResult;");
             }
@@ -965,7 +1004,7 @@ namespace SharedMeta.Generator.Generators
         // continuation. Only differences: no `async`/`Task<>` wrapper, no `await` on impl call.
         private static void GenerateOptimisticMethodSync(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, int paramCount, string callArgs,
-            DetectedSerializer serializer, string? stateTypeName, bool hasDeepDesync = false)
+            DetectedSerializer serializer, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false)
         {
             var methodName = method.Identifier.Text;
             var parameters = string.Join(", ", method.ParameterList.Parameters);
@@ -1067,6 +1106,14 @@ namespace SharedMeta.Generator.Generators
             }
             else
             {
+                if (skipServerOnFalse)
+                {
+                    // [MetaMethod(SkipServerOnFalse = true)] — same semantics as the async path,
+                    // mirrored here for the Sync API. Skip the server round-trip when local
+                    // returned default(T); contract: no state mutation in the default-return branch.
+                    sb.AppendLine($"            if (!System.Collections.Generic.EqualityComparer<{returnType}>.Default.Equals(localResult, default!))");
+                    sb.AppendLine("            {");
+                }
                 sb.AppendLine($"            _ = _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks)");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
@@ -1087,6 +1134,10 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                    }");
                 sb.AppendLine($"                    catch (Exception _ddEx) {{ SharedMeta.Core.Logging.MetaLog.Error(\"[Optimistic-Continuation] {methodAlias}: \" + _ddEx, _ddEx); }}");
                 sb.AppendLine("                });");
+                if (skipServerOnFalse)
+                {
+                    sb.AppendLine("            }");
+                }
                 sb.AppendLine();
                 sb.AppendLine("            return localResult;");
             }

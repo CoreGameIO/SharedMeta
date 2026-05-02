@@ -433,26 +433,48 @@ services.AddSingleton<IConfigVersionResolver>(new AbTestConfigResolver());
 3. The provider materializes the config for that version — caching, downloading, fallback are all internal to the provider.
 4. The resolved instance is cached on the entity's `EntityConnection` and surfaced to all API clients on the entity (`Context.Config`, `client.GetEntityConfig<TConfig>(entityId)`).
 
-The generator-emitted `Add{Service}Services()` extension installs a default `StaticConfigProvider<TConfig>(new TConfig())` via `TryRegisterConfigProvider` — so out of the box you get the bundled config. To override (e.g. download from server with disk caching), register **before** `RegisterAllServices()`:
+#### Registering a provider (required for `ConfigType`, optional for `DefaultConfig`)
+
+> **Breaking in 0.17.0** — services that declare `ConfigType = typeof(X)` without `DefaultConfig = true` MUST register a provider before subscribing. The previous "auto-emit `StaticConfigProvider<T>(new T())` for everyone" behavior silently substituted an empty config and is gone. A missing provider now throws `InvalidOperationException` with the actionable recipe at first subscribe.
+>
+> Services with `[MetaService(..., DefaultConfig = true)]` retain the auto-default — that flag is now the explicit "an empty `new TConfig()` is acceptable as a fallback" contract.
+
+`RegisterConfigProvider<T>` (without "Try") clobbers any auto-emitted default, so order relative to `RegisterAllServices()` doesn't matter — the explicit call always wins.
 
 ```csharp
-// Override default with a downloading provider that caches to disk
+// (A) Preloaded instance — LocalBackend / single-player / bundled ScriptableObject.
+//     Same instance can be passed to LocalServer.RegisterConfig<TState>(...) on the
+//     server side; one object lives on both sides, no serialization, version is ignored.
+resolver.RegisterConfigProvider<GameConfig>(
+    new StaticConfigProvider<GameConfig>(loadedConfig));
+resolver.RegisterAllServices();
+```
+
+```csharp
+// (B) Server-pushed bytes with on-disk caching — real-server live ops.
 using var http = new HttpClient();
 resolver.RegisterConfigProvider<GameConfig>(new DownloadingConfigProvider<GameConfig>(
     urlResolver: client.ConfigDownloadUrlResolver(typeof(GameState).FullName!),
-    downloader: url => http.GetByteArrayAsync(url),
-    serializer: client.Serializer,
-    cache: new FileConfigCache<GameConfig>("./config-cache", client.Serializer)));
+    downloader:  url => http.GetByteArrayAsync(url),
+    serializer:  client.Serializer,
+    cache:       new FileConfigCache<GameConfig>("./config-cache", client.Serializer)));
+resolver.RegisterAllServices();
+```
 
-// Or chain with fallback to the bundled snapshot if the network is down:
+```csharp
+// (C) Composite — try server, fall back to bundled snapshot when offline.
 resolver.RegisterConfigProvider<GameConfig>(new CompositeConfigProvider<GameConfig>(
-    primary: new DownloadingConfigProvider<GameConfig>(...),
-    fallback: new StaticConfigProvider<GameConfig>(new GameConfig())));
-
+    primary:  new DownloadingConfigProvider<GameConfig>(/* ...as in (B)... */),
+    fallback: new StaticConfigProvider<GameConfig>(bundledSnapshot),
+    onPrimaryFailed: ex => MetaLog.Warning($"[Config] download failed, using bundled: {ex.Message}")));
 resolver.RegisterAllServices();
 ```
 
 In Unity, replace `http.GetByteArrayAsync` with `UnityConfigDownloader.DownloadAsync` for IL2CPP/WebGL compatibility.
+
+#### When `DefaultConfig = true` is appropriate
+
+Set it only when `new TConfig()` is genuinely a usable fallback — e.g. configs whose default-constructed values match the gameplay defaults the design assumes when nothing is loaded. For most game configs (item registries, balance numbers, level data), the default ctor produces zeroed nonsense — leave the flag off and register an explicit provider.
 
 ### Accessing Config from Client Code
 
@@ -3161,7 +3183,7 @@ The runtime ignores the attribute. It is purely a marker for downstream tooling.
 |----------|------|---------|-------------|
 | `StateType` | Type | required | State class type |
 | `ConfigType` | Type | null | Explicit config type for this service |
-| `DefaultConfig` | bool | false | Use the config class marked with `[MetaConfig(Default = true)]` |
+| `DefaultConfig` | bool | false | Use config class with `[MetaConfig(Default = true)]`. Also opts the service into the generator's auto-`StaticConfigProvider<T>(new T())` fallback on the client (0.17.0+); without this flag, an explicit `RegisterConfigProvider<T>` is required and a missing one throws at first subscribe |
 | `AccessPolicy` | EntityAccessPolicy | Open | Subscribe access control |
 | `SubscriberInterfaces` | Type[] | empty | Framework event subscriptions |
 

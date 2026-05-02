@@ -97,5 +97,16 @@ namespace SharedMeta.Test.Meta1
         /// </summary>
         [MetaMethod(Alias = "NotifyHeartbeat", Mode = ExecutionMode.Signal)]
         void NotifyHeartbeat(long clientTicks);
+
+        /// <summary>
+        /// Validation-style method covered by the SkipServerOnFalse contract.
+        /// Returns true and increments Sum when amount > 0; returns false and mutates nothing
+        /// otherwise. The generator must wrap the server RPC in
+        /// <c>if (!EqualityComparer&lt;bool&gt;.Default.Equals(localResult, default))</c> so the
+        /// false-return branch never sends bytes over the wire — verified via a server-side
+        /// observer (<see cref="CounterService.SkipServerOnFalseLog"/>).
+        /// </summary>
+        [MetaMethod(Alias = "TryAdd", Mode = ExecutionMode.Optimistic, SkipServerOnFalse = true)]
+        bool TryAdd(int amount);
     }
 }
