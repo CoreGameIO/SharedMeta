@@ -1,5 +1,77 @@
 # Changelog
 
+## [0.18.0] - 2026-05-04
+
+### Added — `IMetaResultComparer<T>` for structural result comparison
+
+Pre-0.18.0 the generated Optimistic / CrossOptimistic / Server ApiClient methods compared local and server return values **byte-for-byte** through `Span.SequenceEqual` on the serialized payloads. That works fine for primitives and POCOs with stable serialization, but breaks for return types whose byte representation is not canonical for their value:
+
+- `Dictionary<,>` — enumeration order depends on insertion sequence and hash buckets, so two semantically-equal dictionaries can produce different bytes when the inserts ran in different orders on client vs server.
+- Types containing floats — `-0.0` vs `+0.0`, NaN payloads, denormals all fail bytewise comparison while passing structural equality.
+- Types whose byte form depends on something the impl method doesn't actually care about (e.g. `HashSet<>`).
+
+The fix is opt-in: implement `IMetaResultComparer<T>` for the affected return type, and the source generator rewrites the comparison path for every method returning `T` to call the comparer instead of comparing bytes.
+
+```csharp
+// Marker interface — discovered by the generator at compile time.
+public class PendingGrantsComparer : IMetaResultComparer<PendingGrants>
+{
+    public bool AreEqual(PendingGrants server, PendingGrants local) =>
+        DictsEqualByContent(server.Currencies, local.Currencies)
+        && DictsEqualByContent(server.Resources, local.Resources)
+        && /* ... */;
+}
+```
+
+No registration required. The generator scans the compilation (own assembly + non-system referenced assemblies) for public, non-abstract, parameterless-ctor classes implementing `IMetaResultComparer<T>`, picks the winner per target type by `[ResultComparer(Priority = N)]` (default 0; ties at top priority produce a `#error` directive in the generated ApiClient naming all candidates so the build fails with an actionable message), and emits one static field per used return type:
+
+```csharp
+private static readonly IMetaResultComparer<PendingGrants> _resultComparer_MyGame_PendingGrants
+    = new MyGame.PendingGrantsComparer();
+```
+
+Each Optimistic / CrossOptimistic / Server method dispatcher then routes through it:
+
+```csharp
+// Server method — serverResult is already deserialized for the call body
+if (!_resultComparer_MyGame_PendingGrants.AreEqual(serverResult, localResult)) {
+    _diagnostics?.OnResultMismatch(...);
+    var localResultBytes = MemoryPackSerializer.Serialize(localResult);  // lazy, only on mismatch
+    _ = _network.SendDesyncReportAsync(...);
+    throw new DesyncException(...);
+}
+
+// Optimistic continuation — server bytes deserialized in try/catch up front
+PendingGrants serverResult = default!;
+bool serverDeserializedOk = false;
+try { serverResult = MemoryPackSerializer.Deserialize<PendingGrants>(t.Result.ResultBytes)!; serverDeserializedOk = true; }
+catch (Exception) { }
+if (!serverDeserializedOk || !_resultComparer_MyGame_PendingGrants.AreEqual(serverResult, localResult)) { /* mismatch */ }
+```
+
+Notable properties:
+
+- **Happy path is faster than 0.17.0.** Without a comparer, the byte path always serializes `localResult` to compare. With a comparer, `localResult` is serialized only on the mismatch branch (for the desync follow-up report) — one Pack saved per Optimistic call when the comparer accepts.
+- **Mismatch path includes one Pack** (for the report) instead of zero — net loss is amortized by mismatches being rare.
+- **Server-result deserialization failure is treated as a mismatch.** If the bytes don't decode, `OnResultMismatch` fires with `default(T)` for the server side rather than swallowing the exception silently.
+- **Composes cleanly with deep desync.** The `OnPatchDesync` path is unaffected — patch CRCs still compare state mutations, comparers only affect `OnResultMismatch`.
+
+### Added
+
+- **`SharedMeta.Core.Diagnostics.IMetaResultComparer<in T>`** ([Runtime/Core/Diagnostics/IMetaResultComparer.cs](com.coregame.sharedmeta/Runtime/Core/Diagnostics/IMetaResultComparer.cs)) — single-method interface (`bool AreEqual(T server, T local)`). Implementations must be deterministic and thread-safe (the Optimistic continuation calls them from the threadpool).
+- **`SharedMeta.Core.Diagnostics.ResultComparerAttribute`** — optional, on the comparer class. `NoAutoRegister = true` opts a comparer out of generator discovery; `Priority = N` resolves ambiguity when multiple comparers exist for the same `T` (highest wins; ties produce a build-time `#error`).
+- **`ResultComparerScanner`** ([src/SharedMeta.Generator/Generators/ResultComparerScanner.cs](src/SharedMeta.Generator/Generators/ResultComparerScanner.cs)) — Roslyn scanner the generator runs against `compilation.Assembly.GlobalNamespace` plus non-system `compilation.References`. Mirrors the discovery convention used by transformers (`IArgumentTransformer<,>`).
+- **Integration tests** ([tests/SharedMeta.IntegrationTests/ResultComparerTests.cs](tests/SharedMeta.IntegrationTests/ResultComparerTests.cs)) — symmetric pair: comparer returning `true` swallows desync despite divergent bytes (`System.Random` in impl), comparer returning `false` surfaces desync despite identical bytes.
+
+### Changed
+
+- **`SimplifiedApiClientGenerator`** — at the top of `Generate`, scans the compilation for comparers and resolves a per-method winner. Emits `#error` directives for ambiguous types (one line per affected return type, listing all candidates with their priorities). Adds a static field per used target type. The four mismatch-detection sites (Server / Optimistic / CrossOptimistic / OptimisticSync) branch on comparer presence: comparer path calls `AreEqual` and serializes `localResult` lazily for the desync report; byte path is unchanged.
+- **`GenerateOptimisticResultDeserialization`** — accepts an optional `ResultComparerInfo`. When present, deserializes the server result up-front in a try/catch and gates the mismatch on either deserialization failure or `!comparer.AreEqual(...)`. When absent, falls through to the existing byte-comparison emission.
+
+### Migration
+
+Nothing required. The feature is purely additive — projects without an `IMetaResultComparer<T>` implementation see the same byte-comparison behavior as 0.17.0. To opt a return type in: drop a class implementing `IMetaResultComparer<T>` anywhere reachable from the assembly that compiles the corresponding `[MetaService]` interface (typically the Shared assembly), rebuild, done.
+
 ## [0.17.0] - 2026-05-02
 
 ### ⚠ Breaking — config delivery is now fail-loud
