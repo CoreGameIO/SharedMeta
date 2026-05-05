@@ -207,12 +207,41 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// </summary>
     protected virtual object? CreatePatchWrapper(PatchNode root) => null;
 
+    /// <summary>
+    /// Current state schema version as last returned by <see cref="RunInitAsync"/>.
+    /// Tracked so the lazy migration check knows when the schema needs advancing.
+    /// </summary>
+    protected int CurrentStateSchemaVersion { get; private set; }
+
+    /// <summary>
+    /// Set to true by <see cref="CheckAndRunLazyMigrationAsync"/> when a lazy migration ran
+    /// and the caller (EntityGrain) must force-persist state.
+    /// Cleared by EntityGrain after it has persisted.
+    /// </summary>
+    public bool LazyMigrationCompleted { get; set; }
+
+    /// <summary>New schema version after a lazy migration. Read by EntityGrain when
+    /// <see cref="LazyMigrationCompleted"/> is true.</summary>
+    public int LazyMigrationNewVersion { get; set; }
+
+    /// <summary>
+    /// Called at the start of <see cref="HandleCallAsync"/> to lazily apply any config-driven
+    /// state schema migration that became necessary since the last activation. Returns true
+    /// when migration ran and <see cref="LazyMigrationCompleted"/> / <see cref="LazyMigrationNewVersion"/>
+    /// have been updated. Generated providers override this when the state declares
+    /// <c>[MetaStateVersion]</c> attributes.
+    /// </summary>
+    protected virtual Task<bool> CheckAndRunLazyMigrationAsync() => Task.FromResult(false);
+
     public async Task<HandleCallResult> HandleCallAsync(RpcCall call)
     {
         if (MetaContext == null || Context == null)
         {
             return new HandleCallResult { Response = new RpcResponse { Error = "Provider not initialized" } };
         }
+
+        // Lazy migration: if config version advanced since activation, run pending migration steps.
+        await CheckAndRunLazyMigrationAsync();
 
         try
         {
@@ -442,6 +471,14 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         if (MetaContext == null || Context == null)
             return new QueryCallResponse { Error = "Provider not initialized" };
 
+        // Lazy migration: run any pending config-driven schema steps before serving the
+        // query so the result reflects the up-to-date state. Note that query calls don't
+        // go through HandleCallAsync, so we check here too. The EntityGrain's HandleCallAsync
+        // wrapper checks LazyMigrationCompleted after HandleCallAsync; for queries we persist
+        // inline via SaveStateHandler when migration ran.
+        if (await CheckAndRunLazyMigrationAsync() && SaveStateHandler != null)
+            await SaveStateHandler();
+
         try
         {
             // Set up minimal context for the query (read-only)
@@ -562,6 +599,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         try
         {
             var newVersion = await RunInitAsync(currentVersion);
+            CurrentStateSchemaVersion = newVersion;
             return newVersion;
         }
         finally
@@ -575,6 +613,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// <summary>
     /// Override in generated code to call [MetaInit] methods.
     /// ServerRandom and Config are available during this call.
+    /// When the state declares [MetaStateVersion] attributes, the generated override calls
+    /// each service's [MetaInit] with the config pinned to the transition version.
     /// </summary>
     protected virtual Task<int> RunInitAsync(int currentVersion)
     {

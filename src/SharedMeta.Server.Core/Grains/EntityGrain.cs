@@ -296,6 +296,15 @@ namespace SharedMeta.Server.Core.Grains
                 var providerResult = await _provider.HandleCallAsync(call);
                 forcePersist = providerResult.ForcePersist;
 
+                // Lazy migration: if CheckAndRunLazyMigrationAsync ran a migration, persist the
+                // updated state.Version so the schema advance is durable before the next call.
+                if (_provider is MetaProviderBase<TState> mpb && mpb.LazyMigrationCompleted)
+                {
+                    state.Version = mpb.LazyMigrationNewVersion;
+                    mpb.LazyMigrationCompleted = false;
+                    forcePersist = true;
+                }
+
                 PersistRandomBytes();
 
                 // Distribute broadcasts to ALL EXCEPT caller

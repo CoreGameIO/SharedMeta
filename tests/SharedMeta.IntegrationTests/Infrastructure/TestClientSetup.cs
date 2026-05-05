@@ -1,5 +1,6 @@
 using SharedMeta.Core;
 using SharedMeta.Core.Network;
+using SharedMeta.Core.Transport;
 using SharedMeta.Core.Diagnostics;
 using SharedMeta.Client;
 using SharedMeta.Debug.InProcess;
@@ -16,6 +17,7 @@ public class TestClientSetup : IAsyncDisposable
     private readonly List<string> _issues = new();
 
     public IMetaSerializer Serializer => _client.Serializer;
+    public IConnection Connection => _client.Connection;
     public string PlayerId => _client.PlayerId;
     public string ConnectionId => _client.ConnectionId;
 

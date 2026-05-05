@@ -565,4 +565,51 @@ namespace SharedMeta.Core
             MethodName = methodName;
         }
     }
+
+    /// <summary>
+    /// Declares a state schema migration breakpoint on an <see cref="ISharedState"/> class.
+    ///
+    /// When all config conditions for a given <see cref="StateVersion"/> are met (AND semantics
+    /// across multiple attributes with the same <see cref="StateVersion"/>), the source generator
+    /// emits code that calls <c>[MetaInit]</c> with <see cref="IMetaConfigProvider{TConfig}.GetConfig"/>
+    /// pinned to the transition version — not the current latest config. Sequential migrations
+    /// (profiles that skipped intermediate versions) receive one <c>[MetaInit]</c> call per
+    /// unprocessed step in ascending order.
+    ///
+    /// Only declare breakpoints — points where the schema actually changes.
+    /// Config bumps that require no schema change need no entry.
+    ///
+    /// Example:
+    /// <code>
+    /// [MetaStateVersion(2, "2.1", typeof(ExpeditionConfig))]   // schema 2 when config >= 2.1
+    /// [MetaStateVersion(3, "3.1", typeof(ExpeditionConfig))]   // schema 3 when BOTH reach threshold
+    /// [MetaStateVersion(3, "1.4", typeof(SeasonConfig))]
+    /// public partial class ProfileState : ISharedState { ... }
+    /// </code>
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class, AllowMultiple = true, Inherited = false)]
+    public class MetaStateVersionAttribute : Attribute
+    {
+        /// <summary>The target state schema version this migration step produces.</summary>
+        public int StateVersion { get; }
+
+        /// <summary>
+        /// Minimum config version (Major.Minor) that triggers this schema transition.
+        /// Format: "Major.Minor" — e.g. "2.1".
+        /// </summary>
+        public string MinConfigVersion { get; }
+
+        /// <summary>
+        /// Which config type this threshold applies to.
+        /// <c>null</c> means the state's single primary config.
+        /// </summary>
+        public Type? ConfigType { get; }
+
+        public MetaStateVersionAttribute(int stateVersion, string minConfigVersion, Type? configType = null)
+        {
+            StateVersion = stateVersion;
+            MinConfigVersion = minConfigVersion;
+            ConfigType = configType;
+        }
+    }
 }
