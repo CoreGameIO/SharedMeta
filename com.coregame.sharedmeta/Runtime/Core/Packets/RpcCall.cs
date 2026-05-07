@@ -48,5 +48,14 @@ namespace SharedMeta.Core
         /// Set per-session by SetDebugOptions.
         /// </summary>
         [Id(9), Key(9)] public bool DeepDesyncRequested { get; set; }
+
+        /// <summary>
+        /// Caller's client app version (e.g. "1.4.3"). Populated by the transport handler on
+        /// the server from the connection's stored client version. Used by the entity grain
+        /// to resolve the per-caller config branch via <c>[MetaConfigVersion]</c> rules and
+        /// set <see cref="ServerMetaContext{TState}.Config"/> for the duration of the call,
+        /// keeping client-side optimistic execution and server-side computation in sync.
+        /// </summary>
+        [Id(10), Key(10)] public string? CallerClientVersion { get; set; }
     }
 }

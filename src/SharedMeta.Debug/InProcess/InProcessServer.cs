@@ -165,7 +165,7 @@ namespace SharedMeta.Debug.InProcess
         {
             try
             {
-                var url = _configUrlResolver?.GetDownloadUrl(request.StateTypeName, new Core.MetaConfigVersion(request.ConfigMajorVersion, request.ConfigMinorVersion));
+                var url = _configUrlResolver?.GetDownloadUrl(request.StateTypeName, new Core.MetaConfigVersion(request.ConfigMajorVersion, request.ConfigMinorVersion, request.ConfigPatchVersion));
                 return Task.FromResult(new ConfigDownloadUrlResponse { Success = true, DownloadUrl = url });
             }
             catch (Exception ex)

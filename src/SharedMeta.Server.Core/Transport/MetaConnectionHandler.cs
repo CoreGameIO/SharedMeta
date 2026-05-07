@@ -50,6 +50,9 @@ namespace SharedMeta.Server.Core.Transport
         public Guid SessionId { get; private set; }
         public bool IsSessionConnected => PlayerId.Length > 0;
         public bool DeepDesyncRequested { get; private set; }
+        /// <summary>Client app version from SessionConnect. Passed to entity grain during subscribe
+        /// so it can resolve the correct [MetaConfigVersion] branch for this client.</summary>
+        private string? _clientVersion;
 
         public MetaConnectionHandler(
             string connectionId,
@@ -107,7 +110,8 @@ namespace SharedMeta.Server.Core.Transport
                             Success = false,
                             Error = versionResult.Error,
                             ServerVersion = versionResult.ServerVersion,
-                            MinClientVersion = versionResult.MinClientVersion
+                            MinClientVersion = versionResult.MinClientVersion,
+                            MaxClientVersion = versionResult.MaxClientVersion
                         };
                     }
                 }
@@ -118,7 +122,29 @@ namespace SharedMeta.Server.Core.Transport
                         "Check that ConfigureMeta() / AddMetaServices() was called so the policy gets registered.");
                 }
 
+                // Per-player version gate: reject downgrade by Major or Minor.
+                // Patch-only changes are allowed (patch = content update, no schema impact).
+                if (!string.IsNullOrEmpty(request.ClientVersion) && !string.IsNullOrEmpty(request.PlayerId))
+                {
+                    var versionGrain = _grainFactory.GetGrain<IPlayerVersionGrain>(request.PlayerId);
+                    var versionCheck = await versionGrain.RecordClientVersionAsync(request.ClientVersion);
+                    if (!versionCheck.Accepted)
+                    {
+                        _logger.LogWarning(
+                            "[Handler] Player version downgrade rejected: PlayerId={PlayerId} client={ClientVersion} max={MaxVersion}",
+                            request.PlayerId, request.ClientVersion, versionCheck.MaxVersion);
+                        return new SessionConnectResponse
+                        {
+                            Success = false,
+                            Error = $"Your profile was last used on a newer client version " +
+                                    $"({versionCheck.MaxVersion}). Please upgrade your app to continue.",
+                            MinClientVersion = versionCheck.MaxVersion
+                        };
+                    }
+                }
+
                 PlayerId = request.PlayerId;
+                _clientVersion = request.ClientVersion; // stored for per-client config resolution at subscribe time
 
                 var grain = _grainFactory.GetGrain<ISessionManager>(request.PlayerId);
                 var result = await grain.ConnectAsync(request.SessionId ?? Guid.Empty, request.LastAcknowledgedSequence);
@@ -178,7 +204,8 @@ namespace SharedMeta.Server.Core.Transport
                         OptimisticRandomBytes = e.OptimisticRandomBytes,
                         NamedRandomsBytes = e.NamedRandomsBytes,
                         ConfigMajorVersion = e.ConfigVersion.Major,
-                        ConfigMinorVersion = e.ConfigVersion.Minor
+                        ConfigMinorVersion = e.ConfigVersion.Minor,
+                        ConfigPatchVersion = e.ConfigVersion.Patch
                     }).ToList()
                 };
             }
@@ -206,7 +233,7 @@ namespace SharedMeta.Server.Core.Transport
                 }
 
                 var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
-                var result = await grain.SubscribeToEntityAsync(request.EntityId, request.StateTypeName);
+                var result = await grain.SubscribeToEntityAsync(request.EntityId, request.StateTypeName, _clientVersion);
 
                 _logger.HandlerSubscribe(PlayerId!, request.EntityId, result.Success);
 
@@ -219,7 +246,8 @@ namespace SharedMeta.Server.Core.Transport
                     OptimisticRandomBytes = result.OptimisticRandomBytes,
                     NamedRandomsBytes = result.NamedRandomsBytes,
                     ConfigMajorVersion = result.ConfigVersion.Major,
-                    ConfigMinorVersion = result.ConfigVersion.Minor
+                    ConfigMinorVersion = result.ConfigVersion.Minor,
+                    ConfigPatchVersion = result.ConfigVersion.Patch
                 };
             }
             catch (Exception ex)
@@ -268,6 +296,7 @@ namespace SharedMeta.Server.Core.Transport
                     ServiceName = request.ServiceName,
                     MethodName = request.MethodName,
                     CallerId = PlayerId,
+                    CallerClientVersion = _clientVersion,
                     Payload = request.Payload,
                     IsCrossOptimistic = request.IsCrossOptimistic,
                     ServerTimeTicks = request.ServerTimeTicks,
@@ -324,6 +353,7 @@ namespace SharedMeta.Server.Core.Transport
                     ServiceName = request.ServiceName,
                     MethodName = request.MethodName,
                     CallerId = PlayerId,
+                    CallerClientVersion = _clientVersion,
                     Payload = request.Payload,
                     ServerTimeTicks = DateTime.UtcNow.Ticks
                 };
@@ -356,6 +386,7 @@ namespace SharedMeta.Server.Core.Transport
                     ServiceName = request.ServiceName,
                     MethodName = request.MethodName,
                     CallerId = PlayerId,
+                    CallerClientVersion = _clientVersion,
                     Payload = request.Payload,
                     ServerTimeTicks = DateTime.UtcNow.Ticks
                 };
@@ -616,25 +647,27 @@ namespace SharedMeta.Server.Core.Transport
             _observerRenewalTimer?.Dispose();
             _observerRenewalTimer = null;
 
-            if (PlayerId != null)
-            {
-                _logger.HandlerDisconnected(_connectionId, PlayerId);
+            // PlayerId is initialised to string.Empty — a transport-level disconnect that
+            // happens before SessionConnect (e.g. handshake failure, immediate close) leaves
+            // it empty and there's nothing to clean up at the grain level.
+            if (!IsSessionConnected) return;
 
-                try
-                {
-                    var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
-                    await grain.OnTransportDisconnectedAsync();
-                }
-                catch (Exception ex)
-                {
-                    _logger.ErrorClearingObserver(ex);
-                }
+            _logger.HandlerDisconnected(_connectionId, PlayerId);
+
+            try
+            {
+                var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                await grain.OnTransportDisconnectedAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorClearingObserver(ex);
             }
         }
 
         private async Task RenewObserverAsync()
         {
-            if (PlayerId == null || _observerRef == null) return;
+            if (!IsSessionConnected || _observerRef == null) return;
             try
             {
                 var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);

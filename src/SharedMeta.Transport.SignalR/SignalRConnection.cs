@@ -156,7 +156,7 @@ namespace SharedMeta.Transport.SignalR
                 StateBytes = response.StateBytes,
                 OptimisticRandomBytes = response.OptimisticRandomBytes,
                 NamedRandomsBytes = response.NamedRandomsBytes,
-                ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion)
+                ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion, response.ConfigPatchVersion)
             };
         }
 
@@ -228,7 +228,7 @@ namespace SharedMeta.Transport.SignalR
         public async Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version)
         {
             EnsureConnected();
-            var response = await _hub!.GetConfigDownloadUrl(new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor });
+            var response = await _hub!.GetConfigDownloadUrl(new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor, ConfigPatchVersion = version.Patch });
             return response.DownloadUrl;
         }
 

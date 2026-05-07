@@ -132,7 +132,8 @@ namespace SharedMeta.Client.Network
                 ServerTimeTicks = response.ServerTimeTicks,
                 ResubscribedEntities = response.ResubscribedEntities,
                 ServerVersion = response.ServerVersion,
-                MinClientVersion = response.MinClientVersion
+                MinClientVersion = response.MinClientVersion,
+                MaxClientVersion = response.MaxClientVersion
             };
         }
 
@@ -153,7 +154,7 @@ namespace SharedMeta.Client.Network
                 StateBytes = response.StateBytes,
                 OptimisticRandomBytes = response.OptimisticRandomBytes,
                 NamedRandomsBytes = response.NamedRandomsBytes,
-                ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion)
+                ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion, response.ConfigPatchVersion)
             };
         }
 
@@ -213,7 +214,7 @@ namespace SharedMeta.Client.Network
         public async Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version)
         {
             EnsureConnected();
-            var response = await _hub!.GetConfigDownloadUrl(new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor });
+            var response = await _hub!.GetConfigDownloadUrl(new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor, ConfigPatchVersion = version.Patch });
             return response.DownloadUrl;
         }
 

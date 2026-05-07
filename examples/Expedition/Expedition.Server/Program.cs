@@ -49,6 +49,20 @@ builder.Services.AddSingleton<IMetaSerializer>(serializer);
 var configProvider = new ExpeditionConfigProvider($"http://localhost:{port}");
 builder.Services.AddSingleton<IMetaConfigProvider<ExpeditionConfig>>(configProvider);
 
+// Version policy:
+//   ServerVersion     = 2.0.0   — current server build
+//   MinClientVersion  = 1.2.0   — clients below 1.2 rejected at SessionConnect ("client too old")
+//   MaxClientVersion  = 2.x.*   — accept any client up to major 2 (no upper-bound rejection yet)
+// 1.2 / 2.0 both pass the cluster gate; their config branch is decided per-client by
+// [MetaConfigVersion] rules on ExpeditionConfig. Once a profile migrates to schema 2 (after
+// connecting with 2.0+), the per-entity Subscribe gate rejects 1.2 clients with "profile migrated."
+builder.Services.AddSingleton(new MetaTransportOptions
+{
+    ServerVersion    = "2.0.0",
+    MinClientVersion = "1.2.0",
+    MaxClientVersion = "2.x.*",
+});
+
 // Orleans Silo
 builder.Host.UseOrleans(siloBuilder =>
 {
@@ -161,18 +175,56 @@ if (useServerPatch)
 await app.RunAsync();
 
 /// <summary>
-/// Provides default expedition config. Can be extended to read from DB, per-entity overrides, etc.
+/// Provides expedition config with two branches:
+///   1.x = lean economy (rare treasures, smaller rewards)
+///   2.x = boosted economy (more frequent treasures, bigger rewards)
+///
+/// Routing client → config branch is decided by <c>[MetaConfigVersion]</c> rules on
+/// <see cref="ExpeditionConfig"/>; this provider just produces config bytes when asked
+/// for a specific version. <see cref="ResolveLatestMatching"/> picks the latest patch
+/// in the requested branch (here: 1.0.0 / 2.0.0 — no patch deployments yet).
 /// </summary>
 public class ExpeditionConfigProvider : IMetaConfigProvider<ExpeditionConfig>
 {
     private readonly string _baseUrl;
+
+    // GetConfig is called on the RPC hot path (per-call resolve, then cached per-grain).
+    // Memoize per (Major, Minor) so we never re-allocate the same branch twice.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(int, int), ExpeditionConfig> _branchCache = new();
 
     public ExpeditionConfigProvider(string baseUrl)
     {
         _baseUrl = baseUrl.TrimEnd('/');
     }
 
-    public MetaConfigVersion CurrentVersion => new(1, 1);
-    public ExpeditionConfig GetConfig(MetaConfigVersion version) => new();
-    public string? GetDownloadUrl(MetaConfigVersion version) => $"{_baseUrl}/meta/config/{version.Major}/{version.Minor}";
+    /// <summary>Default branch reported when no client version is known. 2.x is the latest deployed.</summary>
+    public MetaConfigVersion CurrentVersion => new(2, 0);
+
+    public ExpeditionConfig GetConfig(MetaConfigVersion version)
+        => _branchCache.GetOrAdd((version.Major, version.Minor), key => BuildConfig(key.Item1));
+
+    private static ExpeditionConfig BuildConfig(int major)
+    {
+        // Branch 2.x — boosted economy, schema-2 (post-migration).
+        if (major >= 2)
+        {
+            return new ExpeditionConfig
+            {
+                TreasurePercent = 25,    // ↑ from default 8 (much more loot scattered on the map)
+                TreasureReward  = 75,    // ↑ from default 25 (3× per chest)
+            };
+        }
+
+        // Branch 1.x — lean economy (legacy clients on the 1.2 line).
+        return new ExpeditionConfig
+        {
+            TreasurePercent = 5,         // ↓ from default 8 (rare treasures)
+            TreasureReward  = 10,        // ↓ from default 25 (small reward per chest)
+        };
+    }
+
+    public MetaConfigVersion ResolveLatestMatching(int major, int minor) => new(major, minor, 0);
+
+    public string? GetDownloadUrl(MetaConfigVersion version)
+        => $"{_baseUrl}/meta/config/{version.Major}/{version.Minor}";
 }

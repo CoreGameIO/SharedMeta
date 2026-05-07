@@ -369,12 +369,12 @@ namespace SharedMeta.Server.Core.Session
 
         #region Entity Subscriptions
 
-        public async Task<EntitySubscriptionResult> SubscribeToEntityAsync(string entityId, string stateTypeName)
+        public async Task<EntitySubscriptionResult> SubscribeToEntityAsync(string entityId, string stateTypeName, string? clientVersion = null)
         {
             if (_subscribedEntities.TryGetValue(entityId, out var existing))
             {
-                // Already subscribed - return current state
-                var snapshot = await existing.GrainRef.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>());
+                // Already subscribed - return current state (pass clientVersion for per-client config resolution)
+                var snapshot = await existing.GrainRef.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>(), clientVersion);
 
                 // Update entity ordering state
                 _entityStates[entityId] = new EntityOrderingState
@@ -406,8 +406,8 @@ namespace SharedMeta.Server.Core.Session
                     };
                 }
 
-                // Subscribe to entity
-                var snapshot = await entityGrain.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>());
+                // Subscribe to entity (pass clientVersion for per-client config resolution)
+                var snapshot = await entityGrain.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>(), clientVersion);
 
                 _subscribedEntities[entityId] = new EntitySubscriptionInfo(
                     entityId: entityId,
@@ -1188,6 +1188,7 @@ namespace SharedMeta.Server.Core.Session
                     var entityGrain = GetEntityGrain(saved.EntityId, saved.StateTypeName);
                     if (entityGrain == null) continue;
 
+                    // Reconnect path: clientVersion not available here; entity uses its default ConfigVersion.
                     var snapshot = await entityGrain.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>());
 
                     _subscribedEntities[saved.EntityId] = new EntitySubscriptionInfo(

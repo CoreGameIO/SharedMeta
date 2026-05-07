@@ -230,8 +230,59 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// when migration ran and <see cref="LazyMigrationCompleted"/> / <see cref="LazyMigrationNewVersion"/>
     /// have been updated. Generated providers override this when the state declares
     /// <c>[MetaStateVersion]</c> attributes.
+    /// <para>
+    /// <paramref name="schemaCap"/> caps the migration target — when non-null, the framework
+    /// migrates only up to that schema, not beyond. Used to honour
+    /// <c>[MinStateVersion(N)]</c> on the dispatched method.
+    /// </para>
     /// </summary>
-    protected virtual Task<bool> CheckAndRunLazyMigrationAsync() => Task.FromResult(false);
+    protected virtual Task<bool> CheckAndRunLazyMigrationAsync(int? schemaCap = null) => Task.FromResult(false);
+
+    /// <summary>
+    /// Returns the maximum state schema permitted for a given client (per its resolved
+    /// <c>[MetaConfigVersion]</c> branch). Used to gate activation-time and lazy migration
+    /// so a connecting 1.x client cannot trigger a migration to schema 2 even when the
+    /// provider's <c>CurrentVersion</c> would otherwise satisfy that step.
+    /// <para>
+    /// Default returns null (uncapped) — same as before, preserving behaviour when no
+    /// <c>[MetaStateVersion]</c> declarations exist. Generated providers override.
+    /// </para>
+    /// </summary>
+    public virtual int? ComputeSchemaCapForClient(string? clientVersion) => null;
+
+    /// <summary>
+    /// Public entry point for EntityGrain to drive client-aware init/migration outside the
+    /// per-call dispatch path (e.g. on Subscribe). Returns true when the schema advanced.
+    /// </summary>
+    public Task<bool> RunInitOrMigrateAsync(int? schemaCap)
+        => CheckAndRunLazyMigrationAsync(schemaCap);
+
+    /// <summary>
+    /// Per-method migration policy: returns true when the dispatched method carries
+    /// <c>[NoMigrate]</c>. Generated providers override; default is no skips.
+    /// </summary>
+    protected virtual bool ShouldSkipMigration(string serviceName, string methodName) => false;
+
+    /// <summary>
+    /// Per-method migration policy: returns the schema cap declared via
+    /// <c>[MinStateVersion(N)]</c>, or null when uncapped. Generated providers override.
+    /// </summary>
+    protected virtual int? GetMethodMinStateVersion(string serviceName, string methodName) => null;
+
+    /// <summary>
+    /// For <c>[NoMigrate]</c> calls: returns the config object pinned to the schema-floor
+    /// branch — i.e. the highest config branch that does not require migration past
+    /// the entity's current state schema. Generated providers override when the state
+    /// declares <c>[MetaStateVersion]</c>; default returns null (no pinning).
+    /// </summary>
+    protected virtual object? GetSchemaFloorConfig(int stateSchema) => null;
+
+    /// <summary>
+    /// Returns the resolved <see cref="MetaConfigVersion"/> behind <see cref="GetSchemaFloorConfig"/>
+    /// (so <c>Context.ConfigVersion</c> can stay in sync with <c>Context.Config</c>).
+    /// Default: zero version.
+    /// </summary>
+    protected virtual MetaConfigVersion GetSchemaFloorConfigVersion(int stateSchema) => default;
 
     public async Task<HandleCallResult> HandleCallAsync(RpcCall call)
     {
@@ -240,12 +291,57 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             return new HandleCallResult { Response = new RpcResponse { Error = "Provider not initialized" } };
         }
 
-        // Lazy migration: if config version advanced since activation, run pending migration steps.
-        await CheckAndRunLazyMigrationAsync();
+        // Per-call migration policy. Two caps stack:
+        //   [NoMigrate]            → skip lazy migration AND pin config to schema-floor branch.
+        //   [MinStateVersion(N)]   → migrate only up to N (no further).
+        //   ComputeSchemaCapForClient → migrate only up to caller's resolved config branch
+        //                                (so a 1.x client doesn't trigger a 2.0 migration on
+        //                                 a fresh entity it just activated).
+        // Effective cap = min of the two non-null caps. Per-caller config pin then runs
+        // through GetCachedConfigForClient.
+        bool skipMigration = ShouldSkipMigration(call.ServiceName, call.MethodName);
+        int? schemaCap = null;
+        if (!skipMigration)
+        {
+            var methodCap = GetMethodMinStateVersion(call.ServiceName, call.MethodName);
+            var clientCap = ComputeSchemaCapForClient(call.CallerClientVersion);
+            schemaCap = methodCap.HasValue && clientCap.HasValue
+                ? System.Math.Min(methodCap.Value, clientCap.Value)
+                : (methodCap ?? clientCap);
+            await CheckAndRunLazyMigrationAsync(schemaCap);
+        }
+
+        if (skipMigration)
+        {
+            // Pin to schema-floor config so this call sees the same config branch the entity
+            // was last persisted under — never the latest branch (which would require migration).
+            var floorConfig = GetSchemaFloorConfig(CurrentStateSchemaVersion);
+            if (floorConfig != null)
+            {
+                MetaContext.Config = floorConfig;
+                MetaContext.ConfigVersion = GetSchemaFloorConfigVersion(CurrentStateSchemaVersion);
+            }
+        }
+        else
+        {
+            // Per-call config resolution: each call computes against the config branch
+            // appropriate for its caller. Cached internally so it costs O(1) per call.
+            var perCallConfig = GetCachedConfigForClient(call.CallerClientVersion);
+            if (perCallConfig != null)
+            {
+                MetaContext.Config = perCallConfig;
+                MetaContext.ConfigVersion = ResolveClientConfigVersion(call.CallerClientVersion);
+            }
+        }
+
+        // Expose current schema version on the context so service code can branch on it
+        // (e.g. inside [NoMigrate] methods that must be schema-tolerant).
+        MetaContext.Version = CurrentStateSchemaVersion;
 
         try
         {
             MetaContext.CallerId = call.CallerId;
+            MetaContext.CallerClientVersion = call.CallerClientVersion;
             MetaContext.ServerTimeTicks = call.ServerTimeTicks;
             MetaContext.Random = _optimisticRandom;
             MetaContext.ServerRandom = new MetaRandomRecorder(_serverRandom, MetaContext);
@@ -471,18 +567,51 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         if (MetaContext == null || Context == null)
             return new QueryCallResponse { Error = "Provider not initialized" };
 
+        bool skipMigration = ShouldSkipMigration(call.ServiceName, call.MethodName);
+        int? schemaCap = null;
+        if (!skipMigration)
+        {
+            var methodCap = GetMethodMinStateVersion(call.ServiceName, call.MethodName);
+            var clientCap = ComputeSchemaCapForClient(call.CallerClientVersion);
+            schemaCap = methodCap.HasValue && clientCap.HasValue
+                ? System.Math.Min(methodCap.Value, clientCap.Value)
+                : (methodCap ?? clientCap);
+        }
+
         // Lazy migration: run any pending config-driven schema steps before serving the
-        // query so the result reflects the up-to-date state. Note that query calls don't
-        // go through HandleCallAsync, so we check here too. The EntityGrain's HandleCallAsync
-        // wrapper checks LazyMigrationCompleted after HandleCallAsync; for queries we persist
-        // inline via SaveStateHandler when migration ran.
-        if (await CheckAndRunLazyMigrationAsync() && SaveStateHandler != null)
+        // query so the result reflects the up-to-date state. Queries don't go through
+        // HandleCallAsync, so the check is duplicated here. EntityGrain checks
+        // LazyMigrationCompleted after HandleCallAsync; for queries we persist inline via
+        // SaveStateHandler when migration ran. [NoMigrate]/[MinStateVersion] policies apply.
+        if (!skipMigration && await CheckAndRunLazyMigrationAsync(schemaCap) && SaveStateHandler != null)
             await SaveStateHandler();
+
+        if (skipMigration)
+        {
+            var floorConfig = GetSchemaFloorConfig(CurrentStateSchemaVersion);
+            if (floorConfig != null)
+            {
+                MetaContext.Config = floorConfig;
+                MetaContext.ConfigVersion = GetSchemaFloorConfigVersion(CurrentStateSchemaVersion);
+            }
+        }
+        else
+        {
+            var perCallConfig = GetCachedConfigForClient(call.CallerClientVersion);
+            if (perCallConfig != null)
+            {
+                MetaContext.Config = perCallConfig;
+                MetaContext.ConfigVersion = ResolveClientConfigVersion(call.CallerClientVersion);
+            }
+        }
+
+        MetaContext.Version = CurrentStateSchemaVersion;
 
         try
         {
             // Set up minimal context for the query (read-only)
             MetaContext.CallerId = call.CallerId;
+            MetaContext.CallerClientVersion = call.CallerClientVersion;
             MetaContext.ServerTimeTicks = DateTime.UtcNow.Ticks;
             MetaContextAccessor.Current = MetaContext;
 
@@ -593,6 +722,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         MetaContext.ServerRandom = new MetaRandomRecorder(_serverRandom, MetaContext);
         MetaContext.Random = _optimisticRandom;
         MetaContext.NamedRandoms = _namedRandomsView;
+        MetaContext.Version = currentVersion;
         MetaContextAccessor.Current = MetaContext;
         MetaContext.BeginOperation();
 
@@ -600,6 +730,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         {
             var newVersion = await RunInitAsync(currentVersion);
             CurrentStateSchemaVersion = newVersion;
+            MetaContext.Version = newVersion;
             return newVersion;
         }
         finally
@@ -641,7 +772,47 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     public virtual void InitializeConfig(MetaConfigVersion version)
     {
         ConfigVersion = version;
+        if (MetaContext != null) MetaContext.ConfigVersion = version;
     }
+
+    /// <summary>
+    /// Resolve the config version appropriate for a specific connecting client. Called by
+    /// EntityGrain when returning a subscribe snapshot so each subscriber's
+    /// <c>SubscribeResponse.ConfigVersion</c> reflects the correct config branch for their
+    /// app version per <c>[MetaConfigVersion]</c> rules on the config class.
+    ///
+    /// Generated providers override this when the config class declares
+    /// <see cref="SharedMeta.Core.MetaConfigVersionAttribute"/> rules and a config provider
+    /// is registered. The default falls back to the entity's pinned <see cref="ConfigVersion"/>.
+    /// </summary>
+    public virtual MetaConfigVersion ResolveClientConfigVersion(string? clientVersion)
+        => ConfigVersion;
+
+    /// <summary>
+    /// Per-call config resolution: returns the config object appropriate for the caller
+    /// identified by <paramref name="clientVersion"/>. The default returns null (no config
+    /// system); generated providers override this with a typed two-level cache:
+    ///   1. clientVersion → resolved <see cref="MetaConfigVersion"/> (via [MetaConfigVersion] rules)
+    ///   2. resolved version → TConfig instance (via IMetaConfigProvider.GetConfig)
+    /// Both caches are invalidated when the provider's <c>CurrentVersion</c> advances
+    /// (runtime patch deploy) so the next call picks up the new branch.
+    /// </summary>
+    protected virtual object? GetCachedConfigForClient(string? clientVersion) => null;
+
+    /// <summary>Called by generated <see cref="OnDeactivating"/> overrides to drop the per-call config cache.</summary>
+    protected virtual void ClearConfigCache() { }
+
+    /// <summary>
+    /// Returns true when the client's resolved config version is high enough to be
+    /// compatible with the entity's current state schema. Called by EntityGrain during
+    /// SubscribeAsync — if false the subscribe is rejected so the client knows to upgrade.
+    ///
+    /// Generated providers override this when the state class declares
+    /// <see cref="SharedMeta.Core.MetaStateVersionAttribute"/> attributes.
+    /// Default returns true (no schema requirements).
+    /// </summary>
+    public virtual bool IsClientConfigCompatible(MetaConfigVersion resolvedClientConfigVersion)
+        => true;
 
     /// <summary>
     /// Check if a player is authorized to subscribe to this entity.

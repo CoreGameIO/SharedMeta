@@ -68,6 +68,16 @@ namespace SharedMeta.Core
         public string? CallerId { get; set; }
 
         /// <summary>
+        /// App version of the originating client for the current call. Propagated from
+        /// <see cref="SharedMeta.Core.Transport.RpcCall.CallerClientVersion"/> on the server, and
+        /// across cross-entity boundaries so the target entity sees the same version as the
+        /// session-level call. Used by <c>ComputeSchemaCapForClient</c> to avoid premature
+        /// migration when a chain of cross-entity calls activates a fresh target entity.
+        /// On Client: typically null (the client knows its own version directly).
+        /// </summary>
+        public string? CallerClientVersion { get; set; }
+
+        /// <summary>
         /// The entity ID of the current entity.
         /// Used for cross-entity calls and self-identification.
         /// </summary>
@@ -121,6 +131,25 @@ namespace SharedMeta.Core
         /// Access the typed config via generated Context.Config property in service implementations.
         /// </summary>
         public object? Config { get; set; }
+
+        /// <summary>
+        /// State schema version of the current entity, as recorded by <c>[MetaInit]</c>.
+        /// Set by the framework before each call/init dispatch. <c>0</c> until the entity has
+        /// completed its first init. During a migration step, reflects the version <em>before</em>
+        /// the step runs (i.e. the source version for the <c>[MetaInit]</c> being dispatched).
+        /// </summary>
+        public int Version { get; set; }
+
+        /// <summary>
+        /// Config version currently pinned on this context. Mirrors the resolved
+        /// <see cref="MetaConfigVersion"/> of <see cref="Config"/>:
+        /// <list type="bullet">
+        ///   <item>During a regular call, this is the per-caller resolved version (per <c>[MetaConfigVersion]</c> rules).</item>
+        ///   <item>During a <c>[MetaInit]</c> migration step, this is the transition version pinned by the framework.</item>
+        ///   <item>During a <c>[NoMigrate]</c> call, this is the floor version matching the entity's persisted state schema.</item>
+        /// </list>
+        /// </summary>
+        public MetaConfigVersion ConfigVersion { get; set; }
 
         /// <summary>
         /// Force-persist the current entity state mid-method.

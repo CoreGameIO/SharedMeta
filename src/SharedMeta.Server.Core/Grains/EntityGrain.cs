@@ -129,12 +129,19 @@ namespace SharedMeta.Server.Core.Grains
                         throw new InvalidOperationException(
                             $"Cannot resolve entity grain for service {serviceName}, entity {targetEntityId}");
 
+                    // Propagate the originating client's app version so the target entity's
+                    // ComputeSchemaCapForClient sees the same version as the session-level call.
+                    // Without this, a 1.x session whose Profile cross-calls a fresh Expedition
+                    // entity would see clientVersion=null on the target → cap defaults to the
+                    // provider's CurrentVersion → unwanted migration to schema 2.
+                    var callerClientVersion = SharedMeta.Core.MetaContextAccessor.Current?.CallerClientVersion;
                     var result = await targetGrain.HandleCallFromEntityAsync(new RpcCall
                     {
                         ServiceName = serviceName,
                         MethodName = methodName,
                         Payload = argsBytes,
-                        ServerTimeTicks = serverTimeTicks
+                        ServerTimeTicks = serverTimeTicks,
+                        CallerClientVersion = callerClientVersion
                     });
 
                     if (result.HasError)
@@ -177,22 +184,18 @@ namespace SharedMeta.Server.Core.Grains
             if (_options.DeepDesyncEnabled.HasValue && _provider is MetaProviderBase<TState> ddProvider)
                 ddProvider.DeepDesyncEnabled = _options.DeepDesyncEnabled.Value;
 
-            // Resolve config version: use persisted version, or resolve for new entities
-            _provider.InitializeConfig(state.ConfigVersion);
-
-            // Persist resolved config version if it changed (first activation or upgrade)
-            if (_provider.ConfigVersion != state.ConfigVersion)
-            {
-                state.ConfigVersion = _provider.ConfigVersion;
-            }
-
-            // Run state initialization/migration if provider has [MetaInit] methods
-            var newVersion = await _provider.InitializeStateAsync(state.Version);
-            if (newVersion != state.Version)
-            {
-                state.Version = newVersion;
-                _logger.EntityStateInitialized(typeof(TState).Name, entityId, newVersion);
-            }
+            // Activation is intentionally NOT running [MetaInit] migration here. We don't yet
+            // know which client triggered activation, so we cannot decide which config branch
+            // to migrate to. Eagerly migrating to the provider's CurrentVersion would lock
+            // older clients out of fresh entities (their resolved config branch can't satisfy
+            // the new schema's IsClientConfigCompatible gate).
+            //
+            // Init/migration is deferred to:
+            //   • SubscribeAsync — runs migration capped to the subscribing client's branch.
+            //   • HandleCallAsync — lazy migration capped to call.CallerClientVersion.
+            // First-time base init for a fresh entity (state.Version == 0) is handled by the
+            // same path: ComputeRequiredStateSchema + the generated "fresh entity floor" rule
+            // ensure schema 1 always runs once a client interacts with the entity.
 
             ResetPersistenceTracking();
 
@@ -216,7 +219,7 @@ namespace SharedMeta.Server.Core.Grains
             await base.OnDeactivateAsync(reason, cancellationToken);
         }
 
-        public async Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager)
+        public async Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null)
         {
             // Access policy check
             if (_provider != null)
@@ -241,6 +244,46 @@ namespace SharedMeta.Server.Core.Grains
 
             var state = _persistentState.State;
 
+            // Drive client-aware init/migration BEFORE the compatibility gate. For fresh
+            // entities (state.Version == 0) this runs the base [MetaInit] capped to the
+            // subscriber's resolved config branch, so a 1.x client never causes a 2.0 jump.
+            // For entities already at a higher schema than the client supports, this is a
+            // no-op and the gate below rejects the subscribe.
+            if (_provider is MetaProviderBase<TState> mpbInit)
+            {
+                var clientCfg = mpbInit.ResolveClientConfigVersion(clientVersion);
+                mpbInit.InitializeConfig(clientCfg);
+                var cap = mpbInit.ComputeSchemaCapForClient(clientVersion);
+                if (await mpbInit.RunInitOrMigrateAsync(cap))
+                {
+                    state.Version = mpbInit.LazyMigrationNewVersion;
+                    mpbInit.LazyMigrationCompleted = false;
+                    PersistRandomBytes();
+                    await _persistentState.WriteStateAsync();
+                    ResetPersistenceTracking();
+                    _logger.EntityStateInitialized(typeof(TState).Name, this.GetPrimaryKeyString(), state.Version);
+                }
+            }
+
+            // Per-entity config compatibility gate: reject clients whose resolved config version
+            // is below the minimum required for the entity's current state schema.
+            // E.g. profile migrated to schema 2 (needs config >= 2.0) but client has config 1.5.
+            if (_provider != null)
+            {
+                var resolvedConfigVersion = _provider.ResolveClientConfigVersion(clientVersion);
+                if (!_provider.IsClientConfigCompatible(resolvedConfigVersion))
+                {
+                    _logger.LogWarning(
+                        "[EntityGrain] Subscribe rejected: entity={EntityId} player={PlayerId} " +
+                        "clientConfig={ConfigVersion} is below the minimum required for the current state schema.",
+                        this.GetPrimaryKeyString(), playerId, resolvedConfigVersion);
+                    throw new EntityAccessDeniedException(
+                        $"Your app version is too old for this entity's current state. " +
+                        $"The profile has been upgraded (config {resolvedConfigVersion} is not sufficient). " +
+                        $"Please update your app.");
+                }
+            }
+
             state.Subscribers[playerId] = new PersistedSubscriberInfo
             {
                 PlayerId = playerId,
@@ -262,7 +305,10 @@ namespace SharedMeta.Server.Core.Grains
                 CurrentSequenceNumber = state.EntitySequenceNumber,
                 OptimisticRandomBytes = _provider?.GetOptimisticRandomBytes(),
                 NamedRandomsBytes = namedBytes is { Length: > 0 } ? namedBytes : null,
-                ConfigVersion = _provider?.ConfigVersion ?? default
+                // Resolve per-client config version: if the provider declares [MetaConfigVersion]
+                // rules and the subscriber sent a clientVersion, pick the config branch appropriate
+                // for that client. Falls back to the entity's pinned ConfigVersion when no rule matches.
+                ConfigVersion = _provider?.ResolveClientConfigVersion(clientVersion) ?? default
             };
         }
 

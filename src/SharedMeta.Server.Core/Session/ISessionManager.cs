@@ -54,7 +54,7 @@ namespace SharedMeta.Server.Core.Session
         /// <param name="entityId">The entity to subscribe to.</param>
         /// <param name="stateTypeName">The state type name for auto-creation.</param>
         /// <returns>Subscription result with current state.</returns>
-        Task<EntitySubscriptionResult> SubscribeToEntityAsync(string entityId, string stateTypeName);
+        Task<EntitySubscriptionResult> SubscribeToEntityAsync(string entityId, string stateTypeName, string? clientVersion = null);
 
         /// <summary>
         /// Unsubscribe from an entity.

@@ -20,6 +20,12 @@ namespace SharedMeta.Generator.Generators
 
         /// <summary>True if <c>[MetaMethod(Signal = true)]</c> — fire-and-forget void.</summary>
         public bool IsSignal { get; set; }
+
+        /// <summary>True if the method carries <c>[NoMigrate]</c>.</summary>
+        public bool SkipMigration { get; set; }
+
+        /// <summary>Schema cap declared via <c>[MinStateVersion(N)]</c>; null when uncapped.</summary>
+        public int? MinStateVersion { get; set; }
     }
 
     /// <summary>

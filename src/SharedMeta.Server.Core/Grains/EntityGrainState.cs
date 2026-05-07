@@ -19,11 +19,10 @@ public partial class EntityGrainState<TState> where TState : class, ISharedState
     [Id(4), Key(4), MemoryPackOrder(4)] public byte[]? OptimisticRandomBytes { get; set; }
     [Id(5), Key(5), MemoryPackOrder(5)] public int Version { get; set; }
 
-    /// <summary>
-    /// Persisted config version for this entity. Default (0,0) = not yet resolved.
-    /// Once set, the entity uses this version until explicitly upgraded.
-    /// </summary>
-    [Id(6), Key(6), MemoryPackOrder(6)] public MetaConfigVersion ConfigVersion { get; set; }
+    // Id(6) was MetaConfigVersion ConfigVersion (per-entity pin) — removed in 0.19.0.
+    // Config is now resolved per-call from the caller's clientVersion via [MetaConfigVersion]
+    // rules on the config class. Old persisted data with Id(6) is silently ignored
+    // (EntityGrainState is GenerateType.VersionTolerant + uses explicit Orleans/MessagePack Ids).
 
     /// <summary>
     /// Packed positional list of MetaRandom states for [NamedRandom] declarations on TState.

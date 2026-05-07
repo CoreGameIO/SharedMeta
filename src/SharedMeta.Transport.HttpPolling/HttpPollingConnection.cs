@@ -132,7 +132,8 @@ namespace SharedMeta.Transport.HttpPolling
                 ServerTimeTicks = response.ServerTimeTicks,
                 ResubscribedEntities = response.ResubscribedEntities,
                 ServerVersion = response.ServerVersion,
-                MinClientVersion = response.MinClientVersion
+                MinClientVersion = response.MinClientVersion,
+                MaxClientVersion = response.MaxClientVersion
             };
         }
 
@@ -152,7 +153,7 @@ namespace SharedMeta.Transport.HttpPolling
                 StateBytes = response.StateBytes,
                 OptimisticRandomBytes = response.OptimisticRandomBytes,
                 NamedRandomsBytes = response.NamedRandomsBytes,
-                ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion)
+                ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion, response.ConfigPatchVersion)
             };
         }
 
@@ -242,7 +243,7 @@ namespace SharedMeta.Transport.HttpPolling
             EnsureSessionConnected();
             var response = await PostAsync<ConfigDownloadUrlResponse>(
                 "/config-url",
-                new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor },
+                new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor, ConfigPatchVersion = version.Patch },
                 MetaJsonContext.Default.ConfigDownloadUrlRequest);
             return response?.DownloadUrl;
         }

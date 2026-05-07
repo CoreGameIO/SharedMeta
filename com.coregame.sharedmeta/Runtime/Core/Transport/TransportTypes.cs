@@ -36,6 +36,9 @@ namespace SharedMeta.Core.Transport
 
         /// <summary>Serialized named-random states (packed positional list) for deterministic replay.</summary>
         [Id(5), Key(5)] public byte[]? NamedRandomsBytes { get; set; }
+
+        /// <summary>Config patch version (content). 0 = no patch versioning / pre-0.19.0 entity.</summary>
+        [Id(6), Key(6)] public int ConfigPatchVersion { get; set; }
     }
 
     /// <summary>

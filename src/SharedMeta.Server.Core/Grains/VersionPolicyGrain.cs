@@ -6,10 +6,11 @@ using Orleans.Runtime;
 
 namespace SharedMeta.Server.Core.Grains
 {
-    [MemoryPackable, MessagePackObject, GenerateSerializer]
+    [MemoryPackable(GenerateType.VersionTolerant), MessagePackObject, GenerateSerializer]
     public partial class VersionPolicyGrainState
     {
         [Id(0), Key(0), MemoryPackOrder(0)] public string? MinClientVersion { get; set; }
+        [Id(1), Key(1), MemoryPackOrder(1)] public string? MaxClientVersion { get; set; }
     }
 
     /// <summary>
@@ -32,6 +33,15 @@ namespace SharedMeta.Server.Core.Grains
         public async Task SetMinClientVersionAsync(string? version)
         {
             _state.State.MinClientVersion = version;
+            await _state.WriteStateAsync();
+        }
+
+        public Task<string?> GetMaxClientVersionAsync()
+            => Task.FromResult(_state.State.MaxClientVersion);
+
+        public async Task SetMaxClientVersionAsync(string? version)
+        {
+            _state.State.MaxClientVersion = version;
             await _state.WriteStateAsync();
         }
     }

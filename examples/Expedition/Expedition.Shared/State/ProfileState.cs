@@ -12,6 +12,10 @@ namespace Expedition.Shared
     /// </summary>
     [MemoryPackable(GenerateType.VersionTolerant), MessagePackObject(AllowPrivate = true)]
     [SharedState]
+    // Schema 2 = config 2.0+ — see ExpeditionState for the migration story.
+    // Per-entity gate also applies to ProfileState: once a profile is at schema 2,
+    // clients with resolved config < 2.0 are rejected on subscribe.
+    [MetaStateVersion(2, "2.0", typeof(ExpeditionConfig))]
     public partial class ProfileState : ISharedState
     {
         [Key(0), MemoryPackOrder(0)] public string PlayerId { get; set; } = "";
