@@ -1014,7 +1014,28 @@ int secret = Context.ServerRandom!.Next(1000);   // Server generates, client rep
 
 ### Seeding
 
-Optimistic random is seeded from the entity ID string (FNV-1a hash). State is transmitted to client on `SubscribeAsync()` and persisted in `EntityGrainState.OptimisticRandomBytes`.
+Fresh entity randoms (server, optimistic, `[NamedRandom]` slots) are seeded from a string passed to `MetaRandom.FromString` (FNV-1a hash). Default: `"{entityId}:{streamName}"`. **Once the random advances and the entity persists, the seed is never consulted again** — `EntityGrainState.{Server,Optimistic,NamedRandoms}Bytes` carry the full internal state (s0/s1/s2/s3 + ScrollId), and that's what the client receives via `SubscribeResponse`.
+
+**The seed is server-side-only.** It is never serialized, never sent over the wire, and never reconstructed by the client. Clients reconstruct `MetaRandom` from the persisted bytes, so optimistic execution and replay see the same advanced state the server has — without knowing how the stream started.
+
+**Override seeding to inject entropy.** When you recreate an entity with the same id (profile reset → recycled expedition counter, regenerated game grain) the deterministic seed string produces the same stream. Two ways to inject non-deterministic entropy:
+
+```csharp
+// (A) Per-host: option-driven, no provider subclassing.
+services.Configure<EntityGrainOptions>(o =>
+{
+    o.FreshRandomSeedFactory = (entityId, streamName) =>
+        $"{entityId}:{streamName}:{DateTime.UtcNow.Ticks:x}:{Random.Shared.NextInt64():x}";
+});
+```
+
+```csharp
+// (B) Per-provider: subclass MetaProviderBase and override directly.
+protected override string CreateFreshRandomSeed(string streamName)
+    => $"{Context.EntityId}:{streamName}:{DateTime.UtcNow.Ticks:x}";
+```
+
+The factory and override are invoked **only when no persisted bytes exist** for that stream — once a stream is in motion, the factory is irrelevant. `[NamedRandom(Seed = "literal")]` continues to bypass both paths (the attribute exists specifically to pin a stream to a fixed seed across all entities).
 
 ### Named Random Streams
 

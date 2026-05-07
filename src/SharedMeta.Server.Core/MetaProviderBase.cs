@@ -81,9 +81,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         MetaContext.EntityStateHandler = EntityStateHandler;
         MetaContext.SaveStateHandler = SaveStateHandler;
 
-        // Initialize deterministic randoms
-        _serverRandom = DeserializeOrCreateRandom(context.Serializer, serverRandomBytes, context.EntityId + ":server");
-        _optimisticRandom = DeserializeOrCreateRandom(context.Serializer, optimisticRandomBytes, context.EntityId + ":optimistic");
+        // Initialize deterministic randoms. Seed string only matters for FRESH entities
+        // (no persisted bytes). Once persisted, MetaRandom restores its full internal state
+        // and the seed is never consulted again — and clients receive the persisted bytes
+        // via SubscribeResponse, so the seed is never sent over the wire either.
+        _serverRandom = DeserializeOrCreateRandom(context.Serializer, serverRandomBytes, CreateFreshRandomSeed("server"));
+        _optimisticRandom = DeserializeOrCreateRandom(context.Serializer, optimisticRandomBytes, CreateFreshRandomSeed("optimistic"));
 
         // Initialize named randoms from descriptors (+ persisted bytes, if any)
         InitializeNamedRandoms(context);
@@ -91,6 +94,50 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         // Hook for subclass initialization
         OnInitialize();
     }
+
+    /// <summary>
+    /// Returns the seed string for a fresh random stream — invoked only when no persisted
+    /// bytes exist for that stream (first activation of this entity, or a stream slot whose
+    /// <see cref="NamedRandomDescriptor"/> name shifted positionally).
+    /// <para>
+    /// The seed is consumed locally by <c>MetaRandom.FromString</c> on the server and never
+    /// transmitted to the client — once the random advances and the entity persists, the
+    /// internal state (s0/s1/s2/s3 + ScrollId) is what flows over the wire on subscribe.
+    /// </para>
+    /// <para>
+    /// Default: deterministic <c>"{entityId}:{streamName}"</c> — same entityId always
+    /// produces the same stream, useful for reproducible tests. Override to mix in a
+    /// non-deterministic component (e.g. <c>DateTime.UtcNow.Ticks</c>, <c>Random.Shared</c>)
+    /// when you want fresh entities recreated under the same id (profile reset, generated
+    /// expedition recycled) to produce different streams.
+    /// </para>
+    /// <para>
+    /// <b>Replay safety:</b> overriding this with non-deterministic entropy is safe — the
+    /// resulting random state is captured in the entity snapshot the client receives on
+    /// subscribe, so client-side replay/optimistic execution sees the same advanced state
+    /// the server has, without ever needing to reconstruct the seed.
+    /// </para>
+    /// <para>
+    /// <c>[NamedRandom(Seed = "literal")]</c> bypasses this method — that attribute is the
+    /// explicit "pin to a fixed seed" override.
+    /// </para>
+    /// </summary>
+    /// <param name="streamName">
+    /// <c>"server"</c> for <see cref="ServerMetaContext{TState}.ServerRandom"/>,
+    /// <c>"optimistic"</c> for <see cref="MetaContext.Random"/>,
+    /// or the <see cref="NamedRandomAttribute.Name"/> of a <c>[NamedRandom]</c> stream.
+    /// </param>
+    protected virtual string CreateFreshRandomSeed(string streamName)
+        => FreshRandomSeedFactory?.Invoke(Context.EntityId, streamName)
+           ?? (Context.EntityId + ":" + streamName);
+
+    /// <summary>
+    /// Optional seed factory wired by EntityGrain from
+    /// <see cref="SharedMeta.Server.Core.Grains.EntityGrainOptions.FreshRandomSeedFactory"/>.
+    /// Read by the default <see cref="CreateFreshRandomSeed"/> implementation; ignored when
+    /// a derived class overrides that method directly.
+    /// </summary>
+    public System.Func<string, string, string>? FreshRandomSeedFactory { get; set; }
 
     private static MetaRandom DeserializeOrCreateRandom(IMetaSerializer serializer, byte[]? bytes, string seed)
     {
@@ -134,7 +181,10 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             else
             {
                 var d = descriptors[i];
-                var seed = d.SeedOverride ?? (context.EntityId + ":" + d.Name);
+                // SeedOverride from [NamedRandom(Seed = "...")] is a literal pin and bypasses
+                // the user hook by design — that attribute exists specifically so the user
+                // can lock a stream to a fixed seed across all entities.
+                var seed = d.SeedOverride ?? CreateFreshRandomSeed(d.Name);
                 _namedRandoms[i] = MetaRandom.FromString(seed);
             }
         }

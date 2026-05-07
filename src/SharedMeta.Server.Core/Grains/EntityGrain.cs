@@ -175,6 +175,11 @@ namespace SharedMeta.Server.Core.Grains
                     ResetPersistenceTracking();
                     _logger.PersistenceForced(entityId, _requestsSinceLastSave);
                 };
+
+                // Forward optional global seed factory so MetaProviderBase.CreateFreshRandomSeed
+                // can mix in non-deterministic entropy when host opts in. Must be set BEFORE
+                // Initialize() — Initialize seeds fresh randoms during its body.
+                providerBase.FreshRandomSeedFactory = _options.FreshRandomSeedFactory;
             }
 
             var context = new MetaProviderContext(entityId, _serializer, GrainFactory, _logger, state.NamedRandomsBytes);

@@ -25,4 +25,23 @@ public class EntityGrainOptions
     /// When false: disables deep desync even if attribute says true.
     /// </summary>
     public bool? DeepDesyncEnabled { get; set; }
+
+    /// <summary>
+    /// Seed factory for fresh random streams. Invoked once per stream when an entity activates
+    /// without persisted random bytes (first activation, or a [NamedRandom] slot that shifted
+    /// position). Arguments: <c>(entityId, streamName)</c> where <c>streamName</c> is one of
+    /// <c>"server"</c> / <c>"optimistic"</c> / a <c>[NamedRandom]</c> name.
+    /// <para>
+    /// Default (null) → deterministic <c>"{entityId}:{streamName}"</c> seed. Set to mix in
+    /// non-deterministic entropy (e.g. <c>DateTime.UtcNow.Ticks</c>, <c>Random.Shared</c>) when
+    /// you want fresh entities recreated under the same id (profile reset, recycled expedition
+    /// id) to produce different streams.
+    /// </para>
+    /// <para>
+    /// <b>Replay-safe:</b> the seed is consumed locally on the server and never sent over the
+    /// wire — clients receive the post-seed <c>MetaRandom</c> internal state via the subscribe
+    /// snapshot, so optimistic execution and replay continue to work without any seed knowledge.
+    /// </para>
+    /// </summary>
+    public System.Func<string, string, string>? FreshRandomSeedFactory { get; set; }
 }

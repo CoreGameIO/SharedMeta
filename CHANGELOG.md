@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.19.1] - 2026-05-07
+
+### Added — `EntityGrainOptions.FreshRandomSeedFactory` for entropy-driven seed injection
+
+Pre-0.19.1, `MetaProviderBase.Initialize` seeded fresh entity randoms (`server`, `optimistic`, `[NamedRandom]` slots) from a deterministic string `"{entityId}:{streamName}"`. That meant recreating an entity with the same id (profile reset → expedition counter reused, recycled per-game grain id, etc.) produced the **same random stream** — same map, same shuffle, same drops.
+
+The seed is consumed locally by `MetaRandom.FromString` on the server and never sent to the client (clients receive the post-seed `MetaRandom` internal state via `SubscribeResponse`), so injecting non-deterministic entropy is replay-safe. The framework now exposes a hook:
+
+```csharp
+services.Configure<EntityGrainOptions>(o =>
+{
+    // Mix in non-deterministic entropy when seeding fresh randoms.
+    o.FreshRandomSeedFactory = (entityId, streamName) =>
+        $"{entityId}:{streamName}:{DateTime.UtcNow.Ticks:x}:{Random.Shared.NextInt64():x}";
+});
+```
+
+Default behaviour (factory not set) is unchanged — deterministic `"{entityId}:{streamName}"` so existing tests keep passing. `[NamedRandom(Seed = "literal")]` continues to bypass both paths by design (the attribute exists specifically to pin a stream to a fixed seed across all entities).
+
+Internally, `MetaProviderBase` exposes `protected virtual string CreateFreshRandomSeed(string streamName)` which derived providers can override directly when option-based wiring isn't enough.
+
+The Expedition example now opts into entropy-based seeding in `Expedition.Server/Program.cs`.
+
 ## [0.19.0] - 2026-05-06
 
 Per-client config versioning and state schema migration. Breaking storage change: `EntityGrainState.ConfigVersion` removed, `MetaConfigVersion` extended from `Major.Minor` to `Major.Minor.Patch`. Existing entities deserialize cleanly because `MetaConfigVersion` is no longer persisted on the entity grain (config is now resolved per-call from the connected client's app version).

@@ -125,6 +125,18 @@ int item = LootRandom.Next(drops.Count);
 
 Same semantics as `Context.Random` (shared deterministic stream, per-entity seed from `entityId + ":" + Name`, transported on subscribe). `Seed = "literal"` pins a fixed seed across all entities. Server reports per-index scroll deltas; client catches up on `ServerPatch` / broadcast replay. Reordering attributes reseeds the affected slots — positional storage.
 
+**Seed is server-only and replay-safe to override.** The seed string is consumed locally by `MetaRandom.FromString` on the server and never sent over the wire — clients receive the post-seed `MetaRandom` internal state via `SubscribeResponse`. To make recreated entities (profile reset, recycled grain id) produce different streams, mix in entropy via `EntityGrainOptions.FreshRandomSeedFactory` (0.19.1+):
+
+```csharp
+services.Configure<EntityGrainOptions>(o =>
+{
+    o.FreshRandomSeedFactory = (entityId, streamName) =>
+        $"{entityId}:{streamName}:{DateTime.UtcNow.Ticks:x}:{Random.Shared.NextInt64():x}";
+});
+```
+
+Invoked only on first activation (no persisted bytes yet). `[NamedRandom(Seed = "literal")]` bypasses the factory by design.
+
 ### 4. Never Use DateTime.Now
 
 Use `Context.ServerTimeTicks` (synchronized UTC ticks) instead:
