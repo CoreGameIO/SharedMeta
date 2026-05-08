@@ -58,6 +58,15 @@ namespace SharedMeta.Server.Core.Transport
         /// Clients that do not send a version at all are allowed through (backward compatibility).
         /// </summary>
         public string? MinClientVersion { get; set; }
+
+        /// <summary>
+        /// Maximum client version this server supports, in "major.minor.patch" format (e.g. "2.3.*").
+        /// Clients newer than this (e.g. a client built against the next server version while this
+        /// server is still on the old version) are rejected with "client too new for this server."
+        /// Use <c>*</c> for the patch component (e.g. "2.3.*") to allow any patch of that minor.
+        /// Null = no upper bound.
+        /// </summary>
+        public string? MaxClientVersion { get; set; }
     }
 
     /// <summary>

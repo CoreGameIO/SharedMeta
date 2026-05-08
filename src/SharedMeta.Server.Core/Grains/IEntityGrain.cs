@@ -15,7 +15,7 @@ namespace SharedMeta.Server.Core.Grains
         /// <summary>
         /// Subscribe to this entity. Returns current state.
         /// </summary>
-        Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager);
+        Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null);
 
         /// <summary>
         /// Unsubscribe from this entity.

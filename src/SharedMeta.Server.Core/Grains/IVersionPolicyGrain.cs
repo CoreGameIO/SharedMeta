@@ -25,5 +25,18 @@ namespace SharedMeta.Server.Core.Grains
         /// Pass null to clear the override and fall back to static server config.
         /// </summary>
         Task SetMinClientVersionAsync(string? version);
+
+        /// <summary>
+        /// Returns the admin-set maximum client version, or null if no override is active.
+        /// Null means "use the local MetaTransportOptions.MaxClientVersion".
+        /// Pattern: "Major.Minor.*" allows any patch of that minor (e.g. "2.3.*").
+        /// </summary>
+        Task<string?> GetMaxClientVersionAsync();
+
+        /// <summary>
+        /// Sets the maximum client version enforced cluster-wide.
+        /// Pass null to clear the override and fall back to static server config.
+        /// </summary>
+        Task SetMaxClientVersionAsync(string? version);
     }
 }

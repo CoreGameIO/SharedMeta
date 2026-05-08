@@ -118,32 +118,50 @@ public partial class GameServiceImpl : IGameService
 
 ## State Initialization (`[MetaInit]`)
 
-Add a `[MetaInit]` method to your service implementation to initialize or migrate state automatically when the entity grain activates on the server. Clients receive the already-initialized state when they subscribe — no client-side init call needed.
+Add a `[MetaInit]` method to your service implementation to initialize or migrate state. Two signatures are supported — the generator picks the matching call shape automatically:
+
+```csharp
+// Single-arg form (legacy)
+[MetaInit] public Task<int> Init(int version) { ... }
+
+// Two-arg form (0.19.0+) — also receives the target schema for this step
+[MetaInit] public Task<int> Init(int version, int target) { ... }
+```
+
+Use the two-arg form when you have `[MetaStateVersion]` migration breakpoints (see [Per-Client Config Branches & State Migration](#per-client-config-branches--state-migration)). It lets each migration step branch by both source and target version:
 
 ```csharp
 [MetaServiceImpl(typeof(IGameService), typeof(GameState))]
 public partial class GameServiceImpl : IGameService
 {
     [MetaInit]
-    public Task<int> InitState(int version)
+    public Task<int> InitState(int version, int target)
     {
-        if (version < 1)
+        if (version < 1 && target >= 1)
         {
+            // Base init — Config pinned to 1.x branch
             State.Score = 0;
             State.Items = new List<string> { "starter-sword" };
-            return Task.FromResult(1);
         }
-        // Add new migrations here:
-        // if (version < 2) { State.NewField = ...; return Task.FromResult(2); }
-        return Task.FromResult(version);
+        if (version < 2 && target >= 2)
+        {
+            // 1→2 migration — Config pinned to 2.0 transition version
+            State.NewField = Config.NewFieldDefault;
+        }
+        return Task.FromResult(Math.Max(version, target));
     }
 }
 ```
 
-- **Signature:** `Task<int> MethodName(int version)` — takes current version, returns new version
-- Version is persisted per entity — migrations only run once
-- `Context.Random`, `Context.ServerRandom`, and `Config` are all available during init
-- The grain is not persisted after init alone — only after player interactions
+**When `[MetaInit]` runs (changed in 0.19.0):**
+- Activation no longer pre-migrates fresh entities. Init/migration is deferred to the first client `SubscribeAsync` or RPC call, capped to that client's resolved config branch — so a 1.x client never triggers a 2.0 migration on a fresh entity.
+- For services with `[MetaInit]` but no `[MetaStateVersion]`, base init runs exactly once on first interaction.
+
+**Available during `[MetaInit]`:**
+- `Context.Random` and `Context.ServerRandom` — deterministic randomness for init
+- `Config` — pinned to the appropriate branch for this step
+- `Context.Version` / `Context.ConfigVersion` — current schema and config version (0.19.0+)
+- `State` — entity state to mutate
 
 ---
 
@@ -205,8 +223,9 @@ public partial class GameServiceImpl : IGameService
 ```csharp
 public class GameConfigProvider : IMetaConfigProvider<GameConfig>
 {
-    public MetaConfigVersion CurrentVersion => new(1, 1);
-    public GameConfig GetConfig(MetaConfigVersion version) => new();
+    public MetaConfigVersion CurrentVersion => new(2, 0, 0);
+    public GameConfig GetConfig(MetaConfigVersion version) => /* fetch by version */;
+    public MetaConfigVersion ResolveLatestMatching(int major, int minor) => new(major, minor, 0);
     public string? GetDownloadUrl(MetaConfigVersion version)
         => $"https://example.com/config/{version.Major}/{version.Minor}";
 }
@@ -215,9 +234,63 @@ public class GameConfigProvider : IMetaConfigProvider<GameConfig>
 services.AddSingleton<IMetaConfigProvider<GameConfig>>(new GameConfigProvider());
 ```
 
-### Config Version Pinning
+`MetaConfigVersion` is `Major.Minor.Patch` as of 0.19.0. `ResolveLatestMatching` is called by the `[MetaConfigVersion]` resolver to materialize `Patch` captures (e.g. `1.6.x` → `1.6.17`).
 
-Each entity persists its config version on first activation. Subsequent activations reuse the pinned version until explicitly upgraded. This supports gradual rollouts and A/B tests via `IConfigVersionResolver`.
+### Per-Client Config Branches & State Migration
+
+> **Added in 0.19.0**: route connecting clients to their own config branch and migrate entity state schema gradually as live config advances. See the [framework guide](https://github.com/CoreGameIO/SharedMeta/blob/main/docs/GUIDE.md#per-client-config-branches--state-migration) for the full treatment.
+
+#### Route clients to a config branch
+
+Declare on the config class which client app version maps to which config:
+
+```csharp
+[MetaConfig(Default = true)]
+[MemoryPackable, MessagePackObject]
+[MetaConfigVersion(Client = "1.x.*", Config = "1.x.*")]   // 1.x clients → 1.x configs
+[MetaConfigVersion(Client = "2.x.*", Config = "2.x.*")]   // 2.x clients → 2.x configs
+public partial class GameConfig { … }
+```
+
+Pattern grammar — `Major.Minor.Patch` with `x` (capture, propagates to Config), `N+` (range), `*` (wildcard), or literal values. The framework resolves each connecting client per-RPC and pins `Context.Config` to the matching branch.
+
+#### Schema migration breakpoints
+
+Declare on a state class that schema N requires config ≥ X:
+
+```csharp
+[SharedState]
+[MemoryPackable(GenerateType.VersionTolerant)]
+[MetaStateVersion(2, "2.0", typeof(GameConfig))]   // schema 2 needs GameConfig >= 2.0
+public partial class ProfileState : ISharedState { … }
+```
+
+Migration is **client-aware** — a 1.x client connecting to a fresh entity gets schema 1 (base init only). A 2.x client triggers lazy migration to schema 2 with `Context.Config` pinned to the 2.0 transition version. The per-entity `IsClientConfigCompatible` gate rejects subscribes from clients whose config branch can't satisfy the entity's persisted schema.
+
+#### Per-method controls
+
+- **`[NoMigrate]`** — skip lazy migration; pin `Context.Config` to the schema-floor branch. Use for cross-entity "administrative" calls (gift sending) so the recipient isn't force-upgraded.
+- **`[MinStateVersion(N)]`** — cap migration target at schema N for this method.
+
+```csharp
+[MetaMethod(Mode = ExecutionMode.Server)]
+[NoMigrate]
+void DepositGift(GiftItem item);
+```
+
+#### MaxClientVersion + downgrade gate
+
+```csharp
+builder.Services.AddSingleton(new MetaTransportOptions
+{
+    ServerVersion    = "2.0.0",
+    MinClientVersion = "1.1.0",
+    MaxClientVersion = "2.0.*",   // accept any 2.0.x; reject 2.1+
+    RequireAuthentication = true,
+});
+```
+
+`IPlayerVersionGrain` records the highest version a player has connected with — subsequent connects from a *lower* version are rejected (downgrade prevention).
 
 ### Client-Side Config (0.15.0+)
 

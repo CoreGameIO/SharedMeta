@@ -143,6 +143,8 @@ namespace SharedMeta.Core.Transport
         public string? ServerVersion { get; set; }
         /// <summary>Minimum client version required. Populated only when connection was rejected due to version mismatch.</summary>
         public string? MinClientVersion { get; set; }
+        /// <summary>Maximum client version this server supports. Populated when rejected because client is too new.</summary>
+        public string? MaxClientVersion { get; set; }
     }
 
     /// <summary>

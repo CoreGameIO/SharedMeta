@@ -284,12 +284,70 @@ namespace SharedMeta.Core
     /// <summary>
     /// Marks a method on a [MetaServiceImpl] class as a state initializer.
     /// Called during EntityGrain activation with the current state version.
-    /// Must have signature: Task&lt;int&gt; MethodName(int version)
+    /// <para>
+    /// Two signatures are supported:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><c>Task&lt;int&gt; Init(int version)</c> — receives current schema version.</item>
+    ///   <item><c>Task&lt;int&gt; Init(int version, int targetVersion)</c> — also receives the
+    ///   target schema for this step. On first init (version == 0), the framework computes target
+    ///   as the highest <see cref="MetaStateVersionAttribute.StateVersion"/> whose config conditions
+    ///   are satisfied by the current provider config (or 1 when no <c>[MetaStateVersion]</c> is
+    ///   declared). On subsequent migration steps, target equals that step's
+    ///   <see cref="MetaStateVersionAttribute.StateVersion"/>. Use the two-arg form to write
+    ///   idempotent migrations: <c>if (version &lt; N &amp;&amp; target &gt;= N) { ... }</c>.</item>
+    /// </list>
     /// Returns the new version number to persist.
     /// </summary>
     [AttributeUsage(AttributeTargets.Method)]
     public class MetaInitAttribute : Attribute
     {
+    }
+
+    /// <summary>
+    /// Marks a <c>[MetaMethod]</c> as exempt from lazy schema migration. When the method is
+    /// invoked on an entity whose state schema is below the current required version, the
+    /// framework will <b>not</b> trigger a <c>[MetaInit]</c> migration — the method runs against
+    /// whatever schema is currently persisted.
+    /// <para>
+    /// Use for cross-entity "administrative" calls (e.g. inbox/gift sending) that must work on
+    /// entities owned by clients on older config branches without forcing a migration the
+    /// receiver hasn't asked for. The method body is responsible for being schema-tolerant.
+    /// </para>
+    /// <para>
+    /// While this method runs, <c>Context.Config</c> is pinned to the config branch that matches
+    /// the entity's current state schema (per the inverse of <see cref="MetaStateVersionAttribute"/>
+    /// thresholds), not the latest provider version.
+    /// </para>
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method, AllowMultiple = false, Inherited = false)]
+    public sealed class NoMigrateAttribute : Attribute
+    {
+    }
+
+    /// <summary>
+    /// Caps lazy schema migration for this method. If the entity's state schema is below
+    /// <see cref="StateVersion"/>, the framework migrates only up to <see cref="StateVersion"/>
+    /// before dispatching — never beyond. If the schema is already at or above
+    /// <see cref="StateVersion"/>, no migration runs (the method may still observe a higher schema).
+    /// <para>
+    /// Use when a release intentionally raises the floor for a specific operation (e.g. a new
+    /// feature path requires schema ≥ 2) without forcing a full migration to whatever the
+    /// current latest schema is.
+    /// </para>
+    /// <para>
+    /// Conflicts with <see cref="NoMigrateAttribute"/> on the same method (compile-time error).
+    /// </para>
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method, AllowMultiple = false, Inherited = false)]
+    public sealed class MinStateVersionAttribute : Attribute
+    {
+        public int StateVersion { get; }
+
+        public MinStateVersionAttribute(int stateVersion)
+        {
+            StateVersion = stateVersion;
+        }
     }
 
     [AttributeUsage(AttributeTargets.Class)]
@@ -563,6 +621,53 @@ namespace SharedMeta.Core
         {
             ServiceInterface = serviceInterface;
             MethodName = methodName;
+        }
+    }
+
+    /// <summary>
+    /// Declares a state schema migration breakpoint on an <see cref="ISharedState"/> class.
+    ///
+    /// When all config conditions for a given <see cref="StateVersion"/> are met (AND semantics
+    /// across multiple attributes with the same <see cref="StateVersion"/>), the source generator
+    /// emits code that calls <c>[MetaInit]</c> with <see cref="IMetaConfigProvider{TConfig}.GetConfig"/>
+    /// pinned to the transition version — not the current latest config. Sequential migrations
+    /// (profiles that skipped intermediate versions) receive one <c>[MetaInit]</c> call per
+    /// unprocessed step in ascending order.
+    ///
+    /// Only declare breakpoints — points where the schema actually changes.
+    /// Config bumps that require no schema change need no entry.
+    ///
+    /// Example:
+    /// <code>
+    /// [MetaStateVersion(2, "2.1", typeof(ExpeditionConfig))]   // schema 2 when config >= 2.1
+    /// [MetaStateVersion(3, "3.1", typeof(ExpeditionConfig))]   // schema 3 when BOTH reach threshold
+    /// [MetaStateVersion(3, "1.4", typeof(SeasonConfig))]
+    /// public partial class ProfileState : ISharedState { ... }
+    /// </code>
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class, AllowMultiple = true, Inherited = false)]
+    public class MetaStateVersionAttribute : Attribute
+    {
+        /// <summary>The target state schema version this migration step produces.</summary>
+        public int StateVersion { get; }
+
+        /// <summary>
+        /// Minimum config version (Major.Minor) that triggers this schema transition.
+        /// Format: "Major.Minor" — e.g. "2.1".
+        /// </summary>
+        public string MinConfigVersion { get; }
+
+        /// <summary>
+        /// Which config type this threshold applies to.
+        /// <c>null</c> means the state's single primary config.
+        /// </summary>
+        public Type? ConfigType { get; }
+
+        public MetaStateVersionAttribute(int stateVersion, string minConfigVersion, Type? configType = null)
+        {
+            StateVersion = stateVersion;
+            MinConfigVersion = minConfigVersion;
+            ConfigType = configType;
         }
     }
 }

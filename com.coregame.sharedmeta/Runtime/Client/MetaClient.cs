@@ -128,7 +128,7 @@ namespace SharedMeta.Client
                         StateBytes = connectResponse.StateBytes,
                         OptimisticRandomBytes = connectResponse.OptimisticRandomBytes,
                         NamedRandomsBytes = connectResponse.NamedRandomsBytes,
-                        ConfigVersion = new MetaConfigVersion(connectResponse.ConfigMajorVersion, connectResponse.ConfigMinorVersion)
+                        ConfigVersion = new MetaConfigVersion(connectResponse.ConfigMajorVersion, connectResponse.ConfigMinorVersion, connectResponse.ConfigPatchVersion)
                     };
                 },
                 Serializer,

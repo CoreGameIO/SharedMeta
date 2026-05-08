@@ -235,41 +235,55 @@ public partial class CardGameServiceImpl : ICardGameService
 
 ### State Initialization (`[MetaInit]`)
 
-Use `[MetaInit]` on a method in your `[MetaServiceImpl]` class to initialize or migrate state when the entity grain activates. The method is called server-side during `OnActivateAsync` — it is **not** broadcast to clients (clients receive the already-initialized state via snapshot on subscribe).
+Use `[MetaInit]` on a method in your `[MetaServiceImpl]` class to initialize or migrate state. Two signatures are supported — the generator detects the parameter count and emits the matching call shape:
+
+```csharp
+// Legacy single-arg form
+[MetaInit] public Task<int> Init(int version) { ... }
+
+// Two-arg form (0.19.0+) — also receives the target schema for this step
+[MetaInit] public Task<int> Init(int version, int target) { ... }
+```
+
+The two-arg form pairs naturally with `[MetaStateVersion]` migration breakpoints (see [Per-Client Config Branches & State Migration](#per-client-config-branches--state-migration)) — `target` is the schema version the framework wants to reach in this step, so you can branch independently of which migration step triggered the call:
 
 ```csharp
 [MetaServiceImpl(typeof(IProfileService), typeof(ProfileState))]
 public partial class ProfileServiceImpl : IProfileService
 {
     [MetaInit]
-    public Task<int> InitState(int version)
+    public Task<int> InitState(int version, int target)
     {
-        if (version < 1)
+        if (version < 1 && target >= 1)
         {
-            state.Energy = 50;
-            state.MaxEnergy = 50;
-            state.Money = 100;
-            return Task.FromResult(1);
+            // Base init — Context.Config pinned to 1.x branch.
+            State.Energy = Config.StartEnergy;
+            State.Money  = Config.StartMoney;
         }
-        // Future migrations:
-        // if (version < 2) { state.NewField = ...; return Task.FromResult(2); }
-        return Task.FromResult(version);
+        if (version < 2 && target >= 2)
+        {
+            // 1→2 migration — Context.Config pinned to 2.0 transition version.
+            State.NewField = Config.NewFieldDefault;
+        }
+        return Task.FromResult(Math.Max(version, target));
     }
 }
 ```
 
-**How it works:**
-- `EntityGrainState` stores `int Version`, persisted alongside entity state
-- On grain activation, the framework calls `InitializeStateAsync(currentVersion)` on the generated provider
-- The returned version is saved to `EntityGrainState.Version`
-- The grain is **not** persisted after init alone — persistence only happens when a player interacts with the entity (the `_isDirty` flag is not set by init)
-- This prevents creating persistent state for grains that were activated but never used
+**When `[MetaInit]` runs (changed in 0.19.0):**
+- **Activation no longer drives migration.** `OnActivateAsync` only loads persisted state.
+- First-time init and lazy migration run from `SubscribeAsync` (when a client subscribes) and from `HandleCallAsync` / `HandleQueryAsync` (when a method is dispatched). Both paths cap migration to the connecting client's resolved config branch — see [Per-Client Config Branches & State Migration](#per-client-config-branches--state-migration).
+- For services with `[MetaInit]` but no `[MetaStateVersion]`, the generator emits a minimal lazy-init path that runs `Init` exactly once on first interaction.
+- Returned version is saved to `EntityGrainState.Version`.
+- Persistence only happens when a player interacts with the entity (the `_isDirty` flag is not set by init alone) — this prevents creating persistent state for grains that were activated but never used.
 
-**Signature:** `Task<int> MethodName(int version)` — takes current version, returns new version.
+**Signatures:** `Task<int> MethodName(int version)` or `Task<int> MethodName(int version, int target)`. Returns the new version.
 
 **Available during `[MetaInit]`:**
 - `Context.Random` and `Context.ServerRandom` — available for deterministic initialization (e.g., map generation)
-- `Config` — available if a config type is configured for the service (config is resolved before init runs)
+- `Config` — pinned to the appropriate branch for this step. For base init (target=1) without an explicit `[MetaStateVersion(1, …)]`, pinned to `(1, 0, 0)`. For migration steps, pinned to the step's transition version (so a 1→2 migration sees `Config@2.0`, not the latest).
+- `Context.Version` — current schema version (the source version of this step).
+- `Context.ConfigVersion` — the `MetaConfigVersion` matching `Config`.
 - `State` — the entity state to initialize/migrate
 
 **Note:** `[MetaInit]` is a server-only step. Random values used during init are not replayed on the client — the client receives the already-initialized state snapshot.
@@ -347,18 +361,22 @@ public Task<int> InitState(int version)
 
 ### Config Versioning (`MetaConfigVersion`)
 
-Config uses a two-part version: `Major.Minor`.
+Config uses a three-part version: `Major.Minor.Patch` (extended from `Major.Minor` in 0.19.0).
 
 - **Major** = schema version. Changes when config structure changes (requires client update).
 - **Minor** = data version. Changes when config values change (same schema).
+- **Patch** = hotfix version. Used by `IMetaConfigProvider.ResolveLatestMatching(major, minor)` to pick the latest patch within a (major, minor) range.
 
 ```csharp
 public readonly struct MetaConfigVersion
 {
     public int Major { get; }
     public int Minor { get; }
+    public int Patch { get; }
 }
 ```
+
+Parses string forms via `MetaConfigVersion.Parse("1.2.3")`. Comparison operators (`<`, `<=`, `>`, `>=`, `==`) compare component-wise. `default(MetaConfigVersion) == (0, 0, 0)`.
 
 ### Server-Side Config Provider
 
@@ -394,15 +412,34 @@ services.ConfigureMeta(svc =>
 });
 ```
 
-### Config Version Pinning
+### Per-Call Config Resolution
 
-Each entity persists its config version in `EntityGrainState.ConfigVersion`. The version is resolved **once** on first activation and reused on subsequent activations:
+> **Changed in 0.19.0**: removed per-entity config pinning. Config is now resolved **per RPC call** based on the caller's client version, so each subscriber sees the config branch appropriate for their app version. This makes optimistic execution consistent between client and server for any given call, and removes the "two services on one entity want different configs" deadlock.
 
-1. New entity activates → `ConfigVersion` is `(0,0)` (unset)
-2. Framework calls `IMetaConfigProvider.CurrentVersion` to get the default version
-3. If `IConfigVersionResolver` is registered, it can override the version (for A/B tests)
-4. Resolved version is persisted → all future activations use this version
-5. Entity keeps using pinned version until explicitly upgraded
+Flow on each RPC:
+
+1. Client sends RPC with its `clientVersion` (carried in `RpcCall.CallerClientVersion`, populated by the connection handler from session state — clients don't set it explicitly).
+2. Generated provider looks up `clientVersion → resolved MetaConfigVersion` via `[MetaConfigVersion]` rules on the config class. **Cached per-grain** by `clientVersion`.
+3. Looks up `resolved version → TConfig instance` via `IMetaConfigProvider<TConfig>.GetConfig(version)`. **Cached per-grain** by version.
+4. `MetaContext.Config` is set to that instance for the duration of the call.
+5. Both caches invalidate when `IMetaConfigProvider.CurrentVersion` advances (runtime patch deploy).
+
+`EntityGrainState.ConfigVersion` was **removed in 0.19.0** — `Id(6)` is reserved as a tombstone in the serialization contract so existing persisted data deserializes cleanly. Config is no longer pinned per-entity; it's resolved per-call from the connecting client's version, so a single grain serves multiple branches without re-activation.
+
+### Config-Dependent Mutations on Shared Entities
+
+Per-call resolution makes **the caller** consistent with the server, but broadcast-replay-based modes (`Optimistic`, `CrossOptimistic`, `Server`) **replay the method on other subscribers** with their own config. If a method mutates state using `Config.X` and `X` differs across config branches, replays diverge.
+
+**Rules of thumb:**
+
+- **Owned entities (`UserOwned`, `OwnerOnly`)** — single subscriber = caller. No broadcast divergence possible. `Optimistic` with `Config.X` is safe and idiomatic.
+
+- **Shared entities (`Open`, `Authorized` with multiple subscribers)** — choose one of:
+  1. **`ExecutionMode.ServerPatch` / `ServerReplace`** — server computes, broadcasts state diff (or full snapshot) instead of replay payload. Other subscribers apply the diff bytewise; their config is irrelevant. **Recommended for any shared mutation that uses `Config.X` in a formula.**
+  2. **`[MetaStateVersion]` schema gate** — declare that schema N requires config ≥ X. After any client connects with config X+, the entity migrates to schema N and `IsClientConfigCompatible` rejects subscribers on lower configs. All remaining subscribers are on the same branch, replay is consistent.
+  3. **Config-stable formulas** — if the method's mutation doesn't depend on `Config` (e.g. `Move` just changes coordinates), no special mode is needed.
+
+Methods that read `Config.X` but don't mutate state (queries, cosmetic reactions) are always safe across branches — different subscribers just get different views, no divergence.
 
 ### Config Version Resolver (A/B Tests, Gradual Rollouts)
 
@@ -425,6 +462,148 @@ public class AbTestConfigResolver : IConfigVersionResolver
 // Register in DI (optional — without it, CurrentVersion is always used):
 services.AddSingleton<IConfigVersionResolver>(new AbTestConfigResolver());
 ```
+
+### Per-Client Config Branches & State Migration
+
+> **Added in 0.19.0**: a complete system for routing connecting clients to the correct config branch and migrating entity state schema as the live config advances — without locking older clients out of fresh entities.
+
+The problem this solves: you ship config 2.0 with a new feature, your live ops promote `_configProvider.CurrentVersion = (2, 0)`, but a chunk of your players are still on the 1.x build. Without per-client branching, they either see broken state (the new feature's fields are zeroed) or get migrated to a schema they can't reason about. With per-client branches, 1.x clients keep getting `Config@1.x` and `state.Version=1`, while 2.x clients see `Config@2.0` and `state.Version=2` — same entity grain, different views per call.
+
+#### `[MetaConfigVersion]` — client → config routing
+
+Declare on the config class which client app version maps to which config version. Two grammars are supported on the same attribute, picked by which constructor / properties you use:
+
+```csharp
+[MetaConfig(Default = true)]
+[MemoryPackable, MessagePackObject]
+[MetaConfigVersion(Client = "1.x.*", Config = "1.x.*")]   // 1.x clients → 1.x configs (latest patch)
+[MetaConfigVersion(Client = "2.x.*", Config = "2.x.*")]   // 2.x clients → 2.x configs
+public partial class GameConfig { … }
+```
+
+**Pattern grammar** — three components matched independently:
+
+| Form | Example | Meaning |
+|---|---|---|
+| **Literal** | `2.0.5` | Matches exactly. |
+| **Capture** | `x` | Matches any value AND propagates: `Client="1.x.*", Config="1.x.*"` routes 1.5.0 → 1.5.* and 1.6.2 → 1.6.* with one rule. |
+| **Range** | `2.2+` | Matches 2.2 or higher within the same major. |
+| **Wildcard** | `*` | Matches any value (terminal — no propagation). |
+
+Resolution picks the most-specific rule (literal > capture > range > wildcard, then by component depth). Multiple `[MetaConfigVersion]` attributes are allowed; first-match-after-sort wins.
+
+The framework calls `IMetaConfigProvider<T>.ResolveLatestMatching(major, minor)` on captures to materialize the actual `Patch` value (e.g. `1.6.x` → `1.6.17` if that's the latest published 1.6 patch).
+
+#### Per-call resolution flow
+
+On every RPC the generated `MetaProvider` runs:
+
+1. `clientVersion → resolved MetaConfigVersion` via the `[MetaConfigVersion]` resolver. Cached per grain.
+2. `resolved version → TConfig instance` via `IMetaConfigProvider.GetConfig(version)`. Cached per grain.
+3. `MetaContext.Config` and `MetaContext.ConfigVersion` are set for the duration of the call.
+
+Both caches invalidate when `_configProvider.CurrentVersion` advances (runtime patch deploy via your live-ops dashboard).
+
+`RpcCall.CallerClientVersion` carries the version through the wire. `MetaContext.CallerClientVersion` mirrors it for the duration of dispatch — cross-entity calls read it and propagate it forward, so a 1.x session whose Profile cross-calls a fresh Expedition entity sees the same `clientVersion` on both ends.
+
+#### `[MetaStateVersion]` — schema migration breakpoints
+
+Declare on a state class that schema N requires config ≥ X:
+
+```csharp
+[SharedState]
+[MemoryPackable(GenerateType.VersionTolerant)]
+[MetaStateVersion(2, "2.0", typeof(GameConfig))]   // schema 2 requires GameConfig >= 2.0
+[MetaStateVersion(3, "3.0", typeof(GameConfig))]   // schema 3 requires GameConfig >= 3.0
+public partial class ProfileState : ISharedState { … }
+```
+
+Multiple attributes with the same `StateVersion` form an **AND gate** — useful when two configs gate the same schema bump:
+
+```csharp
+[MetaStateVersion(3, "3.1", typeof(GameConfig))]   // schema 3 needs BOTH:
+[MetaStateVersion(3, "1.4", typeof(SeasonConfig))] //   GameConfig >= 3.1 AND SeasonConfig >= 1.4
+```
+
+The framework calls `[MetaInit]` once per applicable step, with `Context.Config` pinned to that step's transition version (not the latest), so each migration runs against the config it was authored against. Sequential migrations (a profile that skipped intermediate versions) get one `[MetaInit]` call per unprocessed step in ascending order.
+
+#### Client-aware migration cap
+
+Migration is **never** driven by `_configProvider.CurrentVersion` alone. Each entry point caps the migration target to the connecting client's resolved branch:
+
+| Entry point | Cap source |
+|---|---|
+| `EntityGrain.SubscribeAsync` | `ComputeSchemaCapForClient(clientVersion)` |
+| `MetaProviderBase.HandleCallAsync` | `min(method's [MinStateVersion], ComputeSchemaCapForClient(call.CallerClientVersion))` |
+| `MetaProviderBase.HandleQueryAsync` | same as HandleCallAsync |
+
+So a 1.x client subscribing to a fresh entity gets schema 1 (base init only), even when the server's current is 2.0. A 2.x client subscribing later triggers lazy migration to schema 2.
+
+#### `IsClientConfigCompatible` — per-entity gate
+
+The framework also generates a per-entity gate on Subscribe:
+
+> If the entity is already at schema N, reject any client whose resolved config branch can't satisfy schema N's threshold.
+
+Example: a 2.x client connected first and migrated the profile to schema 2; a 1.x client trying to subscribe to *that* profile is rejected with a clear error (`"Your app version is too old for this entity's current state…"`). The check uses the same threshold table as `[MetaStateVersion]`.
+
+#### `[NoMigrate]` and `[MinStateVersion(N)]` — per-method controls
+
+Two attributes on `[MetaMethod]`s give you fine-grained migration control:
+
+```csharp
+[MetaMethod(Mode = ExecutionMode.Server)]
+[NoMigrate]
+void DepositGift(GiftItem item);
+
+[MetaMethod(Mode = ExecutionMode.Server)]
+[MinStateVersion(2)]
+void UseSeasonalAbility(int abilityId);
+```
+
+- **`[NoMigrate]`** — the method skips lazy migration entirely and pins `Context.Config` to the **schema-floor branch** (the highest config branch that does not require migration past the entity's current persisted schema). Use for cross-entity "administrative" calls (inbox/gift sending) — sending a gift to a profile shouldn't force-upgrade that profile if its owner is still on an older client. The method body is responsible for being schema-tolerant.
+- **`[MinStateVersion(N)]`** — caps migration at schema N. If the entity is below N, migrate up to N (no further); if at or above, no migration runs.
+
+#### Server-side responsibilities
+
+Your `IMetaConfigProvider<TConfig>` must implement the full surface that 0.19.0 expects:
+
+```csharp
+public class GameConfigProvider : IMetaConfigProvider<GameConfig>
+{
+    public MetaConfigVersion CurrentVersion => new(2, 0, 0);
+
+    // Fetch a SPECIFIC historical version. Used at runtime AND for download URLs.
+    // Cache or memoize — migration steps repeatedly request the same transition versions.
+    public GameConfig GetConfig(MetaConfigVersion version) => …;
+
+    // Resolve a Major.Minor capture to its latest patch. Called by the [MetaConfigVersion]
+    // resolver when the rule has an `x` capture in the Patch slot.
+    public MetaConfigVersion ResolveLatestMatching(int major, int minor) => …;
+
+    // Optional. Used by DownloadingConfigProvider on the client (Unity) to fetch the
+    // version-specific config bytes from your CDN.
+    public string? GetDownloadUrl(MetaConfigVersion version) => …;
+}
+```
+
+#### `MaxClientVersion` and downgrade tracking
+
+`MetaTransportOptions.MaxClientVersion` lets the server explicitly bound the supported client range:
+
+```csharp
+builder.Services.AddSingleton(new MetaTransportOptions
+{
+    ServerVersion    = "2.0.0",
+    MinClientVersion = "1.1.0",
+    MaxClientVersion = "2.0.*",   // accept any 2.0.x, reject 2.1+
+    RequireAuthentication = true,
+});
+```
+
+`ClientVersionPolicy.Validate` uses inclusive Min/Max bounds rigorously (the old `clientMajor == serverMajor` check is gone), so you can publish hotfixes outside the server's own version range without surprise rejections.
+
+`IPlayerVersionGrain` records the highest client version a player has ever connected with. Subsequent connects from a *lower* version are rejected with a clear "downgrade not allowed" error — so a player can't quietly roll back their app to dodge a forced migration.
 
 ### Client-Side Config Flow (0.15.0+)
 
@@ -835,7 +1014,28 @@ int secret = Context.ServerRandom!.Next(1000);   // Server generates, client rep
 
 ### Seeding
 
-Optimistic random is seeded from the entity ID string (FNV-1a hash). State is transmitted to client on `SubscribeAsync()` and persisted in `EntityGrainState.OptimisticRandomBytes`.
+Fresh entity randoms (server, optimistic, `[NamedRandom]` slots) are seeded from a string passed to `MetaRandom.FromString` (FNV-1a hash). Default: `"{entityId}:{streamName}"`. **Once the random advances and the entity persists, the seed is never consulted again** — `EntityGrainState.{Server,Optimistic,NamedRandoms}Bytes` carry the full internal state (s0/s1/s2/s3 + ScrollId), and that's what the client receives via `SubscribeResponse`.
+
+**The seed is server-side-only.** It is never serialized, never sent over the wire, and never reconstructed by the client. Clients reconstruct `MetaRandom` from the persisted bytes, so optimistic execution and replay see the same advanced state the server has — without knowing how the stream started.
+
+**Override seeding to inject entropy.** When you recreate an entity with the same id (profile reset → recycled expedition counter, regenerated game grain) the deterministic seed string produces the same stream. Two ways to inject non-deterministic entropy:
+
+```csharp
+// (A) Per-host: option-driven, no provider subclassing.
+services.Configure<EntityGrainOptions>(o =>
+{
+    o.FreshRandomSeedFactory = (entityId, streamName) =>
+        $"{entityId}:{streamName}:{DateTime.UtcNow.Ticks:x}:{Random.Shared.NextInt64():x}";
+});
+```
+
+```csharp
+// (B) Per-provider: subclass MetaProviderBase and override directly.
+protected override string CreateFreshRandomSeed(string streamName)
+    => $"{Context.EntityId}:{streamName}:{DateTime.UtcNow.Ticks:x}";
+```
+
+The factory and override are invoked **only when no persisted bytes exist** for that stream — once a stream is in motion, the factory is irrelevant. `[NamedRandom(Seed = "literal")]` continues to bypass both paths (the attribute exists specifically to pin a stream to a fixed seed across all entities).
 
 ### Named Random Streams
 
@@ -3146,8 +3346,12 @@ The runtime ignores the attribute. It is purely a marker for downstream tooling.
 | `[MetaService]` | Interface | Marks shared service for code generation |
 | `[MetaMethod]` | Method | Configures execution mode, alias, versioning |
 | `[MetaServiceImpl]` | Class | Marks service implementation for context injection |
-| `[MetaInit]` | Method | State initialization/migration on grain activation |
+| `[MetaInit]` | Method | State initialization/migration. One- or two-arg form: `Init(int version)` or `Init(int version, int target)` |
+| `[MetaStateVersion(N, "M.m", typeof(TConfig))]` | Class (state) | Schema migration breakpoint — schema N requires `TConfig >= M.m`. Multiple per state form an AND gate. (0.19.0+) |
+| `[NoMigrate]` | Method | Skip lazy migration; pin `Context.Config` to the schema-floor branch. (0.19.0+) |
+| `[MinStateVersion(N)]` | Method | Cap migration target at schema N for this method. (0.19.0+) |
 | `[MetaConfig]` | Class | Marks a class as static game configuration |
+| `[MetaConfigVersion(Client = …, Config = …)]` | Class (config) | Per-client config branch routing rule. Pattern grammar: literal / `x` capture / `N+` range / `*` wildcard. Multiple per class. (0.19.0+) |
 | `[SharedState]` | Class | Marks shared state entity |
 | `[Tracked]` | Field | Push-based change tracking property for UI binding (client-only) |
 | `[Trigger]` | Method | Auto-execute after condition on another method |

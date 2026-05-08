@@ -24,6 +24,12 @@ namespace SharedMeta.Generator.Generators
         public bool HasIsAuthorizedMethod { get; set; }
         public string? MetaInitMethodName { get; set; }
         /// <summary>
+        /// Number of parameters on the <c>[MetaInit]</c> method.
+        /// 1 = legacy <c>Init(int version)</c>; 2 = <c>Init(int version, int target)</c>.
+        /// Generator emits the matching call shape.
+        /// </summary>
+        public int MetaInitParameterCount { get; set; } = 1;
+        /// <summary>
         /// Config type full name from [MetaService(ConfigType = typeof(...))] or resolved default config.
         /// </summary>
         public string? ConfigTypeFullName { get; set; }
@@ -38,6 +44,12 @@ namespace SharedMeta.Generator.Generators
         /// Named randoms declared via [NamedRandom] on the state class, in attribute declaration order.
         /// </summary>
         public List<NamedRandomDeclaration> NamedRandoms { get; set; } = new();
+
+        /// <summary>
+        /// Migration conditions declared via [MetaStateVersion] on the state class, sorted by StateVersion.
+        /// Multiple conditions with the same StateVersion form an AND gate.
+        /// </summary>
+        public List<MigrationCondition> MigrationConditions { get; set; } = new();
 
         /// <summary>
         /// True when the impl class carries <c>[MetaServiceImpl]</c> but its declared service interface
@@ -56,6 +68,24 @@ namespace SharedMeta.Generator.Generators
     {
         public string Name { get; set; } = "";
         public string? SeedOverride { get; set; }
+    }
+
+    /// <summary>
+    /// A single condition declared by <c>[MetaStateVersion(stateVersion, "Major.Minor", typeof(ConfigType))]</c>.
+    /// Multiple conditions with the same <see cref="StateVersion"/> form an AND gate.
+    /// </summary>
+    public class MigrationCondition
+    {
+        /// <summary>Target state schema version.</summary>
+        public int StateVersion { get; set; }
+        /// <summary>Minimum config Major component.</summary>
+        public int Major { get; set; }
+        /// <summary>Minimum config Minor component.</summary>
+        public int Minor { get; set; }
+        /// <summary>Config type full name. Null = primary config of the state.</summary>
+        public string? ConfigTypeFullName { get; set; }
+        /// <summary>Safe identifier suffix for field names (e.g. "MyGame_ExpeditionConfig").</summary>
+        public string ConfigTypeIdent { get; set; } = "";
     }
 
     /// <summary>
@@ -187,6 +217,7 @@ namespace SharedMeta.Generator.Generators
             if (metaInitMethod != null)
             {
                 info.MetaInitMethodName = metaInitMethod.Name;
+                info.MetaInitParameterCount = metaInitMethod.Parameters.Length;
             }
 
             // Check for DeepDesync = true
@@ -209,6 +240,43 @@ namespace SharedMeta.Generator.Generators
 
                 info.NamedRandoms.Add(new NamedRandomDeclaration { Name = name, SeedOverride = seedOverride });
             }
+
+            // Collect [MetaStateVersion] attributes from the state class (migration breakpoints)
+            foreach (var stateAttr in stateType.GetAttributes())
+            {
+                if (stateAttr.AttributeClass?.ToDisplayString() != "SharedMeta.Core.MetaStateVersionAttribute")
+                    continue;
+                if (stateAttr.ConstructorArguments.Length < 2) continue;
+
+                if (stateAttr.ConstructorArguments[0].Value is not int stateVer) continue;
+                if (stateAttr.ConstructorArguments[1].Value is not string verStr) continue;
+
+                var configTypeSymbol = stateAttr.ConstructorArguments.Length > 2
+                    ? stateAttr.ConstructorArguments[2].Value as INamedTypeSymbol
+                    : null;
+
+                var parts = verStr.Split('.');
+                if (parts.Length < 2 ||
+                    !int.TryParse(parts[0], out var major) ||
+                    !int.TryParse(parts[1], out var minor))
+                    continue;
+
+                var configTypeFull = configTypeSymbol?.ToDisplayString();
+                var configTypeIdent = configTypeFull != null
+                    ? new string(configTypeFull.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray())
+                    : "";
+
+                info.MigrationConditions.Add(new MigrationCondition
+                {
+                    StateVersion  = stateVer,
+                    Major         = major,
+                    Minor         = minor,
+                    ConfigTypeFullName = configTypeFull,
+                    ConfigTypeIdent    = configTypeIdent,
+                });
+            }
+            // Sort by ascending StateVersion so the generator emits steps in order
+            info.MigrationConditions.Sort((a, b) => a.StateVersion.CompareTo(b.StateVersion));
 
             // Get server dependencies from constructor arguments (params Type[])
             if (attr.ConstructorArguments.Length > 2)
@@ -287,6 +355,20 @@ namespace SharedMeta.Generator.Generators
                 var signatureString = SignatureHashGenerator.BuildSignatureString(info.InterfaceName, methodAlias, member);
                 var signatureHash = SignatureHashGenerator.ComputeFnv1aHash(signatureString);
 
+                // Per-method migration policy:
+                //   [NoMigrate]            → SkipMigration = true
+                //   [MinStateVersion(N)]   → MinStateVersion = N
+                bool skipMigration = member.GetAttributes().Any(a =>
+                    a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.NoMigrateAttribute");
+                int? minStateVersion = null;
+                var minStateAttr = member.GetAttributes().FirstOrDefault(a =>
+                    a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MinStateVersionAttribute");
+                if (minStateAttr != null && minStateAttr.ConstructorArguments.Length > 0
+                    && minStateAttr.ConstructorArguments[0].Value is int msv)
+                {
+                    minStateVersion = msv;
+                }
+
                 info.MethodSignatures.Add(new MethodSignatureInfo
                 {
                     ServiceName = info.InterfaceName,
@@ -295,7 +377,9 @@ namespace SharedMeta.Generator.Generators
                     SignatureHash = signatureHash,
                     IsQuery = isQuery,
                     IsOpenAccess = isOpenAccess,
-                    IsSignal = isSignal
+                    IsSignal = isSignal,
+                    SkipMigration = skipMigration,
+                    MinStateVersion = minStateVersion
                 });
             }
 
@@ -696,25 +780,65 @@ namespace SharedMeta.Generator.Generators
                 var fieldName = GetFieldName(service.InterfaceName);
                 sb.AppendLine($"            {fieldName} = null;");
             }
+            // Clear per-call config cache (cleared anyway on grain teardown, explicit for clarity).
+            sb.AppendLine("            ClearConfigCache();");
             sb.AppendLine("        }");
             sb.AppendLine();
 
-            // Override InitializeConfig to resolve config by version
+            // Override InitializeConfig to resolve config by version.
+            // Also emit secondary config providers for [MetaStateVersion] conditions that reference
+            // additional config types beyond the primary service config.
             var configType = services.Select(s => s.ConfigTypeFullName).FirstOrDefault(c => c != null);
+
+            // Collect all migration conditions (dedup across services sharing the same state).
+            var allMigConds = services
+                .SelectMany(s => s.MigrationConditions)
+                .GroupBy(c => $"{c.StateVersion}:{c.ConfigTypeFullName ?? "__primary__"}")
+                .Select(g => g.First())
+                .OrderBy(c => c.StateVersion)
+                .ToList();
+
+            // Secondary config types: referenced in migration conditions but NOT the primary service config.
+            var secondaryProviders = allMigConds
+                .Where(c => c.ConfigTypeFullName != null && c.ConfigTypeFullName != configType)
+                .GroupBy(c => c.ConfigTypeFullName!)
+                .Select(g => (ConfigType: g.Key, Ident: g.First().ConfigTypeIdent))
+                .ToList();
+
+            // Emit OnInitialize when EITHER a primary config exists OR migration conditions
+            // reference secondary config types (a state with [MetaStateVersion] but no service
+            // declaring a primary ConfigType still needs the migration providers wired up).
+            bool hasAnyConfigProvider = configType != null || secondaryProviders.Count > 0;
+
             if (configType != null)
             {
                 sb.AppendLine($"        private SharedMeta.Server.Core.IMetaConfigProvider<{configType}>? _configProvider;");
                 sb.AppendLine($"        private SharedMeta.Server.Core.IConfigVersionResolver? _configVersionResolver;");
+            }
+            foreach (var sec in secondaryProviders)
+                sb.AppendLine($"        private SharedMeta.Server.Core.IMetaConfigProvider<{sec.ConfigType}>? _configProvider_{sec.Ident};");
+
+            if (hasAnyConfigProvider)
+            {
                 sb.AppendLine();
                 sb.AppendLine("        protected override void OnInitialize()");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (ServiceResolver != null)");
                 sb.AppendLine("            {");
-                sb.AppendLine($"                _configProvider = (SharedMeta.Server.Core.IMetaConfigProvider<{configType}>)ServiceResolver(typeof(SharedMeta.Server.Core.IMetaConfigProvider<{configType}>));");
-                sb.AppendLine($"                try {{ _configVersionResolver = ServiceResolver(typeof(SharedMeta.Server.Core.IConfigVersionResolver)) as SharedMeta.Server.Core.IConfigVersionResolver; }} catch {{ }}");
+                if (configType != null)
+                {
+                    sb.AppendLine($"                _configProvider = (SharedMeta.Server.Core.IMetaConfigProvider<{configType}>)ServiceResolver(typeof(SharedMeta.Server.Core.IMetaConfigProvider<{configType}>));");
+                    sb.AppendLine($"                try {{ _configVersionResolver = ServiceResolver(typeof(SharedMeta.Server.Core.IConfigVersionResolver)) as SharedMeta.Server.Core.IConfigVersionResolver; }} catch {{ }}");
+                }
+                foreach (var sec in secondaryProviders)
+                    sb.AppendLine($"                try {{ _configProvider_{sec.Ident} = ServiceResolver(typeof(SharedMeta.Server.Core.IMetaConfigProvider<{sec.ConfigType}>)) as SharedMeta.Server.Core.IMetaConfigProvider<{sec.ConfigType}>; }} catch {{ }}");
                 sb.AppendLine("            }");
                 sb.AppendLine("        }");
                 sb.AppendLine();
+            }
+
+            if (configType != null)
+            {
                 sb.AppendLine("        public override void InitializeConfig(SharedMeta.Core.MetaConfigVersion version)");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_configProvider == null) { base.InitializeConfig(version); return; }");
@@ -730,6 +854,48 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine();
                 sb.AppendLine("            base.InitializeConfig(version);");
                 sb.AppendLine("            MetaContext!.Config = _configProvider.GetConfig(version);");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+
+                // ResolveClientConfigVersion — uses [MetaConfigVersion] rules on the config class
+                // to pick the config branch appropriate for the connecting client's app version.
+                sb.AppendLine($"        private static readonly SharedMeta.Core.MetaConfigVersionResolver? _configVersionPolicyResolver");
+                sb.AppendLine($"            = SharedMeta.Core.MetaConfigVersionResolver.ForType(typeof({configType}));");
+                sb.AppendLine();
+                sb.AppendLine("        public override SharedMeta.Core.MetaConfigVersion ResolveClientConfigVersion(string? clientVersion)");
+                sb.AppendLine("            => _configProvider?.ResolveForClient(clientVersion, _configVersionPolicyResolver) ?? ConfigVersion;");
+                sb.AppendLine();
+
+                // GetCachedConfigForClient — per-call config cache:
+                //   1. clientVersion → resolved MetaConfigVersion (via [MetaConfigVersion] rules)
+                //   2. resolved version → TConfig instance (one entry per branch per grain activation)
+                // Cache invalidates when the provider's CurrentVersion advances (runtime patch deploy).
+                // Both lookups are O(1) dict access on the hot RPC path.
+                sb.AppendLine($"        private readonly System.Collections.Generic.Dictionary<string, {configType}> _configCacheByClient = new System.Collections.Generic.Dictionary<string, {configType}>();");
+                sb.AppendLine("        private SharedMeta.Core.MetaConfigVersion _lastSeenProviderVersion;");
+                sb.AppendLine();
+                sb.AppendLine("        protected override object? GetCachedConfigForClient(string? clientVersion)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            if (_configProvider == null) return null;");
+                sb.AppendLine("            var providerCurrent = _configProvider.CurrentVersion;");
+                sb.AppendLine("            if (providerCurrent != _lastSeenProviderVersion)");
+                sb.AppendLine("            {");
+                sb.AppendLine("                _configCacheByClient.Clear();");
+                sb.AppendLine("                _lastSeenProviderVersion = providerCurrent;");
+                sb.AppendLine("            }");
+                sb.AppendLine("            var key = clientVersion ?? string.Empty;");
+                sb.AppendLine("            if (!_configCacheByClient.TryGetValue(key, out var cached))");
+                sb.AppendLine("            {");
+                sb.AppendLine("                var resolved = ResolveClientConfigVersion(clientVersion);");
+                sb.AppendLine("                cached = _configProvider.GetConfig(resolved);");
+                sb.AppendLine("                _configCacheByClient[key] = cached;");
+                sb.AppendLine("            }");
+                sb.AppendLine("            return cached;");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+                sb.AppendLine("        protected override void ClearConfigCache()");
+                sb.AppendLine("        {");
+                sb.AppendLine("            _configCacheByClient.Clear();");
                 sb.AppendLine("        }");
                 sb.AppendLine();
             }
@@ -906,19 +1072,434 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine();
             }
 
-            // InitializeStateAsync override (if any service has [MetaInit])
+            // InitializeStateAsync / migration override (if any service has [MetaInit])
             var servicesWithInit = services.Where(s => s.MetaInitMethodName != null).ToList();
             if (servicesWithInit.Count > 0)
             {
+                // Group migration conditions by target state schema version (AND semantics per group).
+                var migStepGroups = allMigConds
+                    .GroupBy(c => c.StateVersion)
+                    .OrderBy(g => g.Key)
+                    .ToList();
+
+                bool hasMigration = migStepGroups.Count > 0;
+
                 sb.AppendLine("        protected override async System.Threading.Tasks.Task<int> RunInitAsync(int currentVersion)");
                 sb.AppendLine("        {");
                 sb.AppendLine("            var maxVersion = currentVersion;");
-                foreach (var service in servicesWithInit)
+
+                if (hasMigration)
                 {
-                    var baseName = GetBaseName(service.InterfaceName);
-                    sb.AppendLine($"            maxVersion = System.Math.Max(maxVersion, await (({service.ImplClassFullName})Get{baseName}()).{service.MetaInitMethodName}(currentVersion));");
+                    // Schema 1 is "explicit" when the user declared [MetaStateVersion(1, …)] —
+                    // meaning they want schema 1 gated by its own config threshold. If no such
+                    // entry exists, schema 1 is "implicit base init" and we emit Step 0 to run
+                    // it unconditionally for fresh entities.
+                    bool hasExplicitSchemaOne = migStepGroups.Any(g => g.Key == 1);
+
+                    // Step 0 — base init for primary-config services. Always runs for fresh
+                    // entities (currentVersion < 1) regardless of which migration steps fire.
+                    // Pinned to (1, 0, 0) so the user's base init has a well-defined config
+                    // branch (the "1.x" baseline). This decouples first-time init from the
+                    // schema-2+ migration steps gated by client-resolved config.
+                    var primaryServicesWithInit = servicesWithInit
+                        .Where(s => s.ConfigTypeFullName == null || s.ConfigTypeFullName == configType)
+                        .ToList();
+                    if (!hasExplicitSchemaOne && primaryServicesWithInit.Count > 0 && configType != null)
+                    {
+                        sb.AppendLine("            if (currentVersion < 1 && 1 <= _migrationCap && _configProvider != null)");
+                        sb.AppendLine("            {");
+                        sb.AppendLine("                var _savedConfig0 = MetaContext!.Config;");
+                        sb.AppendLine("                try");
+                        sb.AppendLine("                {");
+                        sb.AppendLine("                    MetaContext!.Config = _configProvider.GetConfig(new SharedMeta.Core.MetaConfigVersion(1, 0, 0));");
+                        sb.AppendLine("                    MetaContext!.ConfigVersion = new SharedMeta.Core.MetaConfigVersion(1, 0, 0);");
+                        sb.AppendLine("                    MetaContext!.Version = currentVersion;");
+                        foreach (var svc in primaryServicesWithInit)
+                        {
+                            var baseName = GetBaseName(svc.InterfaceName);
+                            var initArgs = svc.MetaInitParameterCount == 2 ? "currentVersion, 1" : "currentVersion";
+                            sb.AppendLine($"                    maxVersion = System.Math.Max(maxVersion, await (({svc.ImplClassFullName})Get{baseName}()).{svc.MetaInitMethodName}({initArgs}));");
+                        }
+                        sb.AppendLine("                }");
+                        sb.AppendLine("                finally { MetaContext!.Config = _savedConfig0; }");
+                        sb.AppendLine("                currentVersion = maxVersion;");
+                        sb.AppendLine("            }");
+                    }
+
+                    // Migration-aware path: for each schema step above currentVersion, check AND
+                    // conditions and call each service's [MetaInit] with the transition config.
+                    foreach (var group in migStepGroups)
+                    {
+                        var targetSchema = group.Key;
+                        var conds = group.ToList();
+
+                        // Build null-guard: all providers referenced in this group must be non-null.
+                        var providerGuards = new List<string>();
+                        if (conds.Any(c => c.ConfigTypeFullName == null || c.ConfigTypeFullName == configType))
+                            providerGuards.Add("_configProvider != null");
+                        foreach (var sec in conds
+                            .Where(c => c.ConfigTypeFullName != null && c.ConfigTypeFullName != configType)
+                            .Select(c => $"_configProvider_{c.ConfigTypeIdent}")
+                            .Distinct())
+                            providerGuards.Add($"{sec} != null");
+
+                        // _migrationCap honours [MinStateVersion(N)] on the dispatched method.
+                        // int.MaxValue (default) means uncapped, so the && comparison is a no-op.
+                        var capGuard = $"{targetSchema} <= _migrationCap";
+                        var guardExpr = providerGuards.Count > 0
+                            ? $"currentVersion < {targetSchema} && {capGuard} && {string.Join(" && ", providerGuards)}"
+                            : $"currentVersion < {targetSchema} && {capGuard}";
+
+                        sb.AppendLine($"            if ({guardExpr})");
+                        sb.AppendLine("            {");
+
+                        // Emit boolean checks for each AND condition.
+                        for (int ci = 0; ci < conds.Count; ci++)
+                        {
+                            var cond = conds[ci];
+                            var provField = (cond.ConfigTypeFullName == null || cond.ConfigTypeFullName == configType)
+                                ? "_configProvider"
+                                : $"_configProvider_{cond.ConfigTypeIdent}";
+                            sb.AppendLine($"                var _cv{ci} = {provField}!.CurrentVersion;");
+                            sb.AppendLine($"                bool _ok{ci} = _cv{ci}.Major > {cond.Major} || (_cv{ci}.Major == {cond.Major} && _cv{ci}.Minor >= {cond.Minor});");
+                        }
+
+                        var allOk = string.Join(" && ", Enumerable.Range(0, conds.Count).Select(i => $"_ok{i}"));
+                        sb.AppendLine($"                if ({allOk})");
+                        sb.AppendLine("                {");
+                        sb.AppendLine("                    var _savedConfig = MetaContext!.Config;");
+                        sb.AppendLine("                    try");
+                        sb.AppendLine("                    {");
+
+                        // For each condition: find the service whose config type matches, set config, call [MetaInit].
+                        foreach (var cond in conds)
+                        {
+                            var provField = (cond.ConfigTypeFullName == null || cond.ConfigTypeFullName == configType)
+                                ? "_configProvider"
+                                : $"_configProvider_{cond.ConfigTypeIdent}";
+                            // Find matching service by config type
+                            var matchingSvc = servicesWithInit.FirstOrDefault(s =>
+                                (cond.ConfigTypeFullName == null && (s.ConfigTypeFullName == null || s.ConfigTypeFullName == configType))
+                                || s.ConfigTypeFullName == cond.ConfigTypeFullName);
+                            if (matchingSvc == null) continue;
+
+                            var baseName = GetBaseName(matchingSvc.InterfaceName);
+                            var initArgs = matchingSvc.MetaInitParameterCount == 2
+                                ? $"currentVersion, {targetSchema}"
+                                : "currentVersion";
+                            sb.AppendLine($"                        MetaContext!.Config = {provField}!.GetConfig(new SharedMeta.Core.MetaConfigVersion({cond.Major}, {cond.Minor}, 0));");
+                            sb.AppendLine($"                        MetaContext!.ConfigVersion = new SharedMeta.Core.MetaConfigVersion({cond.Major}, {cond.Minor}, 0);");
+                            sb.AppendLine($"                        MetaContext!.Version = currentVersion;");
+                            sb.AppendLine($"                        maxVersion = System.Math.Max(maxVersion, await (({matchingSvc.ImplClassFullName})Get{baseName}()).{matchingSvc.MetaInitMethodName}({initArgs}));");
+                        }
+
+                        sb.AppendLine("                    }");
+                        sb.AppendLine("                    finally { MetaContext!.Config = _savedConfig; }");
+                        sb.AppendLine("                }");
+                        sb.AppendLine("            }");
+
+                        // After successful step, currentVersion tracks progress for next step guard.
+                        sb.AppendLine("            currentVersion = maxVersion;");
+                    }
+
+                    // Call [MetaInit] for services whose config type doesn't appear in any migration
+                    // condition — backward-compatible path (they use version-counter logic internally).
+                    var handledConfigTypes = new HashSet<string?>(allMigConds.Select(c => c.ConfigTypeFullName));
+                    var uncoveredServices = servicesWithInit
+                        .Where(s => !handledConfigTypes.Contains(s.ConfigTypeFullName)
+                                 && !handledConfigTypes.Contains(null))
+                        .ToList();
+                    foreach (var svc in uncoveredServices)
+                    {
+                        var baseName = GetBaseName(svc.InterfaceName);
+                        // Uncovered services have no [MetaStateVersion] entries → target defaults to 1.
+                        var initArgs = svc.MetaInitParameterCount == 2 ? "currentVersion, 1" : "currentVersion";
+                        sb.AppendLine($"            MetaContext!.Version = currentVersion;");
+                        sb.AppendLine($"            maxVersion = System.Math.Max(maxVersion, await (({svc.ImplClassFullName})Get{baseName}()).{svc.MetaInitMethodName}({initArgs}));");
+                    }
                 }
+                else
+                {
+                    // No migration conditions — simple legacy path (version-counter only).
+                    foreach (var service in servicesWithInit)
+                    {
+                        var baseName = GetBaseName(service.InterfaceName);
+                        // No [MetaStateVersion] declared → target = 1 for two-arg form.
+                        var initArgs = service.MetaInitParameterCount == 2 ? "currentVersion, 1" : "currentVersion";
+                        sb.AppendLine($"            MetaContext!.Version = currentVersion;");
+                        sb.AppendLine($"            maxVersion = System.Math.Max(maxVersion, await (({service.ImplClassFullName})Get{baseName}()).{service.MetaInitMethodName}({initArgs}));");
+                    }
+                }
+
                 sb.AppendLine("            return maxVersion;");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+
+                // Emit ComputeRequiredStateSchema + CheckAndRunLazyMigrationAsync only when
+                // migration conditions are declared — otherwise the base-class no-op suffices.
+                if (hasMigration)
+                {
+                    // ComputeRequiredStateSchema — generated lookup table.
+                    sb.AppendLine("        private int ComputeRequiredStateSchema()");
+                    sb.AppendLine("        {");
+                    sb.AppendLine("            int required = 0;");
+                    foreach (var group in migStepGroups)
+                    {
+                        var targetSchema = group.Key;
+                        var conds = group.ToList();
+
+                        var nullGuards = new List<string>();
+                        if (conds.Any(c => c.ConfigTypeFullName == null || c.ConfigTypeFullName == configType))
+                            nullGuards.Add("_configProvider != null");
+                        foreach (var ident in conds
+                            .Where(c => c.ConfigTypeFullName != null && c.ConfigTypeFullName != configType)
+                            .Select(c => $"_configProvider_{c.ConfigTypeIdent}").Distinct())
+                            nullGuards.Add($"{ident} != null");
+
+                        var nullGuardExpr = nullGuards.Count > 0
+                            ? "if (" + string.Join(" && ", nullGuards) + ")"
+                            : "";
+
+                        if (nullGuardExpr.Length > 0) sb.AppendLine($"            {nullGuardExpr}");
+                        sb.AppendLine("            {");
+
+                        for (int ci = 0; ci < conds.Count; ci++)
+                        {
+                            var cond = conds[ci];
+                            var provField = (cond.ConfigTypeFullName == null || cond.ConfigTypeFullName == configType)
+                                ? "_configProvider"
+                                : $"_configProvider_{cond.ConfigTypeIdent}";
+                            sb.AppendLine($"                var _rcv{ci} = {provField}!.CurrentVersion;");
+                            sb.AppendLine($"                bool _rok{ci} = _rcv{ci}.Major > {cond.Major} || (_rcv{ci}.Major == {cond.Major} && _rcv{ci}.Minor >= {cond.Minor});");
+                        }
+
+                        var allOk = string.Join(" && ", Enumerable.Range(0, conds.Count).Select(i => $"_rok{i}"));
+                        sb.AppendLine($"                if ({allOk}) required = System.Math.Max(required, {targetSchema});");
+                        sb.AppendLine("            }");
+                    }
+                    sb.AppendLine("            return required;");
+                    sb.AppendLine("        }");
+                    sb.AppendLine();
+
+                    // _migrationCap is honoured by RunInitAsync's per-step guards. int.MaxValue
+                    // means uncapped (default). [MinStateVersion(N)] sets it to N for one call.
+                    sb.AppendLine("        private int _migrationCap = int.MaxValue;");
+                    sb.AppendLine();
+
+                    // CheckAndRunLazyMigrationAsync — calls InitializeStateAsync if schema must advance.
+                    sb.AppendLine("        protected override async System.Threading.Tasks.Task<bool> CheckAndRunLazyMigrationAsync(int? schemaCap = null)");
+                    sb.AppendLine("        {");
+                    sb.AppendLine("            var required = ComputeRequiredStateSchema();");
+                    sb.AppendLine("            if (schemaCap.HasValue) required = System.Math.Min(required, schemaCap.Value);");
+                    // Fresh-entity floor: schema 1 base init runs unconditionally on first
+                    // interaction ONLY when there's no explicit [MetaStateVersion(1, …)] gate.
+                    // When schema 1 is gated, the user wants config to control whether base
+                    // init runs at all — respect their declaration.
+                    if (!migStepGroups.Any(g => g.Key == 1))
+                    {
+                        sb.AppendLine("            if (CurrentStateSchemaVersion == 0 && (!schemaCap.HasValue || schemaCap.Value >= 1))");
+                        sb.AppendLine("                required = System.Math.Max(required, 1);");
+                    }
+                    sb.AppendLine("            if (required <= CurrentStateSchemaVersion) return false;");
+                    sb.AppendLine("            var before = CurrentStateSchemaVersion;");
+                    sb.AppendLine("            var prevCap = _migrationCap;");
+                    sb.AppendLine("            _migrationCap = schemaCap ?? int.MaxValue;");
+                    sb.AppendLine("            try");
+                    sb.AppendLine("            {");
+                    sb.AppendLine("                await InitializeStateAsync(CurrentStateSchemaVersion);");
+                    sb.AppendLine("            }");
+                    sb.AppendLine("            finally { _migrationCap = prevCap; }");
+                    sb.AppendLine("            if (CurrentStateSchemaVersion > before)");
+                    sb.AppendLine("            {");
+                    sb.AppendLine("                LazyMigrationNewVersion = CurrentStateSchemaVersion;");
+                    sb.AppendLine("                LazyMigrationCompleted = true;");
+                    sb.AppendLine("                return true;");
+                    sb.AppendLine("            }");
+                    sb.AppendLine("            return false;");
+                    sb.AppendLine("        }");
+                    sb.AppendLine();
+
+                    // IsClientConfigCompatible — per-entity gate: checks that the client's
+                    // resolved config version covers the entity's current state schema.
+                    // Uses the same per-step AND-conditions as ComputeRequiredStateSchema but
+                    // tests a SUPPLIED config version rather than the provider's CurrentVersion.
+                    sb.AppendLine("        public override bool IsClientConfigCompatible(SharedMeta.Core.MetaConfigVersion clientConfigVersion)");
+                    sb.AppendLine("        {");
+                    sb.AppendLine("            int schema = CurrentStateSchemaVersion;");
+                    sb.AppendLine("            if (schema <= 0) return true;");
+
+                    foreach (var group in migStepGroups)
+                    {
+                        var targetSchema = group.Key;
+                        var conds = group.ToList();
+
+                        var nullGuards = new List<string>();
+                        if (conds.Any(c => c.ConfigTypeFullName == null || c.ConfigTypeFullName == configType))
+                            nullGuards.Add("_configProvider != null");
+                        foreach (var ident in conds
+                            .Where(c => c.ConfigTypeFullName != null && c.ConfigTypeFullName != configType)
+                            .Select(c => $"_configProvider_{c.ConfigTypeIdent}").Distinct())
+                            nullGuards.Add($"{ident} != null");
+
+                        var nullGuardExpr = nullGuards.Count > 0
+                            ? "if (" + string.Join(" && ", nullGuards) + ")"
+                            : "";
+
+                        sb.AppendLine($"            // Schema {targetSchema} gate");
+                        sb.AppendLine($"            if (schema >= {targetSchema})");
+                        sb.AppendLine("            {");
+                        // For single-config: compare clientConfigVersion directly
+                        for (int ci = 0; ci < conds.Count; ci++)
+                        {
+                            var cond = conds[ci];
+                            // Only check conditions for the primary config (clientConfigVersion IS the primary config version)
+                            if (cond.ConfigTypeFullName != null && cond.ConfigTypeFullName != configType)
+                                continue; // secondary configs: skip for now (single-config gate)
+                            sb.AppendLine($"                bool _gc{ci} = clientConfigVersion.Major > {cond.Major} || (clientConfigVersion.Major == {cond.Major} && clientConfigVersion.Minor >= {cond.Minor});");
+                            sb.AppendLine($"                if (!_gc{ci}) return false;");
+                        }
+                        sb.AppendLine("            }");
+                    }
+
+                    sb.AppendLine("            return true;");
+                    sb.AppendLine("        }");
+                    sb.AppendLine();
+
+                    // ComputeSchemaCapForClient — caps init/migration to what the connecting
+                    // client's resolved config branch supports. Used by EntityGrain.SubscribeAsync
+                    // and MetaProviderBase.HandleCallAsync to prevent premature migration
+                    // (a 1.x client triggering a 2.0 schema jump on a fresh entity).
+                    // Single-config gate only — secondary configs aren't reflected here.
+                    var primaryStepGroupsForCap = migStepGroups
+                        .Where(g => g.Any(c => c.ConfigTypeFullName == null || c.ConfigTypeFullName == configType))
+                        .OrderBy(g => g.Key)
+                        .ToList();
+                    // Cap baseline: 1 when schema 1 is implicit base init (no explicit
+                    // [MetaStateVersion(1, …)]); 0 when schema 1 is gated, because in that case
+                    // running base init below the gate would contradict the user's declaration.
+                    bool hasExplicitSchemaOneCap = migStepGroups.Any(g => g.Key == 1);
+                    int capBaseline = hasExplicitSchemaOneCap ? 0 : 1;
+
+                    sb.AppendLine("        public override int? ComputeSchemaCapForClient(string? clientVersion)");
+                    sb.AppendLine("        {");
+                    sb.AppendLine("            if (_configProvider == null) return null;");
+                    sb.AppendLine("            var resolved = ResolveClientConfigVersion(clientVersion);");
+                    sb.AppendLine($"            int cap = {capBaseline};");
+                    foreach (var grp in primaryStepGroupsForCap)
+                    {
+                        // Use any one primary condition's threshold (group's target shares it).
+                        var primaryCond = grp.First(c => c.ConfigTypeFullName == null || c.ConfigTypeFullName == configType);
+                        sb.AppendLine($"            if (resolved.Major > {primaryCond.Major} || (resolved.Major == {primaryCond.Major} && resolved.Minor >= {primaryCond.Minor})) cap = System.Math.Max(cap, {grp.Key});");
+                    }
+                    sb.AppendLine("            return cap;");
+                    sb.AppendLine("        }");
+                    sb.AppendLine();
+                }
+                else
+                {
+                    // Non-migration path: services have [MetaInit] but the state has no
+                    // [MetaStateVersion] declarations. Emit a minimal CheckAndRunLazyMigrationAsync
+                    // so SubscribeAsync/HandleCallAsync still trigger first-time init for fresh
+                    // entities (since OnActivateAsync no longer drives it).
+                    sb.AppendLine("        protected override async System.Threading.Tasks.Task<bool> CheckAndRunLazyMigrationAsync(int? schemaCap = null)");
+                    sb.AppendLine("        {");
+                    sb.AppendLine("            if (CurrentStateSchemaVersion > 0) return false;");
+                    sb.AppendLine("            if (schemaCap.HasValue && schemaCap.Value < 1) return false;");
+                    sb.AppendLine("            var before = CurrentStateSchemaVersion;");
+                    sb.AppendLine("            await InitializeStateAsync(CurrentStateSchemaVersion);");
+                    sb.AppendLine("            if (CurrentStateSchemaVersion > before)");
+                    sb.AppendLine("            {");
+                    sb.AppendLine("                LazyMigrationNewVersion = CurrentStateSchemaVersion;");
+                    sb.AppendLine("                LazyMigrationCompleted = true;");
+                    sb.AppendLine("                return true;");
+                    sb.AppendLine("            }");
+                    sb.AppendLine("            return false;");
+                    sb.AppendLine("        }");
+                    sb.AppendLine();
+                }
+            }
+
+            // Per-method migration policy overrides — only emitted if any [MetaMethod] in this
+            // provider's services carries [NoMigrate] or [MinStateVersion(N)].
+            var allSkipMigrationMethods = services
+                .SelectMany(s => s.MethodSignatures.Where(m => m.SkipMigration).Select(m => m))
+                .ToList();
+            var allMinStateMethods = services
+                .SelectMany(s => s.MethodSignatures.Where(m => m.MinStateVersion.HasValue).Select(m => m))
+                .ToList();
+
+            if (allSkipMigrationMethods.Count > 0)
+            {
+                sb.AppendLine("        protected override bool ShouldSkipMigration(string serviceName, string methodName)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            return (serviceName, methodName) switch");
+                sb.AppendLine("            {");
+                foreach (var m in allSkipMigrationMethods)
+                    sb.AppendLine($"                (\"{m.ServiceName}\", \"{m.MethodAlias}\") => true,");
+                sb.AppendLine("                _ => false");
+                sb.AppendLine("            };");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+            }
+
+            if (allMinStateMethods.Count > 0)
+            {
+                sb.AppendLine("        protected override int? GetMethodMinStateVersion(string serviceName, string methodName)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            return (serviceName, methodName) switch");
+                sb.AppendLine("            {");
+                foreach (var m in allMinStateMethods)
+                    sb.AppendLine($"                (\"{m.ServiceName}\", \"{m.MethodAlias}\") => {m.MinStateVersion!.Value},");
+                sb.AppendLine("                _ => null");
+                sb.AppendLine("            };");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+            }
+
+            // GetSchemaFloorConfig / GetSchemaFloorConfigVersion — used when [NoMigrate] is in
+            // play. Resolve to the lowest config version that satisfies all migration thresholds
+            // for the current state schema (so the call sees the same config branch the entity
+            // was last persisted under). Only emitted when both:
+            //   1. The state declares [MetaStateVersion] migration breakpoints, AND
+            //   2. At least one method on the provider's services carries [NoMigrate].
+            // Single primary-config path only — secondary configs use their own provider's
+            // CurrentVersion (no per-schema floor for now).
+            if (allSkipMigrationMethods.Count > 0 && configType != null)
+            {
+                var primaryStepGroups = allMigConds
+                    .Where(c => c.ConfigTypeFullName == null || c.ConfigTypeFullName == configType)
+                    .GroupBy(c => c.StateVersion)
+                    .OrderBy(g => g.Key)
+                    .ToList();
+
+                sb.AppendLine($"        protected override SharedMeta.Core.MetaConfigVersion GetSchemaFloorConfigVersion(int stateSchema)");
+                sb.AppendLine("        {");
+                if (primaryStepGroups.Count > 0)
+                {
+                    sb.AppendLine("            return stateSchema switch");
+                    sb.AppendLine("            {");
+                    foreach (var grp in primaryStepGroups)
+                    {
+                        // Threshold for schema N is the MinConfigVersion of any one of its conditions
+                        // (AND group, but they target the same step — pick any primary one).
+                        var primaryCond = grp.First();
+                        sb.AppendLine($"                {grp.Key} => new SharedMeta.Core.MetaConfigVersion({primaryCond.Major}, {primaryCond.Minor}, 0),");
+                    }
+                    // For schemas below first threshold, use (1, 0, 0) — the legacy 1.x branch.
+                    sb.AppendLine("                _ => new SharedMeta.Core.MetaConfigVersion(1, 0, 0)");
+                    sb.AppendLine("            };");
+                }
+                else
+                {
+                    sb.AppendLine("            return new SharedMeta.Core.MetaConfigVersion(1, 0, 0);");
+                }
+                sb.AppendLine("        }");
+                sb.AppendLine();
+
+                sb.AppendLine($"        protected override object? GetSchemaFloorConfig(int stateSchema)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            if (_configProvider == null) return null;");
+                sb.AppendLine("            return _configProvider.GetConfig(GetSchemaFloorConfigVersion(stateSchema));");
                 sb.AppendLine("        }");
                 sb.AppendLine();
             }
@@ -1058,7 +1639,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                {");
             sb.AppendLine("                    var opts = sp.GetService<SharedMeta.Server.Core.Transport.MetaTransportOptions>();");
             sb.AppendLine("                    var grainFactory = sp.GetService<Orleans.IGrainFactory>();");
-            sb.AppendLine("                    return new SharedMeta.Server.Core.Transport.ClientVersionPolicy(opts?.ServerVersion, opts?.MinClientVersion, grainFactory);");
+            sb.AppendLine("                    return new SharedMeta.Server.Core.Transport.ClientVersionPolicy(opts?.ServerVersion, opts?.MinClientVersion, opts?.MaxClientVersion, grainFactory);");
             sb.AppendLine("                });");
             sb.AppendLine("            }");
             sb.AppendLine();

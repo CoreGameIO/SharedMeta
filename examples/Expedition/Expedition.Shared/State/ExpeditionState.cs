@@ -27,6 +27,9 @@ namespace Expedition.Shared
     /// </summary>
     [MemoryPackable(GenerateType.VersionTolerant), MessagePackObject]
     [SharedState]
+    // Schema 2 = config 2.0+ — when a client connects with config 2.0+ the state is upgraded
+    // (one-way). After upgrade the per-entity gate blocks 1.x clients from re-subscribing.
+    [MetaStateVersion(2, "2.0", typeof(ExpeditionConfig))]
     public partial class ExpeditionState : ISharedState
     {
         [Key(0), MemoryPackOrder(0)] public int Width { get; set; }

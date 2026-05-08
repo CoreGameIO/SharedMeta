@@ -199,6 +199,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                    try");
             sb.AppendLine($"                    {{");
             sb.AppendLine($"                        var svc = new {baseName}();");
+            sb.AppendLine($"#pragma warning disable CS1522 // empty switch block when all methods are Query/Signal");
             sb.AppendLine($"                        switch (methodName)");
             sb.AppendLine($"                        {{");
 
@@ -258,6 +259,7 @@ namespace SharedMeta.Generator.Generators
             }
 
             sb.AppendLine($"                        }}");
+            sb.AppendLine($"#pragma warning restore CS1522");
             sb.AppendLine($"                        _tracker.FlushAndNotify();");
             sb.AppendLine($"                    }}");
             sb.AppendLine($"                    catch");

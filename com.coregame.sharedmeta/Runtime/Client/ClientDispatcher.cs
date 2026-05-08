@@ -194,7 +194,8 @@ namespace SharedMeta.Client
                 OptimisticRandomBytes = result.OptimisticRandomBytes,
                 NamedRandomsBytes = result.NamedRandomsBytes,
                 ConfigMajorVersion = result.ConfigVersion.Major,
-                ConfigMinorVersion = result.ConfigVersion.Minor
+                ConfigMinorVersion = result.ConfigVersion.Minor,
+                ConfigPatchVersion = result.ConfigVersion.Patch
             };
         }
 

@@ -18,5 +18,12 @@ namespace SharedMeta.Core.Transport
         /// Used by server to resolve the correct grain type.
         /// </summary>
         [Id(1), Key(1)] public string StateTypeName { get; set; } = "";
+
+        /// <summary>
+        /// Client application version (e.g. "1.4.3"). Optional — when present the server resolves
+        /// the config version appropriate for this client via <c>[MetaConfigVersion]</c> rules on
+        /// the config class. Absent = use the entity's default pinned config version.
+        /// </summary>
+        [Id(2), Key(2)] public string? ClientVersion { get; set; }
     }
 }

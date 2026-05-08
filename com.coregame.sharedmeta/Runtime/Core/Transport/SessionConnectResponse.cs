@@ -58,6 +58,13 @@ namespace SharedMeta.Core.Transport
         /// is rejected due to an incompatible client version.
         /// </summary>
         [Id(9), Key(9)] public string? MinClientVersion { get; set; }
+
+        /// <summary>
+        /// Maximum client version this server supports. Populated when the connection is
+        /// rejected because the client is too new for this server — lets the client show
+        /// "please wait for a server update" or switch to a compatible endpoint.
+        /// </summary>
+        [Id(10), Key(10)] public string? MaxClientVersion { get; set; }
     }
 
     /// <summary>
@@ -73,5 +80,6 @@ namespace SharedMeta.Core.Transport
         [Id(4), Key(4)] public int ConfigMajorVersion { get; set; }
         [Id(5), Key(5)] public int ConfigMinorVersion { get; set; }
         [Id(6), Key(6)] public byte[]? NamedRandomsBytes { get; set; }
+        [Id(7), Key(7)] public int ConfigPatchVersion { get; set; }
     }
 }

@@ -26,6 +26,39 @@ namespace SharedMeta.Server.Core
         TConfig GetConfig(MetaConfigVersion version);
 
         /// <summary>
+        /// Resolve the latest available config version within a specific Major.Minor branch.
+        /// Called when a client connects and the matching <see cref="MetaConfigVersionAttribute"/>
+        /// rule specifies <c>*</c> for the Patch component — meaning "latest patch in this branch".
+        ///
+        /// Example: pattern "1.x.*" → caller resolves to the newest 1.3.N via
+        /// <c>ResolveLatestMatching(1, 3)</c>.
+        ///
+        /// The default implementation returns <see cref="CurrentVersion"/> unchanged (no
+        /// patch-branch tracking). Override in providers that manage multiple patch versions.
+        /// </summary>
+        MetaConfigVersion ResolveLatestMatching(int major, int minor)
+            => CurrentVersion;
+
+        /// <summary>
+        /// Resolve the config version for a specific connecting client's app version using
+        /// the <see cref="MetaConfigVersionAttribute"/> rules on the config class.
+        /// Returns <see cref="CurrentVersion"/> when no rule matches or when no
+        /// <see cref="MetaConfigVersionResolver"/> was supplied.
+        /// </summary>
+        MetaConfigVersion ResolveForClient(string? clientAppVersion, MetaConfigVersionResolver? resolver)
+        {
+            if (resolver == null || string.IsNullOrEmpty(clientAppVersion))
+                return CurrentVersion;
+
+            var request = resolver.Resolve(clientAppVersion);
+            if (request == null) return CurrentVersion;
+
+            return request.PatchIsLatest
+                ? ResolveLatestMatching(request.Major, request.Minor)
+                : new MetaConfigVersion(request.Major, request.Minor, request.PatchMin);
+        }
+
+        /// <summary>
         /// Get the download URL for a specific config version.
         /// Called by the transport layer when client requests a config download.
         /// Return null if client is expected to have config bundled.

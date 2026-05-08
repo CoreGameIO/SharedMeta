@@ -203,6 +203,21 @@ namespace SharedMeta.Server.Core
         /// </summary>
         /// <param name="version">The config version to use. (0,0) if no config configured.</param>
         void InitializeConfig(MetaConfigVersion version) { }
+
+        /// <summary>
+        /// Resolve the config version appropriate for a specific connecting client's app version.
+        /// Called by EntityGrain when building the subscribe snapshot so each subscriber's
+        /// SubscribeResponse carries the correct config branch per <c>[MetaConfigVersion]</c> rules.
+        /// Default returns <see cref="ConfigVersion"/> (entity's primary pinned version).
+        /// </summary>
+        MetaConfigVersion ResolveClientConfigVersion(string? clientVersion) => ConfigVersion;
+
+        /// <summary>
+        /// Returns true when <paramref name="resolvedClientConfigVersion"/> is high enough for
+        /// the entity's current state schema. Called by EntityGrain during SubscribeAsync.
+        /// Default returns true (no schema requirements declared).
+        /// </summary>
+        bool IsClientConfigCompatible(MetaConfigVersion resolvedClientConfigVersion) => true;
     }
 
     /// <summary>

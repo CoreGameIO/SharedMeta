@@ -107,7 +107,7 @@ namespace SharedMeta.Debug.InProcess
                 StateBytes = response.StateBytes,
                 OptimisticRandomBytes = response.OptimisticRandomBytes,
                 NamedRandomsBytes = response.NamedRandomsBytes,
-                ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion)
+                ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion, response.ConfigPatchVersion)
             };
         }
 
@@ -167,7 +167,7 @@ namespace SharedMeta.Debug.InProcess
         public async Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version)
         {
             EnsureConnected();
-            var response = await _server.GetConfigDownloadUrlAsync(_connectionId, new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor });
+            var response = await _server.GetConfigDownloadUrlAsync(_connectionId, new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor, ConfigPatchVersion = version.Patch });
             return response.DownloadUrl;
         }
 

@@ -1,4 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
+using SharedMeta.Core;
+using SharedMeta.Server.Core;
+using SharedMeta.Test.Meta1;
 using SharedMeta.Test.Meta1.Server;
 
 namespace SharedMeta.Test.Server;
@@ -10,12 +13,47 @@ namespace SharedMeta.Test.Server;
 public static class TestServerConfiguration
 {
     /// <summary>
+    /// Shared migration config provider instance — tests adjust CurrentVersion to control
+    /// which migration steps fire. Safe because tests in the TestCluster collection are
+    /// sequential (xunit collection fixture).
+    /// </summary>
+    public static readonly TestMigrationConfigProvider MigrationConfigProvider =
+        new TestMigrationConfigProvider(new MetaConfigVersion(1, 0));
+
+    /// <summary>
     /// Register all test meta services using generated ConfigureMeta.
     /// </summary>
     public static IServiceCollection ConfigureTestMeta(
         this IServiceCollection services,
         Action<IServiceCollection>? configureServices = null)
     {
+        services.AddSingleton<IMetaConfigProvider<MigrationConfig>>(MigrationConfigProvider);
         return services.ConfigureMeta(configureServices);
     }
+}
+
+/// <summary>
+/// Controllable config provider for MigrationTests. Tests set
+/// <see cref="CurrentVersion"/> to simulate a config rollout advancing to a new version.
+/// <see cref="GetConfig"/> always returns a MigrationConfig whose Major/Minor reflect
+/// the requested version — so [MetaInit] can record which version was pinned to each step.
+/// </summary>
+public class TestMigrationConfigProvider : IMetaConfigProvider<MigrationConfig>
+{
+    private MetaConfigVersion _currentVersion;
+
+    public TestMigrationConfigProvider(MetaConfigVersion initialVersion)
+        => _currentVersion = initialVersion;
+
+    public MetaConfigVersion CurrentVersion => _currentVersion;
+
+    public void SetVersion(MetaConfigVersion v) => _currentVersion = v;
+    public void SetVersion(int major, int minor) => _currentVersion = new MetaConfigVersion(major, minor);
+
+    public MigrationConfig GetConfig(MetaConfigVersion version) => new MigrationConfig
+    {
+        Major = version.Major,
+        Minor = version.Minor,
+        Label = $"{version.Major}.{version.Minor}"
+    };
 }

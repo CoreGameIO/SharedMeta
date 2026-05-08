@@ -13,5 +13,6 @@ namespace SharedMeta.Core.Transport
         [Id(0), Key(0)] public string StateTypeName { get; set; } = "";
         [Id(1), Key(1)] public int ConfigMajorVersion { get; set; }
         [Id(2), Key(2)] public int ConfigMinorVersion { get; set; }
+        [Id(3), Key(3)] public int ConfigPatchVersion { get; set; }
     }
 }

@@ -29,7 +29,9 @@ namespace SharedMeta.Server.Core.Transport
 
         private readonly IGrainFactory? _grainFactory;
         private readonly string? _staticMinClientVersion;
+        private readonly string? _staticMaxClientVersion;
         private volatile string? _grainMinClientVersion;
+        private volatile string? _grainMaxClientVersion;
         private long _cacheExpiryTicks;
 
         /// <summary>
@@ -39,19 +41,25 @@ namespace SharedMeta.Server.Core.Transport
         /// </summary>
         public string? ServerVersion { get; }
 
-        /// <summary>
-        /// The currently effective minimum client version, after applying the grain override.
-        /// Returns the grain value when set, otherwise the static config value.
-        /// </summary>
+        /// <summary>The currently effective minimum client version.</summary>
         public string? MinClientVersion => _grainMinClientVersion ?? _staticMinClientVersion;
+
+        /// <summary>
+        /// The currently effective maximum client version. Clients with a version strictly above
+        /// this (by major or minor) are rejected with "client too new for this server."
+        /// Null = no upper bound.
+        /// </summary>
+        public string? MaxClientVersion => _grainMaxClientVersion ?? _staticMaxClientVersion;
 
         public ClientVersionPolicy(
             string? serverVersion = null,
             string? minClientVersion = null,
+            string? maxClientVersion = null,
             IGrainFactory? grainFactory = null)
         {
             ServerVersion = serverVersion;
             _staticMinClientVersion = minClientVersion;
+            _staticMaxClientVersion = maxClientVersion;
             _grainFactory = grainFactory;
             // Start expired so the first ValidateAsync always fetches from the grain.
             Interlocked.Exchange(ref _cacheExpiryTicks, 0L);
@@ -66,11 +74,12 @@ namespace SharedMeta.Server.Core.Transport
         {
             await RefreshIfStaleAsync();
 
-            var serverVersion = ServerVersion;
+            var serverVersion    = ServerVersion;
             var minClientVersion = MinClientVersion;
-            var error = Validate(clientVersion, serverVersion, minClientVersion);
+            var maxClientVersion = MaxClientVersion;
+            var error = Validate(clientVersion, serverVersion, minClientVersion, maxClientVersion);
 
-            return new ClientVersionValidationResult(serverVersion, minClientVersion, error);
+            return new ClientVersionValidationResult(serverVersion, minClientVersion, maxClientVersion, error);
         }
 
         private async Task RefreshIfStaleAsync()
@@ -82,6 +91,7 @@ namespace SharedMeta.Server.Core.Transport
             {
                 var grain = _grainFactory.GetGrain<IVersionPolicyGrain>("global");
                 _grainMinClientVersion = await grain.GetMinClientVersionAsync();
+                _grainMaxClientVersion = await grain.GetMaxClientVersionAsync();
             }
             catch
             {
@@ -95,26 +105,68 @@ namespace SharedMeta.Server.Core.Transport
             }
         }
 
-        private static string? Validate(string? clientVersion, string? serverVersion, string? minClientVersion)
+        private static string? Validate(
+            string? clientVersion,
+            string? serverVersion,
+            string? minClientVersion,
+            string? maxClientVersion)
         {
-            if (minClientVersion == null || serverVersion == null) return null;
             if (clientVersion == null) return null; // old client without version — allow through
 
             if (!TryParseVersion(clientVersion, out int cMaj, out int cMin, out int cPatch))
                 return $"Invalid client version format: '{clientVersion}'. Expected major.minor.patch.";
 
-            if (!TryParseVersion(serverVersion, out int sMaj, out _, out _))
-                return null; // misconfigured server — don't block clients
+            // Lower bound check — strictly compare against MinClientVersion (not serverVersion).
+            // The accepted range is [MinClientVersion, MaxClientVersion] inclusive; the server's
+            // own version doesn't constrain the lower bound. A server on 2.0 with Min=1.1 / Max=2.x
+            // legitimately accepts clients with majors 1 AND 2.
+            if (minClientVersion != null)
+            {
+                if (TryParseVersion(minClientVersion, out int minMaj, out int minMin, out int minPatch))
+                {
+                    bool tooOld =
+                        cMaj < minMaj ||
+                        (cMaj == minMaj && cMin < minMin) ||
+                        (cMaj == minMaj && cMin == minMin && cPatch < minPatch);
 
-            if (!TryParseVersion(minClientVersion, out _, out int minMin, out int minPatch))
-                return null; // misconfigured server — don't block clients
+                    if (tooOld)
+                        return $"Client version {clientVersion} is outdated. " +
+                               $"Minimum required: {minClientVersion}. Please upgrade your client.";
+                }
+                // If MinClientVersion is unparseable — misconfigured server, don't block clients.
+            }
 
-            if (cMaj != sMaj)
-                return $"Client version {clientVersion} has incompatible major version (server requires major {sMaj}). Please upgrade your client.";
+            // Upper bound check — reject clients that are too new for this server.
+            // Pattern supports "*" for patch component (e.g. "2.3.*" = max minor 3 of major 2).
+            if (maxClientVersion != null)
+            {
+                var maxParts = maxClientVersion.Split('.');
+                if (maxParts.Length >= 2
+                    && int.TryParse(maxParts[0], out int maxMaj)
+                    && int.TryParse(maxParts[1], out int maxMin))
+                {
+                    bool patchWildcard = maxParts.Length < 3 || maxParts[2] == "*";
 
-            if (cMin < minMin || (cMin == minMin && cPatch < minPatch))
-                return $"Client version {clientVersion} is outdated. Minimum required: {minClientVersion}. Please upgrade your client.";
+                    if (cMaj > maxMaj)
+                        return $"Client version {clientVersion} is too new for this server " +
+                               $"(maximum supported: {maxClientVersion}). Please downgrade or wait for a server update.";
 
+                    if (cMaj == maxMaj && !patchWildcard)
+                    {
+                        if (!int.TryParse(maxParts[2], out int maxPatch)) goto skipMax;
+                        if (cMin > maxMin || (cMin == maxMin && cPatch > maxPatch))
+                            return $"Client version {clientVersion} is too new for this server " +
+                                   $"(maximum supported: {maxClientVersion}). Please downgrade or wait for a server update.";
+                    }
+                    else if (cMaj == maxMaj && patchWildcard && cMin > maxMin)
+                    {
+                        return $"Client version {clientVersion} is too new for this server " +
+                               $"(maximum supported: {maxClientVersion}). Please downgrade or wait for a server update.";
+                    }
+                }
+            }
+
+            skipMax:
             return null;
         }
 
@@ -122,31 +174,36 @@ namespace SharedMeta.Server.Core.Transport
         {
             major = minor = patch = 0;
             var parts = v.Split('.');
-            if (parts.Length < 3) return false;
-            return int.TryParse(parts[0], out major)
-                && int.TryParse(parts[1], out minor)
-                && int.TryParse(parts[2], out patch);
+            if (parts.Length < 2) return false;
+            if (!int.TryParse(parts[0], out major) || !int.TryParse(parts[1], out minor)) return false;
+            patch = parts.Length > 2 && int.TryParse(parts[2], out var p) ? p : 0;
+            return true;
         }
     }
 
     /// <summary>
     /// Outcome of <see cref="ClientVersionPolicy.ValidateAsync"/>. <see cref="Error"/> is null when
     /// the client version is acceptable; otherwise it carries a human-readable rejection reason.
-    /// <see cref="ServerVersion"/> and <see cref="MinClientVersion"/> are always populated so the
-    /// caller can echo them back to the client (so a rejected client knows which version to install).
+    /// Version metadata is always populated so the caller can echo it back to the client.
     /// </summary>
     public readonly struct ClientVersionValidationResult
     {
         public string? ServerVersion { get; }
         public string? MinClientVersion { get; }
+        public string? MaxClientVersion { get; }
         public string? Error { get; }
         public bool IsAllowed => Error == null;
 
-        public ClientVersionValidationResult(string? serverVersion, string? minClientVersion, string? error)
+        public ClientVersionValidationResult(
+            string? serverVersion,
+            string? minClientVersion,
+            string? maxClientVersion,
+            string? error)
         {
-            ServerVersion = serverVersion;
+            ServerVersion    = serverVersion;
             MinClientVersion = minClientVersion;
-            Error = error;
+            MaxClientVersion = maxClientVersion;
+            Error            = error;
         }
     }
 }

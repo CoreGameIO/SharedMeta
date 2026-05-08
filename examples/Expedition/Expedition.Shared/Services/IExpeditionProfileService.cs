@@ -7,7 +7,7 @@ namespace Expedition.Shared
     /// Energy regenerates over time. Can be spent on exploration.
     /// Money earned from treasures, spent on buying energy.
     /// </summary>
-    [MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned)]
+    [MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned, DefaultConfig = true)]
     public interface IExpeditionProfileService : IMetaService
     {
         /// <summary>
