@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.19.2] - 2026-05-08
+
+### Changed
+
+Version up
+
 ## [0.19.1] - 2026-05-07
 
 ### Added — `EntityGrainOptions.FreshRandomSeedFactory` for entropy-driven seed injection
