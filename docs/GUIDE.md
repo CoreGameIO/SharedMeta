@@ -1106,6 +1106,138 @@ Semantics mirror `Context.Random` — identical algorithm and seed on server and
 
 5. `SessionManager` uses this to suppress duplicate broadcasts (advances `KnownEntitySequence` for target entity)
 
+### Sibling-Service Calls (0.20.0)
+
+A "sibling" is another `[MetaServiceImpl]` hosted on the same `TState` as the caller — both impls live in the same `EntityGrain`. 0.20.0 makes sibling calls cheap (typed in-process, no serialization, no grain RPC) while keeping the existing cross-entity API intact.
+
+#### Implicit — `GetI{Service}(entityId)` self-detect
+
+The existing cross-entity getter gains a runtime self-detect: when `entityId == Context.EntityId` and the requested service is hosted on this grain's `TState`, the accessor returns a generated `{Service}SiblingCaller` that wraps the cached sibling impl. Each method forwards directly to the impl with typed args — no `CallEntityAsync`, no payload bytes.
+
+```csharp
+[MetaServiceImpl(typeof(IProfileService), typeof(ProfileState),
+    typeof(IInventoryService))]                 // declare InventoryService dep
+public partial class ProfileService : IProfileService
+{
+    public async Task SendGift(string targetEntityId, int itemId)
+    {
+        // Works whether targetEntityId is self, a friend, or anyone else.
+        // Self-id → sibling-bypass (no RPC). Different id → real cross-entity grain hop.
+        await GetIInventoryService(targetEntityId).GrantItemAsync(itemId);
+    }
+}
+```
+
+This fixes the "gift-to-self deadlock": pre-0.20.0, calling `GetIInventoryService(self).GrantItem(...)` deadlocked because Orleans grain RPC into a non-reentrant grain stalls awaiting itself.
+
+#### Explicit — `Get{Iface}SiblingAsync()`
+
+For each entity-service dep whose `[MetaService(StateType=...)]` matches this impl's `TState`, the generator emits an async sibling accessor returning the **original** interface:
+
+```csharp
+public async Task ApplyDailyBonus()
+{
+    var inv = await GetIInventoryServiceSiblingAsync();
+    inv.GrantItem("daily_bonus", 1);  // sync method on original interface
+    State.LastBonusUtc = Context.ServerTimeTicks;
+}
+```
+
+The `await` resolves the callee's typed `Config` through its own `IMetaConfigProvider<TConfig>.GetConfigAsync` (server). Multi-config siblings (different `[MetaConfig]` types on the same state) each see their own typed config branch independently of the calling service's primary config.
+
+Use the implicit `GetI{Iface}(entityId)` accessor when the target id is dynamic (potentially self); use `Get{Iface}SiblingAsync()` when the intent is "this entity's own sibling".
+
+#### Multi-config siblings — different `[MetaConfig]` types on one entity
+
+Until 0.20.0, all services on a single `TState` typically shared one config type — either all declared `DefaultConfig = true` (resolving to the project's default `[MetaConfig(Default = true)]` class) or all set the same explicit `ConfigType`. Reading any service's `Config` always cast `Context.Config` to that single shared type.
+
+0.20.0 lets each service on the same state declare its **own** config type. The framework resolves each service's `Config` through its own `IMetaConfigProvider<TConfig>` and sets it on the sibling impl when invoked through `Get{Iface}SiblingAsync()`. This is useful when one entity has multiple independent config domains that release on different schedules — say, an inventory balance config maintained by economy designers vs. a quest text config owned by writers.
+
+```csharp
+// Two separate config classes — different release cadence, different owners
+[MetaConfig(Default = true)]
+public class ProfileConfig          // primary config for the state (DefaultConfig=true)
+{
+    public int StartingEnergy { get; set; } = 100;
+}
+
+[MetaConfig]                         // not Default — explicitly typed
+public class InventoryBalanceConfig
+{
+    public Dictionary<string, int> ItemPrices { get; set; } = new();
+    public int MaxStackSize { get; set; } = 99;
+}
+
+// Service #1 — uses ProfileConfig via DefaultConfig
+[MetaService(StateType = typeof(ProfileState), DefaultConfig = true)]
+public interface IProfileService : IMetaService { ... }
+
+// Service #2 — same state, but explicitly typed to InventoryBalanceConfig
+[MetaService(StateType = typeof(ProfileState), ConfigType = typeof(InventoryBalanceConfig))]
+public interface IInventoryService : IMetaService
+{
+    [MetaMethod(Mode = ExecutionMode.Server)]
+    int Buy(string itemId, int qty);
+}
+
+[MetaServiceImpl(typeof(IInventoryService), typeof(ProfileState))]
+public partial class InventoryService : IInventoryService
+{
+    public int Buy(string itemId, int qty)
+    {
+        // Generator emits typed Config getter for InventoryBalanceConfig — independent of
+        // ProfileConfig that the sibling ProfileService uses.
+        var price = Config.ItemPrices[itemId] * qty;
+        State.Coins -= price;
+        return price;
+    }
+}
+
+// Both services on ProfileState, calling each other as siblings
+[MetaServiceImpl(typeof(IProfileService), typeof(ProfileState),
+    typeof(IInventoryService))]    // declare InventoryService dep
+public partial class ProfileService : IProfileService
+{
+    public async Task<int> BuyDailyBundle()
+    {
+        var inv = await GetIInventoryServiceSiblingAsync();   // ← async resolves InventoryBalanceConfig
+        var spent = inv.Buy("daily_bundle", 1);                // ← uses InventoryBalanceConfig.ItemPrices
+        State.LastDailyBundleUtc = Context.ServerTimeTicks;    // ← reads ProfileConfig.StartingEnergy elsewhere
+        return State.Coins;
+    }
+}
+```
+
+Both `IMetaConfigProvider<ProfileConfig>` and `IMetaConfigProvider<InventoryBalanceConfig>` must be registered with DI on the server. Each can have its own `[MetaConfigVersion]` rules, version stream, and download URL — they evolve independently.
+
+**Limitations**:
+
+- The primary config's `_configProvider` field is auto-emitted on the generated `MetaProvider`; secondary-config providers (anything other than the first service's config type) are wired only when referenced by `[MetaStateVersion]` migration conditions or by an explicit sibling-async call. **Direct dispatch** of a secondary-config service (i.e. a top-level RPC into `IInventoryService.Buy(...)` from the client) currently sets `Context.Config` to the primary type and would fail the cast in the secondary impl's `Config` getter. Workaround: route through the primary service via `Get{Iface}SiblingAsync()`. This is a documented 0.20.0 limitation; lifting it requires the generator to emit per-service `Config`-set in `Get{Name}()` plus per-method config dispatch in `HandleCallAsync` — planned for 0.20.x / 0.21.0.
+- On the client, multi-config siblings work through server-only outer modes (`Server` / `ServerReplace` / `ServerPatch`) — the sibling-async getter's async config resolution depends on `IMetaConfigProvider<TConfig>` from `SharedMeta.Server.Core`, which isn't referenceable from shared client-side assemblies. The `#if SHAREDMETA_SERVER` guard in the generated body skips that resolution on client; for `Optimistic` / `CrossOptimistic` outer modes the client would need a parallel `IClientMetaConfigProvider<TConfig>` lookup wired into the sibling resolver — also future work.
+
+#### What's preserved across the boundary
+
+Sibling-bypass is a **typed in-process call** — semantically equivalent to invoking a private helper method on the impl. Specifically:
+
+- **State** — same `Context.State` instance.
+- **Random streams** — same `Context.Random` / `Context.ServerRandom` / named-randoms (advances are recorded once into the outer's replay payload).
+- **Patch / change tracking** — same `Context.PatchWrapper` and `ChangeTracker`. `ServerPatch` / `ServerReplace` / `Optimistic` / `CrossOptimistic` modes ship one patch per outer call regardless of how many siblings were invoked.
+- **By-reference args** — typed C# call, no serialization. Mutations the sibling makes to passed-in objects are visible to the caller.
+
+#### What's not preserved (by design)
+
+- **`[Transformer]` Box/Unbox** — transformers run on serialization boundaries (`WriteWithAutoBox` / `ReadWithAutoUnbox`). Sibling-bypass skips both, so transformers don't fire. If your method depends on a transformer, the dep can't be a sibling — has to be a real cross-entity dep (different `TState`).
+- **Implicit rollback on exception** — sibling-bypass shares the outer's mutation pipeline. If a sibling throws after a partial mutation, the partial state IS observable to the outer. User code that needs rollback should snapshot state before the sibling call and restore on catch.
+- **Per-service `Config` on direct-dispatch of secondary-config services** — only via the explicit `Get{Iface}SiblingAsync()` path. Direct dispatch of a service whose `ConfigType` differs from the state's primary config falls back to `Context.Config` (the primary's type) and crashes on the cast — so secondary-config services should always be invoked via the sibling-async accessor on the primary service.
+
+#### Runtime safety-net
+
+For dynamic paths that bypass the typed accessor (e.g. raw `Context.CallEntityAsync(...)` with a self-id), `EntityGrain.EntityCallHandler` also checks self-targeting and routes through `MetaProviderBase.HandleNestedCallAsync(...)` — runs `DispatchCall` as a sub-operation under the outer `MetaContext`. New `ServerMetaContext.PushNestedOperation` / `PopNestedOperation` helpers swap the inner replay-buffer and `CrossEntityCalls` list so the outer's recording state survives.
+
+#### Required: dep `StateType`
+
+Every entity-service dep declared in `[MetaServiceImpl(typeof(I), typeof(TState), typeof(IDep), ...)]` must carry `[MetaService(StateType = typeof(DepTState))]` on the dep interface. Without this, the framework can't decide whether sibling-bypass is type-safe and the generator emits `#error` in the consumer's compilation.
+
 ### Client-Side Cross-Entity (CrossOptimistic)
 
 Client uses `CrossOptimisticMetaContext<TState>` for local execution on cached target state. Results are recorded and compared against server results for desync detection.

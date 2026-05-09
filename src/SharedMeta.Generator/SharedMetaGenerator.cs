@@ -111,6 +111,74 @@ namespace SharedMeta.Generator
                 }
             });
 
+            // 0.20.0: Entity-caller helper classes (Interface + Recorder/Replayer/
+            // LocalEntityCaller/SiblingCaller) — emitted once per (namespace, dep) pair, not
+            // per consumer. Multiple [MetaServiceImpl] classes in the same namespace declaring
+            // the same dep all reference the same helpers, no CS0111 conflict. Pipeline:
+            //   1. Per impl, project the (consumerNamespace, depInterfaceFqn) tuples.
+            //   2. Collect → flatten → group into unique pairs.
+            //   3. Emit one file per pair.
+            var depPairsPipeline = implPipeline
+                .Select((ctx, _) =>
+                {
+                    var symbol = ctx.TargetSymbol as INamedTypeSymbol;
+                    if (symbol == null) return System.Collections.Immutable.ImmutableArray<(string Ns, string DepFqn)>.Empty;
+                    var attr = symbol.GetAttributes().FirstOrDefault(a =>
+                        a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaServiceImplAttribute");
+                    if (attr == null || attr.ConstructorArguments.Length < 3)
+                        return System.Collections.Immutable.ImmutableArray<(string Ns, string DepFqn)>.Empty;
+                    var depsArg = attr.ConstructorArguments[2];
+                    if (depsArg.IsNull) return System.Collections.Immutable.ImmutableArray<(string Ns, string DepFqn)>.Empty;
+                    var consumerNs = symbol.ContainingNamespace.ToDisplayString();
+                    var builder = System.Collections.Immutable.ImmutableArray.CreateBuilder<(string Ns, string DepFqn)>();
+                    foreach (var d in depsArg.Values)
+                    {
+                        if (d.Value is INamedTypeSymbol depSym)
+                        {
+                            // Only entity-services need helpers (server-services have a different shape).
+                            bool isEntityService = false;
+                            foreach (var iface in depSym.AllInterfaces)
+                            {
+                                if (iface.ToDisplayString() == "SharedMeta.Core.IMetaService") { isEntityService = true; break; }
+                            }
+                            if (!isEntityService) continue;
+                            // Server-meta-services aren't entity services even if they implement IMetaService.
+                            bool isServerMeta = depSym.GetAttributes().Any(a =>
+                                a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.ServerMetaServiceAttribute");
+                            if (isServerMeta) continue;
+                            builder.Add((consumerNs, depSym.ToDisplayString()));
+                        }
+                    }
+                    return builder.ToImmutable();
+                })
+                .Combine(context.CompilationProvider)
+                .SelectMany((tuple, _) => tuple.Left.Select(p => (Ns: p.Ns, DepFqn: p.DepFqn, Comp: tuple.Right)))
+                .Collect()
+                .SelectMany((all, _) =>
+                {
+                    // Dedup unique (Ns, DepFqn) pairs across all impls.
+                    var seen = new HashSet<string>();
+                    var result = System.Collections.Immutable.ImmutableArray.CreateBuilder<(string Ns, string DepFqn, Compilation Comp)>();
+                    foreach (var item in all)
+                    {
+                        var key = $"{item.Ns}::{item.DepFqn}";
+                        if (seen.Add(key))
+                            result.Add((item.Ns, item.DepFqn, item.Comp));
+                    }
+                    return result.ToImmutable();
+                });
+
+            context.RegisterSourceOutput(depPairsPipeline, (spc, pair) =>
+            {
+                var depSymbol = pair.Comp.GetTypeByMetadataName(pair.DepFqn);
+                if (depSymbol == null) return;
+                var source = ContextInjectionGenerator.GenerateHelpersForDep(depSymbol, pair.Ns, pair.Comp);
+                // Filename keyed by (namespace, dep) — guarantees one file per unique pair.
+                var safeNs = new string(pair.Ns.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
+                var safeDep = new string(pair.DepFqn.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
+                spc.AddSource($"{safeNs}_{safeDep}_EntityCallerHelpers.g.cs", source);
+            });
+
             // Server Meta Service Wrappers (Recorder + Replayer)
             var serverServicePipeline = context.SyntaxProvider.ForAttributeWithMetadataName(
                 "SharedMeta.Core.ServerMetaServiceAttribute",

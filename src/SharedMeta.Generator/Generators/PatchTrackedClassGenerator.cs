@@ -88,8 +88,18 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"    public class {patchTrackedClassName}");
             sb.AppendLine("    {");
 
-            // Context and State — PatchWrapper version
-            sb.AppendLine($"        protected MetaContext<{stateTypeName}> Context => MetaContextAccessor.Get<{stateTypeName}>();");
+            // 0.20.0: Context is a typed instance property; user-code hot path no longer
+            // needs AsyncLocal. Provider's lazy Get{Name}PatchTracked() sets it on server,
+            // client-side ApiClient SetContext() before invocation, sibling getters on
+            // transient impls. AsyncLocal fallback retained for framework-internal generated
+            // paths (foreign-service entity replay, signal/trigger/subscriber dispatchers,
+            // ServerPatch appliers) — appropriate ambient-execution-context primitive there.
+            sb.AppendLine($"        private MetaContext<{stateTypeName}>? _context;");
+            sb.AppendLine($"        public MetaContext<{stateTypeName}> Context");
+            sb.AppendLine($"        {{");
+            sb.AppendLine($"            get => _context ?? MetaContextAccessor.Get<{stateTypeName}>();");
+            sb.AppendLine($"            set => _context = value;");
+            sb.AppendLine($"        }}");
             sb.AppendLine($"        protected {stateTypeName}PatchWrapper State");
             sb.AppendLine("        {");
             sb.AppendLine("            get");

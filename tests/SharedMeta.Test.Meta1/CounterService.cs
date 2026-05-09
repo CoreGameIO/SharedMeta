@@ -17,7 +17,7 @@ namespace SharedMeta.Test.Meta1
     /// Implementation of the test counter service.
     /// Can be used with generated context or manual context.
     /// </summary>
-    [MetaServiceImpl(typeof(ICounterService), typeof(CounterState), typeof(ICounterService))]
+    [MetaServiceImpl(typeof(ICounterService), typeof(CounterState), typeof(ICounterService), typeof(ICounterAuxService), typeof(IAltConfigService))]
     public partial class CounterService : ICounterService
     {
         // Manual context for testing without generated code
@@ -189,6 +189,145 @@ namespace SharedMeta.Test.Meta1
             var state = GetState();
             state.Sum += amount;
             return true;
+        }
+
+        // ============================================
+        // 0.20.0 sibling-execution test methods
+        // ============================================
+
+        public async Task<int> SiblingAuxAdd(int value)
+        {
+            // Implicit cross-entity getter with self-id — server self-detect routes to the
+            // cached sibling impl; client self-detect builds a transient impl with our Context.
+            var aux = GetICounterAuxService(Context.EntityId ?? string.Empty);
+            return await aux.AuxAddAsync(value);
+        }
+
+        public async Task<int> SiblingAuxAddExplicit(int value)
+        {
+            // Explicit sibling-async accessor: returns original ICounterAuxService (sync method
+            // surface). Async-await resolves callee's typed Config through its provider.
+            var aux = await GetICounterAuxServiceSiblingAsync();
+            return aux.AuxAdd(value);
+        }
+
+        public async Task SiblingTrackedBump(int amount)
+        {
+            // Sibling mutates a [Tracked] field — outer ChangeTracker flushes notifications.
+            var aux = await GetICounterAuxServiceSiblingAsync();
+            aux.MutateTracked(amount);
+        }
+
+        public async Task<int> SiblingDrawCombat(int max)
+        {
+            // Sibling pulls from CombatRandom — outer call's random scroll must advance, and
+            // the client's optimistic replay produces the same result.
+            var aux = await GetICounterAuxServiceSiblingAsync();
+            return aux.DrawNamedCombat(max);
+        }
+
+        public async Task<int> SiblingRecursive(int value)
+        {
+            // Outer (CounterService) → sibling AuxService.CallBackToCounter → sibling
+            // CounterService.AddValue (back to us). Verifies the sibling-bypass survives
+            // a recursive cycle and nested mutations all land in the same outer state.
+            var aux = await GetICounterAuxServiceSiblingAsync();
+            return await aux.CallBackToCounter(value);
+        }
+
+        public async Task<int> SiblingThenCrossEntity(string otherEntityId, int value)
+        {
+            // Outer → sibling AuxService → real cross-entity call to a DIFFERENT entity. The
+            // inner cross-entity hop must use real grain RPC (not the self-bypass), confirming
+            // sibling-bypass and cross-entity routing coexist correctly.
+            var aux = await GetICounterAuxServiceSiblingAsync();
+            return await aux.AuxAddViaOther(otherEntityId, value);
+        }
+
+        public async Task<int> SiblingMultiConfig()
+        {
+            // Multi-config sibling: AltConfigService is on the same TState (CounterState) but
+            // declares ConfigType = typeof(CounterAltConfig) — different from CounterService's
+            // primary CounterConfig. Get{Iface}SiblingAsync()'s async config-resolution path
+            // looks up IMetaConfigProvider<CounterAltConfig> via DI and sets the sibling's
+            // typed Config to a CounterAltConfig instance. The sibling then writes its
+            // Config.MaxValue (7777) into State.Sum so the caller can verify.
+            var alt = await GetIAltConfigServiceSiblingAsync();
+            alt.WriteAltMaxToSum();
+            return (int)Context.State.Sum;
+        }
+
+        public async Task<int> SiblingAuxAddTimes(int valuePerCall, int times)
+        {
+            // Multi-call sibling: same sibling instance is invoked N times in one outer call.
+            // Each call mutates state cumulatively. Verifies that:
+            //   - SiblingResolver returns the SAME cached impl across all N calls (no
+            //     allocation churn);
+            //   - the outer's PatchWrapper / ChangeTracker captures every mutation;
+            //   - the final state reflects valuePerCall * times.
+            var aux = GetICounterAuxService(Context.EntityId);
+            for (int i = 0; i < times; i++)
+                await aux.AuxAddAsync(valuePerCall);
+            return (int)Context.State.Sum;
+        }
+
+        public async Task<int> SiblingThrowsCaught(int value)
+        {
+            // Sibling throws after partial mutation. Outer catches and returns a sentinel.
+            // Test verifies the outer-level method returns the sentinel (proving the throw
+            // crossed the sibling-call boundary) AND the framework didn't crash the grain.
+            // Note: state.Sum WILL contain the partial mutation in current 0.20.0 — sibling-
+            // bypass shares the outer's mutation pipeline by design (no implicit rollback).
+            // Documented behaviour. The test asserts that fact too — outer code can use the
+            // partial state if it wants, or compensate.
+            var aux = GetICounterAuxService(Context.EntityId);
+            try
+            {
+                await aux.AuxThrowAfterMutateAsync(value);
+                return -1;  // unreachable
+            }
+            catch (System.InvalidOperationException)
+            {
+                return 999;
+            }
+        }
+
+        public async Task<int> SiblingReturnsOps(int seed)
+        {
+            // Stage one operation, then ask sibling for a snapshot (returns List<CounterOperation>).
+            // SiblingCaller's pass-through must hand back the typed list with the staged op
+            // intact — verifies typed return through the sibling-bypass.
+            var state = GetState();
+            state.Operations.Add(new CounterOperation { CallerId = "seed", Value = seed, ClientSequence = 0, ServerTimeTicks = 0 });
+            var aux = GetICounterAuxService(Context.EntityId);
+            // Implicit getter routes to SiblingCaller (server) / transient impl (client). The
+            // EntityCaller interface wraps the sync method as async — await unwraps.
+            // Using the typed sibling-async getter keeps the original interface (sync return).
+            var auxSibling = await GetICounterAuxServiceSiblingAsync();
+            var ops = auxSibling.AuxSnapshotOps();
+            return ops.Count;  // Should be 1 — the seeded op
+        }
+
+        public async Task<int> SiblingServerRandom(int max)
+        {
+            // Sibling pulls from Context.ServerRandom — server records, broadcast carries the
+            // record so client replays the SAME value. If sibling-bypass leaks a different
+            // recording context, client and server would observe different values → desync.
+            var aux = await GetICounterAuxServiceSiblingAsync();
+            return aux.AuxDrawServerRandom(max);
+        }
+
+        public async Task<long> SiblingByReference()
+        {
+            // Pass a CounterOperation object to a sibling. Sibling-bypass = typed C# call →
+            // sibling receives the SAME REFERENCE. Sibling mutates `op.ServerTimeTicks` in
+            // place. After return, the caller's `op` instance reflects the mutation.
+            // If serialization were involved (cross-grain RPC), sibling would receive a
+            // deserialized copy and the caller's instance would be untouched — return 0.
+            var op = new CounterOperation { Value = 1, CallerId = "from-caller", ServerTimeTicks = 0 };
+            var aux = await GetICounterAuxServiceSiblingAsync();
+            aux.AuxMutateOpInPlace(op);
+            return op.ServerTimeTicks;  // 999 if by-reference, 0 if by-value (serialized)
         }
     }
 }

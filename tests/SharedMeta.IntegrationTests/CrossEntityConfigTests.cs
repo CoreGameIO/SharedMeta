@@ -87,6 +87,46 @@ public class CrossEntityConfigTests
     }
 
     /// <summary>
+    /// 0.20.0 regression test: cross-entity call where targetEntityId equals the calling
+    /// entity's id (gift-to-self). Pre-0.20.0 this deadlocked because the EntityCallHandler
+    /// routed through Orleans grain RPC, and EntityGrain is non-reentrant — the outer call
+    /// holds the grain's task scheduler while awaiting the self-call, which can never start.
+    ///
+    /// 0.20.0 short-circuits this in EntityGrain.EntityCallHandler: when targetEntityId
+    /// matches self and the target service is hosted on the same TState, the call is
+    /// dispatched locally via MetaProviderBase.HandleNestedCallAsync — same MetaContext,
+    /// same state, fresh inner replay buffer, no grain RPC.
+    ///
+    /// The 60s xunit timeout is the failure detector — pre-fix this test would hang.
+    /// </summary>
+    [Fact(Timeout = 60_000)]
+    public async Task GiftToSelf_CrossEntityCallToSameEntity_DoesNotDeadlock()
+    {
+        var server = new InProcessServer(_fixture.CreateHandlerFactory());
+        await using var client = new TestClientSetup(server);
+        await client.ConnectAsync();
+
+        var resolver = client.CreateResolver();
+        var entityId = $"counter_self_{Guid.NewGuid():N}";
+
+        var api = await resolver.GetServiceAsync<CounterServiceApiClient>(entityId);
+
+        // Cross-entity call with targetEntityId == self. Pre-0.20.0 this hangs (grain
+        // self-RPC deadlock). With the self-detect + HandleNestedCallAsync path, the call
+        // runs locally on this provider as a nested operation.
+        var result = await api.AddCrossEntityAsync(entityId, 42);
+
+        // Result is clamped to MaxValue=1000; 42 < 1000, so unchanged.
+        Assert.Equal(42, result);
+
+        // The nested call mutated this entity's own state (since target == self).
+        var state = resolver.GetState<CounterState>(entityId);
+        Assert.Equal(42, state.Sum);
+
+        Assert.Empty(client.DetectedIssues);
+    }
+
+    /// <summary>
     /// Verify that Config is available via GetEntityConfig API on the resolver.
     /// </summary>
     [Fact(Timeout = 60_000)]

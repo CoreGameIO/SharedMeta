@@ -1,3 +1,4 @@
+using System.Threading.Tasks;
 using SharedMeta.Core;
 
 namespace SharedMeta.Server.Core
@@ -18,12 +19,28 @@ namespace SharedMeta.Server.Core
         MetaConfigVersion CurrentVersion { get; }
 
         /// <summary>
-        /// Get config for a specific version.
+        /// Get config for a specific version (synchronous).
         /// Called during entity activation and on subscribe.
         /// </summary>
         /// <param name="version">The config version.</param>
         /// <returns>The config instance.</returns>
         TConfig GetConfig(MetaConfigVersion version);
+
+        /// <summary>
+        /// Async config materialization. Default implementation delegates to the synchronous
+        /// <see cref="GetConfig"/> for backward compatibility — overrides may perform real
+        /// I/O (database, blob storage, remote service) without blocking the entity grain.
+        /// <para>
+        /// Used by the generated sibling-service infrastructure (0.20.0+) to resolve a
+        /// callee's typed <c>Config</c> for the current <c>CallerClientVersion</c> before
+        /// dispatch — see <see cref="MetaServiceImplAttribute"/>-generated
+        /// <c>Get{Iface}SiblingAsync</c> accessors and the self-detect branch of
+        /// <c>Get{Iface}(entityId)</c>. Result caching is handled by the generator (per
+        /// service per <c>CallerClientVersion</c> per outer-call).
+        /// </para>
+        /// </summary>
+        Task<TConfig> GetConfigAsync(MetaConfigVersion version)
+            => Task.FromResult(GetConfig(version));
 
         /// <summary>
         /// Resolve the latest available config version within a specific Major.Minor branch.

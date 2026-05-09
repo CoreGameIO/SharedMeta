@@ -66,6 +66,17 @@ namespace SharedMeta.Core
         TConfig? GetEntityConfig<TConfig>(string entityId) where TConfig : class;
 
         /// <summary>
+        /// 0.20.0: Resolve a client-side sibling service impl for a given interface type. Used
+        /// by sibling-service code paths during client-side replay/optimistic execution: when
+        /// user code calls <c>Get{Iface}SiblingAsync()</c> or <c>GetI{Iface}(self)</c> on the
+        /// client, the framework asks this method for a transient impl bound to the supplied
+        /// <paramref name="metaContext"/>. Returns null when the resolver doesn't have a service
+        /// registered for the interface (typed factory generated for every <c>[MetaServiceImpl]</c>
+        /// — no reflection).
+        /// </summary>
+        object? ResolveClientSibling(string entityId, Type interfaceType, object metaContext);
+
+        /// <summary>
         /// Subscribe to a method being replayed from server broadcast.
         /// Use this to react to service events (e.g., OnMatchFound from LobbySubscriber).
         /// </summary>
@@ -197,5 +208,20 @@ namespace SharedMeta.Core
         /// </para>
         /// </summary>
         public Action<object, string, byte[], byte[], string?, long, IMetaSerializer, SharedMeta.Core.Random.MetaRandom?, IReadOnlyList<SharedMeta.Core.Random.MetaRandom>?, object?, ICrossEntityResolver?>? EntityReplayDispatcher { get; init; }
+
+        /// <summary>
+        /// 0.20.0: Factory that creates a transient impl of this service bound to the calling
+        /// client-side <c>MetaContext</c>. Used by sibling-service resolution on the client —
+        /// when user code calls <c>Get{Iface}SiblingAsync()</c> or
+        /// <c>GetI{Iface}(self).Method(...)</c> during a client-side replay or optimistic
+        /// flow, the framework creates a fresh impl with the caller's Context so the impl
+        /// reads the same state mirror and randoms as the outer service.
+        /// <para>
+        /// Generator-emitted as a typed lambda <c>(ctx) =&gt; new {Impl}() { Context = (MetaContext&lt;TState&gt;)ctx }</c>
+        /// — no reflection. Wired into <see cref="MetaContext.SiblingServiceResolver"/> on
+        /// client-side <c>ClientMetaContext</c> when ApiClient sets up its context.
+        /// </para>
+        /// </summary>
+        public Func<object /* MetaContext */, object>? ClientSiblingFactory { get; init; }
     }
 }

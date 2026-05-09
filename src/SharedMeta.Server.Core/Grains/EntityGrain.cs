@@ -123,6 +123,29 @@ namespace SharedMeta.Server.Core.Grains
                 providerBase.ExecutionModeProvider = _executionModeProvider;
                 providerBase.EntityCallHandler = async (targetEntityId, serviceName, methodName, argsBytes, serverTimeTicks) =>
                 {
+                    // 0.20.0: Gift-to-self short-circuit. When the target entity id matches
+                    // this grain's id and the requested service is hosted on this grain's
+                    // TState, the cross-entity call is a self-call. Routing it through an
+                    // Orleans grain RPC would deadlock because EntityGrain is non-reentrant
+                    // (the outer call holds the grain's task scheduler while awaiting the
+                    // self-call, which can never start). Instead, dispatch the call locally
+                    // on this provider as a nested operation — same MetaContext, same state,
+                    // same randoms, fresh inner replay buffer.
+                    if (targetEntityId == this.GetPrimaryKeyString())
+                    {
+                        var resolved = _entityGrainResolver.GetEntityGrainByService(
+                            GrainFactory, serviceName, targetEntityId);
+                        // Same TState if the resolver returns a grain reference whose primary
+                        // key matches us AND its grain interface is IEntityGrain<TState>.
+                        // Cheap structural check: the resolver returns IEntityGrain<TState>
+                        // for any service hosted on this state — if so, we are it.
+                        if (resolved is IEntityGrain<TState>)
+                        {
+                            return await providerBase.HandleNestedCallAsync(
+                                targetEntityId, serviceName, methodName, argsBytes);
+                        }
+                    }
+
                     var targetGrain = _entityGrainResolver.GetEntityGrainByService(
                         GrainFactory, serviceName, targetEntityId);
                     if (targetGrain == null)
@@ -188,6 +211,14 @@ namespace SharedMeta.Server.Core.Grains
             // Apply global deep desync override from EntityGrainOptions
             if (_options.DeepDesyncEnabled.HasValue && _provider is MetaProviderBase<TState> ddProvider)
                 ddProvider.DeepDesyncEnabled = _options.DeepDesyncEnabled.Value;
+
+            // 0.20.0 fix: seed the provider's schema version from persisted state.Version.
+            // Lazy migration is still deferred until subscribe/HandleCall (we don't yet know
+            // the client's version), but the provider must know which schema the state is
+            // already at — otherwise the fresh-entity-floor rule re-runs [MetaInit] on every
+            // activation, even when the state was initialized in a previous session.
+            if (_provider is MetaProviderBase<TState> seedProvider)
+                seedProvider.SeedSchemaVersion(state.Version);
 
             // Activation is intentionally NOT running [MetaInit] migration here. We don't yet
             // know which client triggered activation, so we cannot decide which config branch

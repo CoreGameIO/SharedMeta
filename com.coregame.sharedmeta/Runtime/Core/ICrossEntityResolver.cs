@@ -71,5 +71,16 @@ namespace SharedMeta.Core
         /// Called by generated CrossOptimistic method after local execution.
         /// </summary>
         List<CrossEntityLocalResult> TakeRecordedResults();
+
+        /// <summary>
+        /// 0.20.0 client-side sibling resolution. Asks the registered <see cref="MetaServiceConfig.ClientSiblingFactory"/>
+        /// for <paramref name="interfaceType"/> to produce a transient impl bound to
+        /// <paramref name="metaContext"/>. Used during client-side replay/optimistic flows when
+        /// user code calls <c>Get{Iface}SiblingAsync()</c> or <c>GetI{Iface}(self).Method(...)</c>
+        /// — generated code wires <c>ctx.SiblingServiceResolver</c> to delegate here. Returns
+        /// null if no service is registered for the interface (or the registered config predates
+        /// 0.20.0 and didn't emit a sibling factory).
+        /// </summary>
+        object? ResolveSibling(System.Type interfaceType, object metaContext);
     }
 }

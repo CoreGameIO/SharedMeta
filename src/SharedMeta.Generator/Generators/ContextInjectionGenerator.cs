@@ -54,7 +54,23 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("{");
             sb.AppendLine($"    public partial class {className}");
             sb.AppendLine("    {");
-            sb.AppendLine($"        protected MetaContext<{stateTypeName}> Context => MetaContextAccessor.Get<{stateTypeName}>();");
+            sb.AppendLine($"        // 0.20.0: Context is a typed instance property — the user-code hot path no");
+            sb.AppendLine($"        // longer needs the AsyncLocal lookup. The provider's lazy Get{{Name}}() sets");
+            sb.AppendLine($"        // it after `new` on the server; client-side ApiClient sets it via");
+            sb.AppendLine($"        // SetContext(...) before each method invocation; sibling-bypass paths and");
+            sb.AppendLine($"        // Get{{Iface}}SiblingAsync() set it on transient impls. The fallback through");
+            sb.AppendLine($"        // MetaContextAccessor remains for framework-internal generated paths that");
+            sb.AppendLine($"        // were not migrated in 0.20.0 (foreign-service entity replay dispatcher,");
+            sb.AppendLine($"        // signal/trigger/subscriber dispatchers, ServerPatch / ServerReplace");
+            sb.AppendLine($"        // appliers). Those continue to set MetaContextAccessor.Current as their");
+            sb.AppendLine($"        // ambient context — that's the right primitive for those scenarios and is");
+            sb.AppendLine($"        // not a code smell, just an explicit ambient-execution-context handle.");
+            sb.AppendLine($"        private MetaContext<{stateTypeName}>? _context;");
+            sb.AppendLine($"        public MetaContext<{stateTypeName}> Context");
+            sb.AppendLine($"        {{");
+            sb.AppendLine($"            get => _context ?? MetaContextAccessor.Get<{stateTypeName}>();");
+            sb.AppendLine($"            set => _context = value;");
+            sb.AppendLine($"        }}");
             sb.AppendLine();
             sb.AppendLine($"        protected {stateTypeName} State => Context.State;");
 
@@ -100,8 +116,21 @@ namespace SharedMeta.Generator.Generators
             if (configTypeName != null)
             {
                 sb.AppendLine();
-                sb.AppendLine($"        /// <summary>Static game configuration. Provided by IMetaConfigProvider on server.</summary>");
-                sb.AppendLine($"        protected {configTypeName} Config => ({configTypeName})Context.Config!;");
+                sb.AppendLine($"        /// <summary>");
+                sb.AppendLine($"        /// Static game configuration for this service. 0.20.0: typed instance");
+                sb.AppendLine($"        /// field, set by the provider per-call against the caller's resolved");
+                sb.AppendLine($"        /// config branch — independent of any other sibling service's Config,");
+                sb.AppendLine($"        /// so multi-config sibling-calls each see their own type. Falls back to");
+                sb.AppendLine($"        /// the shared <c>Context.Config</c> on client paths that haven't been");
+                sb.AppendLine($"        /// migrated to per-service typed Config (Optimistic / CrossOptimistic /");
+                sb.AppendLine($"        /// Server replay flows continue to set Context.Config the legacy way).");
+                sb.AppendLine($"        /// </summary>");
+                sb.AppendLine($"        private {configTypeName}? _config;");
+                sb.AppendLine($"        public {configTypeName} Config");
+                sb.AppendLine($"        {{");
+                sb.AppendLine($"            get => _config ?? ({configTypeName})Context.Config!;");
+                sb.AppendLine($"            set => _config = value;");
+                sb.AppendLine($"        }}");
             }
 
             // PatchState accessor for ServerPatch mode — only if state has ordinal attributes
@@ -144,7 +173,26 @@ namespace SharedMeta.Generator.Generators
                             // Check if this is an entity service (implements IMetaService, no [ServerMetaService])
                             if (IsEntityService(depSymbol))
                             {
-                                GenerateEntityServiceGetter(sb, depSymbol);
+                                // Resolve dep's TState directly from [MetaService(StateType = typeof(...))]
+                                // on the dep interface itself — no compilation scan, attribute is already
+                                // on the symbol. Every entity service must declare its TState — otherwise
+                                // we can't decide whether sibling-bypass is type-safe. Missing StateType
+                                // surfaces as a #error in the generated file at the consumer's compile.
+                                var depStateFqn = ReadDepStateType(depSymbol);
+                                if (depStateFqn == null)
+                                {
+                                    sb.AppendLine();
+                                    sb.AppendLine($"#error Entity service {depSymbol.ToDisplayString()} declared as a dependency on {symbol.ToDisplayString()} has no [MetaService(StateType = typeof(...))]. Every entity service must declare its TState — otherwise the framework cannot route cross-entity calls.");
+                                    sb.AppendLine();
+                                    continue;
+                                }
+                                bool depIsSibling = depStateFqn == stateTypeName;
+                                GenerateEntityServiceGetter(sb, depSymbol, stateTypeName, depIsSibling);
+                                if (depIsSibling)
+                                {
+                                    var depConfig = ReadDepConfigType(depSymbol);
+                                    GenerateSiblingAsyncGetter(sb, depSymbol, stateTypeName, depConfig);
+                                }
                                 entityServices.Add(depSymbol);
                             }
                             else
@@ -159,17 +207,48 @@ namespace SharedMeta.Generator.Generators
 
             sb.AppendLine("    }");
 
-            // Generate entity caller interfaces and proxy classes
-            foreach (var entityService in entityServices)
-            {
-                GenerateEntityCallerInterface(sb, entityService, namespaceName);
-                GenerateEntityRecorderClass(sb, entityService, namespaceName, serializer);
-                GenerateEntityReplayerClass(sb, entityService, namespaceName);
-                GenerateLocalEntityCallerClass(sb, entityService, namespaceName, stateTypeName);
-            }
+            // 0.20.0: helper classes ({Iface}EntityCaller + Recorder/Replayer/LocalEntityCaller/
+            // SiblingCaller) are emitted by EntityCallerHelpersGenerator — one shared file per
+            // (namespace, dep) pair, regardless of how many consumers in that namespace declare
+            // the dep. This impl partial only contains the consumer-specific bits: getters and
+            // accessor properties. SharedMetaGenerator drives the helpers generator separately.
 
             sb.AppendLine("}");
 
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// 0.20.0: Generate a standalone source file containing the entity-caller helper classes
+        /// ({Iface}EntityCaller interface + Recorder/Replayer/LocalEntityCaller/SiblingCaller)
+        /// for a single dep interface, in the specified consumer namespace. Driven by
+        /// <c>SharedMetaGenerator</c>'s pipeline once per unique (namespace, dep) pair.
+        /// </summary>
+        public static string GenerateHelpersForDep(
+            INamedTypeSymbol depInterface, string consumerNamespace, Compilation compilation)
+        {
+            var serializer = SerializerDetector.Detect(compilation);
+            var sb = new StringBuilder();
+            sb.AppendLine("// <auto-generated/>");
+            sb.AppendLine("#nullable enable");
+            sb.AppendLine("using System;");
+            sb.AppendLine("using System.Threading.Tasks;");
+            sb.AppendLine("using SharedMeta.Core;");
+            sb.AppendLine("using SharedMeta.Core.Random;");
+            sb.AppendLine("using SharedMeta.Core.Transport;");
+            if (serializer == DetectedSerializer.MemoryPack)
+            {
+                sb.AppendLine("using System.Buffers;");
+                sb.AppendLine("using MemoryPack;");
+            }
+            sb.AppendLine($"namespace {consumerNamespace}");
+            sb.AppendLine("{");
+            GenerateEntityCallerInterface(sb, depInterface, consumerNamespace);
+            GenerateEntityRecorderClass(sb, depInterface, consumerNamespace, serializer);
+            GenerateEntityReplayerClass(sb, depInterface, consumerNamespace);
+            GenerateLocalEntityCallerClass(sb, depInterface, consumerNamespace, "");
+            GenerateSiblingCallerClass(sb, depInterface);
+            sb.AppendLine("}");
             return sb.ToString();
         }
 
@@ -208,9 +287,11 @@ namespace SharedMeta.Generator.Generators
         /// Generate getter for entity services (cross-entity calls).
         /// Returns the async EntityCaller interface, not the original service interface.
         /// </summary>
-        private static void GenerateEntityServiceGetter(StringBuilder sb, INamedTypeSymbol depSymbol)
+        private static void GenerateEntityServiceGetter(StringBuilder sb, INamedTypeSymbol depSymbol, string callerStateTypeName, bool depIsSibling)
         {
             var interfaceName = depSymbol.Name;
+            var interfaceFqn = depSymbol.ToDisplayString();
+            var depNamespace = depSymbol.ContainingNamespace.ToDisplayString();
 
             // Base name: IProfileService -> ProfileService
             var baseName = interfaceName;
@@ -225,7 +306,13 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        /// <summary>");
             sb.AppendLine($"        /// Get a proxy to call {interfaceName} on another entity.");
             sb.AppendLine($"        /// Returns async EntityCaller interface for cross-entity communication.");
-            sb.AppendLine($"        /// On server: packs args and calls CallEntityAsync (EntityRecorder).");
+            sb.AppendLine($"        /// On server with self-id and same TState: dispatches directly on cached");
+            sb.AppendLine($"        /// sibling instance (typed args, no serialization, no grain RPC) — 0.20.0.");
+            sb.AppendLine($"        /// On client with self-id and same TState: dispatches on a transient impl");
+            sb.AppendLine($"        /// bound to our Context, so its mutations are visible on the local mirror");
+            sb.AppendLine($"        /// (matters for Optimistic mode where the inner cross-entity call would");
+            sb.AppendLine($"        /// otherwise no-op through Replayer) — 0.20.0.");
+            sb.AppendLine($"        /// On server with cross-grain target: packs args and calls CallEntityAsync (EntityRecorder).");
             sb.AppendLine($"        /// On client with CrossEntityResolver: executes locally (LocalEntityCaller).");
             sb.AppendLine($"        /// On client without CrossEntityResolver: replays from recorded data (EntityReplayer).");
             sb.AppendLine($"        /// </summary>");
@@ -233,16 +320,237 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        {");
             sb.AppendLine("            if (Context.IsServer)");
             sb.AppendLine("            {");
+            sb.AppendLine($"                // 0.20.0 server self-call short-circuit: if entityId is this entity AND");
+            sb.AppendLine($"                // the sibling resolver returns an instance for {interfaceName}, that means");
+            sb.AppendLine($"                // {interfaceName} is hosted on this very grain (same TState). Dispatch");
+            sb.AppendLine($"                // directly on the cached impl with typed args — no serialization, no");
+            sb.AppendLine($"                // grain RPC, no nested-call indirection. Resolver returning null means");
+            sb.AppendLine($"                // cross-grain target with same entity id (different TState) — falls");
+            sb.AppendLine($"                // through to the recorder path.");
+            sb.AppendLine($"                if (entityId == Context.EntityId && Context.SiblingServiceResolver != null)");
+            sb.AppendLine("                {");
+            sb.AppendLine($"                    var sibling = Context.SiblingServiceResolver(typeof({interfaceFqn})) as {interfaceFqn};");
+            sb.AppendLine($"                    if (sibling != null)");
+            sb.AppendLine($"                        return new {baseName}SiblingCaller(sibling);");
+            sb.AppendLine("                }");
             sb.AppendLine($"                return new {baseName}EntityRecorder(entityId, (IServerRecordContext)Context);");
             sb.AppendLine("            }");
-            sb.AppendLine("            else if (Context.CrossEntityResolver != null)");
+            if (depIsSibling)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"            // 0.20.0 client self-call short-circuit: same-entity target on client side.");
+                sb.AppendLine($"            // {interfaceName} lives on the same TState as this caller — sibling. Build");
+                sb.AppendLine($"            // a transient {baseName} impl bound to our caller's Context and dispatch");
+                sb.AppendLine($"            // on it through the same SiblingCaller adapter. The impl reads our State");
+                sb.AppendLine($"            // and MetaContext directly, so its mutations are visible on the local");
+                sb.AppendLine($"            // mirror under both Optimistic and CrossOptimistic outer modes — without");
+                sb.AppendLine($"            // this short-circuit, an Optimistic outer would route through the no-op");
+                sb.AppendLine($"            // EntityReplayer and the inner mutation would never appear on the client");
+                sb.AppendLine($"            // (e.g. gift-to-self: outer deducts, inner add-back is invisible).");
+                sb.AppendLine($"            if (entityId == Context.EntityId)");
+                sb.AppendLine("            {");
+                sb.AppendLine($"                var transient = new {depNamespace}.{baseName}() {{ Context = Context }};");
+                sb.AppendLine($"                return new {baseName}SiblingCaller(transient);");
+                sb.AppendLine("            }");
+                sb.AppendLine();
+            }
+            sb.AppendLine("            if (Context.CrossEntityResolver != null)");
             sb.AppendLine("            {");
             sb.AppendLine($"                return new {baseName}LocalEntityCaller(entityId, Context.CrossEntityResolver);");
             sb.AppendLine("            }");
-            sb.AppendLine("            else");
-            sb.AppendLine("            {");
-            sb.AppendLine($"                return new {baseName}EntityReplayer((IClientReplayContext)Context);");
-            sb.AppendLine("            }");
+            sb.AppendLine($"            return new {baseName}EntityReplayer((IClientReplayContext)Context);");
+            sb.AppendLine("        }");
+        }
+
+        /// <summary>
+        /// 0.20.0: Emit the explicit <c>Get{Iface}SiblingAsync()</c> accessor on the calling impl
+        /// partial. Returns the original <c>I{Iface}</c> interface (not the async EntityCaller
+        /// shape) — the caller awaits to resolve the callee's typed Config asynchronously through
+        /// its own <c>IMetaConfigProvider&lt;TConfig&gt;</c>, then gets back a sibling instance
+        /// ready to use with sync/async methods as declared in the interface.
+        /// </summary>
+        private static void GenerateSiblingAsyncGetter(
+            StringBuilder sb, INamedTypeSymbol depSymbol, string callerStateTypeName, string? depConfigTypeName)
+        {
+            var interfaceName = depSymbol.Name;
+            var interfaceFqn = depSymbol.ToDisplayString();
+            var depNamespace = depSymbol.ContainingNamespace.ToDisplayString();
+            var baseName = interfaceName;
+            if (baseName.StartsWith("I") && baseName.Length > 1 && char.IsUpper(baseName[1]))
+                baseName = baseName.Substring(1);
+            var implFqn = $"{depNamespace}.{baseName}";
+
+            sb.AppendLine();
+            sb.AppendLine($"        /// <summary>");
+            sb.AppendLine($"        /// 0.20.0 explicit sibling accessor for {interfaceName}. Returns the original");
+            sb.AppendLine($"        /// {interfaceName} interface bound to this entity's cached sibling instance");
+            sb.AppendLine($"        /// (server) or a transient impl with this caller's Context (client). Async");
+            sb.AppendLine($"        /// because resolving the callee's typed Config goes through");
+            sb.AppendLine($"        /// IMetaConfigProvider&lt;TConfig&gt;.GetConfigAsync — supports remote / IO-");
+            sb.AppendLine($"        /// backed providers without blocking the entity grain.");
+            sb.AppendLine($"        /// </summary>");
+            // 0.20.0 multi-config caveat: server-side Config-resolve uses SharedMeta.Server.Core.
+            // IMetaConfigProvider<T>, which lives in the server-side assembly. Shared
+            // [MetaServiceImpl] partials compile into both client and server, so the
+            // server-only path is wrapped in #if SHAREDMETA_SERVER. Client-side falls back to
+            // the impl's typed Config getter (instance _config field if pre-set, else cast
+            // from Context.Config) — multi-config siblings on client require server-only
+            // execution modes (Server / ServerReplace / ServerPatch) so the client never
+            // replays the method body that would otherwise hit a typed-Config cast mismatch.
+            sb.AppendLine($"#if SHAREDMETA_SERVER");
+            string asyncModifierServer = depConfigTypeName != null ? "async " : "";
+            string returnExprServer = depConfigTypeName != null ? "return sibling;" : "return System.Threading.Tasks.Task.FromResult(sibling);";
+            sb.AppendLine($"        protected {asyncModifierServer}System.Threading.Tasks.Task<{interfaceFqn}> Get{interfaceName}SiblingAsync()");
+            sb.AppendLine("        {");
+            sb.AppendLine($"            {interfaceFqn}? sibling = null;");
+            sb.AppendLine($"            if (Context.SiblingServiceResolver != null)");
+            sb.AppendLine($"                sibling = Context.SiblingServiceResolver(typeof({interfaceFqn})) as {interfaceFqn};");
+            sb.AppendLine($"            if (sibling == null)");
+            sb.AppendLine($"                sibling = new {implFqn}() {{ Context = Context }};");
+            if (depConfigTypeName != null)
+            {
+                sb.AppendLine($"            var configProvider = Context.ResolveService<SharedMeta.Server.Core.IMetaConfigProvider<{depConfigTypeName}>>();");
+                sb.AppendLine($"            var policyResolver = SharedMeta.Core.MetaConfigVersionResolver.ForType(typeof({depConfigTypeName}));");
+                sb.AppendLine($"            var resolvedVersion = configProvider.ResolveForClient(Context.CallerClientVersion, policyResolver);");
+                sb.AppendLine($"            var typedConfig = await configProvider.GetConfigAsync(resolvedVersion);");
+                sb.AppendLine($"            (({implFqn})sibling).Config = typedConfig;");
+            }
+            sb.AppendLine($"            {returnExprServer}");
+            sb.AppendLine("        }");
+            sb.AppendLine($"#else");
+            // Client-side body — no Config-resolve, no Server.Core reference.
+            sb.AppendLine($"        protected System.Threading.Tasks.Task<{interfaceFqn}> Get{interfaceName}SiblingAsync()");
+            sb.AppendLine("        {");
+            sb.AppendLine($"            {interfaceFqn}? sibling = null;");
+            sb.AppendLine($"            if (Context.SiblingServiceResolver != null)");
+            sb.AppendLine($"                sibling = Context.SiblingServiceResolver(typeof({interfaceFqn})) as {interfaceFqn};");
+            sb.AppendLine($"            if (sibling == null)");
+            sb.AppendLine($"                sibling = new {implFqn}() {{ Context = Context }};");
+            sb.AppendLine($"            return System.Threading.Tasks.Task.FromResult(sibling);");
+            sb.AppendLine("        }");
+            sb.AppendLine($"#endif");
+        }
+
+        /// <summary>
+        /// 0.20.0: Read the dep service's ConfigType from <c>[MetaService(ConfigType = typeof(...))]</c>
+        /// on the interface symbol. Returns null when the service has no associated config — the
+        /// generated <c>Get{Iface}SiblingAsync()</c> in that case skips the async config refresh
+        /// and returns the bare sibling instance.
+        /// </summary>
+        private static string? ReadDepConfigType(INamedTypeSymbol depInterface)
+        {
+            var metaServiceAttr = depInterface.GetAttributes().FirstOrDefault(a =>
+                a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaServiceAttribute");
+            if (metaServiceAttr == null) return null;
+            var configTypeArg = metaServiceAttr.NamedArguments.FirstOrDefault(a => a.Key == "ConfigType");
+            if (configTypeArg.Value.Value is INamedTypeSymbol cfg)
+                return cfg.ToDisplayString();
+            return null;
+        }
+
+        /// <summary>
+        /// 0.20.0: Generate the sibling-caller class for a dependency interface — an in-process
+        /// adapter that exposes the async <c>{Iface}EntityCaller</c> shape but delegates each
+        /// method to a real <c>I{Iface}</c> impl instance. Used when <see cref="GenerateEntityServiceGetter"/>'s
+        /// runtime self-detect fires: the impl resolved via <c>MetaContext.SiblingServiceResolver</c>
+        /// is wrapped in this caller, and the user's <c>await GetIInventoryService(self).GrantItemAsync(...)</c>
+        /// becomes a typed direct call into the sibling, bypassing the cross-entity machinery
+        /// (no arg serialization, no <c>CallEntityAsync</c>, no Orleans RPC).
+        /// </summary>
+        private static void GenerateSiblingCallerClass(StringBuilder sb, INamedTypeSymbol interfaceSymbol)
+        {
+            var interfaceName = interfaceSymbol.Name;
+            var interfaceFqn = interfaceSymbol.ToDisplayString();
+            var entityCallerInterface = $"{interfaceName}EntityCaller";
+
+            var baseName = interfaceName;
+            if (baseName.StartsWith("I") && baseName.Length > 1 && char.IsUpper(baseName[1]))
+            {
+                baseName = baseName.Substring(1);
+            }
+
+            sb.AppendLine();
+            sb.AppendLine($"    /// <summary>");
+            sb.AppendLine($"    /// In-process sibling caller for {interfaceName} (0.20.0).");
+            sb.AppendLine($"    /// Implements {entityCallerInterface} by delegating each method to a typed");
+            sb.AppendLine($"    /// {interfaceName} impl instance — used when the cross-entity getter detects");
+            sb.AppendLine($"    /// a self-targeted call and the sibling lives on the same TState.");
+            sb.AppendLine($"    /// </summary>");
+            sb.AppendLine($"    internal class {baseName}SiblingCaller : {entityCallerInterface}");
+            sb.AppendLine("    {");
+            sb.AppendLine($"        private readonly {interfaceFqn} _impl;");
+            sb.AppendLine();
+            sb.AppendLine($"        public {baseName}SiblingCaller({interfaceFqn} impl)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            _impl = impl;");
+            sb.AppendLine("        }");
+
+            foreach (var member in interfaceSymbol.GetMembers().OfType<IMethodSymbol>())
+            {
+                if (member.MethodKind == MethodKind.Ordinary)
+                {
+                    GenerateSiblingCallerMethod(sb, member, interfaceFqn);
+                }
+            }
+
+            sb.AppendLine("    }");
+        }
+
+        private static void GenerateSiblingCallerMethod(StringBuilder sb, IMethodSymbol method, string interfaceFqn)
+        {
+            var methodName = method.Name;
+            var returnType = method.ReturnType.ToDisplayString();
+            var parameters = string.Join(", ", method.Parameters.Select(p => $"{p.Type.ToDisplayString()} {p.Name}"));
+            var paramNames = method.Parameters.Select(p => p.Name).ToList();
+            var callArgs = string.Join(", ", paramNames);
+
+            var (isAsync, innerType) = ParseReturnType(returnType);
+
+            // Match the EntityCaller naming/return convention: void/sync→Task with Async
+            // suffix, async stays as-is. The inner call to _impl uses the original signature.
+            string asyncReturnType;
+            string asyncMethodName;
+            if (isAsync)
+            {
+                asyncReturnType = returnType;
+                asyncMethodName = methodName;
+            }
+            else if (returnType == "void")
+            {
+                asyncReturnType = "Task";
+                asyncMethodName = methodName + "Async";
+            }
+            else
+            {
+                asyncReturnType = $"Task<{returnType}>";
+                asyncMethodName = methodName + "Async";
+                innerType = returnType;
+            }
+
+            sb.AppendLine();
+            sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
+            sb.AppendLine($"        public {asyncReturnType} {asyncMethodName}({parameters})");
+            sb.AppendLine("        {");
+
+            if (isAsync)
+            {
+                // Original is already async (Task / Task<T>) — direct passthrough.
+                if (innerType != null)
+                    sb.AppendLine($"            return _impl.{methodName}({callArgs});");
+                else
+                    sb.AppendLine($"            return _impl.{methodName}({callArgs});");
+            }
+            else if (returnType == "void")
+            {
+                sb.AppendLine($"            _impl.{methodName}({callArgs});");
+                sb.AppendLine("            return Task.CompletedTask;");
+            }
+            else
+            {
+                sb.AppendLine($"            var result = _impl.{methodName}({callArgs});");
+                sb.AppendLine($"            return Task.FromResult(result);");
+            }
+
             sb.AppendLine("        }");
         }
 
@@ -730,7 +1038,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            MetaContextAccessor.Current = ctx;");
             sb.AppendLine("            try");
             sb.AppendLine("            {");
-            sb.AppendLine($"                var service = new {implNamespace}.{baseName}();");
+            sb.AppendLine($"                var service = new {implNamespace}.{baseName}() {{ Context = ctx }};");
 
             if (innerType != null)
             {
@@ -859,6 +1167,25 @@ namespace SharedMeta.Generator.Generators
                 result = FindDefaultConfigTypeInNamespace(assemblySymbol.GlobalNamespace);
                 if (result != null) return result;
             }
+            return null;
+        }
+
+        /// <summary>
+        /// 0.20.0: Read the dep entity-service's TState directly from
+        /// <c>[MetaService(StateType = typeof(...))]</c> on the interface symbol — no compilation
+        /// scan, attribute is already on the symbol. Every entity service is bound to a TState
+        /// (no entity service can exist without one — that's where it lives), so this lookup
+        /// must succeed for any well-formed entity service. Returns null only when the attribute
+        /// is missing or doesn't set <c>StateType</c> — caller emits a generator error.
+        /// </summary>
+        private static string? ReadDepStateType(INamedTypeSymbol depInterface)
+        {
+            var metaServiceAttr = depInterface.GetAttributes().FirstOrDefault(a =>
+                a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaServiceAttribute");
+            if (metaServiceAttr == null) return null;
+            var stateTypeArg = metaServiceAttr.NamedArguments.FirstOrDefault(a => a.Key == "StateType");
+            if (stateTypeArg.Value.Value is INamedTypeSymbol stateType)
+                return stateType.ToDisplayString();
             return null;
         }
 

@@ -406,7 +406,7 @@ namespace SharedMeta.Generator.Generators
             }
 
             // Context management
-            GenerateContextMethods(sb, stateTypeName);
+            GenerateContextMethods(sb, stateTypeName, hasDeepDesync);
 
             // Broadcast handling
             GenerateHandleBroadcast(sb, methods, interfaceName, namespaceName, implClassName, stateTypeName, subscriberInterfaces, serializer);
@@ -969,11 +969,19 @@ namespace SharedMeta.Generator.Generators
 
             // Set context before local execution (MetaContextAccessor must be set for Context.State access)
             sb.AppendLine($"            var ctx = new ClientMetaContext<{stateTypeName}>(_state, _serializer);");
+            sb.AppendLine($"            ctx.EntityId = _network.EntityId ?? string.Empty;");
             sb.AppendLine("            ctx.CallerId = _network.PlayerId;");
             sb.AppendLine("            ctx.ServerTimeTicks = serverTimeTicks;");
             sb.AppendLine("            ctx.Random = _optimisticRandom;");
             sb.AppendLine("            ctx.Config = _config;");
             sb.AppendLine("            ctx.NamedRandoms = _namedRandoms;");
+            // 0.20.0: set instance Context on impl(s) directly + wire the client-side sibling
+            // resolver so user code can call Get{Iface}SiblingAsync() / GetI{Iface}(self) and
+            // get back a transient impl bound to ctx — same as server's sibling-bypass flow.
+            sb.AppendLine("            ctx.SiblingServiceResolver = type => _crossEntityResolver?.ResolveSibling(type, ctx);");
+            sb.AppendLine("            _service.Context = ctx;");
+            if (hasDeepDesync)
+                sb.AppendLine("            _patchTrackedService.Context = ctx;");
             sb.AppendLine("            MetaContextAccessor.Current = ctx;");
 
             if (!isVoidReturn)
@@ -1122,11 +1130,19 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            var serverTimeTicks = _network.ServerTimeTicks;");
 
             sb.AppendLine($"            var ctx = new ClientMetaContext<{stateTypeName}>(_state, _serializer);");
+            sb.AppendLine($"            ctx.EntityId = _network.EntityId ?? string.Empty;");
             sb.AppendLine("            ctx.CallerId = _network.PlayerId;");
             sb.AppendLine("            ctx.ServerTimeTicks = serverTimeTicks;");
             sb.AppendLine("            ctx.Random = _optimisticRandom;");
             sb.AppendLine("            ctx.Config = _config;");
             sb.AppendLine("            ctx.NamedRandoms = _namedRandoms;");
+            // 0.20.0: set instance Context on impl(s) directly + wire the client-side sibling
+            // resolver so user code can call Get{Iface}SiblingAsync() / GetI{Iface}(self) and
+            // get back a transient impl bound to ctx — same as server's sibling-bypass flow.
+            sb.AppendLine("            ctx.SiblingServiceResolver = type => _crossEntityResolver?.ResolveSibling(type, ctx);");
+            sb.AppendLine("            _service.Context = ctx;");
+            if (hasDeepDesync)
+                sb.AppendLine("            _patchTrackedService.Context = ctx;");
             sb.AppendLine("            MetaContextAccessor.Current = ctx;");
 
             if (!isVoidReturn)
@@ -1269,12 +1285,20 @@ namespace SharedMeta.Generator.Generators
 
             // Set context with CrossEntityResolver
             sb.AppendLine($"            var ctx = new ClientMetaContext<{stateTypeName}>(_state, _serializer);");
+            sb.AppendLine($"            ctx.EntityId = _network.EntityId ?? string.Empty;");
             sb.AppendLine("            ctx.CallerId = _network.PlayerId;");
             sb.AppendLine("            ctx.ServerTimeTicks = serverTimeTicks;");
             sb.AppendLine("            ctx.CrossEntityResolver = _crossEntityResolver;");
             sb.AppendLine("            ctx.Random = _optimisticRandom;");
             sb.AppendLine("            ctx.Config = _config;");
             sb.AppendLine("            ctx.NamedRandoms = _namedRandoms;");
+            // 0.20.0: set instance Context on impl(s) directly + wire the client-side sibling
+            // resolver so user code can call Get{Iface}SiblingAsync() / GetI{Iface}(self) and
+            // get back a transient impl bound to ctx — same as server's sibling-bypass flow.
+            sb.AppendLine("            ctx.SiblingServiceResolver = type => _crossEntityResolver?.ResolveSibling(type, ctx);");
+            sb.AppendLine("            _service.Context = ctx;");
+            if (hasDeepDesync)
+                sb.AppendLine("            _patchTrackedService.Context = ctx;");
             sb.AppendLine("            MetaContextAccessor.Current = ctx;");
 
             if (!isVoidReturn)
@@ -1635,7 +1659,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                        }");
         }
 
-        private static void GenerateContextMethods(StringBuilder sb, string? stateTypeName)
+        private static void GenerateContextMethods(StringBuilder sb, string? stateTypeName, bool hasDeepDesync = false)
         {
             sb.AppendLine("        private void SetContext(byte[] replayContext)");
             sb.AppendLine("        {");
@@ -1645,6 +1669,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        private void SetContext(byte[] replayContext, string? callerId, long serverTimeTicks = 0)");
             sb.AppendLine("        {");
             sb.AppendLine($"            var ctx = new ClientMetaContext<{stateTypeName}>(_state, _serializer);");
+            sb.AppendLine($"            ctx.EntityId = _network.EntityId ?? string.Empty;");
             sb.AppendLine("            ctx.CallerId = callerId;");
             sb.AppendLine("            ctx.ServerTimeTicks = serverTimeTicks;");
             sb.AppendLine("            ctx.BeginReplay(replayContext);");
@@ -1652,6 +1677,13 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            ctx.Config = _config;");
             sb.AppendLine("            ctx.ServerRandom = new MetaRandomReplayer(ctx);");
             sb.AppendLine("            ctx.NamedRandoms = _namedRandoms;");
+            // 0.20.0: set instance Context on impl(s) directly + wire the client-side sibling
+            // resolver so user code can call Get{Iface}SiblingAsync() / GetI{Iface}(self) and
+            // get back a transient impl bound to ctx — same as server's sibling-bypass flow.
+            sb.AppendLine("            ctx.SiblingServiceResolver = type => _crossEntityResolver?.ResolveSibling(type, ctx);");
+            sb.AppendLine("            _service.Context = ctx;");
+            if (hasDeepDesync)
+                sb.AppendLine("            _patchTrackedService.Context = ctx;");
             sb.AppendLine("            MetaContextAccessor.Current = ctx;");
             sb.AppendLine("        }");
             sb.AppendLine();

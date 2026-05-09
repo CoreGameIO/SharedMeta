@@ -104,6 +104,22 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
+        /// 0.20.0 client-side sibling resolution. Looks up the registered MetaServiceConfig for
+        /// <paramref name="interfaceType"/> and invokes its generator-emitted
+        /// <see cref="MetaServiceConfig.ClientSiblingFactory"/> with <paramref name="metaContext"/> —
+        /// produces a transient impl bound to the caller's Context, no reflection. Returns null
+        /// if no service is registered for the interface or if the registered config didn't
+        /// emit a sibling factory (legacy services predating 0.20.0).
+        /// </summary>
+        public object? ResolveClientSibling(string entityId, Type interfaceType, object metaContext)
+        {
+            if (!_configsByServiceName.TryGetValue(interfaceType.Name, out var config) ||
+                config.ClientSiblingFactory == null)
+                return null;
+            return config.ClientSiblingFactory(metaContext);
+        }
+
+        /// <summary>
         /// Pick the best PatchApplier for the config's state type — calling service's first,
         /// else any service registered against the same state. Lets a hand-rolled config that
         /// drops PatchApplier still benefit from a generator-emitted applier on a sibling service.
@@ -506,6 +522,16 @@ namespace SharedMeta.Client
             var results = _recordedResults ?? new();
             _recordedResults = null;
             return results;
+        }
+
+        object? ICrossEntityResolver.ResolveSibling(System.Type interfaceType, object metaContext)
+        {
+            // Look up by interface name — _configsByServiceName is the only registry keyed by
+            // interface (the others are by ApiClient type or state type).
+            if (!_configsByServiceName.TryGetValue(interfaceType.Name, out var config) ||
+                config.ClientSiblingFactory == null)
+                return null;
+            return config.ClientSiblingFactory(metaContext);
         }
 
         #endregion

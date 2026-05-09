@@ -28,8 +28,25 @@ public static class TestServerConfiguration
         Action<IServiceCollection>? configureServices = null)
     {
         services.AddSingleton<IMetaConfigProvider<MigrationConfig>>(MigrationConfigProvider);
+        // 0.20.0 multi-config sibling test fixture: AltConfigService declares ConfigType =
+        // typeof(CounterAltConfig). Generated Get{Iface}SiblingAsync() resolves this provider
+        // via Context.ResolveService → DI lookup. Without this registration the sibling-async
+        // path throws when called from a multi-config sibling test.
+        services.AddSingleton<IMetaConfigProvider<CounterAltConfig>>(new TestCounterAltConfigProvider());
         return services.ConfigureMeta(configureServices);
     }
+}
+
+/// <summary>
+/// Trivial static provider for <see cref="CounterAltConfig"/> — returns the same instance
+/// regardless of version. Tests rely on the default <c>MaxValue=7777</c> to verify the sibling
+/// saw the alt config rather than the primary <c>CounterConfig</c>.
+/// </summary>
+public class TestCounterAltConfigProvider : IMetaConfigProvider<CounterAltConfig>
+{
+    private readonly CounterAltConfig _instance = new() { MaxValue = 7777 };
+    public MetaConfigVersion CurrentVersion => new(1, 0);
+    public CounterAltConfig GetConfig(MetaConfigVersion version) => _instance;
 }
 
 /// <summary>

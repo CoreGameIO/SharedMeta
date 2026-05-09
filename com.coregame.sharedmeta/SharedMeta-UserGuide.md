@@ -594,6 +594,45 @@ Task<bool> TradeWith(string targetEntityId, Item item);
 
 The framework automatically routes the call to the target entity's grain on the server. The first parameter with type `string` is extracted as the target entity ID.
 
+### Sibling Services on the Same Entity (0.20.0)
+
+A "sibling" is another `[MetaServiceImpl]` hosted on the same `TState` — both impls live in the same entity grain. 0.20.0 dispatches sibling calls in-process (typed C#, no serialization, no grain RPC) while keeping the existing cross-entity API intact.
+
+**Implicit (gift-to-anyone with possible self-id):** declare the sibling service as a dep, the existing cross-entity getter handles self-detect:
+
+```csharp
+[MetaServiceImpl(typeof(IProfileService), typeof(ProfileState),
+    typeof(IInventoryService))]                 // declare InventoryService dep
+public partial class ProfileService : IProfileService
+{
+    public async Task SendGift(string targetEntityId, int itemId)
+    {
+        // Self-id → typed in-process call to the cached sibling impl. Other id →
+        // real cross-entity grain RPC. Same line of code handles both.
+        await GetIInventoryService(targetEntityId).GrantItemAsync(itemId);
+    }
+}
+```
+
+This fixes the "gift-to-self deadlock" — pre-0.20.0 the call hung because Orleans grain RPC into a non-reentrant grain stalls awaiting itself.
+
+**Explicit (this entity's own sibling):** the generator emits an async accessor that returns the original interface (sync methods stay sync) and resolves the callee's typed `Config` per-service:
+
+```csharp
+public async Task ApplyDailyBonus()
+{
+    var inv = await GetIInventoryServiceSiblingAsync();
+    inv.GrantItem("daily_bonus", 1);
+    State.LastBonusUtc = Context.ServerTimeTicks;
+}
+```
+
+The await resolves the callee's typed `Config` through its own `IMetaConfigProvider<TConfig>`. Multi-config siblings (different `[MetaConfig]` types on the same state) each see their own typed config branch.
+
+**What's preserved** across the sibling boundary: state, randoms (`Context.Random`/`ServerRandom`/named), `PatchWrapper`, `ChangeTracker`, and by-reference args. **What's not** (by design): `[Transformer]` Box/Unbox (transformers are a serialization-boundary concern; sibling-bypass skips it), implicit rollback on exception (sibling shares the outer's mutation pipeline — partial mutations stay if a sibling throws).
+
+**Required:** every dep declared in `[MetaServiceImpl(..., typeof(IDep))]` MUST carry `[MetaService(StateType = typeof(...))]` on the dep interface — otherwise the generator emits `#error`.
+
 ### Read-Only State Access
 
 ```csharp

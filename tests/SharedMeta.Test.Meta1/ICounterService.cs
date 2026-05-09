@@ -108,5 +108,66 @@ namespace SharedMeta.Test.Meta1
         /// </summary>
         [MetaMethod(Alias = "TryAdd", Mode = ExecutionMode.Optimistic, SkipServerOnFalse = true)]
         bool TryAdd(int amount);
+
+        // ============================================
+        // 0.20.0 sibling-execution test methods
+        // ============================================
+
+        [MetaMethod(Alias = "SiblingAuxAdd", Mode = ExecutionMode.Server)]
+        Task<int> SiblingAuxAdd(int value);
+
+        [MetaMethod(Alias = "SiblingAuxAddExplicit", Mode = ExecutionMode.Server)]
+        Task<int> SiblingAuxAddExplicit(int value);
+
+        [MetaMethod(Alias = "SiblingTrackedBump", Mode = ExecutionMode.Server)]
+        Task SiblingTrackedBump(int amount);
+
+        [MetaMethod(Alias = "SiblingDrawCombat", Mode = ExecutionMode.Optimistic)]
+        Task<int> SiblingDrawCombat(int max);
+
+        [MetaMethod(Alias = "SiblingRecursive", Mode = ExecutionMode.Server)]
+        Task<int> SiblingRecursive(int value);
+
+        [MetaMethod(Alias = "SiblingThenCrossEntity", Mode = ExecutionMode.Server)]
+        Task<int> SiblingThenCrossEntity(string otherEntityId, int value);
+
+        /// <summary>
+        /// Multi-config sibling test: outer CounterService (uses CounterConfig) calls
+        /// AltConfigService sibling (uses CounterAltConfig). The async sibling-getter must
+        /// resolve CounterAltConfig for the sibling's typed Config — not CounterConfig.
+        /// State.Sum is set to the value the sibling read from its Config — test asserts it
+        /// equals CounterAltConfig.MaxValue (7777), confirming the right config was applied.
+        /// ServerReplace mode so client-side replay path doesn't need access to config DI
+        /// (which throws on ClientMetaContext.ResolveService).
+        /// </summary>
+        [MetaMethod(Alias = "SiblingMultiConfig", Mode = ExecutionMode.ServerReplace)]
+        Task<int> SiblingMultiConfig();
+
+        /// <summary>Calls sibling AuxAdd N times in the same outer call — verifies cumulative
+        /// mutations and that state arrives at expected sum on both sides.</summary>
+        [MetaMethod(Alias = "SiblingAuxAddTimes", Mode = ExecutionMode.Server)]
+        Task<int> SiblingAuxAddTimes(int valuePerCall, int times);
+
+        /// <summary>Sibling throws after a partial mutation — outer's catch swallows. State
+        /// must NOT contain the partial mutation (or the framework must consistently report
+        /// the failure to the client without leaking corrupt state).</summary>
+        [MetaMethod(Alias = "SiblingThrowsCaught", Mode = ExecutionMode.Server)]
+        Task<int> SiblingThrowsCaught(int value);
+
+        /// <summary>Sibling returns a list — verifies SiblingCaller typed pass-through preserves
+        /// reference identity / serialization-tolerant types end-to-end.</summary>
+        [MetaMethod(Alias = "SiblingReturnsOps", Mode = ExecutionMode.Server)]
+        Task<int> SiblingReturnsOps(int seed);
+
+        /// <summary>Sibling consumes ServerRandom — outer's response carries the recorded random
+        /// scroll delta (via outer's optimistic random); client replay reads same value.</summary>
+        [MetaMethod(Alias = "SiblingServerRandom", Mode = ExecutionMode.Server)]
+        Task<int> SiblingServerRandom(int max);
+
+        /// <summary>Pass an object to sibling, sibling mutates in place. Verifies typed
+        /// by-reference pass-through (no serialization on sibling-bypass), which is also
+        /// why argument transformers don't apply on this path.</summary>
+        [MetaMethod(Alias = "SiblingByRef", Mode = ExecutionMode.Server)]
+        Task<long> SiblingByReference();
     }
 }

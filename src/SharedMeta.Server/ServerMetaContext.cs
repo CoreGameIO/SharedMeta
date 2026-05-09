@@ -77,6 +77,57 @@ namespace SharedMeta.Server
         }
 
         /// <summary>
+        /// 0.20.0: Snapshot of the recorder fields that <see cref="BeginOperation"/> would
+        /// otherwise clobber. Used by <see cref="MetaProviderBase{TState}.HandleNestedCallAsync"/>
+        /// to run a nested same-grain dispatch (sibling sibling self-cross-call) inside an
+        /// already-active outer operation without losing the outer's replay buffer or its
+        /// in-flight cross-entity-call list.
+        /// </summary>
+        public readonly struct NestedOperationFrame
+        {
+            internal readonly IPayloadWriter? OuterWriter;
+            internal readonly PayloadDebug? OuterDebug;
+            internal readonly List<CrossEntityCallInfo>? OuterCrossEntityCalls;
+            internal NestedOperationFrame(IPayloadWriter? w, PayloadDebug? d, List<CrossEntityCallInfo>? c)
+            {
+                OuterWriter = w; OuterDebug = d; OuterCrossEntityCalls = c;
+            }
+        }
+
+        /// <summary>
+        /// Begin a nested operation: saves the outer recorder state and starts a fresh
+        /// operation context. The returned <see cref="NestedOperationFrame"/> must be passed
+        /// back to <see cref="PopNestedOperation"/> to restore the outer state. Used by
+        /// the gift-to-self short-circuit path in <c>EntityGrain.EntityCallHandler</c>.
+        /// </summary>
+        public NestedOperationFrame PushNestedOperation()
+        {
+            var frame = new NestedOperationFrame(_writer, _debug, _crossEntityCalls);
+            _writer = _serializer.CreateWriter();
+            _debug = DebugEnabled ? new PayloadDebug() : null;
+            _crossEntityCalls = null;
+            return frame;
+        }
+
+        /// <summary>
+        /// End the inner operation, return its payload bytes, and restore the outer
+        /// recorder state captured by the matching <see cref="PushNestedOperation"/> call.
+        /// Inner cross-entity calls collected during the nested dispatch are returned via
+        /// <paramref name="nestedCrossEntityCalls"/> so the caller can attach them to the
+        /// inner result without merging them into the outer's list.
+        /// </summary>
+        public byte[] PopNestedOperation(NestedOperationFrame frame, out List<CrossEntityCallInfo>? nestedCrossEntityCalls)
+        {
+            if (_writer == null) throw new InvalidOperationException("No nested operation in progress.");
+            var innerBytes = _writer.Complete();
+            nestedCrossEntityCalls = _crossEntityCalls;
+            _writer = frame.OuterWriter;
+            _debug = frame.OuterDebug;
+            _crossEntityCalls = frame.OuterCrossEntityCalls;
+            return innerBytes;
+        }
+
+        /// <summary>
         /// Get current debug info and reset.
         /// </summary>
         public PayloadDebug? GetAndClearDebug()

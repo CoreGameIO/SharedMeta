@@ -250,6 +250,16 @@ namespace SharedMeta.Core
         /// </summary>
         public abstract TService ResolveService<TService>() where TService : class;
 
+        /// <summary>
+        /// 0.20.0: Resolve a sibling-service impl instance hosted on the same entity (same
+        /// <c>TState</c>, same grain). Wired by <c>EntityGrain.OnActivateAsync</c> to point
+        /// at the provider's lazy <c>Get{Name}()</c> getters. Used by generated cross-entity
+        /// accessors when the target entity id matches this entity — the call is dispatched
+        /// directly on the cached sibling instance with typed args, skipping the cross-entity
+        /// serialization+grain-RPC path entirely.
+        /// </summary>
+        public Func<Type, object?>? SiblingServiceResolver { get; set; }
+
         // ============================================
         // Transformer Support
         // ============================================

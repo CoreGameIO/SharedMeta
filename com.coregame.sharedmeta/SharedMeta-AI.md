@@ -629,6 +629,29 @@ public partial class ExpeditionService : IExpeditionService
 
 > **Do not use `Context.GetEntityApi<T>(id)`.** That method no longer exists on `MetaContext` (removed in 0.12.4). Cross-entity access goes strictly through declared dependencies and the generated `GetI{Service}` accessor — the typed name makes the dependency explicit in `[MetaServiceImpl]`, which is required for the generator to wire up real/replay/cross-optimistic routing.
 
+### Sibling-Service Calls (0.20.0)
+
+A "sibling" is another `[MetaServiceImpl]` hosted on the same `TState` — both impls live in the same entity grain. Sibling calls dispatch in-process (typed C# call, no serialization, no grain RPC). Both implicit and explicit getters are available; the implicit one fixes the gift-to-self deadlock that pre-0.20.0 versions had.
+
+```csharp
+// Implicit — same getter as cross-entity, but with self-detect
+public async Task SendGift(string targetEntityId, int itemId) {
+    // Self-id → in-process sibling call. Other id → real cross-grain RPC. Same code.
+    await GetIInventoryService(targetEntityId).GrantItemAsync(itemId);
+}
+
+// Explicit — typed sibling on this entity, returns the original interface
+public async Task ApplyDailyBonus() {
+    var inv = await GetIInventoryServiceSiblingAsync();  // resolves typed Config async
+    inv.GrantItem("daily_bonus", 1);
+}
+```
+
+**Preserved across sibling boundary:** state, randoms, `PatchWrapper`, `ChangeTracker`, by-reference args.
+**Not preserved:** `[Transformer]` Box/Unbox (serialization-boundary concern, skipped on in-process call), implicit rollback on exception (sibling shares outer's mutation pipeline).
+**Multi-config siblings:** different `[MetaConfig]` types on the same state are supported via `Get{Iface}SiblingAsync()`. The async getter resolves each service's typed Config through its own `IMetaConfigProvider<TConfig>`. Direct dispatch of a secondary-config service falls back to `Context.Config` (primary type) and crashes — secondary services should always go through the sibling-async accessor.
+**Required:** every dep declared in `[MetaServiceImpl(..., typeof(IDep))]` MUST carry `[MetaService(StateType = typeof(...))]` on the dep interface — generator emits `#error` if missing.
+
 ### Read-Only State Access
 
 Read another entity's state without calling a method on it:

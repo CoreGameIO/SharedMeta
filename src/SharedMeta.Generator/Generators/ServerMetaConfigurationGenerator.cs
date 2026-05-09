@@ -1504,20 +1504,39 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine();
             }
 
-            // Service getter methods
+            // Service getter methods.
+            // 0.20.0: lazy creation now ALSO sets the service's instance Context property so
+            // it doesn't have to look it up via MetaContextAccessor on every member access.
+            // Each [MetaServiceImpl] partial declares `public MetaContext<TState> Context { get; internal set; }`.
             sb.AppendLine("        // Service getters");
             foreach (var service in services)
             {
                 var baseName = GetBaseName(service.InterfaceName);
                 var fieldName = GetFieldName(service.InterfaceName);
-                sb.AppendLine($"        private {service.InterfaceName} Get{baseName}() => {fieldName} ??= new {service.ImplClassFullName}();");
+                sb.AppendLine($"        private {service.InterfaceName} Get{baseName}() => {fieldName} ??= new {service.ImplClassFullName}() {{ Context = MetaContext! }};");
                 if (service.DeepDesync)
                 {
                     var ptFieldName = fieldName + "PT";
                     sb.AppendLine($"        private {service.ImplClassFullName}_PatchTracked? {ptFieldName};");
-                    sb.AppendLine($"        private {service.InterfaceName} Get{baseName}PatchTracked() => {ptFieldName} ??= new {service.ImplClassFullName}_PatchTracked();");
+                    sb.AppendLine($"        private {service.InterfaceName} Get{baseName}PatchTracked() => {ptFieldName} ??= new {service.ImplClassFullName}_PatchTracked() {{ Context = MetaContext! }};");
                 }
             }
+
+            // 0.20.0: Sibling-resolver override. Returns the cached impl instance for any
+            // service hosted on this provider's TState — null for any other interface.
+            // The instance is wired into MetaContext.SiblingServiceResolver in
+            // MetaProviderBase.Initialize, so cross-entity getters can short-circuit
+            // self-targeted calls into typed sibling invocations (no serialization).
+            sb.AppendLine();
+            sb.AppendLine("        public override object? ResolveSiblingByType(System.Type interfaceType)");
+            sb.AppendLine("        {");
+            foreach (var service in services)
+            {
+                var baseName = GetBaseName(service.InterfaceName);
+                sb.AppendLine($"            if (interfaceType == typeof({service.InterfaceName})) return Get{baseName}();");
+            }
+            sb.AppendLine("            return null;");
+            sb.AppendLine("        }");
 
             sb.AppendLine("    }");
         }

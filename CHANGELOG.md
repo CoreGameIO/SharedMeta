@@ -1,10 +1,155 @@
 # Changelog
 
+## [0.20.0] - 2026-05-09
+
+### TL;DR
+
+- **Fix:** `GetIInventoryService(entityId).GrantItem(...)` no longer deadlocks when `entityId` is the caller's own entity (gift-to-self / send-to-anyone-with-self-id). Sibling services on the same `TState` are now invoked through a typed in-process call path — no serialization, no grain RPC.
+- **New:** explicit `Get{Iface}SiblingAsync()` accessor with async per-service typed `Config` resolution. Multi-config siblings (different `[MetaConfig]` types on the same state) each see their own typed config.
+- **Fix:** `[MetaInit]` re-running on every grain reactivation (state.Version wasn't seeded into the provider). Already-initialized entities skip re-init now.
+- **Architectural:** server hot path on `[MetaServiceImpl]` no longer goes through `MetaContextAccessor` (AsyncLocal) — `Context` is a typed instance property set by the provider on lazy creation. Framework-internal AsyncLocal usage is intentionally retained as the ambient-execution-context primitive.
+- **Generator hygiene:** entity-caller helpers (Recorder/Replayer/LocalEntityCaller/SiblingCaller/EntityCaller) emit once per `(namespace, dep)` pair instead of per consumer — multiple `[MetaServiceImpl]` classes in the same namespace can now declare the same dep without CS0111.
+- **Required:** every entity-service dep declared on `[MetaServiceImpl]` MUST carry `[MetaService(StateType = typeof(...))]`. Generator emits `#error` if missing.
+
+### Fixed — gift-to-self grain deadlock
+
+Calling another service on the same entity used to route through Orleans cross-entity RPC: `GetIInventoryService(entityId).GrantItem(...)` resolved a grain proxy regardless of `entityId`. When `entityId` happened to be the calling entity itself (user-to-self gift, generic "send to anyone" with caller's id, etc.), Orleans deadlocked — `EntityGrain` is non-reentrant, the outer call held the grain's task scheduler while awaiting the self-call which could never start.
+
+0.20.0 fixes this with a generator-emitted sibling-caller path plus a runtime safety-net. User code is unchanged: `GetIInventoryService(entityId).GrantItem(...)` works whether `entityId` is self or another entity.
+
+**Generated sibling-caller (primary path).** Each `GetI{Iface}(entityId)` accessor gains a runtime self-detect branch: when `entityId == Context.EntityId` and `Context.SiblingServiceResolver` returns an instance for the requested interface, the call is dispatched on the cached sibling impl directly — typed args, no serialization, no grain RPC. Cross-grain targets (different `TState`, same entity id) still flow through the recorder path.
+
+Generator emissions:
+
+- `Get{Iface}(entityId)` accessor — adds self-bypass branch (server + client).
+- `{Iface}SiblingCaller` class — implements the async `{Iface}EntityCaller` shape, holds a typed `I{Iface}` impl reference, forwards each method without serialization.
+- `MetaProviderBase.ResolveSiblingByType(Type)` override on each generated provider — switch over hosted services, returns the cached `Get{Name}()` instance.
+
+Server side: `MetaProviderBase.Initialize` wires `MetaContext.SiblingServiceResolver = ResolveSiblingByType` so the accessor finds the sibling at runtime.
+
+Client side: `MetaServiceConfig.ClientSiblingFactory` (typed lambda `(ctx) => new {Impl}() { Context = (MetaContext<TState>)ctx }`) is invoked by `ICrossEntityResolver.ResolveSibling(Type, MetaContext)`. The simplified ApiClient wires `ctx.SiblingServiceResolver = type => _crossEntityResolver?.ResolveSibling(type, ctx)` in `SetContext(...)` so client-side replay flows resolve siblings the same way as the server.
+
+**Runtime safety-net.** For paths that bypass the typed accessor (e.g. raw `Context.CallEntityAsync(...)` with a self-id), `EntityGrain.EntityCallHandler` checks `targetEntityId == this.GetPrimaryKeyString()` and routes through a new `MetaProviderBase.HandleNestedCallAsync(...)` — runs `DispatchCall` as a sub-operation under the outer `MetaContext`. New `ServerMetaContext.PushNestedOperation`/`PopNestedOperation` helpers swap the inner replay-buffer and `CrossEntityCalls` list so the outer's recording state survives.
+
+Patch / change-tracking compatibility: sibling-call mutations share the outer's `PatchWrapper` and `ChangeTracker`. `ServerPatch` / `ServerReplace` / `Optimistic` / `CrossOptimistic` modes still ship one patch per outer call. From the client's perspective a sibling-call is indistinguishable from a private helper-method invocation in the outer service.
+
+### Added — explicit `Get{Iface}SiblingAsync()` accessor
+
+For every entity-service dependency declared on a `[MetaServiceImpl]` whose `[MetaService(StateType=...)]` matches the calling impl's TState, the generator emits:
+
+```csharp
+// inside ProfileService impl — InventoryService is a sibling on ProfileState
+var inv = await GetIInventoryServiceSiblingAsync();
+inv.GrantItem("daily_bonus", 1);
+```
+
+Returns the **original** `IInventoryService` interface (sync/async methods exactly as declared), not the async `EntityCaller` wrapper. The `await` resolves the callee's typed `Config` through its own `IMetaConfigProvider<TConfig>.GetConfigAsync` (server) — multi-config siblings each see their own typed config branch independently of the calling service.
+
+Use the implicit `GetIInventoryService(entityId)` accessor when the target id is dynamic (potentially self); use `GetIInventoryServiceSiblingAsync()` when the intent is "this entity's own sibling".
+
+Generated body is wrapped in `#if SHAREDMETA_SERVER` for the config-resolution branch (uses `IMetaConfigProvider<TConfig>` from `SharedMeta.Server.Core`, not referenceable from shared client-side assemblies). On the client the getter falls back to typed sibling resolution without async config refresh — adequate for single-config sibling siblings; multi-config siblings on client require server-only outer modes (`Server` / `ServerReplace` / `ServerPatch`).
+
+### Added — `IMetaConfigProvider<TConfig>.GetConfigAsync` default method
+
+```csharp
+public interface IMetaConfigProvider<TConfig> where TConfig : class
+{
+    TConfig GetConfig(MetaConfigVersion version);                          // existing, sync
+    Task<TConfig> GetConfigAsync(MetaConfigVersion version)                // NEW
+        => Task.FromResult(GetConfig(version));
+}
+```
+
+Default impl delegates to sync. Existing providers continue to work. Override `GetConfigAsync` to fetch from DB / blob storage / remote service without blocking the entity grain. Consumed by `Get{Iface}SiblingAsync()` for typed per-service config resolution.
+
+### Fixed — `[MetaInit]` re-running on every grain reactivation
+
+`MetaProviderBase.CurrentStateSchemaVersion` was never seeded from the persisted `state.Version` after activation — it stayed at default `0`. The generated fresh-entity-floor rule (`if (CurrentStateSchemaVersion == 0 && ...)`) then re-triggered base `[MetaInit]` on every reactivation, even when the state had been initialized in a previous session. Symptom: a freshly-restarted server would call `GenerateMap(0)` on every entity activation, regenerating the world.
+
+Fix: `MetaProviderBase.SeedSchemaVersion(int)` public method, called from `EntityGrain.OnActivateAsync` immediately after `_provider.Initialize(...)`. Lazy migration is still deferred to subscribe / first call (we don't yet know the client version at activation), but the provider now correctly knows which schema the persisted state is at.
+
+### Changed — `[MetaServiceImpl]` partial: `Context` is now an instance property (server hot path)
+
+Service-impl partial classes — both `[MetaServiceImpl]` and the generated `_PatchTracked` companions — declare `Context` as a settable instance property. The provider's lazy service-getter (`Get{Name}()`) sets `service.Context = MetaContext` immediately after `new`. Dispatched method calls read the field directly instead of indirecting through `MetaContextAccessor.Get<TState>()`.
+
+The getter falls back to `MetaContextAccessor.Get<TState>()` when the instance field hasn't been assigned. Backward-compat for code paths that still set `MetaContextAccessor.Current` (client-side ApiClient flows, `LocalEntityCaller`, signal/trigger dispatchers, server-service recorders).
+
+User code continues to compile unchanged. Direct reads of `MetaContextAccessor.Current` from user code (rare) should migrate to `Context`.
+
+`Context.EntityId` is now also set in client-side `ClientMetaContext` by every `ApiClient.SetContext(...)` path — without this, `entityId == Context.EntityId` self-detect would never fire on the client (regression that bit Optimistic + CrossOptimistic flows).
+
+### Changed — typed per-service `Config` is an instance field with fallback
+
+Each `[MetaServiceImpl]` partial's typed `Config` accessor:
+
+```csharp
+private InventoryConfig? _config;
+public InventoryConfig Config
+{
+    get => _config ?? (InventoryConfig)Context.Config!;
+    set => _config = value;
+}
+```
+
+The provider sets `_config` per-call via `Get{Iface}SiblingAsync()` for siblings (each gets its own typed config). The fallback to `Context.Config` keeps Optimistic / CrossOptimistic / replay client paths working unchanged.
+
+### Generator — entity-caller helpers emit per `(namespace, dep)`, not per consumer
+
+Pre-0.20.0, helper classes (`{Iface}EntityCaller` interface + `Recorder` / `Replayer` / `LocalEntityCaller` / `SiblingCaller`) were emitted in every `[MetaServiceImpl]`'s `Context.g.cs`. Two impls in the same namespace declaring the same dep → CS0111 (duplicate class definitions).
+
+0.20.0 splits the pipeline:
+
+- `ContextInjectionGenerator` runs per `[MetaServiceImpl]` and emits **only** consumer-specific bits: `Context` / `State` / `Config` accessors, named-randoms, `PatchState`, server-service getters, `Get{Iface}(entityId)` and `Get{Iface}SiblingAsync()` getters.
+- A new pipeline stage in `SharedMetaGenerator` collects unique `(consumerNamespace, depInterfaceFqn)` pairs across all `[MetaServiceImpl]`s, deduplicates, and calls `ContextInjectionGenerator.GenerateHelpersForDep(...)` per pair. Result: one `{Ns}_{Dep}_EntityCallerHelpers.g.cs` file per pair, regardless of how many consumers in that namespace declare the dep.
+
+### Generator — `[MetaService(StateType = typeof(...))]` is required for entity-service deps
+
+When a service interface is declared as a dependency in `[MetaServiceImpl(typeof(IService), typeof(TState), typeof(IDep))]`, the dep interface MUST carry `[MetaService(StateType = typeof(DepTState))]` — otherwise the generator emits `#error` in the consumer's compilation. Without `StateType` the framework cannot route cross-entity calls or decide whether sibling-bypass is safe.
+
+### Architectural — `MetaContextAccessor` (AsyncLocal) is intentionally kept
+
+The user-code hot path (every `[MetaServiceImpl]` method body) no longer goes through `MetaContextAccessor.Get<TState>()`. That was the goal of the AsyncLocal-removal effort: hidden dependencies in user code are bad, instance fields are good.
+
+The `MetaContextAccessor` class itself remains. Framework-internal generated code — signal / trigger / subscriber dispatchers, `EntityReplayDispatcher`, `LocalInvoker`, `OrleansLobbyRequester`, `ServerPatch` / `ServerReplace` appliers, and `EntityGrain.EntityCallHandler`'s cross-entity propagation — continues to use it as the ambient execution-context primitive (analogous to `Activity.Current` / `SynchronizationContext.Current`). Replacing it with method-parameter threading would be API churn for marginal gain on those paths.
+
+The instance `Context` getter retains an AsyncLocal fallback so not-yet-migrated framework paths (e.g. `EntityReplayDispatcher` building a transient impl) keep working. Transient impls now set the instance `Context` directly via object initializer where it's straightforward, incrementally narrowing the surface that depends on the fallback.
+
+### Test coverage
+
+15 new sibling-execution integration tests in `tests/SharedMeta.IntegrationTests/SiblingExecutionTests.cs`:
+
+- Implicit and explicit sibling getters (gift-to-self, by-name)
+- Outer modes: `Server`, `ServerPatch`, `ServerReplace`, `CrossOptimistic`, `Optimistic`
+- `[Tracked]` field via sibling, `[NamedRandom]` and `Context.ServerRandom` via sibling
+- Recursive sibling A → B → A
+- Sibling → real cross-entity to a different entity
+- Multi-config sibling (`AltConfigService` with `CounterAltConfig`, distinct from `CounterConfig`)
+- Multiple sibling calls in the same outer (cumulative mutations)
+- Sibling throws after partial mutation (documented: no implicit rollback)
+- Complex return type pass-through (`List<CounterOperation>`)
+- ServerRandom record/replay symmetry
+- By-reference pass-through (proves no serialization on sibling-bypass — also documents why `[Transformer]` doesn't apply to siblings)
+
+Full suite: 1238 tests pass (`dotnet test SharedMeta.slnx`).
+
+### Migration notes
+
+- **No user code changes required** for single-config sibling support. Existing `GetI{Iface}(entityId)` calls continue to work with the new self-detect built in.
+- **Multi-config siblings** require explicit `[MetaService(ConfigType = typeof(...))]` on the dep interface and a registered `IMetaConfigProvider<TConfig>` for each config type. Cannot use `DefaultConfig = true` for both services on the same state.
+- **Direct `MetaContextAccessor.Current` reads** in user code (rare) should migrate to `Context` — the impl partial's instance property handles both server and client paths and is the documented user-facing API.
+- **Cross-entity dep declarations** without `[MetaService(StateType = typeof(...))]` will fail compilation. Add the attribute to existing dep interfaces.
+
 ## [0.19.2] - 2026-05-08
 
 ### Changed
 
-Version up
+Version up. (Released by mistake under tag `v0.19.1`. Superseded by 0.20.0.)
+
+## [0.19.2] - 2026-05-08
+
+### Changed
+
+Version up. (Released by mistake under tag `v0.19.1`. Superseded by 0.20.0.)
 
 ## [0.19.1] - 2026-05-07
 

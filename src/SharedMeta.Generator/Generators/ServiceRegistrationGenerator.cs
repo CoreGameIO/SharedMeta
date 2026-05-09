@@ -159,6 +159,13 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                    {stateTypeFullName}PatchApplier.Apply(({stateTypeFullName})state, patch, ser);");
             sb.AppendLine($"                }},");
             EmitEntityReplayDispatcher(sb, node, baseName, stateTypeFullName, namespaceName);
+            // 0.20.0: Client-side sibling factory. When user code calls Get{Iface}SiblingAsync()
+            // or GetI{Iface}(self) on the client, the framework asks the resolver to produce
+            // a transient impl bound to the calling client-side MetaContext. Typed cast — no
+            // reflection. Returns a fresh impl every call (impls are stateless w.r.t. fields,
+            // they read State/Random through Context).
+            sb.AppendLine($"                ClientSiblingFactory = ctx =>");
+            sb.AppendLine($"                    new {namespaceName}.{baseName}() {{ Context = (MetaContext<{stateTypeFullName}>)ctx }},");
             sb.AppendLine($"                StateRefresher = (apiClient, state, random, namedRandoms) =>");
             sb.AppendLine($"                    (({baseName}ApiClient)apiClient).RefreshState(({stateTypeFullName})state, random, namedRandoms)");
         }
@@ -198,7 +205,10 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                    var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
             sb.AppendLine($"                    try");
             sb.AppendLine($"                    {{");
-            sb.AppendLine($"                        var svc = new {baseName}();");
+            // 0.20.0: also set Context as instance field on the transient impl so it doesn't
+            // depend on the AsyncLocal fallback in the impl partial's Context getter. Accessor
+            // remains set for framework internals (signal/trigger dispatchers and the like).
+            sb.AppendLine($"                        var svc = new {baseName}() {{ Context = ctx }};");
             sb.AppendLine($"#pragma warning disable CS1522 // empty switch block when all methods are Query/Signal");
             sb.AppendLine($"                        switch (methodName)");
             sb.AppendLine($"                        {{");

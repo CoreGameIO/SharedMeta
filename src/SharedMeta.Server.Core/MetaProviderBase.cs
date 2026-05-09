@@ -80,6 +80,10 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         MetaContext.EntityCallHandler = EntityCallHandler;
         MetaContext.EntityStateHandler = EntityStateHandler;
         MetaContext.SaveStateHandler = SaveStateHandler;
+        // 0.20.0: Wire sibling-service resolver so generated cross-entity accessors can
+        // detect self-targeted calls and dispatch directly on the cached sibling impl
+        // instance — no serialization, no grain RPC.
+        MetaContext.SiblingServiceResolver = ResolveSiblingByType;
 
         // Initialize deterministic randoms. Seed string only matters for FRESH entities
         // (no persisted bytes). Once persisted, MetaRandom restores its full internal state
@@ -237,6 +241,16 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     protected abstract Task<DispatchResult> DispatchCall(string serviceName, string methodName, byte[] payload);
 
     /// <summary>
+    /// 0.20.0: Resolve a sibling-service impl instance by interface type. Default returns
+    /// null. Generated providers override with a switch over service interface types,
+    /// returning the cached <c>Get{Name}()</c> instance for any service hosted on this
+    /// entity's <c>TState</c>. Wired into <see cref="MetaContext.SiblingServiceResolver"/>
+    /// by <c>EntityGrain.OnActivateAsync</c> so generated cross-entity accessors can
+    /// short-circuit self-targeted calls into typed sibling invocations.
+    /// </summary>
+    public virtual object? ResolveSiblingByType(System.Type interfaceType) => null;
+
+    /// <summary>
     /// Dispatch a signal method call (void return, fire-and-forget). Default no-op;
     /// generated code overrides when the provider has one or more <c>[MetaMethod(Signal = true)]</c>
     /// methods and wires them into a generated <c>{Service}SignalDispatcher.Dispatch</c>.
@@ -262,6 +276,19 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// Tracked so the lazy migration check knows when the schema needs advancing.
     /// </summary>
     protected int CurrentStateSchemaVersion { get; private set; }
+
+    /// <summary>
+    /// 0.20.0 fix: Seed the provider's schema version from the persisted <c>state.Version</c>
+    /// at grain activation, BEFORE any deferred lazy-migration check runs. Without this, the
+    /// fresh-entity-floor rule in the generated <c>CheckAndRunLazyMigrationAsync</c> sees
+    /// <c>CurrentStateSchemaVersion == 0</c> on every activation and re-runs <c>[MetaInit]</c>
+    /// even when the state has already been initialized in a previous session.
+    /// </summary>
+    public void SeedSchemaVersion(int persistedVersion)
+    {
+        CurrentStateSchemaVersion = persistedVersion;
+        if (MetaContext != null) MetaContext.Version = persistedVersion;
+    }
 
     /// <summary>
     /// Set to true by <see cref="CheckAndRunLazyMigrationAsync"/> when a lazy migration ran
@@ -563,6 +590,63 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         {
             MetaContextAccessor.Current = null;
         }
+    }
+
+    /// <summary>
+    /// 0.20.0: Same-grain nested call dispatcher. Used by <c>EntityGrain.EntityCallHandler</c>
+    /// when a cross-entity call's <c>targetEntityId</c> resolves to the calling grain itself
+    /// (gift-to-self). Bypasses Orleans grain RPC — which would deadlock since
+    /// <c>EntityGrain</c> is non-reentrant — and dispatches directly on this provider's
+    /// cached service instances under the same <see cref="MetaContext"/>.
+    /// <para>
+    /// The nested call runs as a sub-operation: it gets its own replay-payload buffer and
+    /// its own <c>CrossEntityCalls</c> list (so further-nested calls don't pollute the
+    /// outer's collection), but shares state, randoms, named-randoms, and the outer's
+    /// <c>PatchWrapper</c> (mutations flow into the outer's patch tree — patches stay one
+    /// per outer call from the client's perspective).
+    /// </para>
+    /// <para>
+    /// Caller-context fields (<c>CallerId</c>, <c>CallerClientVersion</c>,
+    /// <c>ServerTimeTicks</c>) are inherited from the outer call — the original network
+    /// caller is still the originator of every nested step.
+    /// </para>
+    /// <para>
+    /// Returns a <see cref="CrossEntityCallInfo"/> populated with inner replay bytes and
+    /// result bytes so the upstream <c>CallEntityAsync</c> caller produces the same
+    /// recording shape as a real cross-entity hop — clients replaying the outer operation
+    /// see the inner step exactly as if it had crossed grain boundaries.
+    /// </para>
+    /// </summary>
+    public async Task<CrossEntityCallInfo> HandleNestedCallAsync(string targetEntityId, string serviceName, string methodName, byte[] argsBytes)
+    {
+        if (MetaContext == null)
+            throw new InvalidOperationException("Provider not initialized.");
+
+        // Push nested writer/debug/crossEntityCalls — saves outer state, starts fresh inner op.
+        // Inner-call replay bytes are discarded (matches the CrossEntityCallInfo shape produced
+        // by the real grain-RPC path, which also doesn't ship the target's full replay payload
+        // back through the cross-entity tuple — only ResultBytes does).
+        var frame = MetaContext.PushNestedOperation();
+
+        DispatchResult result;
+        try
+        {
+            result = await DispatchCall(serviceName, methodName, argsBytes);
+        }
+        finally
+        {
+            // Always pop, even on exception, to keep outer recorder state coherent.
+            MetaContext.PopNestedOperation(frame, out _);
+        }
+
+        return new CrossEntityCallInfo
+        {
+            EntityId = targetEntityId,
+            ServiceName = serviceName,
+            MethodName = methodName,
+            ResultBytes = result.ResultBytes,
+            EntitySequenceNumber = 0  // self-call shares outer's sequence; no separate seq increment
+        };
     }
 
     public async Task<HandleEventResult> HandleExternalEventAsync(
