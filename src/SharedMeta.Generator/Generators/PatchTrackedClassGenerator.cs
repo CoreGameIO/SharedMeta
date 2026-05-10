@@ -300,24 +300,46 @@ namespace SharedMeta.Generator.Generators
 
         private static string? FindDefaultConfigType(Compilation compilation)
         {
-            foreach (var syntaxTree in compilation.SyntaxTrees)
-            {
-                var root = syntaxTree.GetRoot();
-                foreach (var classDecl in root.DescendantNodes().OfType<ClassDeclarationSyntax>())
-                {
-                    var semanticModel = compilation.GetSemanticModel(syntaxTree);
-                    var classSymbol = semanticModel.GetDeclaredSymbol(classDecl);
-                    if (classSymbol == null) continue;
+            // Walk current compilation AND referenced assemblies. Prior to 0.20.2 this only
+            // scanned compilation.SyntaxTrees, so a config class declared in a referenced
+            // project was invisible — see the matching fix in ServiceRegistrationGenerator.
+            var result = FindDefaultConfigTypeInNamespace(compilation.Assembly.GlobalNamespace);
+            if (result != null) return result;
 
-                    var metaConfigAttr = classSymbol.GetAttributes().FirstOrDefault(a =>
-                        a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaConfigAttribute");
-                    if (metaConfigAttr != null)
-                    {
-                        var defaultArg = metaConfigAttr.NamedArguments.FirstOrDefault(a => a.Key == "Default");
-                        if (!defaultArg.Value.IsNull && defaultArg.Value.Value is true)
-                            return classSymbol.ToDisplayString();
-                    }
+            foreach (var reference in compilation.References)
+            {
+                if (compilation.GetAssemblyOrModuleSymbol(reference) is not IAssemblySymbol asm) continue;
+                var name = asm.Name;
+                if (name.StartsWith("System") || name.StartsWith("Microsoft") ||
+                    name.StartsWith("netstandard") || name == "mscorlib" ||
+                    name.StartsWith("Orleans") || name == "MemoryPack" ||
+                    name == "MemoryPack.Core" || name == "MessagePack" ||
+                    name == "MessagePack.Annotations")
+                    continue;
+
+                result = FindDefaultConfigTypeInNamespace(asm.GlobalNamespace);
+                if (result != null) return result;
+            }
+            return null;
+        }
+
+        private static string? FindDefaultConfigTypeInNamespace(INamespaceSymbol ns)
+        {
+            foreach (var type in ns.GetTypeMembers())
+            {
+                var attr = type.GetAttributes().FirstOrDefault(a =>
+                    a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaConfigAttribute");
+                if (attr != null)
+                {
+                    var defaultArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "Default");
+                    if (!defaultArg.Value.IsNull && defaultArg.Value.Value is true)
+                        return type.ToDisplayString();
                 }
+            }
+            foreach (var childNs in ns.GetNamespaceMembers())
+            {
+                var result = FindDefaultConfigTypeInNamespace(childNs);
+                if (result != null) return result;
             }
             return null;
         }

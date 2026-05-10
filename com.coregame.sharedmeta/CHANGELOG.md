@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.20.2] - 2026-05-10
+
+### Fixed — `[MetaService(DefaultConfig = true)]` cross-assembly resolution
+
+`[MetaService(DefaultConfig = true)]` without an explicit `ConfigType` silently failed to find the `[MetaConfig(Default = true)]` class when it lived in a referenced assembly (typical Models / Services project split). The generator's `FindDefaultConfigType` in both `ServiceRegistrationGenerator` and `PatchTrackedClassGenerator` only walked `compilation.SyntaxTrees`, so cross-assembly configs were invisible. Generated `MetaServiceConfig.ConfigType` stayed null, `MetaServiceResolver.ResolveConfigAsync` short-circuited via its `if (config.ConfigType == null) return null;` guard, `Context.Config` became null at runtime, and user code NRE'd at the first `Config.X` access — identical in shape to the pre-0.17.0 silent zeroed-config bug despite that fail-loud guard being in place.
+
+Both generators now extend the discovery walk to `compilation.References`, mirroring the pattern already used by `ContextInjectionGenerator` and `ResultComparerScanner`. Search precedence in `ServiceRegistrationGenerator`: same-namespace-in-current → anywhere-in-current → same-namespace-in-references → anywhere-in-references. `PatchTrackedClassGenerator` returns the first match (no namespace preference). The reference walk skips BCL / serializer-runtime / Orleans assemblies; SharedMeta framework assemblies are not skipped (they don't carry `[MetaConfig]` types so the namespace scan returns empty cheaply, and the previous broad `StartsWith("SharedMeta")` skip would also exclude legitimate user projects under that namespace).
+
+**Workaround for users on 0.20.1 and earlier:** add `ConfigType = typeof(...)` explicitly on the `[MetaService]` attribute — this bypasses the discovery walk entirely. `DefaultConfig = true` keeps controlling the auto-default `TryRegisterConfigProvider` emission independently.
+
+Regression test: `tests/SharedMeta.IntegrationTests/CrossAssemblyDefaultConfigTests.cs` with split fixture (`SharedMeta.Test.SplitConfig.Models` / `SharedMeta.Test.SplitConfig.Services`) — config in one assembly, consumer service in another, asserts `MetaServiceConfig.ConfigType` resolves to the cross-assembly type. Verified to fail before the fix, pass after.
+
+Full suite: 1248 tests pass on net8.0 and net10.0.
+
 ## [0.20.1] - 2026-05-09
 
 ### Security — `[MetaMethod(GenerateClientApi = false)]` is now actually enforced

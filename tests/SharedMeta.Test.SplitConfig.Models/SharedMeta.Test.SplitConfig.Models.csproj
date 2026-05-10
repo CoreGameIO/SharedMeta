@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SharedMeta.Core\SharedMeta.Core.csproj" />
+    <!-- Analyzer must run here so the PatchWrapper for SplitConsumerState is emitted in the
+         Models assembly alongside the state class — the consumer's generated Context partial
+         references it by full name. -->
+    <ProjectReference Include="..\..\src\SharedMeta.Generator\SharedMeta.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MemoryPack" />
+  </ItemGroup>
+
+</Project>

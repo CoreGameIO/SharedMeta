@@ -329,38 +329,69 @@ namespace SharedMeta.Generator.Generators
 
         private static string? FindDefaultConfigType(Compilation compilation, INamespaceSymbol serviceNamespace)
         {
-            // Search for [MetaConfig(Default = true)] classes in the same namespace first, then globally
-            var candidates = new List<INamedTypeSymbol>();
+            // Search for [MetaConfig(Default = true)] classes across the current compilation AND
+            // referenced assemblies. Prior to 0.20.2 this only walked compilation.SyntaxTrees, so
+            // a config class declared in a referenced project (typical layout: Models.csproj →
+            // Services.csproj) returned null silently — the generator emitted MetaServiceConfig
+            // without ConfigType, MetaServiceResolver.ResolveConfigAsync's
+            // `if (config.ConfigType == null) return null;` short-circuited, Context.Config stayed
+            // null, and user code NRE'd at the first Config.X access. Mirrors the cross-assembly
+            // scanning convention used by ContextInjectionGenerator and ResultComparerScanner.
+            //
+            // Precedence: same-namespace-in-current > anywhere-in-current > same-namespace-in-refs
+            //           > anywhere-in-refs. Workaround for users who want to short-circuit this:
+            // explicit [MetaService(ConfigType = typeof(...), DefaultConfig = true)] bypasses
+            // discovery entirely (handled at the call site, lines 44-48).
+            var current = new List<INamedTypeSymbol>();
+            CollectDefaultConfigCandidates(compilation.Assembly.GlobalNamespace, current);
 
-            foreach (var tree in compilation.SyntaxTrees)
+            var sameNsCurrent = current.FirstOrDefault(c =>
+                SymbolEqualityComparer.Default.Equals(c.ContainingNamespace, serviceNamespace));
+            if (sameNsCurrent != null) return sameNsCurrent.ToDisplayString();
+            if (current.Count > 0) return current[0].ToDisplayString();
+
+            // Walk references — skip BCL / serialization runtime / Orleans only. Deliberately
+            // do NOT skip `SharedMeta.*` here: a user's product project may legitimately live
+            // under a `SharedMeta.*` namespace (test fixtures within this repo do exactly
+            // that), and those framework assemblies don't carry `[MetaConfig]` types so the
+            // namespace walk below returns empty for them at minor cost.
+            var fromRefs = new List<INamedTypeSymbol>();
+            foreach (var reference in compilation.References)
             {
-                var model = compilation.GetSemanticModel(tree);
-                var root = tree.GetRoot();
-                foreach (var classDecl in root.DescendantNodes().OfType<ClassDeclarationSyntax>())
-                {
-                    var classSymbol = model.GetDeclaredSymbol(classDecl) as INamedTypeSymbol;
-                    if (classSymbol == null) continue;
+                if (compilation.GetAssemblyOrModuleSymbol(reference) is not IAssemblySymbol asm) continue;
+                var name = asm.Name;
+                if (name.StartsWith("System") || name.StartsWith("Microsoft") ||
+                    name.StartsWith("netstandard") || name == "mscorlib" ||
+                    name.StartsWith("Orleans") || name == "MemoryPack" ||
+                    name == "MemoryPack.Core" || name == "MessagePack" ||
+                    name == "MessagePack.Annotations")
+                    continue;
 
-                    var metaConfigAttr = classSymbol.GetAttributes().FirstOrDefault(a =>
-                        a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaConfigAttribute");
-                    if (metaConfigAttr == null) continue;
-
-                    var defaultArg = metaConfigAttr.NamedArguments.FirstOrDefault(a => a.Key == "Default");
-                    if (defaultArg.Value.Value is true)
-                    {
-                        candidates.Add(classSymbol);
-                    }
-                }
+                CollectDefaultConfigCandidates(asm.GlobalNamespace, fromRefs);
             }
 
-            if (candidates.Count == 0) return null;
-
-            // Prefer same namespace
-            var sameNs = candidates.FirstOrDefault(c =>
+            var sameNsRef = fromRefs.FirstOrDefault(c =>
                 SymbolEqualityComparer.Default.Equals(c.ContainingNamespace, serviceNamespace));
-            if (sameNs != null) return sameNs.ToDisplayString();
+            if (sameNsRef != null) return sameNsRef.ToDisplayString();
+            if (fromRefs.Count > 0) return fromRefs[0].ToDisplayString();
 
-            return candidates[0].ToDisplayString();
+            return null;
+        }
+
+        private static void CollectDefaultConfigCandidates(INamespaceSymbol ns, List<INamedTypeSymbol> sink)
+        {
+            foreach (var type in ns.GetTypeMembers())
+            {
+                var metaConfigAttr = type.GetAttributes().FirstOrDefault(a =>
+                    a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaConfigAttribute");
+                if (metaConfigAttr == null) continue;
+
+                var defaultArg = metaConfigAttr.NamedArguments.FirstOrDefault(a => a.Key == "Default");
+                if (defaultArg.Value.Value is true)
+                    sink.Add(type);
+            }
+            foreach (var childNs in ns.GetNamespaceMembers())
+                CollectDefaultConfigCandidates(childNs, sink);
         }
     }
 }

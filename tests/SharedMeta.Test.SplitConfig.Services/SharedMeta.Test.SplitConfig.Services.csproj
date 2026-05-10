@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)Generated</CompilerGeneratedFilesOutputPath>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Models project — the consumer references it. The [MetaConfig(Default = true)]
+         class lives here, NOT in this project's source. Pre-0.20.2 the generator missed it. -->
+    <ProjectReference Include="..\SharedMeta.Test.SplitConfig.Models\SharedMeta.Test.SplitConfig.Models.csproj" />
+    <ProjectReference Include="..\..\src\SharedMeta.Core\SharedMeta.Core.csproj" />
+    <ProjectReference Include="..\..\src\SharedMeta.Client\SharedMeta.Client.csproj" />
+    <ProjectReference Include="..\..\src\SharedMeta.Generator\SharedMeta.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MemoryPack" />
+  </ItemGroup>
+
+</Project>
