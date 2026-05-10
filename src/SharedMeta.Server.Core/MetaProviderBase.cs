@@ -22,6 +22,15 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     protected ServerMetaContext<TState>? MetaContext { get; private set; }
     protected ILogger Logger { get; private set; } = NullLogger.Instance;
 
+    /// <summary>
+    /// 0.20.0: helper used by generator-emitted Handle*Async overrides in user assemblies
+    /// to log validation failures. The underlying <c>Log.ProviderCallError</c> extension is
+    /// internal to <c>SharedMeta.Server.Core</c>, so generated code in user assemblies cannot
+    /// call it directly — this thin wrapper exposes the logging surface.
+    /// </summary>
+    protected void LogProviderCallError(Exception ex, string serviceName, string methodName)
+        => Logger.ProviderCallError(ex, serviceName, methodName);
+
     private MetaRandom _serverRandom = null!;
     private MetaRandom _optimisticRandom = null!;
     private MetaRandom[] _namedRandoms = System.Array.Empty<MetaRandom>();
@@ -361,7 +370,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// </summary>
     protected virtual MetaConfigVersion GetSchemaFloorConfigVersion(int stateSchema) => default;
 
-    public async Task<HandleCallResult> HandleCallAsync(RpcCall call)
+    // 0.20.0: per-method validation (IsClientCallable for GenerateClientApi=false guards) is
+    // emitted inline by the generator as a HandleCallAsync override that runs the switch and
+    // then calls base.HandleCallAsync. Generation is conditional — the override is only
+    // produced when at least one method opts out of client API. For projects with no such
+    // methods, this entry point is reached directly with zero validation overhead.
+    public virtual async Task<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true)
     {
         if (MetaContext == null || Context == null)
         {
@@ -420,6 +434,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContext.CallerId = call.CallerId;
             MetaContext.CallerClientVersion = call.CallerClientVersion;
             MetaContext.ServerTimeTicks = call.ServerTimeTicks;
+            MetaContext.IsClientCall = isClientOriginated;
             MetaContext.Random = _optimisticRandom;
             MetaContext.ServerRandom = new MetaRandomRecorder(_serverRandom, MetaContext);
             MetaContext.NamedRandoms = _namedRandomsView;
@@ -696,7 +711,13 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         }
     }
 
-    public async Task<QueryCallResponse> HandleQueryAsync(RpcCall call)
+    // 0.20.0: per-method validation (this-is-a-query-method, IsClientCallable for
+    // GenerateClientApi=false, IsOpenAccessQuery + access-policy ladder) is emitted by the
+    // generator as a HandleQueryAsync override running an inline switch before delegating
+    // to base. Generation is conditional on the project containing at least one query method.
+    // Default base behaviour: any HandleQueryAsync call without a generator override is
+    // rejected — there are no registered query methods to dispatch.
+    public virtual async Task<QueryCallResponse> HandleQueryAsync(RpcCall call)
     {
         if (MetaContext == null || Context == null)
             return new QueryCallResponse { Error = "Provider not initialized" };
@@ -747,6 +768,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContext.CallerId = call.CallerId;
             MetaContext.CallerClientVersion = call.CallerClientVersion;
             MetaContext.ServerTimeTicks = DateTime.UtcNow.Ticks;
+            MetaContext.IsClientCall = true; // queries always come from clients
             MetaContextAccessor.Current = MetaContext;
 
             // Dispatch the call — same dispatcher, but no replay/random/broadcast machinery
@@ -769,20 +791,11 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         }
     }
 
-    /// <summary>
-    /// Check if a method is a query method. Generated code overrides.
-    /// </summary>
-    public virtual bool IsQueryMethod(string serviceName, string methodName) => false;
-
-    /// <summary>
-    /// Check if a query method has OpenAccess. Generated code overrides.
-    /// </summary>
-    public virtual bool IsOpenAccessQuery(string serviceName, string methodName) => false;
-
-    /// <summary>
-    /// Check if a method is a signal method (fire-and-forget, void return). Generated code overrides.
-    /// </summary>
-    public virtual bool IsSignalMethod(string serviceName, string methodName) => false;
+    // 0.20.0: removed protected lookup hooks (IsQueryMethod / IsSignalMethod /
+    // IsOpenAccessQuery / IsClientCallable). Validation moved into generator-emitted
+    // overrides of HandleCallAsync / HandleQueryAsync / HandleSignalAsync, where each switch
+    // contains exactly the methods it needs to gate. Projects with no GenerateClientApi=false,
+    // no Query, or no Signal methods generate zero validation code for those gates.
 
     /// <summary>
     /// Handle a signal call. Dispatches the method through <see cref="DispatchSignal"/> but skips
@@ -792,7 +805,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// recording is a no-op.
     /// Errors are caught and logged — they do not propagate back to the client (fire-and-forget).
     /// </summary>
-    public async Task HandleSignalAsync(RpcCall call)
+    // 0.20.0: per-method validation (this-is-a-signal-method, IsClientCallable, access-policy
+    // ladder) is emitted inline by the generator as a HandleSignalAsync override that runs
+    // before base. Generation is conditional on the project containing at least one signal
+    // method. Default base behaviour: a HandleSignalAsync without a generator override
+    // silently no-ops on DispatchSignal — no signal methods registered.
+    public virtual async Task HandleSignalAsync(RpcCall call)
     {
         if (MetaContext == null || Context == null)
         {
@@ -804,6 +822,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         {
             MetaContext.CallerId = call.CallerId;
             MetaContext.ServerTimeTicks = DateTime.UtcNow.Ticks;
+            MetaContext.IsClientCall = true; // signals always come from clients
             // Enable signal mode so any bridge Recorder's Writer.Write becomes a no-op
             // (the payload produced during signal execution has no consumer).
             MetaContext.SignalMode = true;

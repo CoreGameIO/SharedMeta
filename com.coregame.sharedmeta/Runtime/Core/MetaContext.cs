@@ -92,6 +92,18 @@ namespace SharedMeta.Core
         public long ServerTimeTicks { get; set; }
 
         /// <summary>
+        /// 0.20.0 (server-side only): true when the active call originated from a direct
+        /// client RPC (<c>EntityGrain.HandleCallAsync</c> / <c>HandleQueryAsync</c> /
+        /// <c>HandleSignalAsync</c>); false when it came in via cross-entity
+        /// (<c>HandleCallFromEntityAsync</c>). Generated dispatcher cases for
+        /// <c>[MetaMethod(GenerateClientApi = false)]</c> methods inline-check this flag and
+        /// reject the call when true. Sibling-bypass dispatches the in-process typed caller
+        /// and never reaches a dispatcher, so this flag is irrelevant to that path. On the
+        /// client this property is unused and stays at its default (true).
+        /// </summary>
+        public bool IsClientCall { get; set; } = true;
+
+        /// <summary>
         /// Cross-entity resolver for CrossOptimistic mode.
         /// When set, generated GetI{Service}(entityId) returns LocalEntityCaller
         /// instead of EntityReplayer, enabling local cross-entity execution.

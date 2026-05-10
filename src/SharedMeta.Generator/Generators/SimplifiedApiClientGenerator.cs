@@ -398,9 +398,20 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
             sb.AppendLine();
 
-            // Generate methods
+            // Generate methods.
+            //
+            // [MetaMethod(GenerateClientApi = false)] suppresses the public callable here —
+            // user code on the client cannot reach these methods through the typed API. They
+            // remain reachable via cross-entity (the EntityCaller surface emitted by
+            // ContextInjectionGenerator) and via sibling-bypass on the server. Broadcasts are
+            // still received and replayed: the events declaration (above) and the broadcast/
+            // replay handlers (below) intentionally do NOT filter on the flag — when another
+            // entity invokes the protected method cross-entity, our subscribed client still
+            // applies the resulting state changes and fires the event for any UI that wants
+            // to observe them.
             foreach (var method in methods)
             {
+                if (IsGenerateClientApiFalse(method)) continue;
                 methodComparers.TryGetValue(method, out var comparer);
                 GenerateMethod(sb, method, interfaceName, namespaceName, implClassName, stateTypeName, serializer, hasDeepDesync, comparer);
             }
@@ -2147,6 +2158,28 @@ namespace SharedMeta.Generator.Generators
                         && modeAccess.Name.Identifier.Text == "Query")
                         return true;
                 }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// True when the method carries <c>[MetaMethod(GenerateClientApi = false)]</c> —
+        /// i.e. the method is reserved for sibling/cross-entity use and must not be exposed
+        /// on the public client API. The corresponding events and broadcast/replay handlers
+        /// are still emitted so subscribed clients can react to state changes when other
+        /// entities invoke the method cross-entity.
+        /// </summary>
+        private static bool IsGenerateClientApiFalse(MethodDeclarationSyntax method)
+        {
+            var metaMethod = method.AttributeLists.SelectMany(a => a.Attributes)
+                .FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
+            if (metaMethod?.ArgumentList == null) return false;
+            foreach (var arg in metaMethod.ArgumentList.Arguments)
+            {
+                if (arg.NameEquals?.Name.Identifier.Text == "GenerateClientApi"
+                    && arg.Expression is LiteralExpressionSyntax lit
+                    && lit.Token.Text == "false")
+                    return true;
             }
             return false;
         }

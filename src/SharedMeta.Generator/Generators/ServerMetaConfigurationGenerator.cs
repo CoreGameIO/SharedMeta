@@ -352,6 +352,15 @@ namespace SharedMeta.Generator.Generators
                     isOpenAccess = !openAccessArg.Value.IsNull && openAccessArg.Value.Value is true;
                 }
 
+                // GenerateClientApi defaults to true; only false explicitly opts out of client RPC.
+                bool generateClientApi = true;
+                if (metaMethodAttr != null)
+                {
+                    var genApiArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "GenerateClientApi");
+                    if (!genApiArg.Value.IsNull && genApiArg.Value.Value is false)
+                        generateClientApi = false;
+                }
+
                 var signatureString = SignatureHashGenerator.BuildSignatureString(info.InterfaceName, methodAlias, member);
                 var signatureHash = SignatureHashGenerator.ComputeFnv1aHash(signatureString);
 
@@ -379,7 +388,8 @@ namespace SharedMeta.Generator.Generators
                     IsOpenAccess = isOpenAccess,
                     IsSignal = isSignal,
                     SkipMigration = skipMigration,
-                    MinStateVersion = minStateVersion
+                    MinStateVersion = minStateVersion,
+                    GenerateClientApi = generateClientApi
                 });
             }
 
@@ -994,57 +1004,118 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
             sb.AppendLine();
 
-            // IsQueryMethod / IsOpenAccessQuery overrides
+            // 0.20.0: validation lives where it's natural to live.
+            //   * GenerateClientApi=false  → inline `if (context.IsClientCall) throw ...` in
+            //                                 each affected method's case in the generated
+            //                                 service Dispatcher / SignalDispatcher.
+            //   * is-query / is-signal     → inline switch in the HandleQueryAsync /
+            //                                 HandleSignalAsync override below — overrides are
+            //                                 emitted only when there is at least one method
+            //                                 of that kind to register.
+            //   * AccessPolicy ladder      → ditto, only when AccessPolicy != Open.
+            // Projects with no Query / no Signal / no GenerateClientApi=false methods
+            // generate zero validation code for those gates.
             var allQueryMethods = services
                 .SelectMany(s => s.MethodSignatures)
                 .Where(m => m.IsQuery)
                 .ToList();
+            var openAccessMethods = allQueryMethods.Where(m => m.IsOpenAccess).ToList();
+            var allSignalMethods = services
+                .SelectMany(s => s.MethodSignatures.Select(m => new { Impl = s, Sig = m }))
+                .Where(x => x.Sig.IsSignal)
+                .ToList();
+
+            // HandleQueryAsync override — emitted only when at least one query method exists.
+            // Inline-validates: (1) is-a-query-method, (2) access-policy ladder (only when
+            // AccessPolicy != Open). The GenerateClientApi=false gate per query method lives
+            // inside the per-case dispatcher switch and is reached after delegation to base.
             if (allQueryMethods.Count > 0)
             {
-                sb.AppendLine("        public override bool IsQueryMethod(string serviceName, string methodName)");
+                sb.AppendLine("        public override async System.Threading.Tasks.Task<QueryCallResponse> HandleQueryAsync(RpcCall call)");
                 sb.AppendLine("        {");
-                sb.AppendLine("            return (serviceName, methodName) switch");
+                sb.AppendLine("            bool isQuery = (call.ServiceName, call.MethodName) switch");
                 sb.AppendLine("            {");
                 foreach (var m in allQueryMethods)
                     sb.AppendLine($"                (\"{m.ServiceName}\", \"{m.MethodAlias}\") => true,");
                 sb.AppendLine("                _ => false");
                 sb.AppendLine("            };");
-                sb.AppendLine("        }");
+                sb.AppendLine("            if (!isQuery)");
+                sb.AppendLine("                return new QueryCallResponse { Error = $\"Method '{call.ServiceName}.{call.MethodName}' is not a query method\" };");
                 sb.AppendLine();
 
-                var openAccessMethods = allQueryMethods.Where(m => m.IsOpenAccess).ToList();
-                if (openAccessMethods.Count > 0)
+                if (maxPolicy > 0)
                 {
-                    sb.AppendLine("        public override bool IsOpenAccessQuery(string serviceName, string methodName)");
-                    sb.AppendLine("        {");
-                    sb.AppendLine("            return (serviceName, methodName) switch");
+                    if (openAccessMethods.Count > 0)
+                    {
+                        sb.AppendLine("            bool isOpenAccess = (call.ServiceName, call.MethodName) switch");
+                        sb.AppendLine("            {");
+                        foreach (var m in openAccessMethods)
+                            sb.AppendLine($"                (\"{m.ServiceName}\", \"{m.MethodAlias}\") => true,");
+                        sb.AppendLine("                _ => false");
+                        sb.AppendLine("            };");
+                        sb.AppendLine("            if (!isOpenAccess && AccessPolicy != SharedMeta.Core.EntityAccessPolicy.Open)");
+                    }
+                    else
+                    {
+                        sb.AppendLine("            if (AccessPolicy != SharedMeta.Core.EntityAccessPolicy.Open)");
+                    }
                     sb.AppendLine("            {");
-                    foreach (var m in openAccessMethods)
-                        sb.AppendLine($"                (\"{m.ServiceName}\", \"{m.MethodAlias}\") => true,");
-                    sb.AppendLine("                _ => false");
-                    sb.AppendLine("            };");
-                    sb.AppendLine("        }");
+                    sb.AppendLine("                bool allowed;");
+                    sb.AppendLine("                if (AccessPolicy is SharedMeta.Core.EntityAccessPolicy.OwnerOnly or SharedMeta.Core.EntityAccessPolicy.UserOwned)");
+                    sb.AppendLine("                    allowed = MetaContext!.EntityId == call.CallerId;");
+                    sb.AppendLine("                else");
+                    sb.AppendLine("                    allowed = await CheckAccessAsync(call.CallerId ?? \"\");");
+                    sb.AppendLine("                if (!allowed)");
+                    sb.AppendLine("                    return new QueryCallResponse { Error = $\"Access denied for query on entity '{MetaContext!.EntityId}'\" };");
+                    sb.AppendLine("            }");
                     sb.AppendLine();
                 }
+
+                sb.AppendLine("            return await base.HandleQueryAsync(call);");
+                sb.AppendLine("        }");
+                sb.AppendLine();
             }
 
-            // IsSignalMethod + DispatchSignal overrides — only emitted when this state's services
-            // contain at least one [MetaMethod(Signal = true)]. The override routes to the generated
-            // {Service}SignalDispatcher companion emitted by ServerDispatcherGenerator.
-            var allSignalMethods = services
-                .SelectMany(s => s.MethodSignatures.Select(m => new { Impl = s, Sig = m }))
-                .Where(x => x.Sig.IsSignal)
-                .ToList();
+            // HandleSignalAsync override — emitted only when at least one signal method exists.
+            // Inline-validates: (1) is-a-signal-method, (2) access-policy ladder (only when
+            // AccessPolicy != Open). The GenerateClientApi=false gate per signal method lives
+            // inside the per-case SignalDispatcher switch and is reached after delegation to base.
             if (allSignalMethods.Count > 0)
             {
-                sb.AppendLine("        public override bool IsSignalMethod(string serviceName, string methodName)");
+                sb.AppendLine("        public override async System.Threading.Tasks.Task HandleSignalAsync(RpcCall call)");
                 sb.AppendLine("        {");
-                sb.AppendLine("            return (serviceName, methodName) switch");
+                sb.AppendLine("            bool isSignal = (call.ServiceName, call.MethodName) switch");
                 sb.AppendLine("            {");
                 foreach (var x in allSignalMethods)
                     sb.AppendLine($"                (\"{x.Sig.ServiceName}\", \"{x.Sig.MethodAlias}\") => true,");
                 sb.AppendLine("                _ => false");
                 sb.AppendLine("            };");
+                sb.AppendLine("            if (!isSignal)");
+                sb.AppendLine("            {");
+                sb.AppendLine("                LogProviderCallError(new System.InvalidOperationException($\"Method '{call.ServiceName}.{call.MethodName}' is not a signal method\"), call.ServiceName, call.MethodName);");
+                sb.AppendLine("                return;");
+                sb.AppendLine("            }");
+                sb.AppendLine();
+
+                if (maxPolicy > 0)
+                {
+                    sb.AppendLine("            if (AccessPolicy != SharedMeta.Core.EntityAccessPolicy.Open)");
+                    sb.AppendLine("            {");
+                    sb.AppendLine("                bool allowed;");
+                    sb.AppendLine("                if (AccessPolicy is SharedMeta.Core.EntityAccessPolicy.OwnerOnly or SharedMeta.Core.EntityAccessPolicy.UserOwned)");
+                    sb.AppendLine("                    allowed = MetaContext!.EntityId == call.CallerId;");
+                    sb.AppendLine("                else");
+                    sb.AppendLine("                    allowed = await CheckAccessAsync(call.CallerId ?? \"\");");
+                    sb.AppendLine("                if (!allowed)");
+                    sb.AppendLine("                {");
+                    sb.AppendLine("                    LogProviderCallError(new System.UnauthorizedAccessException($\"Access denied for signal '{call.ServiceName}.{call.MethodName}' from caller '{call.CallerId}' on entity '{MetaContext!.EntityId}'\"), call.ServiceName, call.MethodName);");
+                    sb.AppendLine("                    return;");
+                    sb.AppendLine("                }");
+                    sb.AppendLine("            }");
+                    sb.AppendLine();
+                }
+
+                sb.AppendLine("            await base.HandleSignalAsync(call);");
                 sb.AppendLine("        }");
                 sb.AppendLine();
 

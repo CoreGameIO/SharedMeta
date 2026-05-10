@@ -651,6 +651,7 @@ public async Task ApplyDailyBonus() {
 **Not preserved:** `[Transformer]` Box/Unbox (serialization-boundary concern, skipped on in-process call), implicit rollback on exception (sibling shares outer's mutation pipeline).
 **Multi-config siblings:** different `[MetaConfig]` types on the same state are supported via `Get{Iface}SiblingAsync()`. The async getter resolves each service's typed Config through its own `IMetaConfigProvider<TConfig>`. Direct dispatch of a secondary-config service falls back to `Context.Config` (primary type) and crashes — secondary services should always go through the sibling-async accessor.
 **Required:** every dep declared in `[MetaServiceImpl(..., typeof(IDep))]` MUST carry `[MetaService(StateType = typeof(...))]` on the dep interface — generator emits `#error` if missing.
+**Hiding sibling-only / cross-entity-only methods from clients:** add `[MetaMethod(..., GenerateClientApi = false)]`. 0.20.0 enforces this server-side: forged client RPCs (modified clients crafting packets that bypass the un-generated API) are rejected at `EntityGrain.HandleCallAsync` / `HandleQueryAsync` / `HandleSignalAsync` via the generated `IsClientCallable` override. `HandleCallFromEntityAsync` (cross-entity) and sibling-bypass paths are server-internal and remain available.
 
 ### Read-Only State Access
 
@@ -1113,7 +1114,7 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `Mode` | ExecutionMode | Optimistic | Execution strategy |
 | `Alias` | string | method name | RPC method identifier |
 | `Version` | int | 0 | Method version for gradual rollout |
-| `GenerateClientApi` | bool | true | Generate API client method |
+| `GenerateClientApi` | bool | true | Generate API client method. When `false`: client API not generated **and** the server gates direct client RPCs (forged packet → "not callable from clients"). Cross-entity and sibling calls still work because they don't traverse the client-RPC boundary. |
 | `SkipServerOnFalse` | bool | false | Skip server call if local returns false/default |
 | `ForcePersist` | bool | false | Always persist state after execution |
 

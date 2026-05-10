@@ -90,6 +90,7 @@ namespace SharedMeta.Generator.Generators
 
                 var methodAlias = methodName;
                 var forcePersist = false;
+                var generateClientApi = true;
                 var attributes = method.AttributeLists.SelectMany(a => a.Attributes);
                 var metaMethod = attributes.FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
                 if (metaMethod != null)
@@ -105,10 +106,30 @@ namespace SharedMeta.Generator.Generators
                     {
                         forcePersist = fpLiteral.Token.ValueText == "true";
                     }
+
+                    var genApiArg = metaMethod.ArgumentList?.Arguments.FirstOrDefault(arg => arg.NameEquals != null && arg.NameEquals.Name.Identifier.Text == "GenerateClientApi");
+                    if (genApiArg != null && genApiArg.Expression is LiteralExpressionSyntax gaLiteral && gaLiteral.Token.ValueText == "false")
+                    {
+                        generateClientApi = false;
+                    }
                 }
 
                 sbServer.AppendLine($"                case \"{methodAlias}\":");
                 sbServer.AppendLine("                {");
+
+                // 0.20.0 security gate: methods declared [MetaMethod(GenerateClientApi = false)]
+                // are reserved for sibling-/cross-entity-only invocation. Reject when the
+                // dispatch is reached via a direct client RPC. context.IsClientCall is set by
+                // MetaProviderBase.HandleCallAsync from its `isClientOriginated` parameter
+                // (true for client RPC, false for cross-entity), and to true unconditionally
+                // by HandleQueryAsync / HandleSignalAsync (those entry points only carry
+                // client traffic). Sibling-bypass dispatches the typed in-process caller and
+                // never enters this switch.
+                if (!generateClientApi)
+                {
+                    sbServer.AppendLine("                    if (context.IsClientCall)");
+                    sbServer.AppendLine($"                        throw new System.InvalidOperationException(\"Method '{symbol}.{methodAlias}' is not callable from clients\");");
+                }
 
                 // Unpack args sequentially
                 if (paramCount > 0)
@@ -234,6 +255,7 @@ namespace SharedMeta.Generator.Generators
                 var methodName = method.Identifier.Text;
                 var paramCount = method.ParameterList.Parameters.Count;
                 var methodAlias = methodName;
+                var generateClientApi = true;
 
                 var metaMethod = method.AttributeLists.SelectMany(a => a.Attributes)
                     .FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
@@ -243,10 +265,24 @@ namespace SharedMeta.Generator.Generators
                         arg => arg.NameEquals != null && arg.NameEquals.Name.Identifier.Text == "Alias");
                     if (aliasArg?.Expression is LiteralExpressionSyntax literal)
                         methodAlias = literal.Token.ValueText;
+
+                    var genApiArg = metaMethod.ArgumentList?.Arguments.FirstOrDefault(
+                        arg => arg.NameEquals != null && arg.NameEquals.Name.Identifier.Text == "GenerateClientApi");
+                    if (genApiArg?.Expression is LiteralExpressionSyntax gaLiteral && gaLiteral.Token.ValueText == "false")
+                        generateClientApi = false;
                 }
 
                 sb.AppendLine($"                case \"{methodAlias}\":");
                 sb.AppendLine("                {");
+
+                // 0.20.0: per-method client-call gate, see ServerDispatcherGenerator main switch.
+                // Signals only flow from clients in normal operation; the explicit check still
+                // protects against misrouted internal callers and matches the regular dispatcher.
+                if (!generateClientApi)
+                {
+                    sb.AppendLine("                    if (_ctx.IsClientCall)");
+                    sb.AppendLine($"                        throw new System.InvalidOperationException(\"Method '{symbol}.{methodAlias}' is not callable from clients\");");
+                }
 
                 if (paramCount == 0)
                 {

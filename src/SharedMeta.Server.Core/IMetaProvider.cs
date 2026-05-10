@@ -89,8 +89,15 @@ namespace SharedMeta.Server.Core
         /// Service methods may be async (e.g., calling other grains).
         /// </summary>
         /// <param name="call">The RPC call.</param>
+        /// <param name="isClientOriginated">
+        /// True when invoked directly by a client RPC (<see cref="SharedMeta.Server.Core.Grains.EntityGrain.HandleCallAsync"/>).
+        /// False when invoked by another grain via cross-entity (<see cref="SharedMeta.Server.Core.Grains.EntityGrain.HandleCallFromEntityAsync"/>).
+        /// The provider uses this to gate methods declared with <c>[MetaMethod(GenerateClientApi = false)]</c>:
+        /// only direct client RPC is rejected; cross-entity calls always pass through. Sibling-bypass
+        /// dispatches in-process and never reaches this method.
+        /// </param>
         /// <returns>Response and broadcasts to distribute.</returns>
-        Task<HandleCallResult> HandleCallAsync(RpcCall call);
+        Task<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true);
 
         /// <summary>
         /// Handle an external event from a framework service asynchronously.
@@ -172,22 +179,11 @@ namespace SharedMeta.Server.Core
         /// </summary>
         Task HandleSignalAsync(RpcCall call) => Task.CompletedTask;
 
-        /// <summary>
-        /// Check if a method is a query method. Generated code implements this.
-        /// </summary>
-        bool IsQueryMethod(string serviceName, string methodName) => false;
-
-        /// <summary>
-        /// Check if a query method has OpenAccess (bypasses access policy).
-        /// Generated code implements this.
-        /// </summary>
-        bool IsOpenAccessQuery(string serviceName, string methodName) => false;
-
-        /// <summary>
-        /// Check if a method is a signal method (fire-and-forget, void return).
-        /// Generated code overrides this.
-        /// </summary>
-        bool IsSignalMethod(string serviceName, string methodName) => false;
+        // Method-level classification hooks (IsQueryMethod / IsSignalMethod / IsOpenAccessQuery /
+        // IsClientCallable) intentionally live as `protected virtual` on MetaProviderBase rather
+        // than on this interface. They are an internal detail consumed by the provider's own
+        // Handle*Async methods — EntityGrain doesn't need to know which methods are queries,
+        // signals, or client-callable; it just routes the call and lets the provider validate.
 
         /// <summary>
         /// Config version for this entity. Returns (0,0) if no config.

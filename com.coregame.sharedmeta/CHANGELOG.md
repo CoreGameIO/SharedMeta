@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.20.1] - 2026-05-09
+
+### Security — `[MetaMethod(GenerateClientApi = false)]` is now actually enforced
+
+In 0.20.0 the flag was advisory: the typed client API was still generated, and a modified client could forge a raw `RpcCallRequest` directly through the transport and the server would dispatch it.
+
+0.20.1 closes both halves:
+
+1. **Client-side:** the public callable is no longer emitted in `*ApiClient.g.cs` for methods declared `GenerateClientApi = false`. Cross-entity callers (`Get{Iface}(entityId)`) and sibling callers still see them. Replay events and broadcast handlers stay — subscribed clients keep receiving state changes when other entities invoke the method cross-entity.
+2. **Server-side:** the generated dispatcher rejects the call at that method's case — `"Method '…' is not callable from clients"` — when it arrived through the client-RPC boundary. Cross-entity and sibling-bypass paths are unaffected.
+
+Tests in `tests/SharedMeta.IntegrationTests/ClientApiSecurityTests.cs`:
+
+- `ForgedClientRpc_GenerateClientApiFalse_IsRejected` — emulates a hacked client sending a raw `RpcCallRequest` directly to `IConnection.RpcCallAsync`; server rejects, state unchanged.
+- `CrossEntityCall_GenerateClientApiFalse_StillWorks` and `SiblingBypass_GenerateClientApiFalse_StillWorks` — protected method remains reachable from server-internal paths.
+- `GenerateClientApiFalse_PublicMethodAbsentFromApiClient` — reflection check that the typed `*ApiClient` no longer exposes the method.
+
+### Breaking — `IMetaProvider` slimmed
+
+For users with custom `IMetaProvider` implementations (rare — most consume the framework-generated provider):
+
+- Three lookup methods removed from the interface: `IsQueryMethod`, `IsSignalMethod`, `IsOpenAccessQuery`. The framework-generated provider now embeds these decisions inside its own `HandleQueryAsync` / `HandleSignalAsync` overrides.
+- `HandleCallAsync` gains a `bool isClientOriginated = true` parameter so server-internal callers can opt out of the client-callable gate.
+- Public `MetaContext.IsClientCall` flag (default `true`) carries the same signal to generated dispatcher cases.
+
 ## [0.20.0] - 2026-05-09
 
 ### TL;DR

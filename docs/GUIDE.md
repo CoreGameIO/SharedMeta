@@ -3507,7 +3507,7 @@ The runtime ignores the attribute. It is purely a marker for downstream tooling.
 | `Mode` | ExecutionMode | Optimistic | Execution strategy |
 | `Alias` | string | method name | RPC method identifier |
 | `Version` | int | 0 | Method version |
-| `GenerateClientApi` | bool | true | Generate API client method |
+| `GenerateClientApi` | bool | true | Generate API client method. When `false`: client API not generated **and** the server rejects forged client RPCs to this method (cross-entity / sibling calls still work). |
 | `SkipServerOnFalse` | bool | false | Skip server if local returns false/default |
 | `ForcePersist` | bool | false | Always persist after execution |
 | `Query` | bool | false | Callable without subscribing (read-only, no broadcast/replay) |
@@ -3891,7 +3891,7 @@ public interface IExpeditionProfileService : IMetaService
 ```
 
 Key patterns:
-- `GenerateClientApi = false` — methods only called cross-entity (server-to-server), no client API generated
+- `GenerateClientApi = false` — methods reserved for cross-entity / sibling calls only. The client API is not generated **and** the server rejects forged client RPCs at `EntityGrain.HandleCallAsync` / `HandleQueryAsync` / `HandleSignalAsync` via the generated `IsClientCallable` override. Cross-entity (`HandleCallFromEntityAsync`) and sibling-bypass paths are server-internal and remain available — the trust boundary is the public method on the *calling* entity, which authorized the originating client through its own access policy. A modified client cannot bypass this by hand-crafting an `RpcCallRequest` packet.
 - `CrossOptimistic` — client executes Move locally for instant response, server validates
 - `ExecutionMode.Server` for `ResumeOrStartExpedition` — makes cross-entity calls that can't run on client
 

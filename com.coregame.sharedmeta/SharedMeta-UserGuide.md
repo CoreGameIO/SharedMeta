@@ -633,6 +633,8 @@ The await resolves the callee's typed `Config` through its own `IMetaConfigProvi
 
 **Required:** every dep declared in `[MetaServiceImpl(..., typeof(IDep))]` MUST carry `[MetaService(StateType = typeof(...))]` on the dep interface — otherwise the generator emits `#error`.
 
+**Hiding sibling-only / cross-entity-only methods from clients:** mark them `[MetaMethod(GenerateClientApi = false)]`. As of 0.20.0, this both suppresses client API generation **and** rejects forged client RPCs server-side (a modified client crafting an `RpcCallRequest` with the matching service+method gets `"... is not callable from clients"`). Cross-entity (`HandleCallFromEntityAsync`) and sibling-bypass paths are server-internal and continue to work — the trust boundary is the public method on the calling entity, which authorized the originating client through its own access policy.
+
 ### Read-Only State Access
 
 ```csharp

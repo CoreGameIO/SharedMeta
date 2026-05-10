@@ -26,6 +26,15 @@ namespace SharedMeta.Generator.Generators
 
         /// <summary>Schema cap declared via <c>[MinStateVersion(N)]</c>; null when uncapped.</summary>
         public int? MinStateVersion { get; set; }
+
+        /// <summary>
+        /// Mirror of <c>[MetaMethod(GenerateClientApi = ...)]</c>. Default true.
+        /// When false: client API is not generated AND direct client-originated RPC is rejected
+        /// at the EntityGrain entry points (HandleCallAsync / HandleQueryAsync / HandleSignalAsync)
+        /// via the generated <c>IsClientCallable</c> override. Cross-entity and sibling calls
+        /// remain available because they don't traverse the client-RPC boundary.
+        /// </summary>
+        public bool GenerateClientApi { get; set; } = true;
     }
 
     /// <summary>

@@ -375,7 +375,9 @@ namespace SharedMeta.Server.Core.Grains
 
             try
             {
-                var providerResult = await _provider.HandleCallAsync(call);
+                // isClientOriginated: true → provider rejects [MetaMethod(GenerateClientApi=false)]
+                // methods. Cross-entity peers land at HandleCallFromEntityAsync below with false.
+                var providerResult = await _provider.HandleCallAsync(call, isClientOriginated: true);
                 forcePersist = providerResult.ForcePersist;
 
                 // Lazy migration: if CheckAndRunLazyMigrationAsync ran a migration, persist the
@@ -428,6 +430,13 @@ namespace SharedMeta.Server.Core.Grains
             }
         }
 
+        // SECURITY INVARIANT: this entry point must NEVER be reached by direct client traffic.
+        // It is intentionally not gated by IsClientCallable because cross-entity calls are
+        // server-internal — the caller is another grain that has already authorized the
+        // originating client through its own public API. Transports (SignalR MetaHub, HTTP
+        // polling, etc.) must route client packets only to HandleCallAsync / HandleQueryAsync /
+        // HandleSignalAsync. Adding any client-reachable wiring to HandleCallFromEntityAsync
+        // would silently bypass the [MetaMethod(GenerateClientApi = false)] protection.
         public async Task<EntityCallResult> HandleCallFromEntityAsync(RpcCall call)
         {
             if (_provider == null)
@@ -441,7 +450,11 @@ namespace SharedMeta.Server.Core.Grains
 
             try
             {
-                var providerResult = await _provider.HandleCallAsync(call);
+                // isClientOriginated: false → cross-entity calls are server-internal; the
+                // calling entity's public method already authorized the originating client
+                // through its own access policy. [MetaMethod(GenerateClientApi=false)] methods
+                // are reachable here.
+                var providerResult = await _provider.HandleCallAsync(call, isClientOriginated: false);
                 forcePersist = providerResult.ForcePersist;
 
                 PersistRandomBytes();
@@ -489,27 +502,9 @@ namespace SharedMeta.Server.Core.Grains
             if (_provider == null)
                 return new QueryCallResponse { Error = "Provider not initialized" };
 
-            // Verify this is a registered query method
-            if (!_provider.IsQueryMethod(call.ServiceName, call.MethodName))
-                return new QueryCallResponse { Error = $"Method '{call.ServiceName}.{call.MethodName}' is not a query method" };
-
-            // Access policy check (unless OpenAccess)
-            if (!_provider.IsOpenAccessQuery(call.ServiceName, call.MethodName))
-            {
-                var policy = _provider.AccessPolicy;
-                if (policy != EntityAccessPolicy.Open)
-                {
-                    bool allowed;
-                    if (policy is EntityAccessPolicy.OwnerOnly or EntityAccessPolicy.UserOwned)
-                        allowed = this.GetPrimaryKeyString() == call.CallerId;
-                    else // Authorized
-                        allowed = await _provider.CheckAccessAsync(call.CallerId ?? "");
-
-                    if (!allowed)
-                        return new QueryCallResponse { Error = $"Access denied for query on entity '{this.GetPrimaryKeyString()}'" };
-                }
-            }
-
+            // Method-level (IsQueryMethod / IsClientCallable / IsOpenAccessQuery) and
+            // entity-level (AccessPolicy / CheckAccessAsync) validation lives inside
+            // MetaProviderBase.HandleQueryAsync. EntityGrain just routes.
             try
             {
                 return await _provider.HandleQueryAsync(call);
@@ -529,38 +524,9 @@ namespace SharedMeta.Server.Core.Grains
                 return;
             }
 
-            // Reject non-signal methods here so mistakes fail loudly on the server instead of
-            // silently falling through to the no-op DispatchSignal default in MetaProviderBase.
-            if (!_provider.IsSignalMethod(call.ServiceName, call.MethodName))
-            {
-                _logger.ErrorHandlingCall(new InvalidOperationException(
-                    $"Method '{call.ServiceName}.{call.MethodName}' is not a signal method"));
-                return;
-            }
-
-            // Access policy check — same rules as regular RPC. UserOwned/OwnerOnly require
-            // the grain key to match CallerId; Authorized delegates to the provider.
-            // We deliberately do NOT expose an "OpenAccess" for signals in the first cut — if
-            // someone wants a public ping endpoint, they can take the Query path.
-            var policy = _provider.AccessPolicy;
-            if (policy != EntityAccessPolicy.Open)
-            {
-                bool allowed;
-                if (policy is EntityAccessPolicy.OwnerOnly or EntityAccessPolicy.UserOwned)
-                    allowed = this.GetPrimaryKeyString() == call.CallerId;
-                else // Authorized
-                    allowed = await _provider.CheckAccessAsync(call.CallerId ?? "");
-
-                if (!allowed)
-                {
-                    _logger.ErrorHandlingCall(new UnauthorizedAccessException(
-                        $"Access denied for signal '{call.ServiceName}.{call.MethodName}' from caller '{call.CallerId}' on entity '{this.GetPrimaryKeyString()}'"));
-                    return;
-                }
-            }
-
-            // Fire-and-forget by contract: any exception from provider is logged inside
-            // MetaProviderBase.HandleSignalAsync and swallowed there. Nothing to return.
+            // Method-level (IsSignalMethod / IsClientCallable) and entity-level (AccessPolicy /
+            // CheckAccessAsync) validation lives inside MetaProviderBase.HandleSignalAsync.
+            // Fire-and-forget by contract: provider errors are logged and swallowed there.
             await _provider.HandleSignalAsync(call);
         }
 
