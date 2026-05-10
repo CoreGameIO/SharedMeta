@@ -39,8 +39,14 @@ public class ExpeditionUIGenerator : MonoBehaviour
     private Button _serverReplaceButton;
     private Button _optimisticButton;
 
-    // Transport choice (shown at startup)
+    // Transport choice (shown at startup) — also hosts the demo client-version picker.
     private GameObject _transportChoicePanel;
+    private Button _versionV10Btn;
+    private Button _versionV12Btn;
+    private Button _versionV20Btn;
+    private Text _versionStatusText;
+    private static readonly Color _versionUnselectedColor = new Color(0.3f, 0.3f, 0.4f);
+    private static readonly Color _versionSelectedColor   = new Color(0.4f, 0.6f, 0.3f);
 
     // Connection health overlay
     private GameObject _connectionHealthPanel;
@@ -272,28 +278,65 @@ public class ExpeditionUIGenerator : MonoBehaviour
 
         // Transport choice panel (shown at startup, before connecting)
         _transportChoicePanel = CreatePanel(canvasGo.transform, "TransportChoicePanel",
-            new Vector2(0.2f, 0.35f), new Vector2(0.8f, 0.65f), Vector2.zero, Vector2.zero);
+            new Vector2(0.15f, 0.20f), new Vector2(0.85f, 0.80f), Vector2.zero, Vector2.zero);
         _transportChoicePanel.GetComponent<Image>().color = new Color(0.1f, 0.2f, 0.3f, 0.95f);
 
+        // ─── Version picker (top half) ───────────────────────────────────────────
+        var versionTitle = CreateText(_transportChoicePanel.transform, "VersionTitle",
+            "Client version (demo):",
+            new Vector2(0, 0.88f), new Vector2(1, 0.97f), Color.white);
+        versionTitle.alignment = TextAnchor.MiddleCenter;
+        versionTitle.fontSize = 18;
+
+        var versionDesc = CreateText(_transportChoicePanel.transform, "VersionDesc",
+            "1.0.0 → rejected at SessionConnect (server MinClientVersion=1.2.0)\n" +
+            "1.2.0 → connects, 1.x config (lean: 5% treasures, 10-coin reward)\n" +
+            "2.0.0 → connects, 2.x config (boosted: 25% treasures, 75-coin reward)\n" +
+            "After playing on 2.0, downgrading to 1.2 is rejected (per-PlayerId / per-entity gate)",
+            new Vector2(0.03f, 0.66f), new Vector2(0.97f, 0.87f), new Color(0.85f, 0.85f, 0.85f));
+        versionDesc.alignment = TextAnchor.MiddleCenter;
+        versionDesc.fontSize = 11;
+
+        _versionV10Btn = CreateButton(_transportChoicePanel.transform, "Ver10Btn",
+            "1.0.0  (reject)", new Vector2(0.05f, 0.54f), new Vector2(0.32f, 0.64f),
+            _versionUnselectedColor);
+        _versionV10Btn.onClick.AddListener(() => SelectVersion("1.0.0"));
+
+        _versionV12Btn = CreateButton(_transportChoicePanel.transform, "Ver12Btn",
+            "1.2.0  (lean)", new Vector2(0.36f, 0.54f), new Vector2(0.64f, 0.64f),
+            _versionUnselectedColor);
+        _versionV12Btn.onClick.AddListener(() => SelectVersion("1.2.0"));
+
+        _versionV20Btn = CreateButton(_transportChoicePanel.transform, "Ver20Btn",
+            "2.0.0  (boosted)", new Vector2(0.68f, 0.54f), new Vector2(0.95f, 0.64f),
+            _versionUnselectedColor);
+        _versionV20Btn.onClick.AddListener(() => SelectVersion("2.0.0"));
+
+        _versionStatusText = CreateText(_transportChoicePanel.transform, "VersionStatus",
+            "Selected: (none — defaults to Application.version)",
+            new Vector2(0, 0.46f), new Vector2(1, 0.53f), new Color(0.7f, 0.7f, 0.5f));
+        _versionStatusText.alignment = TextAnchor.MiddleCenter;
+        _versionStatusText.fontSize = 12;
+
+        // ─── Transport picker (bottom half) ──────────────────────────────────────
         var transportTitle = CreateText(_transportChoicePanel.transform, "TransportTitle",
-            "Choose transport:",
-            new Vector2(0, 0.6f), new Vector2(1, 1), Color.white);
+            "Then choose transport:",
+            new Vector2(0, 0.36f), new Vector2(1, 0.45f), Color.white);
         transportTitle.alignment = TextAnchor.MiddleCenter;
-        transportTitle.fontSize = 20;
+        transportTitle.fontSize = 16;
 
         var transportDesc = CreateText(_transportChoicePanel.transform, "TransportDesc",
-            "SignalR: WebSocket, real-time, FIFO guaranteed\n" +
-            "HTTP Polling: individual HTTP requests, can lose packets",
-            new Vector2(0.05f, 0.3f), new Vector2(0.95f, 0.6f), new Color(0.8f, 0.8f, 0.8f));
+            "SignalR: WebSocket, FIFO   |   HTTP Polling: individual requests",
+            new Vector2(0.05f, 0.26f), new Vector2(0.95f, 0.35f), new Color(0.8f, 0.8f, 0.8f));
         transportDesc.alignment = TextAnchor.MiddleCenter;
-        transportDesc.fontSize = 13;
+        transportDesc.fontSize = 11;
 
         var signalRBtn = CreateButton(_transportChoicePanel.transform, "SignalRBtn",
-            "SignalR", new Vector2(0.1f, 0.05f), new Vector2(0.48f, 0.28f), new Color(0.2f, 0.5f, 0.6f));
+            "SignalR", new Vector2(0.1f, 0.05f), new Vector2(0.48f, 0.23f), new Color(0.2f, 0.5f, 0.6f));
         signalRBtn.onClick.AddListener(() => OnTransportChosen(false));
 
         var httpBtn = CreateButton(_transportChoicePanel.transform, "HttpBtn",
-            "HTTP Polling", new Vector2(0.52f, 0.05f), new Vector2(0.9f, 0.28f), new Color(0.5f, 0.4f, 0.1f));
+            "HTTP Polling", new Vector2(0.52f, 0.05f), new Vector2(0.9f, 0.23f), new Color(0.5f, 0.4f, 0.1f));
         httpBtn.onClick.AddListener(() => OnTransportChosen(true));
 
         // Modal blocker — full-screen semi-transparent overlay behind health panel,
@@ -360,6 +403,28 @@ public class ExpeditionUIGenerator : MonoBehaviour
         }
         GUIUtility.systemCopyBuffer = id;
         SetStatus($"Copied {id} to clipboard.");
+    }
+
+    /// <summary>
+    /// Selects the demo client version reported during SessionConnect. Highlights the
+    /// chosen button and updates the status text. The version is consumed by
+    /// <see cref="ExpeditionGameManager.ClientVersionOverride"/> on the next connect.
+    /// </summary>
+    private void SelectVersion(string version)
+    {
+        gameManager.ClientVersionOverride = version;
+
+        _versionV10Btn.GetComponent<Image>().color = version == "1.0.0" ? _versionSelectedColor : _versionUnselectedColor;
+        _versionV12Btn.GetComponent<Image>().color = version == "1.2.0" ? _versionSelectedColor : _versionUnselectedColor;
+        _versionV20Btn.GetComponent<Image>().color = version == "2.0.0" ? _versionSelectedColor : _versionUnselectedColor;
+
+        _versionStatusText.text = version switch
+        {
+            "1.0.0" => "Selected: 1.0.0  →  expect connect REJECTED (below MinClientVersion)",
+            "1.2.0" => "Selected: 1.2.0  →  lean economy (5% treasures, 10-coin reward)",
+            "2.0.0" => "Selected: 2.0.0  →  boosted economy (25% treasures, 75-coin reward); migrates profile",
+            _       => "Selected: (none — defaults to Application.version)"
+        };
     }
 
     private void OnTransportChosen(bool useHttpPolling)

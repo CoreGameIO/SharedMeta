@@ -28,6 +28,10 @@ namespace Expedition.Shared
     [MessagePackObject(true)]
     [SharedState]
     [NamedRandom("MapGen")]
+    // Schema 2 introduced together with the 2.x config branch — when a client connects with
+    // config 2.0+ the state is upgraded (one-way). After upgrade the per-entity gate blocks
+    // 1.x clients from re-subscribing to this profile.
+    [MetaStateVersion(2, "2.0", typeof(ExpeditionConfig))]
     public partial class ExpeditionState : ISharedState
     {
         [Key(0), MemoryPackOrder(0)] public int Width { get; set; }

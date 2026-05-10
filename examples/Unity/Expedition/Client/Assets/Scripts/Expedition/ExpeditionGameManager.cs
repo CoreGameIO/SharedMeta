@@ -67,6 +67,14 @@ public class ExpeditionGameManager : MonoBehaviour
 
     private bool _useHttpPolling;
 
+    /// <summary>
+    /// Override for the version reported to the server during SessionConnect.
+    /// Set by the version-picker UI to demonstrate the cluster gate (1.0 → reject),
+    /// per-client config delivery (1.2 = lean, 2.0 = boosted), and per-PlayerId downgrade gate.
+    /// Null/empty falls back to <c>Application.version</c>.
+    /// </summary>
+    public string ClientVersionOverride { get; set; }
+
     void Start()
     {
         MetaLog.SetLogger(new UnityConsoleMetaLogger());
@@ -235,7 +243,7 @@ public class ExpeditionGameManager : MonoBehaviour
             useLocalBackendOpt = useLocalBackend;
             localPersistToDiskOpt = localPersistToDisk;
 #endif
-            await _metaClient.ConnectAsync(serverUrl, deviceId, _useHttpPolling, ui.SetStatus, useLocalBackendOpt, localPersistToDiskOpt);
+            await _metaClient.ConnectAsync(serverUrl, deviceId, _useHttpPolling, ui.SetStatus, useLocalBackendOpt, localPersistToDiskOpt, ClientVersionOverride);
 
 
             // Register tracked field subscriptions once — static, survive reconnects
@@ -295,9 +303,19 @@ public class ExpeditionGameManager : MonoBehaviour
                 _metaClient = null;
             }
 
+            // Extract the most informative message — version-gate rejections include the
+            // server's verdict in the message, so surface it directly. Strip the
+            // "Failed to establish session:" prefix from MetaClient.ConnectAsync.
+            string detailMsg = ExtractInnermostMessage(ex);
+            const string sessionPrefix = "Failed to establish session: ";
+            if (detailMsg.StartsWith(sessionPrefix))
+                detailMsg = detailMsg.Substring(sessionPrefix.Length);
+
             var friendly = IsConnectionError(ex)
                 ? $"Server unreachable at {serverUrl}.\nMake sure the server is running, then press Reconnect."
-                : $"Connection failed: {ex.Message}";
+                : LooksLikeVersionGate(detailMsg)
+                    ? $"⚠ Version gate\n\n{detailMsg}\n\nChange the client version selector and press Reconnect."
+                    : $"Connection failed: {detailMsg}";
             ui.SetStatus("");
             // Modal overlay with the existing Reconnect button — click routes back into
             // ReconnectAsync, which detects Client == null and replays ConnectAsync.
@@ -314,6 +332,28 @@ public class ExpeditionGameManager : MonoBehaviour
             if (e is System.Net.Http.HttpRequestException) return true;
         }
         return false;
+    }
+
+    /// <summary>Walk the inner-exception chain and return the deepest non-empty message.</summary>
+    private static string ExtractInnermostMessage(Exception ex)
+    {
+        string msg = ex.Message ?? "";
+        for (var e = ex.InnerException; e != null; e = e.InnerException)
+            if (!string.IsNullOrWhiteSpace(e.Message)) msg = e.Message;
+        return msg;
+    }
+
+    /// <summary>Heuristic: does this look like a server-side version-gate rejection?</summary>
+    private static bool LooksLikeVersionGate(string msg)
+    {
+        if (string.IsNullOrEmpty(msg)) return false;
+        return msg.Contains("Client version", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("client version", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("MinClientVersion", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("MaxClientVersion", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("profile was last used", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("app version is too old", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("incompatible major version", StringComparison.OrdinalIgnoreCase);
     }
 
     private void OnProfileTracked(ChangeTreeArgs args)

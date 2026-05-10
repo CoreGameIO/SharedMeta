@@ -5,7 +5,8 @@
         "Unity.InputSystem",
         "SharedMeta.Runtime",
         "Expedition.Shared",
-        "Expedition.Client"
+        "Expedition.Client",
+        "SharedMeta.Backend.Local.Runtime"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

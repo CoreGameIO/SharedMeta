@@ -54,7 +54,8 @@ public class MetaGameClient : IDisposable
         bool useHttpPolling,
         Action<string> onStatus = null,
         bool useLocalBackend = false,
-        bool localPersistToDisk = true)
+        bool localPersistToDisk = true,
+        string clientVersionOverride = null)
     {
         if (useLocalBackend)
         {
@@ -68,10 +69,10 @@ public class MetaGameClient : IDisposable
 #endif
         }
 
-        await ConnectRemoteAsync(serverUrl, deviceId, useHttpPolling, onStatus);
+        await ConnectRemoteAsync(serverUrl, deviceId, useHttpPolling, onStatus, clientVersionOverride);
     }
 
-    private async Task ConnectRemoteAsync(string serverUrl, string deviceId, bool useHttpPolling, Action<string> onStatus)
+    private async Task ConnectRemoteAsync(string serverUrl, string deviceId, bool useHttpPolling, Action<string> onStatus, string clientVersionOverride = null)
     {
         onStatus?.Invoke("Authenticating...");
         // Scope token cache by deviceId so dev builds with random/per-instance deviceIds
@@ -82,6 +83,13 @@ public class MetaGameClient : IDisposable
 
         Serializer = new MemoryPackMetaSerializer();
 
+        // Allow the demo UI to override the client version reported to the server.
+        // This lets a single Unity build act as 1.0 / 1.2 / 2.0 to exercise the cluster gate,
+        // per-client config delivery, per-PlayerId downgrade gate, and per-entity migration gate.
+        var effectiveClientVersion = string.IsNullOrEmpty(clientVersionOverride)
+            ? Application.version
+            : clientVersionOverride;
+
         IConnection connection;
         if (useHttpPolling)
         {
@@ -90,16 +98,16 @@ public class MetaGameClient : IDisposable
             {
                 ServerUrl = $"{serverUrl}/meta-http",
                 AccessToken = login.Token,
-                ClientVersion = Application.version
+                ClientVersion = effectiveClientVersion
             });
 #else
             Debug.LogError("[MetaGameClient] HTTP polling requires com.unity.nuget.newtonsoft-json. Falling back to SignalR.");
-            connection = new SignalRConnection($"{serverUrl}/meta", login.Token, clientVersion: Application.version);
+            connection = new SignalRConnection($"{serverUrl}/meta", login.Token, clientVersion: effectiveClientVersion);
 #endif
         }
         else
         {
-            connection = new SignalRConnection($"{serverUrl}/meta", login.Token, clientVersion: Application.version);
+            connection = new SignalRConnection($"{serverUrl}/meta", login.Token, clientVersion: effectiveClientVersion);
         }
 
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
@@ -125,6 +133,17 @@ public class MetaGameClient : IDisposable
         var writerCapture = _diagLogWriter;
         if (Client.Dispatcher is ClientDispatcher cd)
             cd.DiagnosticsLog = msg => { try { writerCapture?.WriteLine(msg); } catch { } };
+
+        // Pull ExpeditionConfig from the server's /meta/config/{major}/{minor} endpoint so the
+        // client receives the actual branch configured for its clientVersion (lean v1 vs boosted v2)
+        // — without this the auto-registered StaticConfigProvider<ExpeditionConfig>(new()) would
+        // hand out the C# field defaults and the v1/v2 difference wouldn't surface in gameplay.
+        // RegisterConfigProvider clobbers, so order vs. RegisterAllServices doesn't matter.
+        Client.Resolver.RegisterConfigProvider<ExpeditionConfig>(
+            new DownloadingConfigProvider<ExpeditionConfig>(
+                urlResolver: Client.ConfigDownloadUrlResolver(typeof(ExpeditionState).FullName!),
+                downloader:  UnityConfigDownloader.DownloadAsync,
+                serializer:  Client.Serializer));
 
         Client.Resolver.RegisterAllServices();
 

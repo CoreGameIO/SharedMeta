@@ -29,6 +29,7 @@ namespace Expedition.Shared
         /// receivers reconstruct via <c>EntityReplayDispatcher</c>.
         /// </summary>
         [MetaMethod(Alias = "ReceiveGift", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+        [NoMigrate]
         void ReceiveGift(string fromPlayerId, int amount);
     }
 }

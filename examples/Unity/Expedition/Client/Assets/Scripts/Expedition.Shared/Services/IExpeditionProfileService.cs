@@ -6,17 +6,8 @@ namespace Expedition.Shared
     [MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned, DefaultConfig = true)]
     public interface IExpeditionProfileService : IMetaService
     {
-        [MetaMethod(Alias = "UpdateEnergy")]
-        int UpdateEnergy();
-
         [MetaMethod(Alias = "BuyEnergy", Mode = ExecutionMode.Optimistic, SkipServerOnFalse = true)]
-        bool BuyEnergy();
-
-        [MetaMethod(Alias = "SpendEnergy", Mode = ExecutionMode.Server, GenerateClientApi = false)]
-        bool SpendEnergy(int amount);
-
-        [MetaMethod(Alias = "SpendEnergyUpTo", Mode = ExecutionMode.Server, GenerateClientApi = false)]
-        int SpendEnergyUpTo(int maxAmount);
+        Task<bool> BuyEnergy();
 
         [MetaMethod(Alias = "AddMoney", Mode = ExecutionMode.Server, GenerateClientApi = false)]
         void AddMoney(int amount);
@@ -46,5 +37,8 @@ namespace Expedition.Shared
         /// </summary>
         [MetaMethod(Alias = "SendGift", Mode = ExecutionMode.Server)]
         Task<bool> SendGift(string targetPlayerId, int amount);
+
+        [MetaMethod(Alias = "UpdateEnergy", Mode = ExecutionMode.Optimistic)]
+        Task UpdateEnergy();
     }
 }

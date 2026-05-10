@@ -61,13 +61,22 @@ builder.Host.UseOrleans(siloBuilder =>
             {
                 o.SubscriberTtl = TimeSpan.FromMinutes(10);
                 // DeepDesyncEnabled left null — controlled per-session via client SetDebugOptions
+
+                // Mix in non-deterministic entropy when seeding fresh entity randoms.
+                // Without this, recreating an entity with the same id (profile reset →
+                // expedition counter resets to 1 → "expedition-{playerId}-1" recycled) would
+                // reseed the random from a deterministic string and produce the SAME map.
+                // Replay-safe: the seed is server-only, clients receive the post-seed random
+                // state via the subscribe snapshot.
+                o.FreshRandomSeedFactory = (entityId, streamName) =>
+                    $"{entityId}:{streamName}:{DateTime.UtcNow.Ticks:x}:{Random.Shared.NextInt64():x}";
             });
 
             services.ConfigureMeta(svc =>
             {
                 svc.AddTransient<ILobbyRequester>(sp => new OrleansLobbyRequester(sp.GetRequiredService<IGrainFactory>()));
                 svc.AddTransient<IRandomService, RandomServiceImpl>();
-                svc.AddSingleton<IMetaConfigProvider<ExpeditionConfig>>(new DefaultExpeditionConfigProvider());
+                svc.AddSingleton<IMetaConfigProvider<ExpeditionConfig>>(new DefaultExpeditionConfigProvider($"http://localhost:{port}"));
             });
         });
 });
@@ -96,8 +105,9 @@ builder.Services.AddSingleton(new MetaTransportOptions
     AllowDebugApi = true,             // example project — debug API always available
     DesyncReportingEnabled = true,    // accept client follow-up reports
     DesyncLogLevel = DesyncLogLevel.Debug,  // log full text diff for inspection
-    ServerVersion = "0.13.0",
-    MinClientVersion = "0.13.0",
+    ServerVersion = "2.0.0",
+    MinClientVersion = "1.1.0",
+    MaxClientVersion = "2.0.*"
 });
 
 // HTTP Polling connection manager (for /meta-http transport)
@@ -143,9 +153,48 @@ app.Logger.LogInformation("Debug API enabled — clients can toggle deep desync 
 
 await app.RunAsync();
 
+/// <summary>
+/// Two-branch demo config:
+///   1.x = lean economy (rare treasures, small reward) — for legacy clients on the 1.x line
+///   2.x = boosted economy (frequent treasures, big reward) — for current clients on 2.x
+///
+/// Routing client → branch is decided by <c>[MetaConfigVersion]</c> rules on
+/// <see cref="ExpeditionConfig"/>; this provider just produces the config bytes when asked
+/// for a specific version. Branch instances are memoized so the per-call config resolution
+/// hot path doesn't reallocate.
+/// </summary>
 public class DefaultExpeditionConfigProvider : IMetaConfigProvider<ExpeditionConfig>
 {
-    public MetaConfigVersion CurrentVersion => new(1, 1);
-    public ExpeditionConfig GetConfig(MetaConfigVersion version) => new();
-    public string? GetDownloadUrl(MetaConfigVersion version) => null;
+    private readonly string _baseUrl;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(int, int), ExpeditionConfig> _branchCache = new();
+
+    public DefaultExpeditionConfigProvider(string baseUrl) => _baseUrl = baseUrl.TrimEnd('/');
+
+    /// <summary>Latest deployed branch — what new entities default to.</summary>
+    public MetaConfigVersion CurrentVersion => new(2, 0);
+
+    public ExpeditionConfig GetConfig(MetaConfigVersion version)
+        => _branchCache.GetOrAdd((version.Major, version.Minor), key => BuildConfig(key.Item1));
+
+    private static ExpeditionConfig BuildConfig(int major)
+    {
+        if (major >= 2)
+        {
+            return new ExpeditionConfig
+            {
+                TreasurePercent = 25,    // ↑ from default 8 (more loot scattered on the map)
+                TreasureReward  = 75,    // ↑ from default 25 (3× per chest)
+            };
+        }
+        return new ExpeditionConfig
+        {
+            TreasurePercent = 5,         // ↓ from default 8 (rare treasures)
+            TreasureReward  = 10,        // ↓ from default 25 (small reward per chest)
+        };
+    }
+
+    public MetaConfigVersion ResolveLatestMatching(int major, int minor) => new(major, minor, 0);
+
+    public string? GetDownloadUrl(MetaConfigVersion version)
+        => $"{_baseUrl}/meta/config/{version.Major}/{version.Minor}";
 }

@@ -6,6 +6,10 @@ namespace Expedition.Shared
 {
     [MetaConfig(Default = true)]
     [MemoryPackable, MessagePackObject]
+    // Per-client config delivery: client app 1.x → 1.x.* config (lean economy);
+    //                            client app 2.x → 2.x.* config (boosted economy).
+    [MetaConfigVersion(Client = "1.x.*", Config = "1.x.*")]
+    [MetaConfigVersion(Client = "2.x.*", Config = "2.x.*")]
     public partial class ExpeditionConfig
     {
         // Map generation

@@ -1,11 +1,11 @@
 {
   "dependencies": {
     "com.coregame.sharedmeta": {
-      "version": "https://github.com/CoreGameIO/SharedMeta.git?path=com.coregame.sharedmeta#v0.17.0",
+      "version": "https://github.com/CoreGameIO/SharedMeta.git?path=com.coregame.sharedmeta#v0.20.1",
       "depth": 0,
       "source": "git",
       "dependencies": {},
-      "hash": "7bc6a183fbbad11b3b3aeee0494431040257892e"
+      "hash": "21caf795bfa2bca281aa66f641526c9d3e326265"
     },
     "com.github-glitchenzo.nugetforunity": {
       "version": "https://github.com/GlitchEnzo/NuGetForUnity.git?path=/src/NuGetForUnity",

@@ -5,7 +5,10 @@ using SharedMeta.Core;
 
 namespace Expedition.Shared
 {
-    [MetaServiceImpl(typeof(IExpeditionService), typeof(ExpeditionState), typeof(IExpeditionProfileService), DeepDesync = true)]
+    [MetaServiceImpl(typeof(IExpeditionService), typeof(ExpeditionState)
+        , typeof(IExpeditionProfileService)
+        , typeof(IEnergyService)
+        , DeepDesync = true)]
     public partial class ExpeditionService : IExpeditionService
     {
         private ExpeditionState state => Context.State;
@@ -125,7 +128,7 @@ namespace Expedition.Shared
             if (newCells > 0)
             {
                 // Spend as much energy as available, reveal only that many cells
-                var profileCaller = GetIExpeditionProfileService(state.ProfileEntityId);
+                var profileCaller = GetIEnergyService(state.ProfileEntityId);
                 int spent = await profileCaller.SpendEnergyUpToAsync(newCells * Config.MoveCost);
                 int cellsToReveal = spent / Math.Max(Config.MoveCost, 1);
                 RevealArea(newX, newY, cellsToReveal);
@@ -170,7 +173,7 @@ namespace Expedition.Shared
             if ((CellType)state.Cells[idx] != CellType.Obstacle)
                 return false;
 
-            var profileCaller = GetIExpeditionProfileService(state.ProfileEntityId);
+            var profileCaller = GetIEnergyService(state.ProfileEntityId);
             bool spent = await profileCaller.SpendEnergyAsync(Config.ObstacleCost);
             if (!spent)
                 return false;

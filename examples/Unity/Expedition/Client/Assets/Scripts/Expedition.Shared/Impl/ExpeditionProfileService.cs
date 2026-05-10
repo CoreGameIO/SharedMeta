@@ -4,88 +4,37 @@ using SharedMeta.Core;
 
 namespace Expedition.Shared
 {
-    [MetaServiceImpl(typeof(IExpeditionProfileService), typeof(ProfileState), typeof(IExpeditionService), typeof(ISocialService))]
+    [MetaServiceImpl(typeof(IExpeditionProfileService), typeof(ProfileState)
+        , typeof(IExpeditionService)
+        , typeof(ISocialService)
+        , typeof(IEnergyService)
+    )]
     public partial class ExpeditionProfileService : IExpeditionProfileService
     {
         private ProfileState state => Context.State;
 
         [MetaInit]
-        public Task<int> InitState(int version)
+        public Task<int> InitState(int version, int target)
         {
-            if (version < 1)
-            {
+            if (version < 1) {
                 state.PlayerId = Context.EntityId!;
                 state.Energy = Config.StartEnergy;
                 state.Money = Config.StartMoney;
-                state.EnergyRegenSeconds = Config.EnergyRegenSeconds;
                 state.LastEnergyUpdateTicks = Context.ServerTimeTicks;
-                return Task.FromResult(1);
             }
-            return Task.FromResult(version);
+            return Task.FromResult(target);
         }
 
-        public int UpdateEnergy()
-        {
-            if (state.LastEnergyUpdateTicks == 0)
-            {
-                state.LastEnergyUpdateTicks = Context.ServerTimeTicks;
-                return state.Energy;
-            }
-
-            if (state.Energy >= Config.MaxEnergy)
-            {
-                state.LastEnergyUpdateTicks = Context.ServerTimeTicks;
-                return state.Energy;
-            }
-
-            var now = Context.ServerTimeTicks;
-            var elapsed = now - state.LastEnergyUpdateTicks;
-            var secondsElapsed = elapsed / TimeSpan.TicksPerSecond;
-
-            if (secondsElapsed <= 0)
-                return state.Energy;
-
-            var regenAmount = (int)(secondsElapsed / state.EnergyRegenSeconds);
-            if (regenAmount > 0)
-            {
-                state.Energy = Math.Min(state.Energy + regenAmount, Config.MaxEnergy);
-                state.LastEnergyUpdateTicks += regenAmount * state.EnergyRegenSeconds * TimeSpan.TicksPerSecond;
-            }
-
-            return state.Energy;
-        }
-
-        public bool BuyEnergy()
+        public async Task<bool> BuyEnergy()
         {
             if (state.Money < Config.BuyEnergyCost)
                 return false;
 
-            UpdateEnergy();
-
+            var energyService = await GetIEnergyServiceSiblingAsync();
+            energyService.AddPurchasedEnergy();
             state.Money -= Config.BuyEnergyCost;
-            state.Energy += Config.BuyEnergyAmount;
+
             return true;
-        }
-
-        public bool SpendEnergy(int amount)
-        {
-            UpdateEnergy();
-
-            if (state.Energy < amount)
-                return false;
-
-            state.Energy -= amount;
-            return true;
-        }
-
-        public int SpendEnergyUpTo(int maxAmount)
-        {
-            UpdateEnergy();
-
-            int spent = Math.Min(state.Energy, maxAmount);
-            if (spent > 0)
-                state.Energy -= spent;
-            return spent;
         }
 
         public void AddMoney(int amount)
@@ -137,6 +86,12 @@ namespace Expedition.Shared
             var social = GetISocialService(targetPlayerId);
             await social.ReceiveGiftAsync(state.PlayerId, amount);
             return true;
+        }
+
+        public async Task UpdateEnergy()
+        {
+            var energyService = await GetIEnergyServiceSiblingAsync();
+            energyService.UpdateEnergy();
         }
     }
 }
