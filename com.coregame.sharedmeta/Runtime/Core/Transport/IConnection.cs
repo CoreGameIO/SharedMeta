@@ -39,8 +39,13 @@ namespace SharedMeta.Core.Transport
 
         /// <summary>
         /// Connect to a session on the server.
+        /// <paramref name="clientAppVersion"/> (e.g. <c>"1.4.3"</c>) — when set, stamped on
+        /// <see cref="SessionConnectRequest.ClientVersion"/> and used server-side as the default
+        /// <c>CallerClientVersion</c> for every RPC and subscribe over this connection. Required
+        /// for per-client config branch resolution (<c>[MetaConfigVersion]</c> rules) and for
+        /// the strict server-side contract that arrives in upcoming releases.
         /// </summary>
-        Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0);
+        Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null);
 
         /// <summary>
         /// Subscribe to an entity.

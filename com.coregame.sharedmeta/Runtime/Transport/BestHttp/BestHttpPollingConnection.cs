@@ -121,7 +121,7 @@ namespace SharedMeta.Transport.BestHttp
         }
 
         public async Task<ConnectionSessionConnectResult> SessionConnectAsync(
-            string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0)
+            string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null)
         {
             EnsureConnected();
 
@@ -130,7 +130,7 @@ namespace SharedMeta.Transport.BestHttp
                 PlayerId = playerId,
                 SessionId = sessionId,
                 LastAcknowledgedSequence = lastAcknowledgedSequence,
-                ClientVersion = _options.ClientVersion
+                ClientVersion = clientAppVersion ?? _options.ClientVersion
             };
 
             var response = await PostAsync<SessionConnectResponse>("/session-connect", body);

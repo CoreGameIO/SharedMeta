@@ -76,6 +76,7 @@ namespace SharedMeta.Orleans.Config
         private ImmutableSortedSet<MetaConfigVersion> _knownVersions =
             ImmutableSortedSet<MetaConfigVersion>.Empty.WithComparer(MetaConfigVersionComparer.Instance);
 
+
         // 0 = not initialized, 1 = initialized. CAS via Interlocked.CompareExchange in
         // InitializeAsync — preserves idempotency without taking a lock.
         private int _initialized;
@@ -162,14 +163,16 @@ namespace SharedMeta.Orleans.Config
         /// <summary>
         /// Synchronous read. Throws on cache miss — there's no way to fetch bytes
         /// synchronously across a grain call. Code paths where a cache miss is expected
-        /// should use <see cref="GetConfigAsync"/> instead.
+        /// should use <see cref="GetConfigAsync"/> instead. The 0.21.0 framework calls
+        /// the async path during entity activation (<c>InitializeConfigAsync</c>); sync
+        /// <see cref="GetConfig"/> is reserved for already-warm reads after that point.
         /// </summary>
         public TConfig GetConfig(MetaConfigVersion version)
         {
             if (_cache.TryGetValue(version, out var cached)) return cached;
             throw new InvalidOperationException(
                 $"[BroadcastingConfigProvider:{typeof(TConfig).Name}] no cached config for {version}. " +
-                $"Call GetConfigAsync first or invoke via the framework path (EntityGrain reads asynchronously).");
+                $"Call GetConfigAsync first or invoke via the framework's async activation path (InitializeConfigAsync).");
         }
 
         public async Task<TConfig> GetConfigAsync(MetaConfigVersion version)
@@ -220,12 +223,13 @@ namespace SharedMeta.Orleans.Config
 
         public MetaConfigVersion ResolveForClient(string? clientAppVersion, MetaConfigVersionResolver? resolver)
         {
-            // 0.21.0 transitional: permissive default — returns default(MetaConfigVersion) on
-            // null/empty client version or no matching rule. Phase 5-7 will tighten this at
-            // the EntityGrain handler boundary per EntityScope (Private/Shared throw on
-            // missing client version; Global substitutes IConfigVersionResolver.CurrentClientVersion).
+            // 0.21.0+: strict — null/empty clientAppVersion throws. Server-internal callers
+            // must substitute IConfigVersionResolver.CurrentClientVersion before calling;
+            // EntityScope.Global entities do this inside the framework's per-call dispatch.
             if (string.IsNullOrEmpty(clientAppVersion))
-                return default;
+                throw new InvalidOperationException(
+                    $"[BroadcastingConfigProvider:{typeof(TConfig).Name}] ResolveForClient: clientAppVersion is required. " +
+                    $"Server-internal callers must substitute IConfigVersionResolver.CurrentClientVersion before calling.");
 
             // Prefer the resolver passed in by the framework; fall back to the one captured at
             // construction (the [MetaConfigVersion] rules on TConfig).

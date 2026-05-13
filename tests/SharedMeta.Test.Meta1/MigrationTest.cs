@@ -10,7 +10,16 @@ namespace SharedMeta.Test.Meta1
     /// <summary>
     /// Config for migration tests. Reports its version so [MetaInit] can record
     /// which config version was pinned to each migration step.
+    ///
+    /// <para>0.21.0: declares <c>[MetaConfigVersion]</c> rules mapping the client app version
+    /// passed via <c>MetaClientOptions.ClientAppVersion</c> to a config version. The test
+    /// framework now drives migration by varying <c>clientAppVersion</c> per test (replacing
+    /// the pre-0.21.0 <c>provider.SetVersion(...)</c> ambient-flag pattern).</para>
     /// </summary>
+    [MetaConfigVersion(Client = "0.x.*", Config = "0.x.*")]   // sub-1.0 clients map below schema 1 threshold
+    [MetaConfigVersion(Client = "1.x.*", Config = "1.x.*")]   // 1.x → config 1.x
+    [MetaConfigVersion(Client = "2.x.*", Config = "2.x.*")]   // 2.x → config 2.x
+    [MetaConfigVersion(Client = "3.x.*", Config = "3.x.*")]   // 3.x → config 3.x
     public class MigrationConfig
     {
         /// <summary>The version at which this config instance was fetched.</summary>
@@ -44,7 +53,7 @@ namespace SharedMeta.Test.Meta1
 
     // ─── Service interface ────────────────────────────────────────────────────
 
-    [MetaService(StateType = typeof(MigrationTestState), ConfigType = typeof(MigrationConfig))]
+    [MetaService(StateType = typeof(MigrationTestState), ConfigType = typeof(MigrationConfig), DefaultConfig = true)]
     public interface IMigrationTestService : IMetaService
     {
         /// <summary>

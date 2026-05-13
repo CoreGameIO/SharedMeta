@@ -135,10 +135,15 @@ namespace SharedMeta.Core
 
         /// <summary>
         /// Factory to create the API client.
-        /// Parameters: (network, serializer, state, modeProvider, diagnostics, crossEntityResolver, optimisticRandom, config, namedRandoms)
+        /// Parameters: (network, serializer, state, modeProvider, diagnostics, crossEntityResolver, optimisticRandom, config, namedRandoms, configResolver)
         /// namedRandoms: positional list of MetaRandom declared via [NamedRandom] on the state, or null if state has none.
+        /// configResolver (0.21.0+): optional function that materializes a config object for a specific
+        ///   <see cref="MetaConfigVersion"/>. When the server's <c>ExecutedConfigVersion</c> on a
+        ///   broadcast/response differs from the session-pinned version, the client's replay path
+        ///   calls this to resolve the right config branch. Wired by <c>MetaServiceResolver</c> to
+        ///   <c>EntityConnection.ResolveConfigForBroadcast</c>.
         /// </summary>
-        public Func<INetwork, IMetaSerializer, object, IExecutionModeProvider, IDesyncDiagnostics?, ICrossEntityResolver?, MetaRandom?, object?, IReadOnlyList<MetaRandom>?, object> ApiClientFactory { get; init; } = null!;
+        public Func<INetwork, IMetaSerializer, object, IExecutionModeProvider, IDesyncDiagnostics?, ICrossEntityResolver?, MetaRandom?, object?, IReadOnlyList<MetaRandom>?, Func<MetaConfigVersion, object?>?, object> ApiClientFactory { get; init; } = null!;
 
         /// <summary>
         /// Factory to create the local service instance.

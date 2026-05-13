@@ -21,6 +21,14 @@ public static class TestServerConfiguration
         new TestMigrationConfigProvider(new MetaConfigVersion(1, 0));
 
     /// <summary>
+    /// Per-test-class controllable resolver. Tests set <see cref="CurrentClientVersion"/>
+    /// to simulate the server's "default client version" used by server-internal callers and
+    /// <c>[EntityScope(Global)]</c> entities. Sequential test execution (TestCluster collection)
+    /// makes this safe.
+    /// </summary>
+    public static readonly TestConfigVersionResolver ConfigVersionResolver = new();
+
+    /// <summary>
     /// Register all test meta services using generated ConfigureMeta.
     /// </summary>
     public static IServiceCollection ConfigureTestMeta(
@@ -33,8 +41,71 @@ public static class TestServerConfiguration
         // via Context.ResolveService → DI lookup. Without this registration the sibling-async
         // path throws when called from a multi-config sibling test.
         services.AddSingleton<IMetaConfigProvider<CounterAltConfig>>(new TestCounterAltConfigProvider());
+        // 0.21.0 EntityScope fixture providers.
+        services.AddSingleton<IMetaConfigProvider<SharedScopeConfig>>(new TestSharedScopeConfigProvider());
+        services.AddSingleton<IMetaConfigProvider<GlobalScopeConfig>>(new TestGlobalScopeConfigProvider());
+        services.AddSingleton<IMetaConfigProvider<MultiConfigA>>(new TestMultiConfigAProvider());
+        services.AddSingleton<IMetaConfigProvider<MultiConfigB>>(new TestMultiConfigBProvider());
+        services.AddSingleton<IConfigVersionResolver>(ConfigVersionResolver);
         return services.ConfigureMeta(configureServices);
     }
+}
+
+/// <summary>
+/// Controllable <see cref="IConfigVersionResolver"/> for EntityScope tests. Tests mutate
+/// <see cref="CurrentClientVersion"/> to simulate the server's "default client version".
+/// </summary>
+public class TestConfigVersionResolver : IConfigVersionResolver
+{
+    public string CurrentClientVersion { get; set; } = "1.0.0";
+
+    public MetaConfigVersion ResolveVersion(string stateTypeName, string entityId, MetaConfigVersion defaultVersion)
+        => defaultVersion;
+}
+
+/// <summary>
+/// Provider for <see cref="SharedScopeConfig"/>: returns a config whose Major/Minor/Patch
+/// fields mirror the requested version. Tests assert which version got pinned by reading
+/// these fields back from <c>Context.Config</c> via the service's RecordConfig method.
+/// </summary>
+public class TestSharedScopeConfigProvider : IMetaConfigProvider<SharedScopeConfig>
+{
+    public SharedScopeConfig GetConfig(MetaConfigVersion version) => new SharedScopeConfig
+    {
+        Major = version.Major,
+        Minor = version.Minor,
+        Patch = version.Patch,
+    };
+}
+
+/// <summary>Provider for <see cref="GlobalScopeConfig"/>; same pattern as SharedScope.</summary>
+public class TestGlobalScopeConfigProvider : IMetaConfigProvider<GlobalScopeConfig>
+{
+    public GlobalScopeConfig GetConfig(MetaConfigVersion version) => new GlobalScopeConfig
+    {
+        Major = version.Major,
+        Minor = version.Minor,
+    };
+}
+
+/// <summary>Provider for <see cref="MultiConfigA"/> — used by the AND-gate test fixture.</summary>
+public class TestMultiConfigAProvider : IMetaConfigProvider<MultiConfigA>
+{
+    public MultiConfigA GetConfig(MetaConfigVersion version) => new MultiConfigA
+    {
+        Major = version.Major,
+        Minor = version.Minor,
+    };
+}
+
+/// <summary>Provider for <see cref="MultiConfigB"/> — used by the AND-gate test fixture.</summary>
+public class TestMultiConfigBProvider : IMetaConfigProvider<MultiConfigB>
+{
+    public MultiConfigB GetConfig(MetaConfigVersion version) => new MultiConfigB
+    {
+        Major = version.Major,
+        Minor = version.Minor,
+    };
 }
 
 /// <summary>

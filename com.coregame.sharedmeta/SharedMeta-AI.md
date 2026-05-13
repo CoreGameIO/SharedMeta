@@ -567,6 +567,50 @@ builder.Services.AddSingleton(new MetaTransportOptions
 });
 ```
 
+### Entity Scope (`[EntityScope]`) — 0.21.0+
+
+Declares the sharing model of an entity on its state class. The framework derives subscribe rules, runtime config-version pinning, and dispatch behaviour from this single attribute. Default (no attribute) = `Private`.
+
+```csharp
+[SharedState]
+[EntityScope(EntityScope.Private)]   // default — owner only
+public partial class PlayerProfile : ISharedState { … }
+
+[SharedState]
+[EntityScope(EntityScope.Shared)]    // PvP match, party, raid
+public partial class PvpMatch : ISharedState { … }
+
+[SharedState]
+[EntityScope(EntityScope.Global)]    // clan, leaderboard, global PvP
+public partial class Clan : ISharedState { … }
+```
+
+| Scope | Subscribers | Config-version pin | Per-call config | Optimistic / CrossOptimistic |
+|---|---|---|---|---|
+| `Private` | Owner only (others may cross-entity-call without subscribing) | Established on owner's first connect; survives grain's active lifetime; dropped on Orleans idle-deactivation | From pin | Safe |
+| `Shared` | First subscriber pins; subsequent joiners validated against it (patch downgrade OK; `Major.Minor` mismatch rejects via `EntityAccessDeniedException`) | First subscriber's resolved versions | From pin | Safe |
+| `Global` | Open subscribe gated on `IsClientConfigCompatible` | **Never pinned** — resolved fresh from `IConfigVersionResolver.CurrentClientVersion` on every call (throws if not configured) | Always under `CurrentClientVersion`-resolved version | **Not safe** under mid-session config rollout — use `Server` / `ServerPatch` / `ServerReplace` / `Query` / `Signal` / `Local` |
+
+The pin is *runtime grain state*, not persisted. Idle-deactivation drops it; next first-subscriber re-establishes from scratch (Shared session "next day" naturally picks up newer configs and migrates state forward via `[MetaStateVersion]`).
+
+**Cold calls into a deactivated Private entity** fall back to project policy via `IConfigVersionResolver` (returns `default(MetaConfigVersion)` if not registered, transitional permissive behaviour pending strict-throw follow-up).
+
+**Admin force-migrate (0.21.0+):** drop support for an old config branch by sweeping entity IDs (from your player DB / storage) and calling `entityGrain.ForceMigrateToFloorAsync("3.0.0")` on each. Runs the full `[MetaStateVersion]` migration ladder up to the floor's required schema and persists. No subscriber required.
+
+### `IConfigVersionResolver` (0.21.0+)
+
+Required in DI when any `IMetaConfigProvider<>` is registered or any state declares `[EntityScope(EntityScope.Global)]`:
+
+```csharp
+public class MyResolver : IConfigVersionResolver
+{
+    public string CurrentClientVersion => "2.0.0";   // default for server-internal callers + Global entities
+    public MetaConfigVersion ResolveVersion(string stateTypeName, string entityId, MetaConfigVersion defaultVersion)
+        => defaultVersion;                            // override for A/B tests / staged rollouts
+}
+services.AddSingleton<IConfigVersionResolver>(new MyResolver());
+```
+
 ### Context Properties
 
 Inside `[MetaServiceImpl]` classes, the source generator injects:

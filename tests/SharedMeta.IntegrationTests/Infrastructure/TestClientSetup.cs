@@ -28,10 +28,15 @@ public class TestClientSetup : IAsyncDisposable
 
     public TestClientSetup(InProcessServer server, string? playerId = null,
         IDesyncDiagnostics? diagnostics = null,
-        IExecutionModeProvider? modeProvider = null)
+        IExecutionModeProvider? modeProvider = null,
+        string? clientAppVersion = null)
     {
         diagnostics ??= new TestDesyncDiagnostics(_issues);
 
+        // 0.21.0: server-side ResolveForClient is strict — null/empty clientAppVersion
+        // throws. Default test clients to "1.0.0" so every existing test (which doesn't
+        // exercise per-client config branches) keeps working. Migration / per-scope tests
+        // override this with explicit version strings.
         _client = new MetaClient(
             server.CreateConnection(),
             new SharedMeta.Serialization.MemoryPack.MemoryPackMetaSerializer(),
@@ -39,7 +44,8 @@ public class TestClientSetup : IAsyncDisposable
             {
                 PlayerId = playerId,
                 Diagnostics = diagnostics,
-                ModeProvider = modeProvider
+                ModeProvider = modeProvider,
+                ClientAppVersion = clientAppVersion ?? "1.0.0"
             }
         );
 

@@ -45,7 +45,15 @@ namespace SharedMeta.Core
             return new MetaConfigVersion(major, minor, patch);
         }
 
-        public override string ToString() => Patch == 0 ? $"{Major}.{Minor}" : $"{Major}.{Minor}.{Patch}";
+        /// <summary>
+        /// Canonical 3-component representation <c>"Major.Minor.Patch"</c>. Always includes
+        /// the patch component even when it's <c>0</c> — keeps logs / diagnostics unambiguous
+        /// (a bare <c>"0.1"</c> in an error message is indistinguishable from a 2-component
+        /// short-form, but the framework's version space is always 3 components).
+        /// <see cref="Parse"/> still accepts both <c>"M.m"</c> and <c>"M.m.p"</c> input for
+        /// backward compatibility with user-typed config strings.
+        /// </summary>
+        public override string ToString() => $"{Major}.{Minor}.{Patch}";
 
         public bool Equals(MetaConfigVersion other) =>
             Major == other.Major && Minor == other.Minor && Patch == other.Patch;

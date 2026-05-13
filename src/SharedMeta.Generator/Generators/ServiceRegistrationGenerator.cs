@@ -150,8 +150,8 @@ namespace SharedMeta.Generator.Generators
             {
                 sb.AppendLine($"                ConfigType = typeof({configTypeFullName}),");
             }
-            sb.AppendLine($"                ApiClientFactory = (network, serializer, stateContainer, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms) =>");
-            sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, (EntityStateContainer<{stateTypeFullName}>)stateContainer, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms),");
+            sb.AppendLine($"                ApiClientFactory = (network, serializer, stateContainer, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms, configResolver) =>");
+            sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, (EntityStateContainer<{stateTypeFullName}>)stateContainer, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms, configResolver),");
             sb.AppendLine($"                StateContainerFactory = state => new EntityStateContainer<{stateTypeFullName}>(({stateTypeFullName})state),");
             sb.AppendLine($"                PatchApplier = (state, patchBytes, ser) =>");
             sb.AppendLine($"                {{");

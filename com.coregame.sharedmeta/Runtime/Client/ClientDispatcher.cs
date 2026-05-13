@@ -59,6 +59,9 @@ namespace SharedMeta.Client
         // Session management
         private Guid _sessionId;
         private long _lastAcknowledgedSequence;
+        // 0.21.0: stamped from MetaClientOptions.ClientAppVersion at ConnectSessionAsync.
+        // Reused on resume / restart so reconnects identify the same client version.
+        private string? _clientAppVersion;
 
         // Ordering: all seq>0 SessionResponses drain through this dispatcher in sequence
         // order. It absorbs the reassembly logic, re-entrant handler detection, and
@@ -326,7 +329,7 @@ namespace SharedMeta.Client
         /// </summary>
         public bool IsSessionConnected { get; private set; }
 
-        public async Task<SessionConnectResult> ConnectSessionAsync(Guid sessionId, long lastAcknowledgedSequence)
+        public async Task<SessionConnectResult> ConnectSessionAsync(Guid sessionId, long lastAcknowledgedSequence, string? clientAppVersion = null)
         {
             if (string.IsNullOrEmpty(PlayerId))
                 throw new InvalidOperationException("PlayerId must be set before connecting session");
@@ -335,9 +338,10 @@ namespace SharedMeta.Client
             {
                 _sessionId = sessionId;
                 _lastAcknowledgedSequence = lastAcknowledgedSequence;
+                _clientAppVersion = clientAppVersion;
             }
 
-            var result = await _connection.SessionConnectAsync(PlayerId, sessionId == Guid.Empty ? null : sessionId, lastAcknowledgedSequence);
+            var result = await _connection.SessionConnectAsync(PlayerId, sessionId == Guid.Empty ? null : sessionId, lastAcknowledgedSequence, clientAppVersion);
 
             if (!result.Success)
             {
@@ -793,8 +797,11 @@ namespace SharedMeta.Client
         {
             try
             {
-                // Re-establish session with server, passing last known sequence for missed packet recovery
-                var result = await ConnectSessionAsync(_sessionId, _lastAcknowledgedSequence);
+                // Re-establish session with server, passing last known sequence for missed packet recovery.
+                // Carry the ClientAppVersion captured on first connect — auto-reconnect must identify
+                // the same client version, otherwise per-call config resolution would drift between
+                // before / after the transport blip.
+                var result = await ConnectSessionAsync(_sessionId, _lastAcknowledgedSequence, _clientAppVersion);
 
                 if (!result.Success)
                 {

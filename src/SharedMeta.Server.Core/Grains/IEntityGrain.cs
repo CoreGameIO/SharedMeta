@@ -69,6 +69,22 @@ namespace SharedMeta.Server.Core.Grains
         [AlwaysInterleave]
         Task<byte[]?> GetEntityStateAsync();
 
+        /// <summary>
+        /// 0.21.0 — admin force-migrate. Drives this entity's state schema up to whatever
+        /// schema floor is required by <paramref name="floorClientVersion"/> (resolved via
+        /// the config class's <c>[MetaConfigVersion]</c> rules), running each
+        /// <c>[MetaStateVersion]</c> step in order with its configured transition config.
+        /// Returns <c>true</c> if migration ran and state was persisted; <c>false</c> when
+        /// the entity was already at-or-above the floor (no-op).
+        /// <para>
+        /// Use case: dropping support for an old config branch. Iterate entity IDs of a
+        /// given state type from your project's player DB / storage and call this on each.
+        /// No subscriber required — works on cold or active entities. Existing active
+        /// pins are NOT overwritten (Private/Shared keep their first-subscriber version);
+        /// the force-migrate only advances <c>state.Version</c>.
+        /// </para>
+        /// </summary>
+        Task<bool> ForceMigrateToFloorAsync(string floorClientVersion);
     }
 
     /// <summary>

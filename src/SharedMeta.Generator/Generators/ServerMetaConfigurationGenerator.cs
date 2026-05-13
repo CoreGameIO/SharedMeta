@@ -791,6 +791,16 @@ namespace SharedMeta.Generator.Generators
                 var scopeName = stateScope == 1 ? "Shared" : stateScope == 2 ? "Global" : "Private";
                 sb.AppendLine($"        public override SharedMeta.Core.EntityScope Scope => SharedMeta.Core.EntityScope.{scopeName};");
                 sb.AppendLine();
+
+                // For Global: migration driver is server's IConfigVersionResolver.CurrentClientVersion,
+                // NOT the caller's version. Override only when the generated provider has access
+                // to _configVersionResolver (i.e., it has a primary config provider).
+                if (stateScope == 2)
+                {
+                    sb.AppendLine("        protected override string? ResolveMigrationDriverForGlobal(string? callerClientVersion)");
+                    sb.AppendLine("            => _configVersionResolver?.CurrentClientVersion ?? callerClientVersion;");
+                    sb.AppendLine();
+                }
             }
 
             // NamedRandomDescriptors override — union of [NamedRandom] attributes across services sharing this state.
@@ -945,17 +955,19 @@ namespace SharedMeta.Generator.Generators
 
             if (configType != null)
             {
-                sb.AppendLine("        public override void InitializeConfig(SharedMeta.Core.MetaConfigVersion version)");
+                // 0.21.0: emit InitializeConfigAsync (preferred — uses GetConfigAsync so
+                // BroadcastingConfigProvider et al. can fetch from registry without sync-over-async)
+                // AND a sync InitializeConfig that forwards to the async variant via blocking wait
+                // for code paths that still call it. Most paths go through EntityGrain.SubscribeAsync
+                // which awaits the async variant.
+                sb.AppendLine("        public override async System.Threading.Tasks.Task InitializeConfigAsync(SharedMeta.Core.MetaConfigVersion version)");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_configProvider == null) { base.InitializeConfig(version); return; }");
                 sb.AppendLine();
                 sb.AppendLine("            // Resolve version for new entities (persisted version is 0,0).");
-                sb.AppendLine("            // 0.21.0 (transitional): provider no longer exposes CurrentVersion. When");
-                sb.AppendLine("            // IConfigVersionResolver IS registered, the default version is derived from");
-                sb.AppendLine("            // CurrentClientVersion via ResolveForClient using the config class's");
-                sb.AppendLine("            // [MetaConfigVersion] rules. When NOT registered, fall back to default");
-                sb.AppendLine("            // (0,0,0) — preserves pre-0.21.0 behaviour for projects not yet using configs.");
-                sb.AppendLine("            // Phase 5-7 will tighten the strict-version contract per EntityScope.");
+                sb.AppendLine("            // 0.21.0+: when IConfigVersionResolver IS registered, default version is derived from");
+                sb.AppendLine("            // CurrentClientVersion via ResolveForClient using the config class's [MetaConfigVersion]");
+                sb.AppendLine("            // rules. When NOT registered, fall back to default (0,0,0) for projects without configs.");
                 sb.AppendLine("            if (version.Major == 0 && version.Minor == 0)");
                 sb.AppendLine("            {");
                 sb.AppendLine("                if (_configVersionResolver != null && !string.IsNullOrEmpty(_configVersionResolver.CurrentClientVersion))");
@@ -966,7 +978,9 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("            }");
                 sb.AppendLine();
                 sb.AppendLine("            base.InitializeConfig(version);");
-                sb.AppendLine("            MetaContext!.Config = _configProvider.GetConfig(version);");
+                sb.AppendLine("            // Async fetch — works with sync providers (returns immediately via Task.FromResult) and");
+                sb.AppendLine("            // with async providers like BroadcastingConfigProvider (registry round-trip on cold cache).");
+                sb.AppendLine("            MetaContext!.Config = await _configProvider.GetConfigAsync(version).ConfigureAwait(false);");
                 sb.AppendLine("        }");
                 sb.AppendLine();
 
@@ -977,6 +991,27 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine();
                 sb.AppendLine("        public override SharedMeta.Core.MetaConfigVersion ResolveClientConfigVersion(string? clientVersion)");
                 sb.AppendLine("            => _configProvider?.ResolveForClient(clientVersion, _configVersionPolicyResolver) ?? ConfigVersion;");
+                sb.AppendLine();
+
+                // 0.21.0: scope-aware effective version for the subscribe response — mirrors
+                // GetCachedConfigForClient resolution. Private/Shared returns pin if set;
+                // Global substitutes IConfigVersionResolver.CurrentClientVersion.
+                sb.AppendLine("        public override SharedMeta.Core.MetaConfigVersion ResolveEffectiveConfigVersion(string? clientVersion)");
+                sb.AppendLine("        {");
+                if (stateScope == 2) // Global
+                {
+                    sb.AppendLine("            if (_configProvider == null) return default;");
+                    sb.AppendLine("            if (_configVersionResolver == null || string.IsNullOrEmpty(_configVersionResolver.CurrentClientVersion))");
+                    sb.AppendLine("                return default;");
+                    sb.AppendLine("            return _configProvider.ResolveForClient(_configVersionResolver.CurrentClientVersion, _configVersionPolicyResolver);");
+                }
+                else
+                {
+                    sb.AppendLine($"            if (TryGetConfigPin(typeof({configType}).FullName!, out var _pin))");
+                    sb.AppendLine("                return _pin;");
+                    sb.AppendLine("            return _configProvider?.ResolveForClient(clientVersion, _configVersionPolicyResolver) ?? ConfigVersion;");
+                }
+                sb.AppendLine("        }");
                 sb.AppendLine();
 
                 // GetCachedConfigForClient — per-call config cache:
@@ -1019,12 +1054,24 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine("            // cap) keep using ResolveClientConfigVersion directly — pin only applies to");
                     sb.AppendLine("            // per-call config materialization. Cache by clientVersion still; cache miss");
                     sb.AppendLine("            // path resolves: pin first, then ResolveClientConfigVersion.");
-                    sb.AppendLine("            var key = clientVersion ?? string.Empty;");
+                    sb.AppendLine("            // 0.21.0 strict: when no pin AND no real clientVersion (server-internal");
+                    sb.AppendLine("            // cold call into a Private/Shared entity from a timer / background job),");
+                    sb.AppendLine("            // substitute IConfigVersionResolver.CurrentClientVersion. Throws below if");
+                    sb.AppendLine("            // neither is available — fail-loud surface for misconfigured server-internal callers.");
+                    sb.AppendLine($"            bool _hasPin = TryGetConfigPin(typeof({configType}).FullName!, out var _pinned);");
+                    sb.AppendLine("            string? _effectiveClient = clientVersion;");
+                    sb.AppendLine("            if (!_hasPin && string.IsNullOrEmpty(_effectiveClient))");
+                    sb.AppendLine("            {");
+                    sb.AppendLine("                _effectiveClient = _configVersionResolver?.CurrentClientVersion;");
+                    sb.AppendLine("                if (string.IsNullOrEmpty(_effectiveClient))");
+                    sb.AppendLine("                    throw new System.InvalidOperationException(");
+                    sb.AppendLine($"                        \"Cold call into '{stateTypeFullName}' without CallerClientVersion and no IConfigVersionResolver.CurrentClientVersion configured. \" +");
+                    sb.AppendLine("                        \"Register IConfigVersionResolver in DI or pass CallerClientVersion explicitly from the calling code.\");");
+                    sb.AppendLine("            }");
+                    sb.AppendLine("            var key = _effectiveClient ?? string.Empty;");
                     sb.AppendLine("            if (!_configCacheByClient.TryGetValue(key, out var cached))");
                     sb.AppendLine("            {");
-                    sb.AppendLine($"                var resolved = TryGetConfigPin(typeof({configType}).FullName!, out var _pinned)");
-                    sb.AppendLine("                    ? _pinned");
-                    sb.AppendLine("                    : ResolveClientConfigVersion(clientVersion);");
+                    sb.AppendLine("                var resolved = _hasPin ? _pinned : ResolveClientConfigVersion(_effectiveClient);");
                     sb.AppendLine("                cached = _configProvider.GetConfig(resolved);");
                     sb.AppendLine("                _configCacheByClient[key] = cached;");
                     sb.AppendLine("            }");
@@ -1507,7 +1554,12 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine("            var before = CurrentStateSchemaVersion;");
                     sb.AppendLine("            var prevCap = _migrationCap;");
                     sb.AppendLine("            var prevMigClient = MigrationClientVersion;");
-                    sb.AppendLine("            _migrationCap = schemaCap ?? int.MaxValue;");
+                    sb.AppendLine("            // 0.21.0: cap migration at the AND-gate-adjusted `required`, not the outer");
+                    sb.AppendLine("            // method/client schemaCap. Otherwise a multi-config [MetaStateVersion] step");
+                    sb.AppendLine("            // whose primary config satisfies the threshold but secondary doesn't would");
+                    sb.AppendLine("            // still run (the per-step outer guard only checks _migrationCap, not the");
+                    sb.AppendLine("            // AND-conditions resolved against caller's client version).");
+                    sb.AppendLine("            _migrationCap = required;");
                     sb.AppendLine("            MigrationClientVersion = callerClientVersion;");
                     sb.AppendLine("            try");
                     sb.AppendLine("            {");

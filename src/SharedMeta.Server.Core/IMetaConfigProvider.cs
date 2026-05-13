@@ -67,20 +67,30 @@ namespace SharedMeta.Server.Core
         /// the <see cref="MetaConfigVersionAttribute"/> rules on the config class.
         ///
         /// <para>
-        /// <b>Permissive default in 0.21.0; strict in Phase 5-7:</b> when
-        /// <paramref name="clientAppVersion"/> is null/empty OR no
-        /// <c>[MetaConfigVersion]</c> rule matches, the default impl returns
-        /// <c>default(MetaConfigVersion)</c> (0.0.0). This preserves the pre-0.21.0 "no
-        /// version assigned" semantics for existing code paths. Later phases tighten this
-        /// at the <c>EntityGrain</c> handler boundary based on <see cref="EntityScope"/>:
-        /// Private/Shared require a real client version (or first-subscriber pin), Global
-        /// substitutes <see cref="IConfigVersionResolver.CurrentClientVersion"/>.
+        /// <b>Strict contract (0.21.0+):</b> <paramref name="clientAppVersion"/> must be
+        /// non-empty. Null/empty throws — every code path that reaches here is expected to
+        /// know which client version it's resolving for. Server-internal callers (timers,
+        /// triggers, background jobs, server-only services) must substitute
+        /// <see cref="IConfigVersionResolver.CurrentClientVersion"/> explicitly before
+        /// invoking. <see cref="EntityScope.Global"/> entities substitute it inside the
+        /// framework's per-call dispatch path. <see cref="EntityScope.Private"/> /
+        /// <see cref="EntityScope.Shared"/> entities use the pinned version once a real
+        /// subscriber has joined; cold-call dispatch substitutes <c>CurrentClientVersion</c>
+        /// inside the generated <c>GetCachedConfigForClient</c>.
+        /// </para>
+        /// <para>
+        /// When no <c>[MetaConfigVersion]</c> rule matches the supplied version, returns
+        /// <c>default(MetaConfigVersion)</c> (treat as "no branch routing needed"). This
+        /// keeps projects that don't yet declare rules on their config classes working — the
+        /// framework still gets a non-throwing result for downstream <see cref="GetConfig"/>.
         /// </para>
         /// </summary>
         MetaConfigVersion ResolveForClient(string? clientAppVersion, MetaConfigVersionResolver? resolver)
         {
             if (string.IsNullOrEmpty(clientAppVersion))
-                return default;
+                throw new System.InvalidOperationException(
+                    $"IMetaConfigProvider<{typeof(TConfig).Name}>.ResolveForClient: clientAppVersion is required. " +
+                    $"Server-internal callers must substitute IConfigVersionResolver.CurrentClientVersion before calling.");
 
             resolver ??= MetaConfigVersionResolver.ForType(typeof(TConfig));
             if (resolver == null)

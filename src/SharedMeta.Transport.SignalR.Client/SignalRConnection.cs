@@ -110,7 +110,7 @@ namespace SharedMeta.Transport.SignalR
         }
 
         public async Task<ConnectionSessionConnectResult> SessionConnectAsync(
-            string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0)
+            string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null)
         {
             EnsureConnected();
 
@@ -119,7 +119,7 @@ namespace SharedMeta.Transport.SignalR
                 PlayerId = playerId,
                 SessionId = sessionId,
                 LastAcknowledgedSequence = lastAcknowledgedSequence,
-                ClientVersion = _clientVersion
+                ClientVersion = clientAppVersion ?? _clientVersion
             });
 
             return new ConnectionSessionConnectResult

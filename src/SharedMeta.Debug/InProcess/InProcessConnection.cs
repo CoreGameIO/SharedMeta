@@ -67,7 +67,7 @@ namespace SharedMeta.Debug.InProcess
             MetaLog.Debug($"[InProcess] Disconnected: {_connectionId}");
         }
 
-        public async Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0)
+        public async Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null)
         {
             EnsureConnected();
 
@@ -75,7 +75,8 @@ namespace SharedMeta.Debug.InProcess
             {
                 PlayerId = playerId,
                 SessionId = sessionId,
-                LastAcknowledgedSequence = lastAcknowledgedSequence
+                LastAcknowledgedSequence = lastAcknowledgedSequence,
+                ClientVersion = clientAppVersion
             });
 
             return new ConnectionSessionConnectResult

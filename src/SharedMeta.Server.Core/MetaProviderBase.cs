@@ -350,6 +350,16 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// </summary>
     public virtual EntityScope Scope => EntityScope.Private;
 
+    /// <summary>
+    /// For <see cref="EntityScope.Global"/> entities, returns the client version that should
+    /// drive migration checks in <c>HandleCallAsync</c> — typically
+    /// <see cref="IConfigVersionResolver.CurrentClientVersion"/>. Generated providers override
+    /// this when the state declares <c>[EntityScope(Global)]</c> AND the provider has access
+    /// to <see cref="IConfigVersionResolver"/> via DI. Default returns the caller's version
+    /// unchanged — safe fallback for providers without a resolver.
+    /// </summary>
+    protected virtual string? ResolveMigrationDriverForGlobal(string? callerClientVersion) => callerClientVersion;
+
     // ── Runtime config-version pin (0.21.0 Phase 4) ──────────────────────────────────
     //
     // Per [EntityScope], the framework pins config versions to the grain's active lifetime:
@@ -472,6 +482,34 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         => CheckAndRunLazyMigrationAsync(callerClientVersion, schemaCap);
 
     /// <summary>
+    /// 0.21.0 — admin API: force this entity to migrate to at least the schema required by
+    /// <paramref name="floorClientVersion"/>. Returns <c>true</c> when migration ran (state
+    /// schema advanced), <c>false</c> when the entity was already at-or-above the floor.
+    /// <para>
+    /// Use case: dropping support for an old config branch. Admin code iterates entity IDs
+    /// of a given state type (sourced from your project's player DB or storage layer) and
+    /// invokes <see cref="IEntityGrain{TState}.ForceMigrateToFloorAsync"/> on each. The
+    /// floor's client version drives the framework's normal migration pipeline — same
+    /// behaviour as a real subscriber connecting at that version, but without subscribing.
+    /// </para>
+    /// <para>
+    /// Per-step <c>[MetaInit]</c> calls receive their configured transition config
+    /// (via <c>ResolveForClient</c>), so state ends up at the same shape it would have if
+    /// a real client at <paramref name="floorClientVersion"/> had triggered the migration
+    /// naturally. EntityGrain force-persists when this method returns <c>true</c>.
+    /// </para>
+    /// </summary>
+    public Task<bool> ForceMigrateToFloorAsync(string floorClientVersion)
+    {
+        if (string.IsNullOrEmpty(floorClientVersion))
+            throw new ArgumentException("floorClientVersion must be non-empty", nameof(floorClientVersion));
+        // Uncapped — admin force-migrate runs the full migration ladder up to the floor.
+        // ComputeRequiredStateSchema inside the call resolves floorClientVersion against
+        // [MetaConfigVersion] rules to derive the actual schema floor.
+        return CheckAndRunLazyMigrationAsync(floorClientVersion, schemaCap: null);
+    }
+
+    /// <summary>
     /// Per-method migration policy: returns true when the dispatched method carries
     /// <c>[NoMigrate]</c>. Generated providers override; default is no skips.
     /// </summary>
@@ -520,14 +558,21 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         // through GetCachedConfigForClient.
         bool skipMigration = ShouldSkipMigration(call.ServiceName, call.MethodName);
         int? schemaCap = null;
-        if (!skipMigration)
+        // 0.21.0: Private/Shared entities with an active pin lock schema to subscribe-time
+        // driver. Cross-entity calls from higher-version clients don't get to advance schema —
+        // pin represents "this entity's schema is fixed at this version for its session."
+        // Global scope substitutes IConfigVersionResolver.CurrentClientVersion as the migration
+        // driver (server-side ground truth, independent of caller's own version).
+        bool pinLocksMigration = ActiveConfigPins.Count > 0 && Scope != EntityScope.Global;
+        if (!skipMigration && !pinLocksMigration)
         {
             var methodCap = GetMethodMinStateVersion(call.ServiceName, call.MethodName);
-            var clientCap = ComputeSchemaCapForClient(call.CallerClientVersion);
+            var migrationDriver = Scope == EntityScope.Global ? ResolveMigrationDriverForGlobal(call.CallerClientVersion) : call.CallerClientVersion;
+            var clientCap = ComputeSchemaCapForClient(migrationDriver);
             schemaCap = methodCap.HasValue && clientCap.HasValue
                 ? System.Math.Min(methodCap.Value, clientCap.Value)
                 : (methodCap ?? clientCap);
-            await CheckAndRunLazyMigrationAsync(call.CallerClientVersion, schemaCap);
+            await CheckAndRunLazyMigrationAsync(migrationDriver, schemaCap);
         }
 
         if (skipMigration)
@@ -865,10 +910,14 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
 
         bool skipMigration = ShouldSkipMigration(call.ServiceName, call.MethodName);
         int? schemaCap = null;
-        if (!skipMigration)
+        // 0.21.0: Private/Shared with active pin → migration locked to subscribe-time driver.
+        // Global → CurrentClientVersion-driven via ResolveMigrationDriverForGlobal.
+        bool pinLocksMigration = ActiveConfigPins.Count > 0 && Scope != EntityScope.Global;
+        if (!skipMigration && !pinLocksMigration)
         {
             var methodCap = GetMethodMinStateVersion(call.ServiceName, call.MethodName);
-            var clientCap = ComputeSchemaCapForClient(call.CallerClientVersion);
+            var migrationDriver = Scope == EntityScope.Global ? ResolveMigrationDriverForGlobal(call.CallerClientVersion) : call.CallerClientVersion;
+            var clientCap = ComputeSchemaCapForClient(migrationDriver);
             schemaCap = methodCap.HasValue && clientCap.HasValue
                 ? System.Math.Min(methodCap.Value, clientCap.Value)
                 : (methodCap ?? clientCap);
@@ -879,8 +928,14 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         // HandleCallAsync, so the check is duplicated here. EntityGrain checks
         // LazyMigrationCompleted after HandleCallAsync; for queries we persist inline via
         // SaveStateHandler when migration ran. [NoMigrate]/[MinStateVersion] policies apply.
-        if (!skipMigration && await CheckAndRunLazyMigrationAsync(call.CallerClientVersion, schemaCap) && SaveStateHandler != null)
-            await SaveStateHandler();
+        // 0.21.0: pin-locked Private/Shared skip migration entirely; Global uses the
+        // CurrentClientVersion-substituted driver computed above.
+        if (!skipMigration && !pinLocksMigration)
+        {
+            var queryDriver = Scope == EntityScope.Global ? ResolveMigrationDriverForGlobal(call.CallerClientVersion) : call.CallerClientVersion;
+            if (await CheckAndRunLazyMigrationAsync(queryDriver, schemaCap) && SaveStateHandler != null)
+                await SaveStateHandler();
+        }
 
         if (skipMigration)
         {
@@ -1060,13 +1115,37 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     public MetaConfigVersion ConfigVersion { get; private set; }
 
     /// <summary>
-    /// Initialize config for this entity with the given version.
-    /// Generated code overrides to resolve config from IMetaConfigProvider.
+    /// Initialize config for this entity with the given version. Default impl just records
+    /// the version; generated providers override to additionally materialize the
+    /// <see cref="MetaContext{TState}.Config"/> object from <see cref="IMetaConfigProvider{TConfig}"/>.
+    /// 0.21.0 retains the sync entry point for backward compatibility — providers that need
+    /// async materialization (e.g. <c>BroadcastingConfigProvider</c> on cache miss) should
+    /// override <see cref="InitializeConfigAsync"/> instead.
     /// </summary>
     public virtual void InitializeConfig(MetaConfigVersion version)
     {
         ConfigVersion = version;
         if (MetaContext != null) MetaContext.ConfigVersion = version;
+    }
+
+    /// <summary>
+    /// Async variant of <see cref="InitializeConfig"/> — preferred entry point on grain
+    /// activation when the registered <see cref="IMetaConfigProvider{TConfig}"/> may need
+    /// to fetch bytes across an async boundary (e.g. <c>BroadcastingConfigProvider</c>
+    /// pulling from the per-version <c>IConfigStoreGrain</c>). Default impl delegates to
+    /// the sync <see cref="InitializeConfig"/> for back-compat with providers that have
+    /// only synchronous config materialization.
+    /// <para>
+    /// Generated providers with a registered <see cref="IMetaConfigProvider{TConfig}"/>
+    /// override this and call <see cref="IMetaConfigProvider{TConfig}.GetConfigAsync"/> —
+    /// avoiding sync-over-async on the grain activation path. EntityGrain awaits this
+    /// before the per-entity compat gate.
+    /// </para>
+    /// </summary>
+    public virtual Task InitializeConfigAsync(MetaConfigVersion version)
+    {
+        InitializeConfig(version);
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -1092,6 +1171,27 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// (runtime patch deploy) so the next call picks up the new branch.
     /// </summary>
     protected virtual object? GetCachedConfigForClient(string? clientVersion) => null;
+
+    /// <summary>
+    /// 0.21.0 — scope-aware effective config version that the framework will actually use
+    /// for dispatching calls under this provider for a given subscribing client:
+    /// <list type="bullet">
+    ///   <item><see cref="EntityScope.Private"/> / <see cref="EntityScope.Shared"/> — pin's
+    ///         primary-config version if pin is established; otherwise the joiner's resolved
+    ///         version (which becomes the pin on first subscribe).</item>
+    ///   <item><see cref="EntityScope.Global"/> — the version resolved from
+    ///         <see cref="IConfigVersionResolver.CurrentClientVersion"/>, ignoring the
+    ///         joiner's own version.</item>
+    /// </list>
+    /// Used by <c>EntityGrain.SubscribeAsync</c> to populate <see cref="SubscribeResponse"/>'s
+    /// config version so the client materializes the same config the server will dispatch under.
+    /// <para>
+    /// Default base impl returns <see cref="ResolveClientConfigVersion"/> (pin-free, joiner-direct).
+    /// Generated providers override when they have a primary config registered.
+    /// </para>
+    /// </summary>
+    public virtual MetaConfigVersion ResolveEffectiveConfigVersion(string? clientVersion)
+        => ResolveClientConfigVersion(clientVersion);
 
     /// <summary>Called by generated <see cref="OnDeactivating"/> overrides to drop the per-call config cache.</summary>
     protected virtual void ClearConfigCache() { }

@@ -149,7 +149,10 @@ public class SessionOrderingTests
         await grain.SetObserverAsync(observerRef);
 
         var entityId = $"counter_{Guid.NewGuid():N}";
-        var subscribe = await grain.SubscribeToEntityAsync(entityId, typeof(CounterState).FullName!);
+        // 0.21.0: pass a real clientVersion — server-side ResolveForClient is now strict
+        // (null/empty throws). Tests don't exercise per-client config routing, so "1.0.0"
+        // is the same default TestClientSetup uses.
+        var subscribe = await grain.SubscribeToEntityAsync(entityId, typeof(CounterState).FullName!, clientVersion: "1.0.0");
         Assert.True(subscribe.Success, subscribe.Error);
 
         return (sessionId, observer, grain, entityId);
@@ -170,6 +173,9 @@ public class SessionOrderingTests
             MethodName = "Add",
             Payload = bytes,
             CallerId = "test",
+            // 0.21.0: ResolveForClient strict — pass a real version. "1.0.0" matches the
+            // session's subscribe-time version above for consistent per-call routing.
+            CallerClientVersion = "1.0.0",
         };
     }
 

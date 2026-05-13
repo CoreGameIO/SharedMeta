@@ -292,6 +292,55 @@ builder.Services.AddSingleton(new MetaTransportOptions
 
 `IPlayerVersionGrain` records the highest version a player has connected with — subsequent connects from a *lower* version are rejected (downgrade prevention).
 
+#### Entity Scope (`[EntityScope]`) — 0.21.0+
+
+Declare the sharing model of an entity on its state class. Default (no attribute) = `Private`.
+
+```csharp
+[SharedState]
+[EntityScope(EntityScope.Private)]   // default — owner only
+public partial class PlayerProfile : ISharedState { … }
+
+[SharedState]
+[EntityScope(EntityScope.Shared)]    // PvP match, party, raid
+public partial class PvpMatch : ISharedState { … }
+
+[SharedState]
+[EntityScope(EntityScope.Global)]    // clan, leaderboard, global PvP
+public partial class Clan : ISharedState { … }
+```
+
+| Scope | Subscribers | Config-version pin | Optimistic? |
+|---|---|---|---|
+| `Private` | Owner only (others may cross-entity-call without subscribing) | Established on owner's first connect; lives for grain's active lifetime | Safe |
+| `Shared` | First subscriber establishes pin; joiners validated (`Major.Minor` must match; patch downgrade allowed) | First subscriber's resolved versions | Safe |
+| `Global` | Open subscribe gated on schema compatibility | **Never pinned** — always `IConfigVersionResolver.CurrentClientVersion`-resolved | Not safe under config rollout — use Server / ServerPatch |
+
+Set up `MetaClientOptions.ClientAppVersion` on the client so server-side resolution can route per-client config branches:
+
+```csharp
+var client = new MetaClient(connection, serializer, new MetaClientOptions
+{
+    PlayerId         = playerId,
+    ClientAppVersion = "2.0.0",   // 0.21.0+ — stamped on SessionConnect + every RPC/subscribe
+});
+```
+
+Register `IConfigVersionResolver` (required when any config is used or any state declares `[EntityScope(Global)]`):
+
+```csharp
+services.AddSingleton<IConfigVersionResolver>(new MyResolver());
+
+public class MyResolver : IConfigVersionResolver
+{
+    public string CurrentClientVersion => "2.0.0";
+    public MetaConfigVersion ResolveVersion(string stateTypeName, string entityId, MetaConfigVersion defaultVersion)
+        => defaultVersion;
+}
+```
+
+**Admin force-migrate:** drop support for an old config branch by iterating entity IDs and calling `entityGrain.ForceMigrateToFloorAsync("3.0.0")` on each. Runs the full `[MetaStateVersion]` migration ladder up to the floor's required schema and persists. No subscriber required.
+
 ### Client-Side Config (0.15.0+)
 
 Each `[MetaConfig]` type is materialized by an `IClientMetaConfigProvider<TConfig>` registered on the resolver. The generator-emitted `Add{Service}Services()` extension installs a `StaticConfigProvider<TConfig>(new TConfig())` by default — out of the box, the client receives the bundled config compiled into shared code.

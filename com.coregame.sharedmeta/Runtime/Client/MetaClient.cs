@@ -49,6 +49,16 @@ namespace SharedMeta.Client
 
         /// <summary>Player ID. Default: random 8-char hex.</summary>
         public string? PlayerId { get; set; }
+
+        /// <summary>
+        /// Client app version (e.g. <c>"1.4.3"</c>) — stamped on
+        /// <see cref="SessionConnectRequest.ClientVersion"/> at <see cref="MetaClient.ConnectAsync"/>
+        /// and used server-side as the default <c>CallerClientVersion</c> for every RPC and
+        /// subscribe over this connection. Drives <c>[MetaConfigVersion]</c> per-client config
+        /// branch resolution. Default: null — the connection's own client version (passed to the
+        /// transport constructor / options) is used instead.
+        /// </summary>
+        public string? ClientAppVersion { get; set; }
     }
 
     /// <summary>
@@ -79,6 +89,14 @@ namespace SharedMeta.Client
         /// <summary>Player ID for this client session.</summary>
         public string PlayerId { get; set; }
 
+        /// <summary>
+        /// Client app version stamped on <see cref="SessionConnectRequest.ClientVersion"/> at
+        /// <see cref="ConnectAsync"/>. Drives server-side <c>[MetaConfigVersion]</c> per-client
+        /// resolution and (in upcoming releases) the strict-throw contract. Null = fall back to
+        /// the transport's own client version, if any.
+        /// </summary>
+        public string? ClientAppVersion { get; set; }
+
         /// <summary>The connection ID. Available after ConnectAsync.</summary>
         public string ConnectionId => Connection.ConnectionId;
 
@@ -101,6 +119,7 @@ namespace SharedMeta.Client
             Serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
             TransformerRegistry = options.TransformerRegistry ?? new TransformerRegistry();
             PlayerId = options.PlayerId ?? Guid.NewGuid().ToString("N")[..8];
+            ClientAppVersion = options.ClientAppVersion;
 
             var modeProvider = options.ModeProvider ?? new ExecutionModeProvider();
             var diagnostics = options.Diagnostics;
@@ -155,7 +174,7 @@ namespace SharedMeta.Client
             await Connection.ConnectAsync();
 
             _dispatcher.PlayerId = PlayerId;
-            var sessionResult = await _dispatcher.ConnectSessionAsync(Guid.NewGuid(), 0);
+            var sessionResult = await _dispatcher.ConnectSessionAsync(Guid.NewGuid(), 0, ClientAppVersion);
 
             if (!sessionResult.Success)
             {
@@ -195,7 +214,7 @@ namespace SharedMeta.Client
             }
 
             _dispatcher.PlayerId = PlayerId;
-            var sessionResult = await _dispatcher.ConnectSessionAsync(Guid.NewGuid(), 0);
+            var sessionResult = await _dispatcher.ConnectSessionAsync(Guid.NewGuid(), 0, ClientAppVersion);
 
             if (!sessionResult.Success)
             {

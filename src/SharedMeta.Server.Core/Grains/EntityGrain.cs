@@ -154,10 +154,12 @@ namespace SharedMeta.Server.Core.Grains
 
                     // Propagate the originating client's app version so the target entity's
                     // ComputeSchemaCapForClient sees the same version as the session-level call.
-                    // Without this, a 1.x session whose Profile cross-calls a fresh Expedition
-                    // entity would see clientVersion=null on the target → cap defaults to the
-                    // provider's CurrentVersion → unwanted migration to schema 2.
-                    var callerClientVersion = SharedMeta.Core.MetaContextAccessor.Current?.CallerClientVersion;
+                    // 0.21.0 strict: when there is no current MetaContext (server-internal
+                    // cross-entity call from a timer / background job / server-only service),
+                    // fall back to IConfigVersionResolver.CurrentClientVersion so the target
+                    // resolves under a defined version instead of throwing downstream.
+                    var callerClientVersion = SharedMeta.Core.MetaContextAccessor.Current?.CallerClientVersion
+                        ?? _configVersionResolver?.CurrentClientVersion;
                     var result = await targetGrain.HandleCallFromEntityAsync(new RpcCall
                     {
                         ServiceName = serviceName,
@@ -285,12 +287,24 @@ namespace SharedMeta.Server.Core.Grains
             // subscriber's resolved config branch, so a 1.x client never causes a 2.0 jump.
             // For entities already at a higher schema than the client supports, this is a
             // no-op and the gate below rejects the subscribe.
+            //
+            // 0.21.0 Global: migration is driven by IConfigVersionResolver.CurrentClientVersion
+            // (server-set) — NOT the joiner's own version. Schema progression on Global entities
+            // tracks the server's CurrentClientVersion regardless of who's joining. Private/Shared
+            // keep the joiner-driven model (pin establishes / validates per first subscriber).
             if (_provider is MetaProviderBase<TState> mpbInit)
             {
-                var clientCfg = mpbInit.ResolveClientConfigVersion(clientVersion);
-                mpbInit.InitializeConfig(clientCfg);
-                var cap = mpbInit.ComputeSchemaCapForClient(clientVersion);
-                if (await mpbInit.RunInitOrMigrateAsync(clientVersion, cap))
+                var migrationDriverVersion = mpbInit.Scope == EntityScope.Global
+                    ? (_configVersionResolver?.CurrentClientVersion ?? clientVersion)
+                    : clientVersion;
+                var clientCfg = mpbInit.ResolveClientConfigVersion(migrationDriverVersion);
+                // 0.21.0: async variant avoids sync-over-async when the provider needs to
+                // fetch bytes across a grain boundary (e.g. BroadcastingConfigProvider on
+                // cold-cache version). Default impl forwards to sync InitializeConfig for
+                // providers that don't need async materialization.
+                await mpbInit.InitializeConfigAsync(clientCfg);
+                var cap = mpbInit.ComputeSchemaCapForClient(migrationDriverVersion);
+                if (await mpbInit.RunInitOrMigrateAsync(migrationDriverVersion, cap))
                 {
                     state.Version = mpbInit.LazyMigrationNewVersion;
                     mpbInit.LazyMigrationCompleted = false;
@@ -373,10 +387,14 @@ namespace SharedMeta.Server.Core.Grains
                 CurrentSequenceNumber = state.EntitySequenceNumber,
                 OptimisticRandomBytes = _provider?.GetOptimisticRandomBytes(),
                 NamedRandomsBytes = namedBytes is { Length: > 0 } ? namedBytes : null,
-                // Resolve per-client config version: if the provider declares [MetaConfigVersion]
-                // rules and the subscriber sent a clientVersion, pick the config branch appropriate
-                // for that client. Falls back to the entity's pinned ConfigVersion when no rule matches.
-                ConfigVersion = _provider?.ResolveClientConfigVersion(clientVersion) ?? default
+                // 0.21.0 Phase 5+7: scope-aware effective version. For Private/Shared this is
+                // the pinned version (so the client materializes the same config the server
+                // will dispatch under). For Global it's the IConfigVersionResolver.CurrentClientVersion
+                // resolution, NOT the joiner's own resolved version — Global entities run under
+                // server-driven config regardless of who's calling.
+                ConfigVersion = (_provider as MetaProviderBase<TState>)?.ResolveEffectiveConfigVersion(clientVersion)
+                               ?? _provider?.ResolveClientConfigVersion(clientVersion)
+                               ?? default
             };
         }
 
@@ -566,6 +584,23 @@ namespace SharedMeta.Server.Core.Grains
         {
             var userState = _persistentState.State.UserState;
             return Task.FromResult<byte[]?>(_serializer.Pack(userState));
+        }
+
+        public async Task<bool> ForceMigrateToFloorAsync(string floorClientVersion)
+        {
+            if (_provider is not MetaProviderBase<TState> mpb) return false;
+            // Drives the standard migration pipeline under the floor's resolved client version.
+            // Per-step [MetaInit] runs under each transition config (set by the framework).
+            var migrated = await mpb.ForceMigrateToFloorAsync(floorClientVersion);
+            if (!migrated) return false;
+            var state = _persistentState.State;
+            state.Version = mpb.LazyMigrationNewVersion;
+            mpb.LazyMigrationCompleted = false;
+            PersistRandomBytes();
+            await _persistentState.WriteStateAsync();
+            ResetPersistenceTracking();
+            _logger.EntityStateInitialized(typeof(TState).Name, this.GetPrimaryKeyString(), state.Version);
+            return true;
         }
 
         public async Task<EntityCallResult> HandleExternalEventAsync(

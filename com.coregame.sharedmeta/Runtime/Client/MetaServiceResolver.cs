@@ -228,6 +228,12 @@ namespace SharedMeta.Client
                     ConfigVersion = subResult.ConfigVersion,
                 };
 
+                // 0.21.0: hook the version-specific config fetcher so drift detection
+                // (broadcasts carrying a different ExecutedConfigVersion than the session)
+                // can lazily materialize the right config for replay.
+                if (config.ConfigType != null && _configProviders.TryGetValue(config.ConfigType, out var versionFetcher))
+                    newConnection.VersionedConfigFetcher = versionFetcher;
+
                 // Entity-level broadcast handler: applies state-data (StateBytes / PatchBytes) to the
                 // shared container regardless of which service the broadcast came from. This is what
                 // lets a client that subscribed to only one of several services on the entity still
@@ -237,6 +243,14 @@ namespace SharedMeta.Client
 
             // Create API client using factory — pass the container as the third positional arg.
             // The generated client casts it to EntityStateContainer<TState> internally.
+            // 0.21.0: pass connection.ResolveConfigForBroadcast as configResolver so the client's
+            // broadcast-replay path can materialize the right config when the server's
+            // ExecutedConfigVersion drifts from the session pin. existingConnection / newConnection
+            // exposes it; if neither (rare race), we fall back to no resolver (session config only).
+            var activeConnectionForResolver = existingConnection ?? newConnection;
+            Func<MetaConfigVersion, object?>? configResolver = activeConnectionForResolver != null
+                ? activeConnectionForResolver.ResolveConfigForBroadcast
+                : null;
             var apiClient = (TApiClient)config.ApiClientFactory(
                 network,
                 _serializer,
@@ -246,7 +260,8 @@ namespace SharedMeta.Client
                 this,
                 optimisticRandom,
                 entityConfig,
-                namedRandoms);
+                namedRandoms,
+                configResolver);
 
             // Cache connection
             lock (_lock)
@@ -383,7 +398,7 @@ namespace SharedMeta.Client
             {
                 var e = snapshot[i];
                 var configPart = e.ConfigType != null
-                    ? $"{e.ConfigType.Name}@{e.ConfigVersion.Major}.{e.ConfigVersion.Minor}"
+                    ? $"{e.ConfigType.Name}@{e.ConfigVersion.Major}.{e.ConfigVersion.Minor}.{e.ConfigVersion.Patch}"
                     : "no config";
                 var services = e.ServiceNames.Count == 0
                     ? "(no local API clients)"
@@ -727,6 +742,69 @@ namespace SharedMeta.Client
             public Type? ConfigType { get; init; }
             /// <summary>0.20.3: tracked for <see cref="GetSubscribedEntities"/> debug snapshot.</summary>
             public MetaConfigVersion ConfigVersion { get; init; }
+
+            // 0.21.0 — per-call config drift detection. Server sends ExecutedConfigVersion on every
+            // RpcResponse / EntityBroadcast. When it differs from this entity's session ConfigVersion
+            // (e.g. a mid-session admin rollout of a Global config, or another player's call in a
+            // mixed-version session), the client lazily fetches and caches the right TConfig instance
+            // here so subsequent broadcasts at that version replay under it.
+            //
+            // The cache is populated by a background fetch fired from ResolveConfigForBroadcast.
+            // The first broadcast at a new version is replayed under the session Config (best effort,
+            // with a one-line diagnostic) — subsequent broadcasts at that version use the cached
+            // entry. Cache is dropped when the entity is unsubscribed.
+            private readonly Dictionary<MetaConfigVersion, object> _configByVersion = new();
+            // Single in-flight fetch per version — avoids stampedes when broadcasts arrive in bursts.
+            private readonly Dictionary<MetaConfigVersion, Task> _configFetchTasks = new();
+            // Resolves a TConfig for a specific version. Set at subscribe time from the registered
+            // IClientMetaConfigProvider<TConfig>. Null for entities without a config (Config == null).
+            internal Func<MetaConfigVersion, Task<object?>>? VersionedConfigFetcher { get; set; }
+            // One-line diagnostic emitted on first drift detection per version, to surface the
+            // condition without spamming logs on every broadcast at the same drifted version.
+            private readonly HashSet<MetaConfigVersion> _diagnostedDrifts = new();
+
+            /// <summary>
+            /// Resolve the right <c>Config</c> object to use for replaying a specific broadcast.
+            /// Returns:
+            /// <list type="bullet">
+            ///   <item>The session <see cref="Config"/> when <paramref name="executedVersion"/>
+            ///         matches <see cref="ConfigVersion"/> or is <c>default</c> (no config system).</item>
+            ///   <item>The cached version-specific config when available.</item>
+            ///   <item>The session <see cref="Config"/> as best-effort fallback when no cache
+            ///         entry exists — and kicks off a fire-and-forget background fetch so the
+            ///         next broadcast at this version hits the cache. Emits a one-time diagnostic
+            ///         per drifted version.</item>
+            /// </list>
+            /// </summary>
+            public object? ResolveConfigForBroadcast(MetaConfigVersion executedVersion)
+            {
+                // Default(0,0,0) = "no config system" sentinel from the server. Use session.
+                if (executedVersion.Major == 0 && executedVersion.Minor == 0 && executedVersion.Patch == 0)
+                    return Config;
+                if (executedVersion == ConfigVersion) return Config;
+                if (_configByVersion.TryGetValue(executedVersion, out var cached)) return cached;
+
+                // Cache miss: fire fetch (idempotent if already in flight) and emit one-time diag.
+                if (VersionedConfigFetcher != null && !_configFetchTasks.ContainsKey(executedVersion))
+                {
+                    var fetch = VersionedConfigFetcher(executedVersion);
+                    _configFetchTasks[executedVersion] = fetch.ContinueWith(t =>
+                    {
+                        if (t.IsCompletedSuccessfully && t.Result != null)
+                            lock (_configByVersion) _configByVersion[executedVersion] = t.Result;
+                        lock (_configFetchTasks) _configFetchTasks.Remove(executedVersion);
+                    }, TaskScheduler.Default);
+                }
+                if (_diagnostedDrifts.Add(executedVersion))
+                {
+                    Core.Logging.MetaLog.Debug(
+                        $"[MetaServiceResolver] Entity '{EntityId}' broadcast carries ExecutedConfigVersion " +
+                        $"{executedVersion.Major}.{executedVersion.Minor}.{executedVersion.Patch} but session is pinned at " +
+                        $"{ConfigVersion.Major}.{ConfigVersion.Minor}.{ConfigVersion.Patch}. Replaying under session config; " +
+                        $"future broadcasts at this version will use the fetched config.");
+                }
+                return Config;
+            }
             public Dictionary<Type, object> ApiClients { get; } = new();
             // ServiceNames that have an ApiClient registered locally — entity handler skips
             // EntityReplayDispatcher for these to avoid double-application (the matching
@@ -821,6 +899,11 @@ namespace SharedMeta.Client
 
                 try
                 {
+                    // 0.21.0: replay under the broadcast's ExecutedConfigVersion when it differs
+                    // from the session (e.g. mid-session config rollout). Falls back to session
+                    // Config on cache miss + kicks off a background fetch so the next broadcast
+                    // at this version uses the right config.
+                    var replayConfig = ResolveConfigForBroadcast(broadcast.ExecutedConfigVersion);
                     foreignConfig.EntityReplayDispatcher(
                         StateContainer.State,
                         broadcast.MethodName,
@@ -831,7 +914,7 @@ namespace SharedMeta.Client
                         _serializer!,
                         OptimisticRandom,
                         NamedRandoms,
-                        Config,
+                        replayConfig,
                         _crossEntityResolver);
                     StateContainer.NotifyMutated();
                 }

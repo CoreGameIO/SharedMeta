@@ -151,8 +151,14 @@ namespace SharedMeta.Core.Transport
         /// </summary>
         /// <param name="sessionId">Session ID (Guid.NewGuid() for new session).</param>
         /// <param name="lastAcknowledgedSequence">Last sequence the client received (0 for new).</param>
+        /// <param name="clientAppVersion">
+        /// Optional client app version (e.g. <c>"1.4.3"</c>) — stamped on
+        /// <see cref="SessionConnectRequest.ClientVersion"/> and used server-side as the
+        /// default <c>CallerClientVersion</c> for every RPC and subscribe over this session.
+        /// Cached by the dispatcher so auto-reconnect re-uses the same version.
+        /// </param>
         /// <returns>Connection result with missed packets if resuming.</returns>
-        Task<SessionConnectResult> ConnectSessionAsync(Guid sessionId, long lastAcknowledgedSequence);
+        Task<SessionConnectResult> ConnectSessionAsync(Guid sessionId, long lastAcknowledgedSequence, string? clientAppVersion = null);
 
         /// <summary>
         /// Acknowledge that all broadcasts up to this sequence have been processed.

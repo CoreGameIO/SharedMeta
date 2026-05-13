@@ -385,19 +385,23 @@ Implement `IMetaConfigProvider<TConfig>` and register in DI:
 ```csharp
 public class GameConfigProvider : IMetaConfigProvider<GameConfig>
 {
-    public MetaConfigVersion CurrentVersion => new(1, 2);
+    // 0.21.0+: no CurrentVersion. The provider serves bytes for any requested
+    // version; "which version applies" is decided per-call by the framework from
+    // the caller's client app version (or, for [EntityScope(Global)] entities,
+    // from IConfigVersionResolver.CurrentClientVersion). For Orleans-backed,
+    // hot-reloadable storage use BroadcastingConfigProvider<TConfig> + IConfigRegistry
+    // (services.AddSharedMetaConfigVersioning()).
 
     public GameConfig GetConfig(MetaConfigVersion version)
     {
-        // Return config for the requested version
-        // Could load from files, database, etc.
+        // Return config for the requested version (load from files / DB / etc.)
         return new GameConfig();
     }
 
     public string? GetDownloadUrl(MetaConfigVersion version)
     {
-        // Return URL for client to download this config version
-        // Return null if config is bundled with the client
+        // Return URL for client to download this config version.
+        // Return null if config is bundled with the client.
         return $"https://example.com/config/{version.Major}/{version.Minor}";
     }
 }
@@ -443,23 +447,29 @@ Methods that read `Config.X` but don't mutate state (queries, cosmetic reactions
 
 ### Config Version Resolver (A/B Tests, Gradual Rollouts)
 
-Register `IConfigVersionResolver` in DI to customize which config version an entity uses:
+`IConfigVersionResolver` is the per-server policy point for config-version selection. It owns two decisions: (a) the default *client app version* used by server-internal callers and `[EntityScope(Global)]` entities, and (b) the config version a fresh entity adopts on first activation. Required when the project uses any `IMetaConfigProvider<>` or declares any `[EntityScope(EntityScope.Global)]` state.
 
 ```csharp
 public class AbTestConfigResolver : IConfigVersionResolver
 {
-    public MetaConfigVersion ResolveVersion(
-        string stateTypeName, string entityId, MetaConfigVersion currentVersion)
-    {
-        // Example: 10% of entities get the new config version
-        if (entityId.GetHashCode() % 10 == 0)
-            return new MetaConfigVersion(currentVersion.Major, currentVersion.Minor + 1);
+    // 0.21.0+: required. The framework substitutes this for the calling client
+    // version on server-internal calls (timers, background jobs, server-only
+    // services) and on [EntityScope(Global)] entities. Typically wired to the
+    // host's latest deployed client build via the release pipeline.
+    public string CurrentClientVersion => "2.0.0";
 
-        return currentVersion;
+    public MetaConfigVersion ResolveVersion(
+        string stateTypeName, string entityId, MetaConfigVersion defaultVersion)
+    {
+        // `defaultVersion` is derived by the framework by resolving CurrentClientVersion
+        // through the config class's [MetaConfigVersion] rules. Override to A/B-test:
+        if (entityId.GetHashCode() % 10 == 0)
+            return new MetaConfigVersion(defaultVersion.Major, defaultVersion.Minor + 1);
+
+        return defaultVersion;
     }
 }
 
-// Register in DI (optional — without it, CurrentVersion is always used):
 services.AddSingleton<IConfigVersionResolver>(new AbTestConfigResolver());
 ```
 
@@ -604,6 +614,36 @@ builder.Services.AddSingleton(new MetaTransportOptions
 `ClientVersionPolicy.Validate` uses inclusive Min/Max bounds rigorously (the old `clientMajor == serverMajor` check is gone), so you can publish hotfixes outside the server's own version range without surprise rejections.
 
 `IPlayerVersionGrain` records the highest client version a player has ever connected with. Subsequent connects from a *lower* version are rejected with a clear "downgrade not allowed" error — so a player can't quietly roll back their app to dodge a forced migration.
+
+### Entity Scope (`[EntityScope]`)
+
+> **Added in 0.21.0**: declare the sharing model of an entity on its state class. The framework derives subscribe rules, runtime config-version pinning, and dispatch behaviour from this single attribute.
+
+```csharp
+[SharedState]
+[EntityScope(EntityScope.Private)]   // implicit default — can be omitted
+public partial class PlayerProfile : ISharedState { … }
+
+[SharedState]
+[EntityScope(EntityScope.Shared)]    // PvP match, party, raid
+public partial class PvpMatch : ISharedState { … }
+
+[SharedState]
+[EntityScope(EntityScope.Global)]    // clan, leaderboard, global PvP
+public partial class Clan : ISharedState { … }
+```
+
+| Scope | Subscribers | Config-version pin | Per-call config | Optimistic / CrossOptimistic |
+|---|---|---|---|---|
+| `Private` | Owner only (others may cross-entity-call without subscribing — e.g. send a gift). | Established on owner's first connect; survives grain's active lifetime; dropped on Orleans idle-deactivation. | From pin — every caller (owner, cross-entity gift, server-internal) sees the same config. | Safe. |
+| `Shared` | First subscriber establishes pin; subsequent joiners are validated against it (patch differences tolerated — joiner downgrades to pinned patch; `Major.Minor` mismatch rejects with `EntityAccessDeniedException`). | First subscriber's resolved versions. | From pin. | Safe with caveat: see Known limitations below for cross-version observer scenarios. |
+| `Global` | Open subscribe gated on `IsClientConfigCompatible`. | **Never pinned** — every call resolves freshly from `IConfigVersionResolver.CurrentClientVersion`. The provider throws if the resolver isn't configured. | Always under `CurrentClientVersion`-resolved version, regardless of the caller's own version. | **Not safe today** — see Known limitations. |
+
+The pin is *runtime grain state*, not persisted on `EntityGrainState`. It dies with Orleans idle-deactivation — the next first-subscriber re-establishes it from scratch, naturally picking up newer configs and migrating state forward via `[MetaStateVersion]` thresholds.
+
+**Cold calls into a deactivated Private entity** (no active subscriber, no pin) fall back to project policy via `IConfigVersionResolver`. If the resolver isn't registered the framework returns `default(MetaConfigVersion)` (0.21.0 transitional behaviour); strict-throw lands in a follow-up.
+
+**Why `[EntityScope(Global)]` rejects `Optimistic`:** the server normalizes to `CurrentClientVersion` for dispatch, so the client's local-first optimistic execution runs under a different config branch than the server's — a guaranteed desync. Use `Server` / `ServerPatch` / `ServerReplace` / `Query` / `Signal` / `Local` on Global entities. (Compile-time `SHMETA_OPT_GLOBAL` diagnostic ships in a follow-up; today the mismatch is observable only at runtime via desync diagnostics.)
 
 ### Client-Side Config Flow (0.15.0+)
 

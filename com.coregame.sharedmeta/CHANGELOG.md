@@ -1,6 +1,42 @@
 # Changelog
 
-## [0.21.0] - 2026-05-10
+## [0.21.0] - 2026-05-13
+
+Server-side config-version handling reshaped in two coherent halves: a standardized versioned-config subsystem (registry + observer-driven hot reload) and a three-scope entity taxonomy (`Private` / `Shared` / `Global`) with runtime config-version pins driving per-scope semantics across subscribe, dispatch, and migration. Full design rationale and reference live in [docs/GUIDE.md § Entity Scope](../docs/GUIDE.md#entity-scope-entityscope) and [§ Per-Client Config Branches & State Migration](../docs/GUIDE.md#per-client-config-branches--state-migration).
+
+### Breaking — `IMetaConfigProvider<TConfig>.CurrentVersion` removed
+
+The pre-0.21.0 ambient "current version" property is gone — it was the framework's silent fallback for unresolved client versions, and gave migrations a way to advance state on a branch old clients couldn't handle. Per-call resolution is now always driven by the caller's client app version (real, propagated, or substituted via `IConfigVersionResolver.CurrentClientVersion` for server-internal callers). `BroadcastingConfigProvider` loses `CurrentVersion` / `SetCurrentVersion`; `ResolveLatestMatching(major, minor)` throws when no patch in the branch is published.
+
+Generator changes: migration step conditions no longer read `_configProvider.CurrentVersion`. `CheckAndRunLazyMigrationAsync(callerClientVersion, schemaCap)` threads the caller's version into `ComputeRequiredStateSchema`, which resolves per-step via `ResolveForClient`. Redundant inner `_cv == CurrentVersion` AND-checks removed (already gated by `_migrationCap`).
+
+### Added — `[EntityScope]` lifecycle taxonomy
+
+`EntityScope` enum + `EntityScopeAttribute` on the state class. Default (no attribute) is `Private` — existing code unchanged. See [docs/GUIDE.md § Entity Scope](../docs/GUIDE.md#entity-scope-entityscope) for per-scope semantics (subscribe model, runtime pin, optimistic-mode applicability).
+
+### Added — `IConfigVersionResolver.CurrentClientVersion`
+
+```csharp
+public interface IConfigVersionResolver
+{
+    string CurrentClientVersion { get; }                // 0.21.0+ — required when configs are used
+    MetaConfigVersion ResolveVersion(string stateTypeName, string entityId, MetaConfigVersion defaultVersion);
+}
+```
+
+`defaultVersion` now derives from `CurrentClientVersion` via the config class's `[MetaConfigVersion]` rules. Register a single implementation in DI; required when any `IMetaConfigProvider<>` is registered or any state declares `[EntityScope(EntityScope.Global)]`.
+
+### Added — `MetaClientOptions.ClientAppVersion` + transport plumbing
+
+Client-side `ClientAppVersion` is now stamped on `SessionConnectRequest.ClientVersion` at `MetaClient.ConnectAsync` and re-used on auto-reconnect. Server already extracts it into the connection-scoped `CallerClientVersion` for every RPC and subscribe. `IConnection.SessionConnectAsync(..., string? clientAppVersion = null)` and `IClientDispatcher.ConnectSessionAsync(..., string? clientAppVersion = null)` overloads add the parameter (optional — existing callers continue to work). All built-in transports updated (SignalR / HttpPolling / BestHttp variants / InProcess).
+
+### Added — `ExecutedConfigVersion` on responses and broadcasts
+
+`RpcResponse` (`[Id(9), Key(9)]`) and `EntityBroadcast` (`[Id(11)]`) carry the `MetaConfigVersion` the server actually executed under, populated from `MetaContext.ConfigVersion`. Propagated through `CallResponse<T>` / `VoidCallResponse` / `ByteCallResponse` / `NetworkBroadcast`. `SubscribeResponse.ConfigVersion` reflects the scope-aware effective version (pin for Private/Shared, `CurrentClientVersion`-resolved for Global) so the client materializes the same config the server will dispatch under. **Client replay path** (both `MetaServiceResolver`'s foreign-service `EntityReplayDispatcher` and generated `*ApiClient.DispatchServiceBroadcast`) now consumes `broadcast.ExecutedConfigVersion` and resolves the right `TConfig` for replay via `EntityConnection.ResolveConfigForBroadcast` — a lazy per-version cache backed by fire-and-forget `IClientMetaConfigProvider.GetConfigAsync`. The first broadcast at a drifted version replays under session config (one-time debug log), subsequent broadcasts at the same drifted version use the cached entry.
+
+### Added — `IEntityGrain<TState>.ForceMigrateToFloorAsync(string floorClientVersion)`
+
+Admin API for dropping support for an old config branch. Iterates entity IDs (sourced from the project's player DB / storage) and force-migrates each entity to the schema floor required by `floorClientVersion` (resolved via `[MetaConfigVersion]` rules). Returns `true` when migration ran. No subscriber required — works on cold or active entities. Existing active pins are not overwritten; only `state.Version` advances and is persisted.
 
 ### Added — server-side versioned config subsystem
 
@@ -49,7 +85,37 @@ siloBuilder.ConfigureServices(services =>
 
 Tests: `tests/SharedMeta.IntegrationTests/ConfigVersioningTests.cs` — 5 tests covering publish/get/list round-trip, cache hit/miss, observer-driven cache invalidation on publish, republish-invalidates-cache, and unpublish-drops-from-known-versions. Each test uses its own config type so the shared `TestCluster` fixture doesn't pollute per-test grain state.
 
-Full suite: 1262 tests pass on net8.0 and net10.0.
+### Added — strict `CallerClientVersion` contract
+
+`IMetaConfigProvider.ResolveForClient(null, _)` now throws — every code path that resolves config for a client must supply a non-empty version. Server-internal callers (timers, triggers, server-only services, cross-entity calls from a non-client context) substitute `IConfigVersionResolver.CurrentClientVersion` automatically: `EntityGrain.EntityCallHandler` falls back when `MetaContextAccessor.Current` is null, and generator-emitted `GetCachedConfigForClient` for Private/Shared cold calls substitutes when no pin is set. Misconfigured server-internal callers (no resolver registered AND no client version passed) fail-loud with an actionable message instead of silently routing to `default(MetaConfigVersion)`.
+
+### Added — `EntityScope` integration test coverage
+
+`tests/SharedMeta.IntegrationTests/EntityScopeTests.cs` — 5 core scenarios:
+- **Private + cross-entity call from a higher-version client**: pin locks both config dispatch and migration; target's schema doesn't advance.
+- **Shared + new subscriber at a different patch** (same `Major.Minor`): joiner downgrades to the pinned patch; `RecordConfig` returns the pinned patch, not the joiner's.
+- **Shared + incompatible `Major.Minor` joiner**: subscribe rejected with `EntityAccessDeniedException` ("Cannot join this shared session — your app version is on a different config branch").
+- **Global + supported client**: subscribe succeeds; state migrates under `IConfigVersionResolver.CurrentClientVersion`; `[MetaInit]` records the server-side config at the migration step.
+- **Global + unsupported (old) client**: compat gate rejects with "Your app version is too old / Please update your app".
+
+`tests/SharedMeta.IntegrationTests/EntityScopeAdvancedTests.cs` — 4 edge-case scenarios:
+- **Shared lifecycle on grain deactivation**: `ForceActivationCollection` drops the runtime-only pin; next first-subscriber re-establishes at their version (no stale pin from a previous activation).
+- **Multi-config `[MetaStateVersion]` AND-gate**: schema 2 requires both `MultiConfigA ≥ 2.0` AND `MultiConfigB ≥ 2.0`. Client at "1.0.0" (ConfigA=2.0 ✓ via fixed mapping, ConfigB=1.0 ✗) does NOT migrate; client at "2.0.0" (both ✓) does. Surfaced a generator bug — see Fixed below.
+- **`ForceMigrateToFloorAsync` over active pin**: admin force-migrate advances `state.Version` even when the entity has a live pin; pin itself is not touched.
+- **Global + resolver flip mid-session**: server's `IConfigVersionResolver.CurrentClientVersion` changes between calls → next call dispatches under the new version, migration runs, `ExecutedConfigVersion` on the response reflects the new branch.
+
+The remaining four corners of the design space — 2-hop cross-entity propagation, `BroadcastingConfigProvider` × `EntityScope`, resolver-not-registered fail-loud, server-internal nested async — are covered by inspection (1-hop already exercises the propagation contract; `BroadcastingConfigProvider` is tested in isolation by `ConfigVersioningTests`; the throw paths exist in generator-emitted code and `MetaProviderBase`). See the docstring in `EntityScopeAdvancedTests.cs` for the rationale.
+
+### Fixed — `[MetaStateVersion]` AND-gate bypass on multi-config migrations
+
+The generator emitted `_migrationCap = schemaCap ?? int.MaxValue` in `CheckAndRunLazyMigrationAsync`, where `schemaCap` is the method/client cap that doesn't consider the AND-gate's secondary-config side. The inner per-step guard in `RunInitAsync` only checks `targetSchema <= _migrationCap`, so a step whose primary config crossed its threshold but whose secondary did NOT would still run — exactly the case `EntityScopeAdvancedTests.MultiConfig_AndGate_OnlyMigratesWhenAllConfigsCrossThreshold` exercises. The cap now uses `required` (the AND-gate-aware value from `ComputeRequiredStateSchema`); per-step guards naturally stop at the AND-gate boundary.
+
+### Known limitations (deferred to follow-ups)
+
+- **No compile-time `SHMETA_OPT_GLOBAL` diagnostic.** Optimistic / CrossOptimistic on `[EntityScope(Global)]` is unsafe and currently signaled only via runtime desync. Generator needs a `DiagnosticDescriptor` infrastructure (none today). Tracked separately.
+- **Sweep helper for `ForceMigrateToFloorAsync`.** The per-entity API is in place (`IEntityGrain<TState>.ForceMigrateToFloorAsync`); iterating entity IDs is project-side (Orleans doesn't expose "all grains of type"). A reusable scanner that walks the storage layer for a given state type ships in a follow-up.
+
+Full suite: 230 passing + 0 skipped on net8.0 and net10.0, plus 411 patch-fuzz tests.
 
 ## [0.20.3] - 2026-05-10
 
