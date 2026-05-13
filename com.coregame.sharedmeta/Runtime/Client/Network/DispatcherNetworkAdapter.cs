@@ -62,7 +62,8 @@ namespace SharedMeta.Client.Network
                 RandomScrollDelta = op.MainOperation.Response.RandomScrollDelta,
                 NamedRandomScrollDeltas = op.MainOperation.Response.NamedRandomScrollDeltas,
                 PatchBytes = op.MainOperation.Response.PatchBytes,
-                StateBytes = op.MainOperation.Response.StateBytes
+                StateBytes = op.MainOperation.Response.StateBytes,
+                ExecutedConfigVersion = op.MainOperation.Response.ExecutedConfigVersion
             });
         }
 
@@ -108,7 +109,8 @@ namespace SharedMeta.Client.Network
                 NamedRandomScrollDeltas = rpcOp.MainOperation.Response.NamedRandomScrollDeltas,
                 PatchBytes = rpcOp.MainOperation.Response.PatchBytes,
                 StateBytes = rpcOp.MainOperation.Response.StateBytes,
-                DeepDesyncCrc = rpcOp.MainOperation.Response.DeepDesyncCrc
+                DeepDesyncCrc = rpcOp.MainOperation.Response.DeepDesyncCrc,
+                ExecutedConfigVersion = rpcOp.MainOperation.Response.ExecutedConfigVersion
             };
         }
 
@@ -142,7 +144,8 @@ namespace SharedMeta.Client.Network
                 NamedRandomScrollDeltas = respNoResult.NamedRandomScrollDeltas,
                 PatchBytes = respNoResult.PatchBytes,
                 StateBytes = respNoResult.StateBytes,
-                DeepDesyncCrc = respNoResult.DeepDesyncCrc
+                DeepDesyncCrc = respNoResult.DeepDesyncCrc,
+                ExecutedConfigVersion = respNoResult.ExecutedConfigVersion
             };
         }
 
@@ -176,7 +179,8 @@ namespace SharedMeta.Client.Network
                 NamedRandomScrollDeltas = rpcOp.MainOperation.Response.NamedRandomScrollDeltas,
                 PatchBytes = rpcOp.MainOperation.Response.PatchBytes,
                 StateBytes = rpcOp.MainOperation.Response.StateBytes,
-                DeepDesyncCrc = rpcOp.MainOperation.Response.DeepDesyncCrc
+                DeepDesyncCrc = rpcOp.MainOperation.Response.DeepDesyncCrc,
+                ExecutedConfigVersion = rpcOp.MainOperation.Response.ExecutedConfigVersion
             };
         }
 

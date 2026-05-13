@@ -52,6 +52,13 @@ namespace SharedMeta.Generator.Generators
         public List<MigrationCondition> MigrationConditions { get; set; } = new();
 
         /// <summary>
+        /// <c>EntityScope</c> declared via <c>[EntityScope(EntityScope.X)]</c> on the state
+        /// class, defaulting to <c>Private</c> (enum value 0) when absent. Drives per-scope
+        /// runtime pin behaviour in EntityGrain (Phases 5-7).
+        /// </summary>
+        public int EntityScopeValue { get; set; } = 0; // 0=Private, 1=Shared, 2=Global
+
+        /// <summary>
         /// True when the impl class carries <c>[MetaServiceImpl]</c> but its declared service interface
         /// is marked <c>[ServerMetaService]</c> (and NOT <c>[MetaService]</c>) — a category error that
         /// would otherwise produce a confusing CS0103 on the non-existent dispatcher type.
@@ -277,6 +284,19 @@ namespace SharedMeta.Generator.Generators
             }
             // Sort by ascending StateVersion so the generator emits steps in order
             info.MigrationConditions.Sort((a, b) => a.StateVersion.CompareTo(b.StateVersion));
+
+            // [EntityScope(EntityScope.X)] on the state class — 0.21.0 Phase 4. Default
+            // (no attribute) is Private (0). Aggregated per-state at the end of Analyze
+            // so multiple services on the same state share the same scope.
+            foreach (var stateAttr in stateType.GetAttributes())
+            {
+                if (stateAttr.AttributeClass?.ToDisplayString() != "SharedMeta.Core.EntityScopeAttribute")
+                    continue;
+                if (stateAttr.ConstructorArguments.Length == 0) continue;
+                if (stateAttr.ConstructorArguments[0].Value is int scopeVal)
+                    info.EntityScopeValue = scopeVal;
+                break; // single-attribute usage
+            }
 
             // Get server dependencies from constructor arguments (params Type[])
             if (attr.ConstructorArguments.Length > 2)
@@ -762,6 +782,17 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
             sb.AppendLine();
 
+            // 0.21.0 Phase 4: EntityScope override — emitted only when the state declares
+            // a non-Private scope (Private is the base default, no override needed).
+            // All services on the same state share the scope; take the first.
+            var stateScope = services.Select(s => s.EntityScopeValue).FirstOrDefault();
+            if (stateScope != 0)
+            {
+                var scopeName = stateScope == 1 ? "Shared" : stateScope == 2 ? "Global" : "Private";
+                sb.AppendLine($"        public override SharedMeta.Core.EntityScope Scope => SharedMeta.Core.EntityScope.{scopeName};");
+                sb.AppendLine();
+            }
+
             // NamedRandomDescriptors override — union of [NamedRandom] attributes across services sharing this state.
             // Since multiple services may share the same state, use any service's collected list (should be identical).
             var namedRandoms = services
@@ -845,6 +876,71 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("            }");
                 sb.AppendLine("        }");
                 sb.AppendLine();
+
+                // 0.21.0 Phase 5: EstablishConfigPinsFromClientVersion override —
+                // resolves the client's config version for each registered IMetaConfigProvider<>
+                // (primary + secondaries) and pins it. Called from EntityGrain.SubscribeAsync
+                // for Private (and Shared) scopes; Global never reaches here.
+                sb.AppendLine("        public override void EstablishConfigPinsFromClientVersion(string? clientVersion)");
+                sb.AppendLine("        {");
+                if (configType != null)
+                {
+                    sb.AppendLine("            if (_configProvider != null)");
+                    sb.AppendLine("            {");
+                    sb.AppendLine("                var _pv = _configProvider.ResolveForClient(clientVersion, _configVersionPolicyResolver);");
+                    sb.AppendLine($"                SetConfigPin(typeof({configType}).FullName!, _pv);");
+                    sb.AppendLine("            }");
+                }
+                foreach (var sec in secondaryProviders)
+                {
+                    sb.AppendLine($"            if (_configProvider_{sec.Ident} != null)");
+                    sb.AppendLine("            {");
+                    sb.AppendLine($"                var _sv = _configProvider_{sec.Ident}.ResolveForClient(clientVersion, null);");
+                    sb.AppendLine($"                SetConfigPin(typeof({sec.ConfigType}).FullName!, _sv);");
+                    sb.AppendLine("            }");
+                }
+                sb.AppendLine("        }");
+                sb.AppendLine();
+
+                // 0.21.0 Phase 6: ValidateClientCompatibleWithPins override — emitted only
+                // for Shared scope. Resolves the joiner's version per config type, compares
+                // against pins on Major.Minor. Patch difference is tolerated (joiner downgrades).
+                // Private has one subscriber so this never runs; Global never pins.
+                if (stateScope == 1) // EntityScope.Shared
+                {
+                    sb.AppendLine("        public override bool ValidateClientCompatibleWithPins(string? clientVersion, out string? reason)");
+                    sb.AppendLine("        {");
+                    sb.AppendLine("            reason = null;");
+                    if (configType != null)
+                    {
+                        sb.AppendLine("            if (_configProvider != null");
+                        sb.AppendLine($"                && TryGetConfigPin(typeof({configType}).FullName!, out var _pp))");
+                        sb.AppendLine("            {");
+                        sb.AppendLine("                var _jv = _configProvider.ResolveForClient(clientVersion, _configVersionPolicyResolver);");
+                        sb.AppendLine("                if (_jv.Major != _pp.Major || _jv.Minor != _pp.Minor)");
+                        sb.AppendLine("                {");
+                        sb.AppendLine($"                    reason = $\"config '{configType}' pinned at \" + _pp.Major + \".\" + _pp.Minor + \", joiner resolved to \" + _jv.Major + \".\" + _jv.Minor;");
+                        sb.AppendLine("                    return false;");
+                        sb.AppendLine("                }");
+                        sb.AppendLine("            }");
+                    }
+                    foreach (var sec in secondaryProviders)
+                    {
+                        sb.AppendLine($"            if (_configProvider_{sec.Ident} != null");
+                        sb.AppendLine($"                && TryGetConfigPin(typeof({sec.ConfigType}).FullName!, out var _sp_{sec.Ident}))");
+                        sb.AppendLine("            {");
+                        sb.AppendLine($"                var _sj_{sec.Ident} = _configProvider_{sec.Ident}.ResolveForClient(clientVersion, null);");
+                        sb.AppendLine($"                if (_sj_{sec.Ident}.Major != _sp_{sec.Ident}.Major || _sj_{sec.Ident}.Minor != _sp_{sec.Ident}.Minor)");
+                        sb.AppendLine("                {");
+                        sb.AppendLine($"                    reason = $\"config '{sec.ConfigType}' pinned at \" + _sp_{sec.Ident}.Major + \".\" + _sp_{sec.Ident}.Minor + \", joiner resolved to \" + _sj_{sec.Ident}.Major + \".\" + _sj_{sec.Ident}.Minor;");
+                        sb.AppendLine("                    return false;");
+                        sb.AppendLine("                }");
+                        sb.AppendLine("            }");
+                    }
+                    sb.AppendLine("            return true;");
+                    sb.AppendLine("        }");
+                    sb.AppendLine();
+                }
             }
 
             if (configType != null)
@@ -897,14 +993,43 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("        protected override object? GetCachedConfigForClient(string? clientVersion)");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_configProvider == null) return null;");
-                sb.AppendLine("            var key = clientVersion ?? string.Empty;");
-                sb.AppendLine("            if (!_configCacheByClient.TryGetValue(key, out var cached))");
-                sb.AppendLine("            {");
-                sb.AppendLine("                var resolved = ResolveClientConfigVersion(clientVersion);");
-                sb.AppendLine("                cached = _configProvider.GetConfig(resolved);");
-                sb.AppendLine("                _configCacheByClient[key] = cached;");
-                sb.AppendLine("            }");
-                sb.AppendLine("            return cached;");
+                if (stateScope == 2) // EntityScope.Global
+                {
+                    sb.AppendLine("            // 0.21.0 Phase 7 — EntityScope.Global: ignore the caller's clientVersion and");
+                    sb.AppendLine("            // resolve under IConfigVersionResolver.CurrentClientVersion. Every observer of a");
+                    sb.AppendLine("            // Global entity sees the same config regardless of who triggered the call.");
+                    sb.AppendLine("            if (_configVersionResolver == null || string.IsNullOrEmpty(_configVersionResolver.CurrentClientVersion))");
+                    sb.AppendLine("                throw new System.InvalidOperationException(");
+                    sb.AppendLine($"                    \"[EntityScope(Global)] state '{stateTypeFullName}' requires IConfigVersionResolver.CurrentClientVersion. \" +");
+                    sb.AppendLine("                    \"Register IConfigVersionResolver in DI and ensure CurrentClientVersion is non-empty.\");");
+                    sb.AppendLine("            var effectiveClient = _configVersionResolver.CurrentClientVersion;");
+                    sb.AppendLine("            var key = effectiveClient ?? string.Empty;");
+                    sb.AppendLine("            if (!_configCacheByClient.TryGetValue(key, out var cached))");
+                    sb.AppendLine("            {");
+                    sb.AppendLine("                var resolved = _configProvider.ResolveForClient(effectiveClient, _configVersionPolicyResolver);");
+                    sb.AppendLine("                cached = _configProvider.GetConfig(resolved);");
+                    sb.AppendLine("                _configCacheByClient[key] = cached;");
+                    sb.AppendLine("            }");
+                    sb.AppendLine("            return cached;");
+                }
+                else
+                {
+                    sb.AppendLine("            // 0.21.0 Phase 5: pin (if active) overrides per-client resolution at the");
+                    sb.AppendLine("            // dispatch boundary. Subscribe-time validation paths (compat gate, migration");
+                    sb.AppendLine("            // cap) keep using ResolveClientConfigVersion directly — pin only applies to");
+                    sb.AppendLine("            // per-call config materialization. Cache by clientVersion still; cache miss");
+                    sb.AppendLine("            // path resolves: pin first, then ResolveClientConfigVersion.");
+                    sb.AppendLine("            var key = clientVersion ?? string.Empty;");
+                    sb.AppendLine("            if (!_configCacheByClient.TryGetValue(key, out var cached))");
+                    sb.AppendLine("            {");
+                    sb.AppendLine($"                var resolved = TryGetConfigPin(typeof({configType}).FullName!, out var _pinned)");
+                    sb.AppendLine("                    ? _pinned");
+                    sb.AppendLine("                    : ResolveClientConfigVersion(clientVersion);");
+                    sb.AppendLine("                cached = _configProvider.GetConfig(resolved);");
+                    sb.AppendLine("                _configCacheByClient[key] = cached;");
+                    sb.AppendLine("            }");
+                    sb.AppendLine("            return cached;");
+                }
                 sb.AppendLine("        }");
                 sb.AppendLine();
                 sb.AppendLine("        protected override void ClearConfigCache()");

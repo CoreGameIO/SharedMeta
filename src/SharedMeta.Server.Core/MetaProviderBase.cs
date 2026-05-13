@@ -343,6 +343,116 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     protected string? MigrationClientVersion { get; set; }
 
     /// <summary>
+    /// The <see cref="EntityScope"/> declared on the state class via
+    /// <see cref="EntityScopeAttribute"/>. Default is <see cref="EntityScope.Private"/>
+    /// (no attribute / pre-0.21.0 code). Generated providers override when the state
+    /// class declares <c>[EntityScope(...)]</c>.
+    /// </summary>
+    public virtual EntityScope Scope => EntityScope.Private;
+
+    // ── Runtime config-version pin (0.21.0 Phase 4) ──────────────────────────────────
+    //
+    // Per [EntityScope], the framework pins config versions to the grain's active lifetime:
+    //
+    //   • EntityScope.Private — pin established on the (single) subscriber's connect; lives
+    //     in this dictionary for the grain's active lifetime. Cold calls (no active
+    //     subscriber, no pin) fall back to project policy via IConfigVersionResolver.
+    //   • EntityScope.Shared  — pin established on the FIRST subscriber's connect; subsequent
+    //     joiners are validated against it (patch-downgrade OK, Major.Minor must match).
+    //   • EntityScope.Global  — pin is NEVER set. Every call resolves config versions
+    //     freshly from IConfigVersionResolver.CurrentClientVersion.
+    //
+    // The pin is RUNTIME state, not persisted (per user feedback: "это рантайм состояние в
+    // грейне энтити" — it dies with grain deactivation, re-establishes on the next first
+    // subscribe). Keyed by configType.FullName so multi-config entities pin one version per
+    // config type independently.
+
+    private readonly Dictionary<string, MetaConfigVersion> _activeConfigPins = new();
+
+    /// <summary>
+    /// The set of config-type → pinned-version entries currently active on this provider.
+    /// Empty when the grain has no active subscribers (cold) or when the entity's scope is
+    /// <see cref="EntityScope.Global"/> (never pins).
+    /// </summary>
+    public IReadOnlyDictionary<string, MetaConfigVersion> ActiveConfigPins => _activeConfigPins;
+
+    /// <summary>
+    /// Set the pinned <see cref="MetaConfigVersion"/> for a config type on this active
+    /// provider. Phases 5-7 call this from <c>EntityGrain.SubscribeAsync</c> per scope:
+    /// Private (first subscriber for the owner), Shared (first subscriber overall).
+    /// Replaces an existing pin for the same key — callers that need first-write-wins
+    /// semantics should check <see cref="TryGetConfigPin"/> first.
+    /// </summary>
+    public void SetConfigPin(string configTypeFullName, MetaConfigVersion version)
+    {
+        if (string.IsNullOrEmpty(configTypeFullName))
+            throw new ArgumentException("configTypeFullName must be non-empty", nameof(configTypeFullName));
+        _activeConfigPins[configTypeFullName] = version;
+    }
+
+    /// <summary>
+    /// Look up the pinned <see cref="MetaConfigVersion"/> for a config type.
+    /// Returns <c>false</c> when no pin is set (cold grain, Global scope, or pin already
+    /// cleared) — callers should fall back to per-call resolution from the client's app
+    /// version (or to <see cref="IConfigVersionResolver.CurrentClientVersion"/> for
+    /// server-internal callers).
+    /// </summary>
+    public bool TryGetConfigPin(string configTypeFullName, out MetaConfigVersion version)
+    {
+        return _activeConfigPins.TryGetValue(configTypeFullName, out version);
+    }
+
+    /// <summary>
+    /// Drop all active pins. Phases 5-7 call this from the EntityGrain unsubscribe path
+    /// when the last active subscriber leaves — the next first-subscribe re-establishes
+    /// fresh pins (which may be newer versions if the calling client / current default has
+    /// advanced since).
+    /// </summary>
+    public void ClearConfigPins()
+    {
+        _activeConfigPins.Clear();
+    }
+
+    /// <summary>
+    /// Resolve and set config-version pins from a client app version. Called by EntityGrain
+    /// on first subscribe for <see cref="EntityScope.Private"/> and <see cref="EntityScope.Shared"/>
+    /// scopes. Generated providers override to walk their registered <c>IMetaConfigProvider&lt;&gt;</c>
+    /// fields (primary + secondaries) and call <see cref="SetConfigPin"/> with the resolved
+    /// <see cref="MetaConfigVersion"/> for each.
+    /// <para>
+    /// Default base implementation is a no-op — used by states without any config providers,
+    /// where pinning is meaningless.
+    /// </para>
+    /// </summary>
+    public virtual void EstablishConfigPinsFromClientVersion(string? clientVersion)
+    {
+        // Default: no config providers, no pins to set.
+    }
+
+    /// <summary>
+    /// 0.21.0 Phase 6 — Shared scope only: validate that a joining client's resolved config
+    /// versions are compatible with the pins established by the first subscriber. Returns
+    /// <c>true</c> when every pinned config type's <c>Major.Minor</c> matches the joiner's
+    /// resolved version (Patch can differ — joiner downgrades to the pinned patch). Returns
+    /// <c>false</c> when any config diverges on Major or Minor — the joiner is on a different
+    /// branch and cannot share the session.
+    /// <para>
+    /// On rejection, <paramref name="reason"/> is populated with a human-readable diff that
+    /// <c>EntityGrain.SubscribeAsync</c> includes in the rejection exception.
+    /// </para>
+    /// <para>
+    /// Default base impl returns <c>true</c>. Generator emits an override for states declared
+    /// with <see cref="EntityScope.Shared"/>. Private/Global never reach this method
+    /// (Private has only one subscriber; Global pins nothing).
+    /// </para>
+    /// </summary>
+    public virtual bool ValidateClientCompatibleWithPins(string? clientVersion, out string? reason)
+    {
+        reason = null;
+        return true;
+    }
+
+    /// <summary>
     /// Returns the maximum state schema permitted for a given client (per its resolved
     /// <c>[MetaConfigVersion]</c> branch). Used to gate activation-time and lazy migration
     /// so a connecting 1.x client cannot trigger a migration to schema 2 even when the
@@ -529,7 +639,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                     RandomScrollDelta = randomScrollDelta,
                     NamedRandomScrollDeltas = namedRandomScrollDeltas,
                     PatchBytes = patchBytes,
-                    DeepDesyncCrc = deepDesyncCrc
+                    DeepDesyncCrc = deepDesyncCrc,
+                    // 0.21.0: tell the client which config version was actually in effect for
+                    // this call. Caller's optimistic replay path uses this to materialize
+                    // the same config branch the server used, decoupling replay from
+                    // session-resolved versions (fixes [EntityScope(Global)] and hot rollout).
+                    ExecutedConfigVersion = MetaContext.ConfigVersion
                 },
                 Broadcasts = new List<EntityBroadcast>(),
                 CrossEntityCalls = crossEntityCalls,
@@ -547,7 +662,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                 ServerTimeTicks = call.ServerTimeTicks,
                 RandomScrollDelta = randomScrollDelta,
                 NamedRandomScrollDeltas = namedRandomScrollDeltas,
-                PatchBytes = patchBytes
+                PatchBytes = patchBytes,
+                // 0.21.0: every observer replays this broadcast under the same config the
+                // server used — not their own session-resolved version. Critical for
+                // [EntityScope(Global)] (server normalized to CurrentClientVersion) and for
+                // mid-session config rollouts that haven't reached all observers yet.
+                ExecutedConfigVersion = MetaContext.ConfigVersion
             };
 
             // Handle triggers if any — nest inside main broadcast
@@ -594,7 +714,9 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                         ServerTimeTicks = call.ServerTimeTicks,
                         RandomScrollDelta = triggerScrollDelta,
                         NamedRandomScrollDeltas = triggerNamedDeltas,
-                        PatchBytes = triggerPatchBytes
+                        PatchBytes = triggerPatchBytes,
+                        // Triggers run under the same MetaContext as the outer call — same config.
+                        ExecutedConfigVersion = MetaContext.ConfigVersion
                     });
                 }
             }
@@ -713,7 +835,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                 Payload = eventData,
                 ReplayPayload = replayPayload,
                 ExcludePlayerId = null, // Broadcast to everyone
-                ServerTimeTicks = MetaContext.ServerTimeTicks
+                ServerTimeTicks = MetaContext.ServerTimeTicks,
+                ExecutedConfigVersion = MetaContext.ConfigVersion
             });
 
             return new HandleEventResult { Broadcasts = broadcasts };

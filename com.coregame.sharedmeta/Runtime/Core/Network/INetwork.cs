@@ -131,5 +131,15 @@ namespace SharedMeta.Core.Network
 
         /// <summary>Per-index scroll deltas for [NamedRandom] streams (positional). Null when none advanced.</summary>
         public long[]? NamedRandomScrollDeltas { get; set; }
+
+        /// <summary>
+        /// The <see cref="MetaConfigVersion"/> the server actually executed under (added in
+        /// 0.21.0). Subscribers use it to pin <c>Context.Config</c> during broadcast replay,
+        /// so a cross-version observer (mid-session config rollout, or <c>[EntityScope(Global)]</c>
+        /// where the server normalized to <c>CurrentClientVersion</c>) replays the same config
+        /// the server saw. <c>default(MetaConfigVersion)</c> = no config system, fall back to
+        /// session-resolved version.
+        /// </summary>
+        public MetaConfigVersion ExecutedConfigVersion { get; set; }
     }
 }

@@ -73,6 +73,26 @@ namespace SharedMeta.Core
         /// </summary>
         [Id(8), Key(8)] public long[]? NamedRandomScrollDeltas { get; set; }
 
+        /// <summary>
+        /// The <see cref="MetaConfigVersion"/> the server actually executed this call under.
+        /// Added in 0.21.0 so the client's replay path (Optimistic / CrossOptimistic) materializes
+        /// the same config branch the server used, regardless of the client's own
+        /// session-resolved version.
+        /// <para>
+        /// Without this, a session-pinned client could desync when the server executes under
+        /// a different version — e.g. <c>[EntityScope(Global)]</c> entities where the server
+        /// substitutes <c>IConfigVersionResolver.CurrentClientVersion</c>, or a hot config
+        /// rollout mid-session that has not yet reached the client. Carrying the version on
+        /// each response makes replay deterministic.
+        /// </para>
+        /// <para>
+        /// Default <c>default(MetaConfigVersion)</c> (0.0.0) indicates "no config system" — the
+        /// client falls back to its session-resolved version (legacy behaviour). Servers using
+        /// configs always populate this field on every response.
+        /// </para>
+        /// </summary>
+        [Id(9), Key(9)] public MetaConfigVersion ExecutedConfigVersion { get; set; }
+
         /// <summary>True if the call failed (Error is not null).</summary>
         [IgnoreMember] public bool HasError => Error != null;
 

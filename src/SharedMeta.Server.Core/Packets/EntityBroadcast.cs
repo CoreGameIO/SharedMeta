@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Orleans;
+using SharedMeta.Core;
 
 namespace SharedMeta.Server.Core.Grains
 {
@@ -53,5 +54,15 @@ namespace SharedMeta.Server.Core.Grains
         /// randoms advanced. Subscribers use these for desync detection and Skip-catchup.
         /// </summary>
         [Id(10)] public long[]? NamedRandomScrollDeltas { get; set; }
+
+        /// <summary>
+        /// The <see cref="MetaConfigVersion"/> the server actually executed under (added in 0.21.0).
+        /// Subscribers use this to pin <c>Context.Config</c> during broadcast replay, so a
+        /// cross-version observer (e.g. patch rolled out mid-session, or <c>[EntityScope(Global)]</c>
+        /// entity where the server normalizes to <c>CurrentClientVersion</c>) replays under the
+        /// same config the server used. Default <c>default(MetaConfigVersion)</c> means "no config
+        /// system" — observers fall back to their session-resolved version.
+        /// </summary>
+        [Id(11)] public MetaConfigVersion ExecutedConfigVersion { get; set; }
     }
 }

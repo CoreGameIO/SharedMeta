@@ -46,6 +46,15 @@ namespace SharedMeta.Core.Network
 
         /// <summary>Per-index scroll deltas for [NamedRandom] streams (positional). Null when none advanced.</summary>
         public long[]? NamedRandomScrollDeltas { get; set; }
+
+        /// <summary>
+        /// The <see cref="MetaConfigVersion"/> the server actually executed under. Used by the
+        /// client's optimistic / cross-optimistic replay path to pin <c>Context.Config</c> to
+        /// the same branch the server saw, regardless of the client's own session-resolved
+        /// version. Added in 0.21.0. <c>default(MetaConfigVersion)</c> means "no config system"
+        /// — the client falls back to its session-resolved version.
+        /// </summary>
+        public MetaConfigVersion ExecutedConfigVersion { get; set; }
     }
 
     /// <summary>
@@ -85,6 +94,15 @@ namespace SharedMeta.Core.Network
 
         /// <summary>Per-index scroll deltas for [NamedRandom] streams (positional). Null when none advanced.</summary>
         public long[]? NamedRandomScrollDeltas { get; set; }
+
+        /// <summary>
+        /// The <see cref="MetaConfigVersion"/> the server actually executed under. Used by the
+        /// client's optimistic / cross-optimistic replay path to pin <c>Context.Config</c> to
+        /// the same branch the server saw, regardless of the client's own session-resolved
+        /// version. Added in 0.21.0. <c>default(MetaConfigVersion)</c> means "no config system"
+        /// — the client falls back to its session-resolved version.
+        /// </summary>
+        public MetaConfigVersion ExecutedConfigVersion { get; set; }
     }
 
     /// <summary>
@@ -129,5 +147,14 @@ namespace SharedMeta.Core.Network
 
         /// <summary>Per-index scroll deltas for [NamedRandom] streams (positional). Null when none advanced.</summary>
         public long[]? NamedRandomScrollDeltas { get; set; }
+
+        /// <summary>
+        /// The <see cref="MetaConfigVersion"/> the server actually executed under. Used by the
+        /// client's optimistic / cross-optimistic replay path to pin <c>Context.Config</c> to
+        /// the same branch the server saw, regardless of the client's own session-resolved
+        /// version. Added in 0.21.0. <c>default(MetaConfigVersion)</c> means "no config system"
+        /// — the client falls back to its session-resolved version.
+        /// </summary>
+        public MetaConfigVersion ExecutedConfigVersion { get; set; }
     }
 }

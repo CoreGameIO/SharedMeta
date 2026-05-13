@@ -304,6 +304,8 @@ namespace SharedMeta.Server.Core.Grains
             // Per-entity config compatibility gate: reject clients whose resolved config version
             // is below the minimum required for the entity's current state schema.
             // E.g. profile migrated to schema 2 (needs config >= 2.0) but client has config 1.5.
+            // Uses ResolveClientConfigVersion DIRECTLY (pre-pin) — the gate must see the joiner's
+            // OWN resolved version, not the pin (which may belong to an earlier subscriber).
             if (_provider != null)
             {
                 var resolvedConfigVersion = _provider.ResolveClientConfigVersion(clientVersion);
@@ -317,6 +319,36 @@ namespace SharedMeta.Server.Core.Grains
                         $"Your app version is too old for this entity's current state. " +
                         $"The profile has been upgraded (config {resolvedConfigVersion} is not sufficient). " +
                         $"Please update your app.");
+                }
+            }
+
+            // 0.21.0 Phases 5+6: establish runtime config-version pin (first subscriber) or
+            // validate against existing pin (subsequent Shared subscribers).
+            //
+            //   • EntityScope.Private — pin set once on owner connect; survives subscriber
+            //     churn until grain deactivation. Owner is the sole subscriber so the
+            //     ActiveConfigPins.Count check resolves "first-time" trivially.
+            //
+            //   • EntityScope.Shared — first subscriber establishes pin; every subsequent
+            //     joiner is validated against it. Patch differences tolerated (joiner gets
+            //     pinned patch via GetCachedConfigForClient); Major.Minor mismatch rejects.
+            //
+            //   • EntityScope.Global — pin is NEVER set. Every call resolves freshly from
+            //     IConfigVersionResolver.CurrentClientVersion.
+            if (_provider is MetaProviderBase<TState> mpbPin && mpbPin.Scope != EntityScope.Global)
+            {
+                if (mpbPin.ActiveConfigPins.Count == 0)
+                {
+                    mpbPin.EstablishConfigPinsFromClientVersion(clientVersion);
+                }
+                else if (mpbPin.Scope == EntityScope.Shared
+                    && !mpbPin.ValidateClientCompatibleWithPins(clientVersion, out var pinReason))
+                {
+                    _logger.LogWarning(
+                        "[EntityGrain] Shared-session pin mismatch: entity={EntityId} player={PlayerId} reason={Reason}",
+                        this.GetPrimaryKeyString(), playerId, pinReason);
+                    throw new EntityAccessDeniedException(
+                        $"Cannot join this shared session — your app version is on a different config branch. {pinReason}");
                 }
             }
 
