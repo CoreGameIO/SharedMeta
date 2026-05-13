@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Orleans.Hosting;
 using Orleans.Runtime.Hosting;
+using Orleans.Serialization;
 using SharedMeta.Core;
 
 namespace SharedMeta.Server.Core.Storage
@@ -40,9 +41,14 @@ namespace SharedMeta.Server.Core.Storage
                 var options = new FileGrainStorageOptions();
                 configureOptions?.Invoke(options);
 
-                var serializer = sp.GetRequiredService<IMetaSerializer>();
                 var logger = sp.GetRequiredService<ILogger<FileGrainStorage>>();
-                return new FileGrainStorage(options, serializer, logger);
+                var orleansSerializer = options.UseOrleansSerializer
+                    ? sp.GetRequiredService<Serializer>()
+                    : null;
+                var metaSerializer = options.UseOrleansSerializer
+                    ? sp.GetService<IMetaSerializer>()
+                    : sp.GetRequiredService<IMetaSerializer>();
+                return new FileGrainStorage(options, orleansSerializer, metaSerializer, logger);
             });
 
             return services;

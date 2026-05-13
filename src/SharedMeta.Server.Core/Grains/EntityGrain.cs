@@ -404,6 +404,22 @@ namespace SharedMeta.Server.Core.Grains
             _subscriberRefs.Remove(playerId);
             _logger.PlayerUnsubscribed(this.GetPrimaryKeyString(), playerId);
 
+            // 0.21.0: pin lives only while there are active subscribers. When the last
+            // subscriber leaves, drop pins so the next first-subscriber re-establishes
+            // fresh — picks up any patch published while the entity was effectively idle.
+            // For Private (single owner): disconnect + reconnect → fresh pin, hot-patches apply.
+            // For Shared: all-leave → next "first joiner" of a fresh session re-pins.
+            // Global never holds pins, no-op there.
+            if (_persistentState.State.Subscribers.Count == 0
+                && _provider is MetaProviderBase<TState> mpbClear
+                && mpbClear.ActiveConfigPins.Count > 0)
+            {
+                mpbClear.ClearConfigPins();
+                _logger.LogDebug(
+                    "[EntityGrain] Cleared config pins on '{EntityId}' — no active subscribers remain.",
+                    this.GetPrimaryKeyString());
+            }
+
             await _persistentState.WriteStateAsync();
             ResetPersistenceTracking();
         }

@@ -82,7 +82,7 @@ SharedMeta is a framework for **shared game meta-logic** between Client and Serv
 - `AuthGrain` / `AuthIndexGrain` — auth key → player ID mapping
 - `LobbyGrain` — matchmaking queue per game mode
 
-**Important:** Orleans `[GenerateSerializer]` / `[Id(n)]` are only for framework-internal grain state wrappers. Game state and DTOs use transport serializer attributes (MemoryPack/MessagePack).
+**Important:** transport serialization (`IMetaSerializer` — MemoryPack/MessagePack) and persistence (Orleans storage providers) are two independent serialization channels. Game state and DTOs need transport-serializer attributes for the wire and replay, **and** Orleans `[GenerateSerializer]` / `[Id(n)]` for persistence through any standard Orleans storage provider (Azure Tables, Redis, ADO.NET, or `FileGrainStorage` in its default Orleans mode). The Unity-side UPM package compiles via `Orleans.Stubs` (no-op `[GenerateSerializer]` / `[Id]` attributes), so the same `ISharedState` source builds on both sides.
 
 ### 3.2 Serialization: MemoryPack (primary) + MessagePack (alternative)
 
@@ -530,7 +530,7 @@ The same business code runs on Orleans server and local backend without modifica
 - Use `DateTime.Now` / `DateTime.UtcNow` in shared logic (non-deterministic)
 - Use `float` / `double` arithmetic in shared logic (non-deterministic across platforms: x86 SSE vs ARM NEON, RyuJIT vs Mono). Use `int`, `long`, `decimal`, or `Fp` fixed-point type
 - Add `Polyfills.cs` to individual .csproj files (already included via shared project)
-- Use Orleans `[GenerateSerializer]` / `[Id(n)]` on game state/DTOs (those are for framework-internal grain wrappers only)
+- Skip Orleans `[GenerateSerializer]` / `[Id(n)]` on `ISharedState` / DTOs if the server uses any production Orleans storage provider — only `FileGrainStorage` in `UseOrleansSerializer = false` mode tolerates their absence
 - Use runtime reflection or `Activator.CreateInstance` for service dispatch
 
 ---

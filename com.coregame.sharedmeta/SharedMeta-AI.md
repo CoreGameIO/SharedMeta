@@ -80,7 +80,8 @@ public partial class MyState : ISharedState
 - `[MemoryPackable(GenerateType.VersionTolerant)]` — use on all persisted types. Stores field orders explicitly, allowing safe field addition/removal. Without `VersionTolerant`, adding fields breaks deserialization of old data.
 - `[MemoryPackOrder(n)]` — MemoryPack field ordering. Required with `VersionTolerant`.
 - `[Key(n)]` — MessagePack field ordering. MessagePack with integer keys is inherently version-tolerant.
-- States are persisted and transmitted as bytes via the chosen transport serializer. Orleans `[GenerateSerializer]` / `[Id(n)]` are **not needed** on game state and DTO classes — those are only used internally by the framework.
+- Transport (wire + replay) is driven by `IMetaSerializer` (MemoryPack/MessagePack), so the attributes above are mandatory. Server persistence is a **separate** channel that goes through whichever Orleans storage provider the host registers. Real providers (Azure Tables, Redis, ADO.NET, the bundled `FileGrainStorage` in its default Orleans mode) use the Orleans serializer and require `[GenerateSerializer]` on every type in persisted grain state plus `[Id(n)]` on each member — including your `ISharedState` and nested DTOs. The UPM package ships `Orleans.Stubs` with no-op `[GenerateSerializer]` / `[Id]` attributes so Unity compiles the same source.
+- Orleans attributes are only optional when the server uses `FileGrainStorage` with `UseOrleansSerializer = false` (persistence then runs through `IMetaSerializer`).
 - For non-persisted DTOs (transport-only), plain `[MemoryPackable]` without `VersionTolerant` is acceptable.
 
 ### 2. Classes Must Be Partial

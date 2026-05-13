@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.21.1] - 2026-05-13
+
+### Changed — `FileGrainStorage` defaults to the Orleans serializer
+
+`FileGrainStorageOptions.UseOrleansSerializer` (new, defaults to `true`) selects how grain state is persisted on disk. The default mode matches every real Orleans storage provider (Azure Tables, Redis, ADO.NET) and works for any grain state type with `[GenerateSerializer]` — including types like `ConfigStoreGrainState` / `ConfigDirectoryGrainState` that previously failed because they had no `[MemoryPackable]` / `[MessagePackObject]` attribute. Set `UseOrleansSerializer = false` to keep the prior behaviour (state routed through `IMetaSerializer`).
+
+**Migration:** the two modes produce incompatible byte formats. Existing `./data` directories written by 0.21.0 (MemoryPack/MessagePack bytes) cannot be read by the new default — either delete the directory, or opt back into the old format with `UseOrleansSerializer = false`.
+
+### Added — Orleans serialization attributes on built-in and example grain states
+
+- `ConfigStoreGrainState` and `ConfigDirectoryGrainState` now carry `[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject, GenerateSerializer]` — they work in both `FileGrainStorage` modes and through any standard Orleans storage provider.
+- Example `ISharedState` types and nested DTOs (`GameState`, `ProfileState`, `Card`, `TablePair`, `Player`, `ExpeditionState`, Expedition `ProfileState`, `ResumeExpeditionResult`) now also carry `[GenerateSerializer]` + `[Id(n)]`. This is the recommended pattern for any project that uses a production Orleans storage provider.
+
+### Docs — clarified transport vs persistence serialization
+
+[docs/GUIDE.md](../docs/GUIDE.md), [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md), [SharedMeta-UserGuide.md](SharedMeta-UserGuide.md), and [SharedMeta-AI.md](SharedMeta-AI.md) now document the two channels: `IMetaSerializer` (MemoryPack/MessagePack) carries wire payloads and replay; Orleans storage providers persist grain state via the Orleans serializer and need `[GenerateSerializer]` + `[Id(n)]` on `ISharedState` and nested DTOs. The Unity UPM package already ships `Orleans.Stubs` (no-op attributes) for client-side compilation, so no client-side changes are needed.
+
 ## [0.21.0] - 2026-05-13
 
 Server-side config-version handling reshaped in two coherent halves: a standardized versioned-config subsystem (registry + observer-driven hot reload) and a three-scope entity taxonomy (`Private` / `Shared` / `Global`) with runtime config-version pins driving per-scope semantics across subscribe, dispatch, and migration. Full design rationale and reference live in [docs/GUIDE.md § Entity Scope](../docs/GUIDE.md#entity-scope-entityscope) and [§ Per-Client Config Branches & State Migration](../docs/GUIDE.md#per-client-config-branches--state-migration).
@@ -106,6 +123,24 @@ Tests: `tests/SharedMeta.IntegrationTests/ConfigVersioningTests.cs` — 5 tests 
 
 The remaining four corners of the design space — 2-hop cross-entity propagation, `BroadcastingConfigProvider` × `EntityScope`, resolver-not-registered fail-loud, server-internal nested async — are covered by inspection (1-hop already exercises the propagation contract; `BroadcastingConfigProvider` is tested in isolation by `ConfigVersioningTests`; the throw paths exist in generator-emitted code and `MetaProviderBase`). See the docstring in `EntityScopeAdvancedTests.cs` for the rationale.
 
+### Fixed — pin survives subscriber churn (now correctly drops on count→0)
+
+`EntityGrain.UnsubscribeAsync` now calls `ClearConfigPins` when the last subscriber leaves. The earlier behaviour kept pins alive across subscriber churn for the whole grain activation, which silently made admin-published patches invisible to reconnecting clients until the grain idle-deactivated or the silo restarted. Spec from the original design discussion: "pin lives while active subscriptions exist."
+
+- **Private** (single owner) — disconnect + reconnect within the same grain activation now re-pins at the latest available patch. Hot-fix patches via `IConfigRegistry.PublishAsync` apply on every fresh reconnect.
+- **Shared** — pin holds as long as at least one subscriber remains; all-leave + re-join is a fresh session (consistent with "Shared = natural update on the next session").
+- **Global** — never pinned, unaffected.
+
+Regression test: `EntityScopeAdvancedTests.Shared_AllSubscribersLeave_PinDropsAndRePinsOnNextSubscriber`.
+
+### Changed — async config materialization on grain activation
+
+Generator-emitted `InitializeConfigAsync` now uses `IMetaConfigProvider.GetConfigAsync` (replacing the sync `GetConfig` call which threw on `BroadcastingConfigProvider` cache miss because synchronous fetch from a grain-backed registry isn't possible). `EntityGrain.SubscribeAsync` awaits the async path; no sync-over-async on the grain activation thread. The sync `InitializeConfig` virtual remains for back-compat — `InitializeConfigAsync` default-forwards to it.
+
+### Changed — `MetaConfigVersion.ToString` always 3-component
+
+`ToString` now always returns `"Major.Minor.Patch"` (e.g. `"0.1.0"` instead of dropping the zero patch as `"0.1"`). The short-form was a footgun in logs and error messages — `"no cached config for 0.1"` was indistinguishable from a hypothetical 2-component version. `Parse` still accepts both forms for backward compatibility with user-typed strings in `[MetaConfigVersion]` attributes.
+
 ### Fixed — `[MetaStateVersion]` AND-gate bypass on multi-config migrations
 
 The generator emitted `_migrationCap = schemaCap ?? int.MaxValue` in `CheckAndRunLazyMigrationAsync`, where `schemaCap` is the method/client cap that doesn't consider the AND-gate's secondary-config side. The inner per-step guard in `RunInitAsync` only checks `targetSchema <= _migrationCap`, so a step whose primary config crossed its threshold but whose secondary did NOT would still run — exactly the case `EntityScopeAdvancedTests.MultiConfig_AndGate_OnlyMigratesWhenAllConfigsCrossThreshold` exercises. The cap now uses `required` (the AND-gate-aware value from `ComputeRequiredStateSchema`); per-step guards naturally stop at the AND-gate boundary.
@@ -115,7 +150,7 @@ The generator emitted `_migrationCap = schemaCap ?? int.MaxValue` in `CheckAndRu
 - **No compile-time `SHMETA_OPT_GLOBAL` diagnostic.** Optimistic / CrossOptimistic on `[EntityScope(Global)]` is unsafe and currently signaled only via runtime desync. Generator needs a `DiagnosticDescriptor` infrastructure (none today). Tracked separately.
 - **Sweep helper for `ForceMigrateToFloorAsync`.** The per-entity API is in place (`IEntityGrain<TState>.ForceMigrateToFloorAsync`); iterating entity IDs is project-side (Orleans doesn't expose "all grains of type"). A reusable scanner that walks the storage layer for a given state type ships in a follow-up.
 
-Full suite: 230 passing + 0 skipped on net8.0 and net10.0, plus 411 patch-fuzz tests.
+Full suite: 231 passing + 0 skipped on net8.0 and net10.0, plus 411 patch-fuzz tests.
 
 ## [0.20.3] - 2026-05-10
 

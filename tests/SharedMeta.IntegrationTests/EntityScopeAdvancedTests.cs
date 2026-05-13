@@ -107,6 +107,62 @@ public class EntityScopeAdvancedTests
     }
 
     // ═════════════════════════════════════════════════════════════════════════════
+    //  T1b: Pin drops when last subscriber leaves (no grain deactivation required).
+    //
+    //  The pin lives only while there are active subscribers. When the last subscriber
+    //  unsubscribes (graceful disconnect or explicit unsubscribe), the pin is cleared
+    //  immediately — so the next first-subscriber re-pins fresh, picking up any patches
+    //  published while the entity was effectively idle. This is the typical "publish a
+    //  hot-fix patch + clients reconnect to apply" workflow without requiring a server
+    //  restart or grain idle-deactivation.
+    //
+    //  Flow: A subscribes Shared entity at "1.0.0" → pin established. A disconnects
+    //  (TestClientSetup disposal triggers graceful disconnect → server-side
+    //  UnsubscribeAsync). ActiveConfigPins is empty afterwards. B subscribes at "2.0.0"
+    //  on the same entity → since pin is gone, B is the new "first subscriber" and
+    //  establishes pin at 2.0.0 (not stuck at 1.0.0).
+    // ═════════════════════════════════════════════════════════════════════════════
+    [Fact(Timeout = 60_000)]
+    public async Task Shared_AllSubscribersLeave_PinDropsAndRePinsOnNextSubscriber()
+    {
+        var entityId = UniqueId("scope-share-unsub-");
+        var aId = UniqueId("a-");
+        var bId = UniqueId("b-");
+        var server = CreateServer();
+
+        // Phase 1: A subscribes → pin 1.0.0.
+        {
+            await using var clientA = new TestClientSetup(server, aId, clientAppVersion: "1.0.0");
+            await clientA.ConnectAsync();
+            await clientA.CreateResolver().GetServiceAsync<SharedScopeServiceApiClient>(entityId);
+            // Verify pin established at 1.0.0 by recording config from A's session.
+            // (Direct ActiveConfigPins inspection would couple to internals; RecordConfig
+            // through the public API reflects the same value.)
+            var aApi = await clientA.CreateResolver().GetServiceAsync<SharedScopeServiceApiClient>(entityId);
+            await aApi.RecordConfigAsync();
+            var qapi = new SharedScopeServiceQueryApi(clientA.Connection, clientA.Serializer).EntityApi(entityId);
+            var pinA = await qapi.GetLastConfigAsync();
+            Assert.Equal(1, pinA.Major);
+            Assert.Equal(0, pinA.Minor);
+            // clientA.Dispose() at end of scope → graceful disconnect → server-side
+            // UnsubscribeAsync → ActiveConfigPins.ClearConfigPins() (no subscribers left).
+        }
+
+        // Phase 2: B subscribes at "2.0.0". With pin cleared on A's departure, B is the
+        // new "first subscriber" → pin re-establishes at 2.0.0 (not validated against the
+        // gone 1.0 pin). The same grain activation (no ForceActivationCollection between).
+        {
+            await using var clientB = new TestClientSetup(server, bId, clientAppVersion: "2.0.0");
+            await clientB.ConnectAsync();
+            var bApi = await clientB.CreateResolver().GetServiceAsync<SharedScopeServiceApiClient>(entityId);
+            await bApi.RecordConfigAsync();
+            var qapi = new SharedScopeServiceQueryApi(clientB.Connection, clientB.Serializer).EntityApi(entityId);
+            var pinB = await qapi.GetLastConfigAsync();
+            Assert.Equal(2, pinB.Major);   // fresh pin at B's version
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════════
     //  T2: Multi-config [MetaStateVersion] AND-gate.
     //
     //  MultiConfigState declares schema 2 = (MultiConfigA ≥ 2.0) AND (MultiConfigB ≥ 2.0).

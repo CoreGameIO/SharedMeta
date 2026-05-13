@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using MemoryPack;
+using MessagePack;
 using Microsoft.Extensions.Logging;
 using Orleans;
 using Orleans.Runtime;
@@ -14,10 +16,10 @@ namespace SharedMeta.Orleans.Config
     /// references are intentionally NOT in this state — they're cluster-runtime data and
     /// don't survive silo restarts.
     /// </summary>
-    [GenerateSerializer]
-    public class ConfigDirectoryGrainState
+    [MemoryPackable(GenerateType.VersionTolerant), MessagePackObject, GenerateSerializer]
+    public partial class ConfigDirectoryGrainState
     {
-        [Id(0)] public HashSet<MetaConfigVersion> Versions { get; set; } = new();
+        [Id(0), Key(0), MemoryPackOrder(0)] public HashSet<MetaConfigVersion> Versions { get; set; } = new();
     }
 
     /// <summary>

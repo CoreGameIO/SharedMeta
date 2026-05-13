@@ -1,4 +1,6 @@
 using System.Threading.Tasks;
+using MemoryPack;
+using MessagePack;
 using Orleans;
 using Orleans.Runtime;
 
@@ -8,10 +10,10 @@ namespace SharedMeta.Orleans.Config
     /// Persisted state for <see cref="ConfigStoreGrain"/>. One blob per (configType, version)
     /// grain. Null <see cref="Bytes"/> means the version was cleared (or never set).
     /// </summary>
-    [GenerateSerializer]
-    public class ConfigStoreGrainState
+    [MemoryPackable(GenerateType.VersionTolerant), MessagePackObject, GenerateSerializer]
+    public partial class ConfigStoreGrainState
     {
-        [Id(0)] public byte[]? Bytes { get; set; }
+        [Id(0), Key(0), MemoryPackOrder(0)] public byte[]? Bytes { get; set; }
     }
 
     /// <summary>

@@ -1,7 +1,9 @@
 using MemoryPack;
+using Orleans;
 
 namespace CardGame.Shared
 {
+    [GenerateSerializer]
     public enum Suit
     {
         Hearts,
@@ -10,6 +12,7 @@ namespace CardGame.Shared
         Spades
     }
 
+    [GenerateSerializer]
     public enum Rank
     {
         Six = 6,
@@ -23,11 +26,11 @@ namespace CardGame.Shared
         Ace = 14
     }
 
-    [MemoryPackable]
+    [MemoryPackable, GenerateSerializer]
     public partial class Card
     {
-        [MemoryPackOrder(0)] public Suit Suit { get; set; }
-        [MemoryPackOrder(1)] public Rank Rank { get; set; }
+        [MemoryPackOrder(0), Id(0)] public Suit Suit { get; set; }
+        [MemoryPackOrder(1), Id(1)] public Rank Rank { get; set; }
 
         public override string ToString() => $"{Rank} of {Suit}";
 

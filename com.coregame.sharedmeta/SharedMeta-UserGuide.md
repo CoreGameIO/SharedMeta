@@ -62,7 +62,19 @@ Rules:
 - Use `GenerateType.VersionTolerant` for MemoryPack on persisted state classes (allows adding fields without breaking old data)
 - Every property needs ordinal attributes: `[Key(n)]` (MessagePack) and/or `[MemoryPackOrder(n)]` (MemoryPack)
 - All nested types also need serialization attributes
-- `[GenerateSerializer]` / `[Id(n)]` (Orleans) are **not needed** on state classes
+- For server-side persistence through real Orleans storage providers (Azure Tables, Redis, ADO.NET, or `FileGrainStorage` in its default Orleans mode), add `[GenerateSerializer]` on the class plus `[Id(n)]` on each property. Unity compiles these via the bundled `Orleans.Stubs` (no-op attributes), so the same source builds on both sides:
+
+```csharp
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject, GenerateSerializer]
+[SharedState]
+public partial class GameState : ISharedState
+{
+    [Key(0), MemoryPackOrder(0), Id(0)] public int Score { get; set; }
+    [Key(1), MemoryPackOrder(1), Id(1)] public List<string> Items { get; set; } = new();
+}
+```
+
+You can skip the Orleans attributes only if you stay on `FileGrainStorage` with `UseOrleansSerializer = false` — that mode routes persistence through `IMetaSerializer` (MemoryPack/MessagePack) instead of the Orleans serializer.
 
 ---
 

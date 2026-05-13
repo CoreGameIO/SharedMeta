@@ -172,7 +172,11 @@ public partial class GameState : ISharedState
 }
 ```
 
-`[MemoryPackOrder(n)]` (or `[Key(n)]` for MessagePack) provides version tolerance — you can add new fields without breaking existing persisted state. `GenerateType.VersionTolerant` ensures MemoryPack stores field orders explicitly, allowing safe addition/removal of fields in persisted data. States are persisted and transmitted as bytes via the chosen transport serializer; Orleans `[GenerateSerializer]`/`[Id(n)]` are not needed on game state/DTO classes.
+`[MemoryPackOrder(n)]` (or `[Key(n)]` for MessagePack) provides version tolerance — you can add new fields without breaking existing persisted state. `GenerateType.VersionTolerant` ensures MemoryPack stores field orders explicitly, allowing safe addition/removal of fields in persisted data.
+
+**Persistence vs transport serialization.** The transport serializer (`IMetaSerializer` — MemoryPack or MessagePack) carries state over the wire and into replay payloads. On the server, persisted grain state passes through whatever **Orleans storage provider** you registered (Azure Tables, Redis, ADO.NET, the bundled `FileGrainStorage` in its default Orleans mode, etc.) — those providers use the **Orleans serializer**, which requires `[GenerateSerializer]` + `[Id(n)]` on every type that ends up in persisted grain state, including your `ISharedState` and the DTOs nested inside it. The Unity package ships `Orleans.Stubs` with no-op `[GenerateSerializer]` / `[Id]` attributes, so client-side code compiles without referencing the real Orleans NuGets.
+
+If you only ever use `FileGrainStorage` with `UseOrleansSerializer = false`, you can skip the Orleans attributes — persistence will then go through `IMetaSerializer` and only the MemoryPack/MessagePack attributes matter. For any production-grade storage provider, add the Orleans attributes.
 
 ### Service Interface
 
@@ -2083,7 +2087,19 @@ public partial class MyState : ISharedState
 }
 ```
 
-States are persisted and transmitted as bytes via the chosen transport serializer. Orleans `[GenerateSerializer]` / `[Id(n)]` are **not needed** on game state and DTO classes — those are only used internally by the framework.
+**For server persistence through Orleans storage providers, also add `[GenerateSerializer]` + `[Id(n)]`:**
+```csharp
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject, GenerateSerializer]
+public partial class MyState : ISharedState
+{
+    [Key(0), MemoryPackOrder(0), Id(0)] public string Name { get; set; }
+    [Key(1), MemoryPackOrder(1), Id(1)] public int Value { get; set; }
+}
+```
+
+Real Orleans storage providers (Azure Tables, Redis, ADO.NET, and the bundled `FileGrainStorage` in its default Orleans mode) drive persistence through the **Orleans serializer**, which requires `[GenerateSerializer]` + `[Id(n)]` on every type in the persisted graph — including your `ISharedState` and nested DTOs. The transport serializer (`IMetaSerializer` — MemoryPack/MessagePack) still owns wire payloads and replay, so the MemoryPack/MessagePack attributes are not redundant. Unity-side compilation works thanks to `Orleans.Stubs` (no-op attributes shipped with the UPM package).
+
+If you opt `FileGrainStorage` into MemoryPack/MessagePack mode (`UseOrleansSerializer = false`), the Orleans attributes are not strictly required — but adding them costs nothing and lets you switch storage providers later without touching state classes.
 
 ### Version Tolerance Rules
 
@@ -4261,7 +4277,7 @@ Game state and DTO classes need a transport serializer attribute with field orde
 - **MessagePack**: `[MessagePackObject]` + `[Key(n)]` on properties
 - **Both**: `[MemoryPackable, MessagePackObject]` + `[Key(n), MemoryPackOrder(n)]`
 
-Orleans `[GenerateSerializer]`/`[Id(n)]` are not needed on game state/DTO classes — those are only used internally by the framework for grain-to-grain calls.
+Orleans `[GenerateSerializer]` + `[Id(n)]` are required on `ISharedState` and nested DTOs when the server uses any standard Orleans storage provider (Azure Tables, Redis, ADO.NET, or `FileGrainStorage` with `UseOrleansSerializer = true` — the default). Unity-side compiles via `Orleans.Stubs`. Skipping them is only safe with `FileGrainStorage(UseOrleansSerializer = false)`.
 
 ### Deterministic Random
 

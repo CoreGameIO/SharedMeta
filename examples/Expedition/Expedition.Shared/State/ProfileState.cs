@@ -1,5 +1,6 @@
 using MemoryPack;
 using MessagePack;
+using Orleans;
 using SharedMeta.Core;
 
 namespace Expedition.Shared
@@ -10,7 +11,7 @@ namespace Expedition.Shared
     /// Energy can be purchased with money (bypasses cap).
     /// Energy and Money are [Tracked] for push-based UI change notifications.
     /// </summary>
-    [MemoryPackable(GenerateType.VersionTolerant), MessagePackObject(AllowPrivate = true)]
+    [MemoryPackable(GenerateType.VersionTolerant), MessagePackObject(AllowPrivate = true), GenerateSerializer]
     [SharedState]
     // Schema 2 = config 2.0+ — see ExpeditionState for the migration story.
     // Per-entity gate also applies to ProfileState: once a profile is at schema 2,
@@ -18,13 +19,13 @@ namespace Expedition.Shared
     [MetaStateVersion(2, "2.0", typeof(ExpeditionConfig))]
     public partial class ProfileState : ISharedState
     {
-        [Key(0), MemoryPackOrder(0)] public string PlayerId { get; set; } = "";
-        [Key(1), MemoryPackOrder(1), MemoryPackInclude, Tracked] private int _energy = 50;
-        [Key(2), MemoryPackOrder(2)] public int MaxEnergy { get; set; } = 50;
-        [Key(3), MemoryPackOrder(3), MemoryPackInclude, Tracked] private int _money = 100;
-        [Key(4), MemoryPackOrder(4)] public long LastEnergyUpdateTicks { get; set; }
-        [Key(5), MemoryPackOrder(5)] public int EnergyRegenSeconds { get; set; } = 10;
-        [Key(6), MemoryPackOrder(6)] public string? CurrentExpeditionEntityId { get; set; }
-        [Key(7), MemoryPackOrder(7)] public int ExpeditionCounter { get; set; }
+        [Key(0), MemoryPackOrder(0), Id(0)] public string PlayerId { get; set; } = "";
+        [Key(1), MemoryPackOrder(1), Id(1), MemoryPackInclude, Tracked] private int _energy = 50;
+        [Key(2), MemoryPackOrder(2), Id(2)] public int MaxEnergy { get; set; } = 50;
+        [Key(3), MemoryPackOrder(3), Id(3), MemoryPackInclude, Tracked] private int _money = 100;
+        [Key(4), MemoryPackOrder(4), Id(4)] public long LastEnergyUpdateTicks { get; set; }
+        [Key(5), MemoryPackOrder(5), Id(5)] public int EnergyRegenSeconds { get; set; } = 10;
+        [Key(6), MemoryPackOrder(6), Id(6)] public string? CurrentExpeditionEntityId { get; set; }
+        [Key(7), MemoryPackOrder(7), Id(7)] public int ExpeditionCounter { get; set; }
     }
 }
