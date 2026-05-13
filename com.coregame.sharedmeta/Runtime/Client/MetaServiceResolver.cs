@@ -223,7 +223,9 @@ namespace SharedMeta.Client
                     StateContainer = stateContainer,
                     OptimisticRandom = optimisticRandom,
                     NamedRandoms = namedRandoms,
-                    Config = entityConfig
+                    Config = entityConfig,
+                    ConfigType = config.ConfigType,
+                    ConfigVersion = subResult.ConfigVersion,
                 };
 
                 // Entity-level broadcast handler: applies state-data (StateBytes / PatchBytes) to the
@@ -331,6 +333,66 @@ namespace SharedMeta.Client
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// 0.20.3: snapshot every currently subscribed entity for debug inspection. Use to
+        /// answer "which entities is this client tracking, which config branch got pinned,
+        /// which services are wired locally?" — the kind of question that comes up when a
+        /// desync or NRE deep in user code needs context. Snapshot is taken at call time
+        /// and is not kept live; do not branch production logic on the returned records
+        /// (use <see cref="GetState{TState}"/> + state container <c>OnMutated</c> for that).
+        /// </summary>
+        public IReadOnlyList<SubscribedEntityInfo> GetSubscribedEntities()
+        {
+            lock (_lock)
+            {
+                var result = new List<SubscribedEntityInfo>(_connections.Count);
+                foreach (var (entityId, connection) in _connections)
+                {
+                    result.Add(new SubscribedEntityInfo
+                    {
+                        EntityId = entityId,
+                        StateType = connection.StateType,
+                        ConfigType = connection.ConfigType,
+                        ConfigVersion = connection.ConfigVersion,
+                        ServiceNames = new List<string>(connection.LocalServiceNames),
+                        State = connection.StateContainer.State,
+                        Config = connection.Config,
+                    });
+                }
+                return result;
+            }
+        }
+
+        /// <summary>
+        /// 0.20.3: convenience one-liner for logs / status panels. Produces a multi-line
+        /// summary of <see cref="GetSubscribedEntities"/>:
+        /// <code>
+        /// alice (ProfileState, ExpeditionConfig@2.0, [IProfileService])
+        /// expedition-alice-1 (ExpeditionState, ExpeditionConfig@2.0, [IExpeditionService])
+        /// </code>
+        /// Format is debug-only and may change; do not parse.
+        /// </summary>
+        public string DescribeSubscriptions()
+        {
+            var snapshot = GetSubscribedEntities();
+            if (snapshot.Count == 0) return "(no subscribed entities)";
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < snapshot.Count; i++)
+            {
+                var e = snapshot[i];
+                var configPart = e.ConfigType != null
+                    ? $"{e.ConfigType.Name}@{e.ConfigVersion.Major}.{e.ConfigVersion.Minor}"
+                    : "no config";
+                var services = e.ServiceNames.Count == 0
+                    ? "(no local API clients)"
+                    : "[" + string.Join(", ", e.ServiceNames) + "]";
+                sb.Append(e.EntityId).Append(" (").Append(e.StateType.Name)
+                  .Append(", ").Append(configPart).Append(", ").Append(services).Append(')');
+                if (i < snapshot.Count - 1) sb.AppendLine();
+            }
+            return sb.ToString();
         }
 
         /// <summary>
@@ -467,7 +529,9 @@ namespace SharedMeta.Client
                 StateContainer = stateContainer,
                 OptimisticRandom = optimisticRandom,
                 NamedRandoms = namedRandoms,
-                Config = entityConfig
+                Config = entityConfig,
+                ConfigType = config.ConfigType,
+                ConfigVersion = subResult.ConfigVersion,
             };
             newConnection.SubscribeBroadcasts(_serializer, config.PatchApplier, LookupConfigByServiceName, this);
 
@@ -659,6 +723,10 @@ namespace SharedMeta.Client
             public MetaRandom? OptimisticRandom { get; set; }
             public MetaRandom[]? NamedRandoms { get; set; }
             public object? Config { get; set; }
+            /// <summary>0.20.3: tracked for <see cref="GetSubscribedEntities"/> debug snapshot.</summary>
+            public Type? ConfigType { get; init; }
+            /// <summary>0.20.3: tracked for <see cref="GetSubscribedEntities"/> debug snapshot.</summary>
+            public MetaConfigVersion ConfigVersion { get; init; }
             public Dictionary<Type, object> ApiClients { get; } = new();
             // ServiceNames that have an ApiClient registered locally — entity handler skips
             // EntityReplayDispatcher for these to avoid double-application (the matching

@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.20.3] - 2026-05-10
+
+### Added — subscription introspection on the client
+
+Debug helper for "which entities is this client tracking, which config branch got pinned, which services are wired locally?" — the question that comes up when a desync, NRE, or unexpected RPC failure needs context about the client's view of the world.
+
+```csharp
+IReadOnlyList<SubscribedEntityInfo> snapshot = client.GetSubscribedEntities();
+foreach (var e in snapshot)
+    Debug.Log($"{e.EntityId} ({e.StateType.Name}, {e.ConfigType?.Name}@{e.ConfigVersion.Major}.{e.ConfigVersion.Minor})");
+
+// or, one-liner for logs / status panels:
+Debug.Log(client.DescribeSubscriptions());
+// alice (ProfileState, ExpeditionConfig@2.0, [IProfileService])
+// expedition-alice-1 (ExpeditionState, ExpeditionConfig@2.0, [IExpeditionService])
+```
+
+`SubscribedEntityInfo` is a read-only record exposing `EntityId`, `StateType`, `ConfigType`, `ConfigVersion`, `ServiceNames` (locally-registered API clients), `State` (live reference), and `Config` (resolved config instance). Available on both `MetaServiceResolver` and `MetaClient` (forwards). `DescribeSubscriptions()` returns a multi-line debug summary — format is intentionally not parseable. Snapshot is taken at call time; do not branch production logic on it (use the existing `GetState<T>` / `OnMutated` for live data).
+
+Coverage: `tests/SharedMeta.IntegrationTests/SubscriptionIntrospectionTests.cs`.
+
+Full suite: 1252 tests pass on net8.0 and net10.0.
+
 ## [0.20.2] - 2026-05-10
 
 ### Fixed — `[MetaService(DefaultConfig = true)]` cross-assembly resolution

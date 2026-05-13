@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 #if !NETSTANDARD2_1
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -239,6 +240,19 @@ namespace SharedMeta.Client
         {
             return _resolver.GetEntityConfig<TConfig>(entityId);
         }
+
+        /// <summary>
+        /// 0.20.3: read-only snapshot of every currently subscribed entity for debug
+        /// inspection. See <see cref="MetaServiceResolver.GetSubscribedEntities"/>.
+        /// </summary>
+        public IReadOnlyList<SubscribedEntityInfo> GetSubscribedEntities()
+            => _resolver.GetSubscribedEntities();
+
+        /// <summary>
+        /// 0.20.3: human-readable one-liner per subscribed entity (id, state type, pinned
+        /// config, locally-registered services). Format is debug-only; do not parse.
+        /// </summary>
+        public string DescribeSubscriptions() => _resolver.DescribeSubscriptions();
 
         public async ValueTask DisposeAsync()
         {
