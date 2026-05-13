@@ -290,7 +290,7 @@ namespace SharedMeta.Server.Core.Grains
                 var clientCfg = mpbInit.ResolveClientConfigVersion(clientVersion);
                 mpbInit.InitializeConfig(clientCfg);
                 var cap = mpbInit.ComputeSchemaCapForClient(clientVersion);
-                if (await mpbInit.RunInitOrMigrateAsync(cap))
+                if (await mpbInit.RunInitOrMigrateAsync(clientVersion, cap))
                 {
                     state.Version = mpbInit.LazyMigrationNewVersion;
                     mpbInit.LazyMigrationCompleted = false;

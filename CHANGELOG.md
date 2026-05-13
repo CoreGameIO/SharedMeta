@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.21.0] - 2026-05-10
+
+### Added — server-side versioned config subsystem
+
+Standardized server-side handling of multi-version configs with hot reload across silos. Closes the gap between `[MetaConfigVersion]` per-client branch rules (already in 0.19.0) and serving infrastructure, which until now was 100% user-side and reliably error-prone (cache staleness, missing fallback, no reload story without a silo restart).
+
+**Shape:**
+
+```csharp
+// SharedMeta.Server.Core — Orleans-free contract, easy to mock in unit tests.
+public interface IConfigRegistry
+{
+    Task<byte[]?> GetAsync(Type configType, MetaConfigVersion version);
+    Task<IReadOnlyList<MetaConfigVersion>> ListVersionsAsync(Type configType);
+    Task PublishAsync(Type configType, MetaConfigVersion version, byte[] configBytes);
+    Task UnpublishAsync(Type configType, MetaConfigVersion version);
+}
+// + ConfigRegistryExtensions: typed GetAsync<TConfig> / PublishAsync<TConfig> via IMetaSerializer.
+```
+
+```csharp
+// SharedMeta.Orleans — grain-backed impl.
+//   IConfigStoreGrain     — one per (configType.FullName, MetaConfigVersion); holds the bytes
+//   IConfigDirectoryGrain — one per configType.FullName; tracks the published version set + observer list
+//   IConfigUpdateObserver — observer interface ([OneWay] callbacks)
+//   GrainConfigRegistry   — IConfigRegistry façade that delegates to the grains
+//   BroadcastingConfigProvider<TConfig> — IMetaConfigProvider<TConfig> with in-memory cache + observer-driven invalidation
+```
+
+**Wiring on the silo:**
+
+```csharp
+siloBuilder.ConfigureServices(services =>
+{
+    services.AddSharedMetaConfigVersioning();
+    services.AddSharedMetaConfigProvider<ExpeditionConfig>();
+    services.AddSharedMetaConfigProvider<ProfileConfig>();
+});
+// On startup: await serviceProvider.WarmUpConfigProvidersAsync(typeof(ExpeditionConfig), typeof(ProfileConfig));
+```
+
+**Multi-silo.** Each silo runs its own `BroadcastingConfigProvider<TConfig>` DI singleton and registers as a separate `IConfigUpdateObserver` with the per-type `ConfigDirectoryGrain`. On `PublishAsync` / `UnpublishAsync` the grain fans out `[OneWay]` callbacks to every subscriber. Dead observer references (from silo restarts before unsubscribe) are pruned lazily during fan-out. The cache-miss path always falls back to `IConfigRegistry.GetAsync`, so a dropped observer notification cannot cause stale serving — at worst the cache is briefly colder.
+
+**Persistence.** `ConfigStoreGrain` and `ConfigDirectoryGrain` use `[PersistentState("ConfigStore", "Default")]` / `[PersistentState("ConfigDirectory", "Default")]`. The silo host picks which Orleans storage provider backs the `"Default"` name (in-memory for tests, Azure Tables / Redis / Postgres for production). Observer references are NOT persisted — they're cluster-runtime data, dropped on silo restart.
+
+**Grain addressing.** Per-(type, version) keying for the store grain (`"{typeFullName}::{Major}.{Minor}.{Patch}"`) keeps writes contention-free and lets the cluster lazily activate only versions that are actually queried. Listing the version set is the directory grain's job.
+
+Tests: `tests/SharedMeta.IntegrationTests/ConfigVersioningTests.cs` — 5 tests covering publish/get/list round-trip, cache hit/miss, observer-driven cache invalidation on publish, republish-invalidates-cache, and unpublish-drops-from-known-versions. Each test uses its own config type so the shared `TestCluster` fixture doesn't pollute per-test grain state.
+
+Full suite: 1262 tests pass on net8.0 and net10.0.
+
 ## [0.20.3] - 2026-05-10
 
 ### Added — subscription introspection on the client

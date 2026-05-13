@@ -317,18 +317,36 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// have been updated. Generated providers override this when the state declares
     /// <c>[MetaStateVersion]</c> attributes.
     /// <para>
+    /// <paramref name="callerClientVersion"/> is the client app version that triggered the
+    /// migration (e.g. the calling client on HandleCallAsync, the subscribing client on
+    /// EntityGrain.SubscribeAsync). Required — generated migration step conditions resolve
+    /// the relevant config versions from it via
+    /// <see cref="IMetaConfigProvider{TConfig}.ResolveForClient"/>. 0.21.0+: migration is
+    /// always client-driven; passing null indicates "no migration available."
+    /// </para>
+    /// <para>
     /// <paramref name="schemaCap"/> caps the migration target — when non-null, the framework
     /// migrates only up to that schema, not beyond. Used to honour
     /// <c>[MinStateVersion(N)]</c> on the dispatched method.
     /// </para>
     /// </summary>
-    protected virtual Task<bool> CheckAndRunLazyMigrationAsync(int? schemaCap = null) => Task.FromResult(false);
+    protected virtual Task<bool> CheckAndRunLazyMigrationAsync(string? callerClientVersion, int? schemaCap = null)
+        => Task.FromResult(false);
+
+    /// <summary>
+    /// Holds the <c>CallerClientVersion</c> of the in-flight migration so generated
+    /// <c>RunInitAsync</c> step conditions can resolve config versions per-client without
+    /// taking a new parameter. Set by <see cref="CheckAndRunLazyMigrationAsync"/> right
+    /// before invoking <c>InitializeStateAsync</c>; restored in finally. Mirrors the
+    /// <c>_migrationCap</c> pattern.
+    /// </summary>
+    protected string? MigrationClientVersion { get; set; }
 
     /// <summary>
     /// Returns the maximum state schema permitted for a given client (per its resolved
     /// <c>[MetaConfigVersion]</c> branch). Used to gate activation-time and lazy migration
     /// so a connecting 1.x client cannot trigger a migration to schema 2 even when the
-    /// provider's <c>CurrentVersion</c> would otherwise satisfy that step.
+    /// server has a newer config branch published.
     /// <para>
     /// Default returns null (uncapped) — same as before, preserving behaviour when no
     /// <c>[MetaStateVersion]</c> declarations exist. Generated providers override.
@@ -340,8 +358,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// Public entry point for EntityGrain to drive client-aware init/migration outside the
     /// per-call dispatch path (e.g. on Subscribe). Returns true when the schema advanced.
     /// </summary>
-    public Task<bool> RunInitOrMigrateAsync(int? schemaCap)
-        => CheckAndRunLazyMigrationAsync(schemaCap);
+    public Task<bool> RunInitOrMigrateAsync(string? callerClientVersion, int? schemaCap)
+        => CheckAndRunLazyMigrationAsync(callerClientVersion, schemaCap);
 
     /// <summary>
     /// Per-method migration policy: returns true when the dispatched method carries
@@ -399,7 +417,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             schemaCap = methodCap.HasValue && clientCap.HasValue
                 ? System.Math.Min(methodCap.Value, clientCap.Value)
                 : (methodCap ?? clientCap);
-            await CheckAndRunLazyMigrationAsync(schemaCap);
+            await CheckAndRunLazyMigrationAsync(call.CallerClientVersion, schemaCap);
         }
 
         if (skipMigration)
@@ -738,7 +756,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         // HandleCallAsync, so the check is duplicated here. EntityGrain checks
         // LazyMigrationCompleted after HandleCallAsync; for queries we persist inline via
         // SaveStateHandler when migration ran. [NoMigrate]/[MinStateVersion] policies apply.
-        if (!skipMigration && await CheckAndRunLazyMigrationAsync(schemaCap) && SaveStateHandler != null)
+        if (!skipMigration && await CheckAndRunLazyMigrationAsync(call.CallerClientVersion, schemaCap) && SaveStateHandler != null)
             await SaveStateHandler();
 
         if (skipMigration)

@@ -35,6 +35,77 @@ namespace SharedMeta.Core
     }
 
     /// <summary>
+    /// Lifecycle / sharing model of an entity. Drives how the framework resolves config
+    /// versions, pins them across calls, validates joining subscribers, and which execution
+    /// modes are admissible.
+    ///
+    /// Declared via <see cref="EntityScopeAttribute"/> on the <see cref="ISharedState"/> class.
+    /// Default (no attribute) is <see cref="Private"/>.
+    /// </summary>
+    public enum EntityScope
+    {
+        /// <summary>
+        /// Single-owner entity — typically the player's profile or a player-owned activity
+        /// (e.g. solo expedition). Only the owner subscribes; other players may issue calls
+        /// (e.g. send a gift) without subscribing.
+        ///
+        /// Config-version pin is established on the owner's subscribe and lives in grain
+        /// memory for the active session. State migrates forward via <c>[MetaStateVersion]</c>
+        /// thresholds when the subscriber's resolved config requires a higher schema.
+        /// When the grain deactivates (no active subscribers + idle TTL) the pin is dropped;
+        /// next activation re-establishes it from the next subscribe.
+        ///
+        /// Cold calls into a deactivated Private entity (no active subscriber) fall back to
+        /// project policy via <c>IConfigVersionResolver</c>.
+        /// </summary>
+        Private = 0,
+
+        /// <summary>
+        /// Multi-player session entity — e.g. a PvP match, a co-op raid, an ephemeral party.
+        /// The first subscriber establishes the config-version pin for the duration of the
+        /// active session. Subsequent subscribers' resolved versions must agree with the
+        /// pin on Major.Minor of every relevant config; patch differences are tolerated by
+        /// downgrading the joiner to the entity's pinned patch. Major.Minor mismatch rejects
+        /// the subscribe — incompatible clients cannot play together in the same session.
+        ///
+        /// When all subscribers leave and the grain deactivates, the pin is dropped. The next
+        /// session naturally picks up newer versions and migrates state via
+        /// <c>[MetaStateVersion]</c> thresholds.
+        /// </summary>
+        Shared = 1,
+
+        /// <summary>
+        /// Global / shared-world entity — e.g. a clan, a leaderboard, a global PvP arena.
+        /// No per-session pin; the entity always operates under the versions resolved from
+        /// <c>IConfigVersionResolver.CurrentClientVersion</c>. Subscribers must support those
+        /// versions or are rejected. Admin-driven config rollouts cause a push notification
+        /// to active subscribers, who fetch the new configs to keep replaying broadcasts.
+        ///
+        /// <see cref="ExecutionMode.Optimistic"/> and <see cref="ExecutionMode.CrossOptimistic"/>
+        /// are not admissible on Global entities — the framework emits a compile-time error
+        /// (<c>SHMETA_OPT_GLOBAL</c>) because the client cannot guarantee its local config
+        /// matches the version under which the server will execute.
+        /// </summary>
+        Global = 2,
+    }
+
+    /// <summary>
+    /// Declares the <see cref="EntityScope"/> of an <see cref="ISharedState"/> class.
+    /// Absent attribute = <see cref="EntityScope.Private"/>. See <see cref="EntityScope"/>
+    /// for the per-scope semantics.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class)]
+    public class EntityScopeAttribute : Attribute
+    {
+        public EntityScope Scope { get; }
+
+        public EntityScopeAttribute(EntityScope scope)
+        {
+            Scope = scope;
+        }
+    }
+
+    /// <summary>
     /// Marks a private backing field for push-based change tracking.
     /// The source generator produces a public property with a tracking setter that
     /// records changes into ChangeTracker during method execution (client-only, zero server overhead).

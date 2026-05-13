@@ -30,6 +30,8 @@
     <ProjectReference Include="..\..\src\SharedMeta.Debug\SharedMeta.Debug.csproj" />
     <!-- Auth -->
     <ProjectReference Include="..\..\src\SharedMeta.Auth\SharedMeta.Auth.csproj" />
+    <!-- 0.21.0 versioned config subsystem — grain-backed registry + observer provider -->
+    <ProjectReference Include="..\..\src\SharedMeta.Orleans\SharedMeta.Orleans.csproj" />
     <!-- Cross-assembly DefaultConfig regression fixture (0.20.2). The consumer project
          references SplitConfig.Models for the [MetaConfig(Default = true)] type — without
          the cross-assembly walk in FindDefaultConfigType the generator would silently emit
