@@ -67,7 +67,7 @@ namespace SharedMeta.Debug.InProcess
             MetaLog.Debug($"[InProcess] Disconnected: {_connectionId}");
         }
 
-        public async Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null)
+        public async Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0)
         {
             EnsureConnected();
 
@@ -76,7 +76,8 @@ namespace SharedMeta.Debug.InProcess
                 PlayerId = playerId,
                 SessionId = sessionId,
                 LastAcknowledgedSequence = lastAcknowledgedSequence,
-                ClientVersion = clientAppVersion
+                ClientVersion = clientAppVersion,
+                ClientSignatureHash = clientSignatureHash
             });
 
             return new ConnectionSessionConnectResult
@@ -87,7 +88,9 @@ namespace SharedMeta.Debug.InProcess
                 IsNewSession = response.IsNewSession,
                 MissedPackets = response.MissedPackets,
                 ServerTimeTicks = response.ServerTimeTicks,
-                ResubscribedEntities = response.ResubscribedEntities
+                ResubscribedEntities = response.ResubscribedEntities,
+                NeedsSignatureRegistration = response.NeedsSignatureRegistration,
+                Capabilities = response.Capabilities,
             };
         }
 

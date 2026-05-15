@@ -9,6 +9,23 @@ namespace SharedMeta.Core.Transport
     public interface IMetaHub
     {
         Task<SessionConnectResponse> SessionConnect(SessionConnectRequest request);
+
+        /// <summary>
+        /// 0.22.0+: Phase-2 of the compatibility-negotiation handshake. Called when
+        /// <see cref="SessionConnectResponse.NeedsSignatureRegistration"/> is true — the
+        /// client follows up with the full <see cref="MetaClientSignature"/>, the server
+        /// computes <see cref="ClientCapabilities"/> from it, stores in the signature
+        /// registry keyed by <see cref="MetaClientSignature.SignatureHash"/>, and returns
+        /// the verdict.
+        /// <para>
+        /// Default no-op implementation returns success with empty capabilities — used by
+        /// transports that haven't been updated to the 0.22.0 handshake yet and by tests
+        /// that don't exercise negotiation.
+        /// </para>
+        /// </summary>
+        Task<RegisterClientSignatureResponse> RegisterClientSignature(RegisterClientSignatureRequest request)
+            => Task.FromResult(new RegisterClientSignatureResponse { Success = true, Capabilities = new ClientCapabilities() });
+
         Task<SubscribeResponse> Subscribe(SubscribeRequest request);
         Task<UnsubscribeResponse> Unsubscribe(UnsubscribeRequest request);
 

@@ -102,6 +102,17 @@ namespace SharedMeta.Transport.SignalR
         }
 
         /// <summary>
+        /// 0.22.0+ phase-2 compatibility handshake. Routes to the per-connection handler so
+        /// the upcoming registry-backed implementation (Stage 4+) can stamp capabilities and
+        /// persist the signature.
+        /// </summary>
+        public Task<RegisterClientSignatureResponse> RegisterClientSignature(RegisterClientSignatureRequest request)
+        {
+            var handler = GetOrCreateHandler();
+            return handler.RegisterClientSignatureAsync(request);
+        }
+
+        /// <summary>
         /// Subscribe to an entity.
         /// </summary>
         public Task<SubscribeResponse> Subscribe(SubscribeRequest request)

@@ -65,6 +65,26 @@ namespace SharedMeta.Core.Transport
         /// "please wait for a server update" or switch to a compatible endpoint.
         /// </summary>
         [Id(10), Key(10)] public string? MaxClientVersion { get; set; }
+
+        /// <summary>
+        /// 0.22.0+: True when the server didn't find the client's
+        /// <see cref="SessionConnectRequest.ClientSignatureHash"/> in its registry and
+        /// needs a phase-2 follow-up. The client MUST send a
+        /// <see cref="RegisterClientSignatureRequest"/> with the full signature before
+        /// issuing any RPC. While this flag is set, <see cref="Capabilities"/> is null
+        /// (or an empty default) and the client should treat the session as "not yet
+        /// known to negotiate against."
+        /// </summary>
+        [Id(11), Key(11)] public bool NeedsSignatureRegistration { get; set; }
+
+        /// <summary>
+        /// 0.22.0+: Server's compatibility verdict for the client's declared signature.
+        /// Null when negotiation is disabled or when
+        /// <see cref="NeedsSignatureRegistration"/> is true (capabilities will arrive in
+        /// the phase-2 <see cref="RegisterClientSignatureResponse"/>). Empty lists =
+        /// no restrictions (the common case for an up-to-date client).
+        /// </summary>
+        [Id(12), Key(12)] public ClientCapabilities? Capabilities { get; set; }
     }
 
     /// <summary>

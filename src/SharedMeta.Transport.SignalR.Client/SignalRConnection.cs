@@ -110,7 +110,7 @@ namespace SharedMeta.Transport.SignalR
         }
 
         public async Task<ConnectionSessionConnectResult> SessionConnectAsync(
-            string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null)
+            string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0)
         {
             EnsureConnected();
 
@@ -119,7 +119,8 @@ namespace SharedMeta.Transport.SignalR
                 PlayerId = playerId,
                 SessionId = sessionId,
                 LastAcknowledgedSequence = lastAcknowledgedSequence,
-                ClientVersion = clientAppVersion ?? _clientVersion
+                ClientVersion = clientAppVersion ?? _clientVersion,
+                ClientSignatureHash = clientSignatureHash
             });
 
             return new ConnectionSessionConnectResult
@@ -133,7 +134,9 @@ namespace SharedMeta.Transport.SignalR
                 ResubscribedEntities = response.ResubscribedEntities,
                 ServerVersion = response.ServerVersion,
                 MinClientVersion = response.MinClientVersion,
-                MaxClientVersion = response.MaxClientVersion
+                MaxClientVersion = response.MaxClientVersion,
+                NeedsSignatureRegistration = response.NeedsSignatureRegistration,
+                Capabilities = response.Capabilities,
             };
         }
 

@@ -106,8 +106,11 @@ namespace SharedMeta.Core.Transport
         public Task DisconnectAsync() => _inner.DisconnectAsync();
         public Task GracefulDisconnectAsync() => _inner.GracefulDisconnectAsync();
 
-        public Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null)
-            => _inner.SessionConnectAsync(playerId, sessionId, lastAcknowledgedSequence, clientAppVersion);
+        public Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0)
+            => _inner.SessionConnectAsync(playerId, sessionId, lastAcknowledgedSequence, clientAppVersion, clientSignatureHash);
+
+        public Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(Guid sessionId, MetaClientSignature signature)
+            => _inner.RegisterClientSignatureAsync(sessionId, signature);
 
         public Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, string stateTypeName)
             => _inner.SubscribeAsync(entityId, stateTypeName);

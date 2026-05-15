@@ -111,7 +111,7 @@ namespace SharedMeta.Transport.SignalR
         /// <summary>
         /// Connect to a session on the server.
         /// </summary>
-        public async Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null)
+        public async Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0)
         {
             MetaLog.Debug($"[SignalR] SessionConnectAsync: playerId={playerId}");
             EnsureConnected();
@@ -121,7 +121,8 @@ namespace SharedMeta.Transport.SignalR
                 PlayerId = playerId,
                 SessionId = sessionId,
                 LastAcknowledgedSequence = lastAcknowledgedSequence,
-                ClientVersion = clientAppVersion
+                ClientVersion = clientAppVersion,
+                ClientSignatureHash = clientSignatureHash
             });
             MetaLog.Debug($"[SignalR] SessionConnectAsync response: Success={response.Success}");
 
@@ -133,7 +134,9 @@ namespace SharedMeta.Transport.SignalR
                 IsNewSession = response.IsNewSession,
                 MissedPackets = response.MissedPackets,
                 ServerTimeTicks = response.ServerTimeTicks,
-                ResubscribedEntities = response.ResubscribedEntities
+                ResubscribedEntities = response.ResubscribedEntities,
+                NeedsSignatureRegistration = response.NeedsSignatureRegistration,
+                Capabilities = response.Capabilities,
             };
         }
 

@@ -45,7 +45,24 @@ namespace SharedMeta.Core.Transport
         /// for per-client config branch resolution (<c>[MetaConfigVersion]</c> rules) and for
         /// the strict server-side contract that arrives in upcoming releases.
         /// </summary>
-        Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null);
+        Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0);
+
+        /// <summary>
+        /// 0.22.0+: Phase-2 of the compatibility handshake. Called by the higher-level
+        /// client when <see cref="ConnectionSessionConnectResult.NeedsSignatureRegistration"/>
+        /// is true on the previous <see cref="SessionConnectAsync"/> reply. Sends the full
+        /// <see cref="MetaClientSignature"/> so the server can compute and persist
+        /// <see cref="ClientCapabilities"/> for this client build.
+        /// <para>
+        /// Default implementation throws — transports add real impls when wired into the
+        /// 0.22.0 negotiation pipeline. A connection that doesn't support negotiation can
+        /// remain on the default; the client higher layer will only call this when the
+        /// server explicitly asked for it.
+        /// </para>
+        /// </summary>
+        Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(Guid sessionId, MetaClientSignature signature)
+            => throw new System.NotSupportedException(
+                "This transport does not implement the 0.22.0 compatibility-negotiation handshake.");
 
         /// <summary>
         /// Subscribe to an entity.
@@ -150,6 +167,21 @@ namespace SharedMeta.Core.Transport
         public string? MinClientVersion { get; set; }
         /// <summary>Maximum client version this server supports. Populated when rejected because client is too new.</summary>
         public string? MaxClientVersion { get; set; }
+
+        /// <summary>
+        /// 0.22.0+: True when the server didn't find our <c>ClientSignatureHash</c> in its
+        /// registry. The higher-level client must follow up with
+        /// <see cref="IConnection.RegisterClientSignatureAsync"/> carrying the full
+        /// <see cref="MetaClientSignature"/> before issuing any RPC.
+        /// </summary>
+        public bool NeedsSignatureRegistration { get; set; }
+
+        /// <summary>
+        /// 0.22.0+: Server's compatibility verdict for this client signature. Null when
+        /// negotiation is disabled or when <see cref="NeedsSignatureRegistration"/> is true
+        /// (capabilities will arrive on the phase-2 follow-up).
+        /// </summary>
+        public ClientCapabilities? Capabilities { get; set; }
     }
 
     /// <summary>

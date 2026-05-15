@@ -121,7 +121,7 @@ namespace SharedMeta.Transport.BestHttp
         }
 
         public async Task<ConnectionSessionConnectResult> SessionConnectAsync(
-            string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null)
+            string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0)
         {
             EnsureConnected();
 
@@ -130,7 +130,8 @@ namespace SharedMeta.Transport.BestHttp
                 PlayerId = playerId,
                 SessionId = sessionId,
                 LastAcknowledgedSequence = lastAcknowledgedSequence,
-                ClientVersion = clientAppVersion ?? _options.ClientVersion
+                ClientVersion = clientAppVersion ?? _options.ClientVersion,
+                ClientSignatureHash = clientSignatureHash
             };
 
             var response = await PostAsync<SessionConnectResponse>("/session-connect", body);
@@ -152,7 +153,9 @@ namespace SharedMeta.Transport.BestHttp
                 ResubscribedEntities = response.ResubscribedEntities,
                 ServerVersion = response.ServerVersion,
                 MinClientVersion = response.MinClientVersion,
-                MaxClientVersion = response.MaxClientVersion
+                MaxClientVersion = response.MaxClientVersion,
+                NeedsSignatureRegistration = response.NeedsSignatureRegistration,
+                Capabilities = response.Capabilities,
             };
         }
 

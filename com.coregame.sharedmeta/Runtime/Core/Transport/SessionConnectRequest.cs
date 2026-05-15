@@ -40,5 +40,22 @@ namespace SharedMeta.Core.Transport
         /// Null if the client does not send version information.
         /// </summary>
         [Id(4), Key(4)] public string? ClientVersion { get; set; }
+
+        /// <summary>
+        /// 0.22.0+: FNV-1a hash of the client's full <see cref="MetaClientSignature"/>
+        /// (sorted KnownMethods + per-method ArgHash + Version). Phase-1 handshake key.
+        /// <para>
+        /// When non-zero, the server looks up the matching <see cref="ClientCapabilities"/>
+        /// in its signature registry. If unknown, the server replies with
+        /// <c>NeedsSignatureRegistration = true</c> and the client follows up with a
+        /// <see cref="RegisterClientSignatureRequest"/> carrying the full signature.
+        /// </para>
+        /// <para>
+        /// Zero (default) means the client opted out of compatibility negotiation or is
+        /// pre-0.22.0; the server treats those connections as fully compatible (legacy
+        /// behaviour preserved).
+        /// </para>
+        /// </summary>
+        [Id(5), Key(5)] public ulong ClientSignatureHash { get; set; }
     }
 }
