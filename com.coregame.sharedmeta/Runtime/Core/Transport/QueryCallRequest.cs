@@ -23,5 +23,13 @@ namespace SharedMeta.Core.Transport
 
         /// <summary>Serialized method arguments.</summary>
         [Id(3), Key(3)] public byte[] Payload { get; set; } = Array.Empty<byte>();
+
+        /// <summary>
+        /// Method version (0.22.0+). Mirrors <c>RpcCall.MethodVersion</c> — stamped by the
+        /// generated query proxy from <c>[MetaMethod(Version = N)]</c>. The server query
+        /// dispatcher routes <c>(MethodName, MethodVersion)</c> to the matching declared body;
+        /// legacy callers (MethodVersion = 0) resolve to the lowest-versioned method.
+        /// </summary>
+        [Id(4), Key(4)] public int MethodVersion { get; set; }
     }
 }

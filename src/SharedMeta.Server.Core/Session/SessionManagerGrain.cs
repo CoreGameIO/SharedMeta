@@ -433,6 +433,18 @@ namespace SharedMeta.Server.Core.Session
                     ConfigVersion = snapshot.ConfigVersion
                 };
             }
+            catch (SharedMeta.Core.IncompatibleFeatureException incompat)
+            {
+                // 0.22.0+: surface structured rejection so the client can throw a typed
+                // IncompatibleFeatureException rather than a generic Exception(string).
+                _logger.ErrorSubscribing(incompat, entityId);
+                return new EntitySubscriptionResult
+                {
+                    Success = false,
+                    Error = incompat.Message,
+                    FeatureRequirement = incompat.Requirement,
+                };
+            }
             catch (Exception ex)
             {
                 _logger.ErrorSubscribing(ex, entityId);

@@ -72,12 +72,13 @@ namespace SharedMeta.Client.Network
             OnDisconnected?.Invoke(reason.ToString());
         }
 
-        public async Task<CallResponse<T>> CallAsync<T>(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
+        public async Task<CallResponse<T>> CallAsync<T>(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0, int methodVersion = 0)
         {
             var call = new RpcCall
             {
                 ServiceName = serviceName,
                 MethodName = methodName,
+                MethodVersion = methodVersion,
                 Payload = args,
                 CallerId = PlayerId,
                 IsCrossOptimistic = isCrossOptimistic,
@@ -114,12 +115,13 @@ namespace SharedMeta.Client.Network
             };
         }
 
-        public async Task<VoidCallResponse> CallVoidAsync(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
+        public async Task<VoidCallResponse> CallVoidAsync(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0, int methodVersion = 0)
         {
             var call = new RpcCall
             {
                 ServiceName = serviceName,
                 MethodName = methodName,
+                MethodVersion = methodVersion,
                 Payload = args,
                 CallerId = PlayerId,
                 IsCrossOptimistic = isCrossOptimistic,
@@ -149,12 +151,13 @@ namespace SharedMeta.Client.Network
             };
         }
 
-        public async Task<ByteCallResponse> CallBytesAsync(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
+        public async Task<ByteCallResponse> CallBytesAsync(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0, int methodVersion = 0)
         {
             var call = new RpcCall
             {
                 ServiceName = serviceName,
                 MethodName = methodName,
+                MethodVersion = methodVersion,
                 Payload = args,
                 CallerId = PlayerId,
                 IsCrossOptimistic = isCrossOptimistic,
@@ -189,13 +192,14 @@ namespace SharedMeta.Client.Network
         /// no auto-retry. Completes as soon as the connection hands the message off.
         /// Server-side errors are never reported back.
         /// </summary>
-        public ValueTask SendSignalAsync(string serviceName, string methodName, byte[] args)
+        public ValueTask SendSignalAsync(string serviceName, string methodName, byte[] args, int methodVersion = 0)
         {
             var request = new SignalCallRequest
             {
                 EntityId = _entityId,
                 ServiceName = serviceName,
                 MethodName = methodName,
+                MethodVersion = methodVersion,
                 Payload = args ?? Array.Empty<byte>()
             };
 

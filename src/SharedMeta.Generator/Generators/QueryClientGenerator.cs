@@ -49,10 +49,16 @@ namespace SharedMeta.Generator.Generators
                     ? alias
                     : member.Name;
 
+                // 0.22.0: [MetaMethod(Version = N)] stamped onto QueryCallRequest.MethodVersion
+                // for (MethodName, Version) dispatch on the server query dispatcher.
+                var versionArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Version");
+                int methodVersion = (!versionArg.Value.IsNull && versionArg.Value.Value is int vv) ? vv : 0;
+
                 queryMethods.Add(new QueryMethodInfo
                 {
                     Name = member.Name,
                     Alias = methodAlias,
+                    Version = methodVersion,
                     ReturnType = member.ReturnType,
                     Parameters = member.Parameters
                 });
@@ -199,6 +205,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                EntityId = _entityId,");
             sb.AppendLine("                ServiceName = ServiceName,");
             sb.AppendLine($"                MethodName = \"{method.Alias}\",");
+            sb.AppendLine($"                MethodVersion = {method.Version},");
             sb.AppendLine("                Payload = argsBytes");
             sb.AppendLine("            });");
             sb.AppendLine();
@@ -221,6 +228,7 @@ namespace SharedMeta.Generator.Generators
         {
             public string Name { get; set; } = "";
             public string Alias { get; set; } = "";
+            public int Version { get; set; }
             public ITypeSymbol ReturnType { get; set; } = null!;
             public System.Collections.Immutable.ImmutableArray<IParameterSymbol> Parameters { get; set; }
         }

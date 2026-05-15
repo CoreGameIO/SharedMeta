@@ -103,7 +103,10 @@ namespace SharedMeta.Test.Meta1
 
     [SharedState]
     [EntityScope(EntityScope.Global)]
-    [MetaStateVersion(2, "2.0", typeof(GlobalScopeConfig))]
+    // 0.22.0: Breaking = true — schema 2 introduces a structural change; old clients
+    // (resolved < 2.0) are rejected on subscribe with IncompatibleFeatureException,
+    // exercising the "structural break + update required" path.
+    [MetaStateVersion(2, "2.0", typeof(GlobalScopeConfig), Breaking = true)]
     [MemoryPackable]
     public partial class GlobalScopeState : ISharedState
     {

@@ -316,23 +316,29 @@ namespace SharedMeta.Server.Core.Grains
             }
 
             // Per-entity config compatibility gate: reject clients whose resolved config version
-            // is below the minimum required for the entity's current state schema.
-            // E.g. profile migrated to schema 2 (needs config >= 2.0) but client has config 1.5.
-            // Uses ResolveClientConfigVersion DIRECTLY (pre-pin) — the gate must see the joiner's
-            // OWN resolved version, not the pin (which may belong to an earlier subscriber).
+            // is below the minimum required for the entity's current state schema — but only
+            // when the schema bump was marked Breaking = true on [MetaStateVersion]. 0.22.0:
+            // generator emits IsClientConfigCompatible that returns false ONLY for breaking
+            // bumps; non-breaking schema advances allow old clients to subscribe and rely on
+            // VersionTolerant deserialization to skip new fields.
             if (_provider != null)
             {
                 var resolvedConfigVersion = _provider.ResolveClientConfigVersion(clientVersion);
                 if (!_provider.IsClientConfigCompatible(resolvedConfigVersion))
                 {
                     _logger.LogWarning(
-                        "[EntityGrain] Subscribe rejected: entity={EntityId} player={PlayerId} " +
+                        "[EntityGrain] Subscribe rejected (breaking schema): entity={EntityId} player={PlayerId} " +
                         "clientConfig={ConfigVersion} is below the minimum required for the current state schema.",
                         this.GetPrimaryKeyString(), playerId, resolvedConfigVersion);
-                    throw new EntityAccessDeniedException(
-                        $"Your app version is too old for this entity's current state. " +
-                        $"The profile has been upgraded (config {resolvedConfigVersion} is not sufficient). " +
-                        $"Please update your app.");
+                    // Throw structured exception so SessionManagerGrain / MetaConnectionHandler
+                    // can propagate FeatureRequirement to the client via SubscribeResponse.
+                    throw new IncompatibleFeatureException(new FeatureRequirement
+                    {
+                        FeatureKind = "State",
+                        Identifier = typeof(TState).FullName ?? typeof(TState).Name,
+                        MinRequiredVersion = resolvedConfigVersion.ToString(),
+                        Reason = "State schema introduced a structural change ([MetaStateVersion(..., Breaking = true)]). Update the client to use this entity.",
+                    });
                 }
             }
 

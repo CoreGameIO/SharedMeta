@@ -36,18 +36,23 @@ namespace SharedMeta.Core.Network
 
         /// <summary>
         /// Call a method that returns a value.
+        /// <para><c>methodVersion</c> (0.22.0+) is the value of <c>[MetaMethod(Version=N)]</c>
+        /// on the declared interface method; stamped onto <see cref="RpcCall.MethodVersion"/>
+        /// so the server dispatcher routes to the correct <c>(Alias, Version)</c> implementation.
+        /// Default <c>0</c> selects the lowest-versioned (legacy) implementation under the alias.</para>
         /// </summary>
-        Task<CallResponse<T>> CallAsync<T>(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
+        Task<CallResponse<T>> CallAsync<T>(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0, int methodVersion = 0);
 
         /// <summary>
-        /// Call a void method.
+        /// Call a void method. See <see cref="CallAsync{T}"/> for the <c>methodVersion</c> contract.
         /// </summary>
-        Task<VoidCallResponse> CallVoidAsync(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
+        Task<VoidCallResponse> CallVoidAsync(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0, int methodVersion = 0);
 
         /// <summary>
         /// Call a method and get raw bytes result (for serializer-specific deserialization).
+        /// See <see cref="CallAsync{T}"/> for the <c>methodVersion</c> contract.
         /// </summary>
-        Task<ByteCallResponse> CallBytesAsync(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
+        Task<ByteCallResponse> CallBytesAsync(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0, int methodVersion = 0);
 
         /// <summary>
         /// Send a desync follow-up report (deep desync detection).
@@ -66,7 +71,7 @@ namespace SharedMeta.Core.Network
         /// the message is handed off to the wire; it does NOT represent server execution.
         /// Default implementation throws — transports that do not support signals must opt in.
         /// </summary>
-        ValueTask SendSignalAsync(string serviceName, string methodName, byte[] args)
+        ValueTask SendSignalAsync(string serviceName, string methodName, byte[] args, int methodVersion = 0)
             => throw new System.NotSupportedException(
                 "This transport does not support fire-and-forget signals. Use a MetaMethod without [Signal] or switch to a transport that supports signals (InProcess, SignalR, HttpPolling).");
 

@@ -93,6 +93,15 @@ namespace SharedMeta.Generator.Generators
         public string? ConfigTypeFullName { get; set; }
         /// <summary>Safe identifier suffix for field names (e.g. "MyGame_ExpeditionConfig").</summary>
         public string ConfigTypeIdent { get; set; } = "";
+        /// <summary>
+        /// 0.22.0+: <c>true</c> when <c>[MetaStateVersion(..., Breaking = true)]</c> — state
+        /// shape changed in a way old clients cannot deserialize. Generator emits a strict
+        /// <c>IsClientConfigCompatible</c> gate only for these. Non-breaking schema bumps
+        /// (default <c>Breaking = false</c>) allow old clients to subscribe and rely on
+        /// MemoryPack <c>VersionTolerant</c> / MessagePack key-based deserialization to
+        /// tolerate the extra fields.
+        /// </summary>
+        public bool Breaking { get; set; }
     }
 
     /// <summary>
@@ -273,6 +282,11 @@ namespace SharedMeta.Generator.Generators
                     ? new string(configTypeFull.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray())
                     : "";
 
+                // 0.22.0: Breaking named-arg drives the IsClientConfigCompatible gate.
+                // Default false = old clients still subscribe; true = reject with FeatureRequirement.
+                var breakingArg = stateAttr.NamedArguments.FirstOrDefault(a => a.Key == "Breaking");
+                var breaking = !breakingArg.Value.IsNull && breakingArg.Value.Value is bool b && b;
+
                 info.MigrationConditions.Add(new MigrationCondition
                 {
                     StateVersion  = stateVer,
@@ -280,6 +294,7 @@ namespace SharedMeta.Generator.Generators
                     Minor         = minor,
                     ConfigTypeFullName = configTypeFull,
                     ConfigTypeIdent    = configTypeIdent,
+                    Breaking      = breaking,
                 });
             }
             // Sort by ascending StateVersion so the generator emits steps in order
@@ -708,7 +723,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            {");
             foreach (var service in services)
             {
-                sb.AppendLine($"                \"{service.InterfaceName}\" => (svc, method, payload, ser) => {service.InterfaceName}Dispatcher.Dispatch(({service.InterfaceName})svc, method, payload, ser),");
+                sb.AppendLine($"                \"{service.InterfaceName}\" => (svc, method, payload, methodVersion, ser) => {service.InterfaceName}Dispatcher.Dispatch(({service.InterfaceName})svc, method, payload, methodVersion, ser),");
             }
             sb.AppendLine("                _ => null");
             sb.AppendLine("            };");
@@ -1086,8 +1101,10 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine();
             }
 
-            // Implement abstract DispatchCall
-            sb.AppendLine("        protected override async Task<DispatchResult> DispatchCall(string serviceName, string methodName, byte[] payload)");
+            // Implement abstract DispatchCall — 0.22.0+: methodVersion routes (Alias, Version) tuples
+            // to the matching declared body. Legacy/unversioned callers pass methodVersion=0 and the
+            // generated dispatcher routes them to the lowest-versioned implementation under the alias.
+            sb.AppendLine("        protected override async Task<DispatchResult> DispatchCall(string serviceName, string methodName, byte[] payload, int methodVersion)");
             sb.AppendLine("        {");
             sb.AppendLine("            return serviceName switch");
             sb.AppendLine("            {");
@@ -1098,12 +1115,12 @@ namespace SharedMeta.Generator.Generators
                 {
                     // Deep desync: use PatchTracked version when PatchWrapper is active
                     sb.AppendLine($"                \"{service.InterfaceName}\" => MetaContext!.PatchWrapper != null");
-                    sb.AppendLine($"                    ? await {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}PatchTracked(), methodName, payload, Context.Serializer)");
-                    sb.AppendLine($"                    : await {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}(), methodName, payload, Context.Serializer),");
+                    sb.AppendLine($"                    ? await {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}PatchTracked(), methodName, payload, methodVersion, Context.Serializer)");
+                    sb.AppendLine($"                    : await {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}(), methodName, payload, methodVersion, Context.Serializer),");
                 }
                 else
                 {
-                    sb.AppendLine($"                \"{service.InterfaceName}\" => await {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}(), methodName, payload, Context.Serializer),");
+                    sb.AppendLine($"                \"{service.InterfaceName}\" => await {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}(), methodName, payload, methodVersion, Context.Serializer),");
                 }
             }
             sb.AppendLine("                _ => throw new InvalidOperationException($\"Unknown service: {serviceName}\")");
@@ -1295,7 +1312,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("        }");
                 sb.AppendLine();
 
-                sb.AppendLine("        protected override async Task DispatchSignal(string serviceName, string methodName, byte[] payload)");
+                sb.AppendLine("        protected override async Task DispatchSignal(string serviceName, string methodName, byte[] payload, int methodVersion)");
                 sb.AppendLine("        {");
                 sb.AppendLine("            switch (serviceName)");
                 sb.AppendLine("            {");
@@ -1310,7 +1327,7 @@ namespace SharedMeta.Generator.Generators
                     // Signal dispatcher is emitted by ServerDispatcherGenerator in the same namespace
                     // as the main dispatcher — we route by service interface name.
                     sb.AppendLine($"                case \"{anyImpl.InterfaceName}\":");
-                    sb.AppendLine($"                    await {anyImpl.InterfaceName}SignalDispatcher.Dispatch(Get{baseName}(), methodName, payload, Context.Serializer);");
+                    sb.AppendLine($"                    await {anyImpl.InterfaceName}SignalDispatcher.Dispatch(Get{baseName}(), methodName, payload, methodVersion, Context.Serializer);");
                     sb.AppendLine("                    break;");
                 }
                 sb.AppendLine("                default: throw new MissingMethodException($\"Signal service '{serviceName}' not found\");");
@@ -1578,8 +1595,11 @@ namespace SharedMeta.Generator.Generators
 
                     // IsClientConfigCompatible — per-entity gate: checks that the client's
                     // resolved config version covers the entity's current state schema.
-                    // Uses the same per-step AND-conditions as ComputeRequiredStateSchema but
-                    // tests a SUPPLIED config version rather than the provider's CurrentVersion.
+                    // 0.22.0: only Breaking = true schema steps reject. Non-breaking schemas
+                    // allow old clients to subscribe (MemoryPack VersionTolerant tolerates
+                    // additive fields). Reason: most schema bumps are additive; explicit
+                    // Breaking opt-in surfaces real structural breaks as user-actionable
+                    // "update required" notifications instead of silent fail-loud on every bump.
                     sb.AppendLine("        public override bool IsClientConfigCompatible(SharedMeta.Core.MetaConfigVersion clientConfigVersion)");
                     sb.AppendLine("        {");
                     sb.AppendLine("            int schema = CurrentStateSchemaVersion;");
@@ -1589,6 +1609,10 @@ namespace SharedMeta.Generator.Generators
                     {
                         var targetSchema = group.Key;
                         var conds = group.ToList();
+                        // 0.22.0: gate this schema step only when ANY of its conditions is Breaking.
+                        // If all conditions in the group are non-breaking, the schema bump is
+                        // backward-compatible — emit nothing for that step.
+                        if (!conds.Any(c => c.Breaking)) continue;
 
                         var nullGuards = new List<string>();
                         if (conds.Any(c => c.ConfigTypeFullName == null || c.ConfigTypeFullName == configType))
@@ -1602,7 +1626,7 @@ namespace SharedMeta.Generator.Generators
                             ? "if (" + string.Join(" && ", nullGuards) + ")"
                             : "";
 
-                        sb.AppendLine($"            // Schema {targetSchema} gate");
+                        sb.AppendLine($"            // Schema {targetSchema} gate — BREAKING; rejects old clients");
                         sb.AppendLine($"            if (schema >= {targetSchema})");
                         sb.AppendLine("            {");
                         // For single-config: compare clientConfigVersion directly

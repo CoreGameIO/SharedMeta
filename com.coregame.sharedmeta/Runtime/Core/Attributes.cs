@@ -291,11 +291,37 @@ namespace SharedMeta.Core
     [AttributeUsage(AttributeTargets.Method)]
     public class MetaMethodAttribute : Attribute
     {
-        /// <summary>RPC method alias (defaults to method name).</summary>
+        /// <summary>
+        /// RPC method alias (defaults to method name). When multiple <c>[MetaMethod]</c>
+        /// declarations share the same <see cref="Alias"/>, they must differ in
+        /// <see cref="Version"/>; the framework dispatches by <c>(Alias, MethodVersion)</c>
+        /// tuple and routes legacy clients (MethodVersion == 0) to the lowest-versioned
+        /// implementation under that alias.
+        /// </summary>
         public string Alias { get; set; } = "";
 
-        /// <summary>Method version for compatibility.</summary>
+        /// <summary>
+        /// Method version for compatibility (0.22.0+).
+        /// <para>
+        /// Default <c>0</c> (legacy / unversioned) — the dispatcher treats it as the single
+        /// implementation under the alias. Set explicitly (1, 2, ...) when introducing a
+        /// new method body that must coexist with an older one for old clients. Each
+        /// <c>(Alias, Version)</c> tuple must be unique within a service.
+        /// </para>
+        /// </summary>
         public int Version { get; set; }
+
+        /// <summary>
+        /// Minimum client method-version that can still run this method body locally
+        /// (Optimistic / CrossOptimistic) without diverging from server execution (0.22.0+).
+        /// <para>
+        /// Default <c>0</c>. Bump when a server-side change to the method body would
+        /// produce different results from an old client's local execution — the framework
+        /// then force-downgrades clients below this floor to <see cref="ExecutionMode.ServerPatch"/>
+        /// for this specific method.
+        /// </para>
+        /// </summary>
+        public int MinCompatibleVersion { get; set; }
 
         public bool GenerateClientApi { get; set; } = true;
 
@@ -733,6 +759,23 @@ namespace SharedMeta.Core
         /// <c>null</c> means the state's single primary config.
         /// </summary>
         public Type? ConfigType { get; }
+
+        /// <summary>
+        /// When <c>true</c> (0.22.0+), this schema step represents a STRUCTURAL change to
+        /// the persisted state — old clients cannot deserialize / reason about the new
+        /// shape. The framework rejects subscribe attempts from clients whose resolved
+        /// config is below this threshold's <see cref="MinConfigVersion"/> with
+        /// <see cref="IncompatibleFeatureException"/>; the client UI is expected to surface
+        /// a non-blocking "update required for this entity" notification.
+        /// <para>
+        /// Default <c>false</c>: schema bumps are treated as backward-compatible — the new
+        /// shape is a superset (additive fields tolerated by MemoryPack
+        /// <c>GenerateType.VersionTolerant</c> / MessagePack key-based deserialization).
+        /// Old clients still subscribe, miss any new fields they don't know about, and the
+        /// game keeps progressing for them.
+        /// </para>
+        /// </summary>
+        public bool Breaking { get; set; }
 
         public MetaStateVersionAttribute(int stateVersion, string minConfigVersion, Type? configType = null)
         {

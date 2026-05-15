@@ -230,14 +230,16 @@ public class EntityScopeTests
             await primer.CreateResolver().GetServiceAsync<GlobalScopeServiceApiClient>(entityId);
 
             // Legacy client at 1.0.0 attempts to subscribe — server's compat gate rejects.
+            // 0.22.0: GlobalScopeState declares Breaking = true on [MetaStateVersion(2, ...)],
+            // so the gate triggers IncompatibleFeatureException with structured FeatureRequirement
+            // describing the gated feature. Game UI catches this and renders an "update required"
+            // notification.
             await using var legacy = new TestClientSetup(server, legacyId, clientAppVersion: "1.0.0");
             await legacy.ConnectAsync();
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            var ex = await Assert.ThrowsAsync<IncompatibleFeatureException>(async () =>
                 await legacy.CreateResolver().GetServiceAsync<GlobalScopeServiceApiClient>(entityId));
-            // The server's reject message goes through SessionManagerGrain → SubscribeResponse.Error
-            // → ClientDispatcher wraps as "Failed to subscribe to entity '{id}': {error}". The inner
-            // error text from EntityGrain mentions "app version is too old / Please update your app".
-            // Test verifies the user-actionable substring is preserved through the propagation chain.
+            Assert.Equal("State", ex.Requirement.FeatureKind);
+            Assert.Contains(nameof(GlobalScopeState), ex.Requirement.Identifier);
             Assert.Contains("update", ex.Message, StringComparison.OrdinalIgnoreCase);
         }
         finally { TestServerConfiguration.ConfigVersionResolver.CurrentClientVersion = prevResolverVersion; }

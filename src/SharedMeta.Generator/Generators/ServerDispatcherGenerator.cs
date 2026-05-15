@@ -72,138 +72,61 @@ namespace SharedMeta.Generator.Generators
                 GenerateUnpackArgsHelper(sbServer, arity);
             }
 
-            // Generate dispatch method signature - returns DispatchResult for trigger support
-            sbServer.AppendLine($"        public static async Task<DispatchResult> Dispatch({symbol} service, string method, byte[] payload, IMetaSerializer serializer)");
+            // Generate dispatch method signature - returns DispatchResult for trigger support.
+            // 0.22.0: 'methodVersion' selects between coexisting [MetaMethod(Alias = X, Version = N)]
+            // declarations sharing an alias. Callers pass 0 for legacy/unversioned dispatch, which
+            // resolves to the lowest declared Version under the alias.
+            sbServer.AppendLine($"        public static async Task<DispatchResult> Dispatch({symbol} service, string method, byte[] payload, int methodVersion, IMetaSerializer serializer)");
             sbServer.AppendLine("        {");
 
             // Always get context for auto-discovery support
             sbServer.AppendLine("            var context = MetaContextAccessor.Current ?? throw new InvalidOperationException(\"MetaContext not set. Ensure MetaContextAccessor.Current is set before calling Dispatch.\");");
 
+            // Group methods by alias to emit (Alias, Version) routing. Each alias gets one outer
+            // case; if a single declaration exists, the body runs unconditionally. Multiple
+            // versioned declarations under the same alias produce an inner switch over methodVersion.
+            var groupedMethods = methods
+                .Select(m => new { Method = m, Info = ReadMetaMethodInfo(m) })
+                .GroupBy(x => x.Info.Alias)
+                .ToList();
+
             sbServer.AppendLine("            switch (method)");
             sbServer.AppendLine("            {");
 
-            foreach (var method in methods)
+            foreach (var group in groupedMethods)
             {
-                var methodName = method.Identifier.Text;
-                var returnType = method.ReturnType.ToString();
-                var paramCount = method.ParameterList.Parameters.Count;
+                var alias = group.Key;
+                var versions = group.OrderBy(x => x.Info.Version).ToList();
+                var minVersion = versions[0].Info.Version;
 
-                var methodAlias = methodName;
-                var forcePersist = false;
-                var generateClientApi = true;
-                var attributes = method.AttributeLists.SelectMany(a => a.Attributes);
-                var metaMethod = attributes.FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
-                if (metaMethod != null)
-                {
-                    var aliasArg = metaMethod.ArgumentList?.Arguments.FirstOrDefault(arg => arg.NameEquals != null && arg.NameEquals.Name.Identifier.Text == "Alias");
-                    if (aliasArg != null && aliasArg.Expression is LiteralExpressionSyntax literal)
-                    {
-                        methodAlias = literal.Token.ValueText;
-                    }
-
-                    var forcePersistArg = metaMethod.ArgumentList?.Arguments.FirstOrDefault(arg => arg.NameEquals != null && arg.NameEquals.Name.Identifier.Text == "ForcePersist");
-                    if (forcePersistArg != null && forcePersistArg.Expression is LiteralExpressionSyntax fpLiteral)
-                    {
-                        forcePersist = fpLiteral.Token.ValueText == "true";
-                    }
-
-                    var genApiArg = metaMethod.ArgumentList?.Arguments.FirstOrDefault(arg => arg.NameEquals != null && arg.NameEquals.Name.Identifier.Text == "GenerateClientApi");
-                    if (genApiArg != null && genApiArg.Expression is LiteralExpressionSyntax gaLiteral && gaLiteral.Token.ValueText == "false")
-                    {
-                        generateClientApi = false;
-                    }
-                }
-
-                sbServer.AppendLine($"                case \"{methodAlias}\":");
+                sbServer.AppendLine($"                case \"{alias}\":");
                 sbServer.AppendLine("                {");
 
-                // 0.20.0 security gate: methods declared [MetaMethod(GenerateClientApi = false)]
-                // are reserved for sibling-/cross-entity-only invocation. Reject when the
-                // dispatch is reached via a direct client RPC. context.IsClientCall is set by
-                // MetaProviderBase.HandleCallAsync from its `isClientOriginated` parameter
-                // (true for client RPC, false for cross-entity), and to true unconditionally
-                // by HandleQueryAsync / HandleSignalAsync (those entry points only carry
-                // client traffic). Sibling-bypass dispatches the typed in-process caller and
-                // never enters this switch.
-                if (!generateClientApi)
+                if (versions.Count == 1)
                 {
-                    sbServer.AppendLine("                    if (context.IsClientCall)");
-                    sbServer.AppendLine($"                        throw new System.InvalidOperationException(\"Method '{symbol}.{methodAlias}' is not callable from clients\");");
-                }
-
-                // Unpack args sequentially
-                if (paramCount > 0)
-                {
-                    // Check if any parameter has transformers (need generic mode for those)
-                    var hasTransformers = method.ParameterList.Parameters.Any(p =>
-                    {
-                        var attrs = p.AttributeLists.SelectMany(a => a.Attributes).ToList();
-                        return attrs.Any(a => a.Name.ToString().Contains("Transform"));
-                    });
-
-                    // Use MemoryPack direct deserialization when available and no transformers
-                    if (serializer == DetectedSerializer.MemoryPack && !hasTransformers)
-                    {
-                        GenerateMemoryPackArgumentUnpacking(sbServer, method, out var argNames);
-                        var callArgs = string.Join(", ", argNames);
-                        GenerateMethodCallWithTriggers(sbServer, methodName, callArgs, returnType, triggersByMethod, serializer, forcePersist);
-                    }
-                    else
-                    {
-                        // Generic mode with IPayloadReader
-                        sbServer.AppendLine("                    using var reader = serializer.CreateReader(payload);");
-
-                        var argNames = new System.Collections.Generic.List<string>();
-                        foreach (var param in method.ParameterList.Parameters)
-                        {
-                            var paramType = param.Type!.ToString();
-                            var paramName = param.Identifier.Text;
-                            var paramAttrs = param.AttributeLists.SelectMany(a => a.Attributes).ToList();
-
-                            var hasSkipTransform = paramAttrs.Any(a => a.Name.ToString().Contains("SkipTransform"));
-                            var transformAttr = paramAttrs.FirstOrDefault(a =>
-                                a.Name.ToString().Contains("Transform") && !a.Name.ToString().Contains("SkipTransform"));
-
-                            if (hasSkipTransform)
-                            {
-                                // [SkipTransform] - read as-is
-                                sbServer.AppendLine($"                    var {paramName} = reader.Read<{paramType}>();");
-                            }
-                            else if (transformAttr != null && transformAttr.ArgumentList?.Arguments.Count > 0)
-                            {
-                                // [Transform(typeof(T))] - use explicit transformer
-                                var transformerTypeArg = transformAttr.ArgumentList.Arguments.First();
-                                if (transformerTypeArg.Expression is TypeOfExpressionSyntax typeOf)
-                                {
-                                    var transformerTypeName = typeOf.Type.ToString();
-                                    sbServer.AppendLine($"                    // Unbox {paramName} using explicit {transformerTypeName}");
-                                    sbServer.AppendLine($"                    var boxedBytes_{paramName} = reader.Read<byte[]>();");
-                                    sbServer.AppendLine($"                    var simpleType_{paramName} = MetaContext.GetSimpleType(typeof({transformerTypeName}));");
-                                    sbServer.AppendLine($"                    var boxed_{paramName} = serializer.Unpack(simpleType_{paramName}, boxedBytes_{paramName});");
-                                    sbServer.AppendLine($"                    var {paramName} = ({paramType})context.UnboxValue(typeof({transformerTypeName}), boxed_{paramName}!);");
-                                }
-                                else
-                                {
-                                    sbServer.AppendLine($"                    var {paramName} = reader.Read<{paramType}>();");
-                                }
-                            }
-                            else
-                            {
-                                // Auto-discovery - use compact helper
-                                sbServer.AppendLine($"                    var {paramName} = context.ReadWithAutoUnbox<{paramType}>(reader, serializer);");
-                            }
-
-                            argNames.Add(paramName);
-                        }
-
-                        var callArgs = string.Join(", ", argNames);
-                        GenerateMethodCallWithTriggers(sbServer, methodName, callArgs, returnType, triggersByMethod, serializer, forcePersist);
-                    }
+                    // Single declaration under this alias — no inner switch needed. methodVersion
+                    // is accepted regardless of value (forward-compatibility: a client with a
+                    // newer Version stamp still routes to the only declared body).
+                    EmitMethodBody(sbServer, versions[0].Method, versions[0].Info, symbol, triggersByMethod, serializer);
                 }
                 else
                 {
-                    // No args
-                    GenerateMethodCallWithTriggers(sbServer, methodName, "", returnType, triggersByMethod, serializer, forcePersist);
+                    // Multi-version alias — switch on methodVersion. Legacy callers (methodVersion = 0)
+                    // route to the lowest-declared Version so existing v0 clients continue to dispatch
+                    // when v2 is added alongside v1.
+                    sbServer.AppendLine("                    switch (methodVersion)");
+                    sbServer.AppendLine("                    {");
+                    foreach (var entry in versions)
+                    {
+                        sbServer.AppendLine($"                        case {entry.Info.Version}:");
+                        if (entry.Info.Version == minVersion)
+                            sbServer.AppendLine("                        case 0:  // legacy/unversioned caller routes to lowest Version");
+                        sbServer.AppendLine("                        {");
+                        EmitMethodBody(sbServer, entry.Method, entry.Info, symbol, triggersByMethod, serializer);
+                        sbServer.AppendLine("                        }");
+                    }
+                    sbServer.AppendLine($"                        default: throw new MissingMethodException($\"Method '{symbol}.{alias}' has no version {{methodVersion}} (available: {string.Join(", ", versions.Select(v => v.Info.Version))})\");");
+                    sbServer.AppendLine("                    }");
                 }
 
                 sbServer.AppendLine("                }");
@@ -243,73 +166,51 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"    /// </summary>");
             sb.AppendLine($"    public static class {symbol}SignalDispatcher");
             sb.AppendLine("    {");
-            sb.AppendLine($"        public static async Task Dispatch({symbol} service, string method, byte[] payload, IMetaSerializer serializer)");
+            // 0.22.0: methodVersion routes (Alias, Version) tuples. Legacy callers (methodVersion=0)
+            // resolve to the lowest declared Version under the alias.
+            sb.AppendLine($"        public static async Task Dispatch({symbol} service, string method, byte[] payload, int methodVersion, IMetaSerializer serializer)");
             sb.AppendLine("        {");
             // MetaContext must be set by MetaProviderBase.HandleSignalAsync before calling here.
             sb.AppendLine("            var _ctx = MetaContextAccessor.Current ?? throw new InvalidOperationException(\"MetaContext not set for signal dispatch.\");");
+
+            var signalGroups = signalMethods
+                .Select(m => new { Method = m, Info = ReadMetaMethodInfo(m) })
+                .GroupBy(x => x.Info.Alias)
+                .ToList();
+
             sb.AppendLine("            switch (method)");
             sb.AppendLine("            {");
 
-            foreach (var method in signalMethods)
+            foreach (var group in signalGroups)
             {
-                var methodName = method.Identifier.Text;
-                var paramCount = method.ParameterList.Parameters.Count;
-                var methodAlias = methodName;
-                var generateClientApi = true;
+                var alias = group.Key;
+                var versions = group.OrderBy(x => x.Info.Version).ToList();
+                var minVersion = versions[0].Info.Version;
 
-                var metaMethod = method.AttributeLists.SelectMany(a => a.Attributes)
-                    .FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
-                if (metaMethod != null)
-                {
-                    var aliasArg = metaMethod.ArgumentList?.Arguments.FirstOrDefault(
-                        arg => arg.NameEquals != null && arg.NameEquals.Name.Identifier.Text == "Alias");
-                    if (aliasArg?.Expression is LiteralExpressionSyntax literal)
-                        methodAlias = literal.Token.ValueText;
-
-                    var genApiArg = metaMethod.ArgumentList?.Arguments.FirstOrDefault(
-                        arg => arg.NameEquals != null && arg.NameEquals.Name.Identifier.Text == "GenerateClientApi");
-                    if (genApiArg?.Expression is LiteralExpressionSyntax gaLiteral && gaLiteral.Token.ValueText == "false")
-                        generateClientApi = false;
-                }
-
-                sb.AppendLine($"                case \"{methodAlias}\":");
+                sb.AppendLine($"                case \"{alias}\":");
                 sb.AppendLine("                {");
 
-                // 0.20.0: per-method client-call gate, see ServerDispatcherGenerator main switch.
-                // Signals only flow from clients in normal operation; the explicit check still
-                // protects against misrouted internal callers and matches the regular dispatcher.
-                if (!generateClientApi)
+                if (versions.Count == 1)
                 {
-                    sb.AppendLine("                    if (_ctx.IsClientCall)");
-                    sb.AppendLine($"                        throw new System.InvalidOperationException(\"Method '{symbol}.{methodAlias}' is not callable from clients\");");
-                }
-
-                if (paramCount == 0)
-                {
-                    sb.AppendLine($"                    service.{methodName}();");
+                    EmitSignalBody(sb, versions[0].Method, versions[0].Info, symbol);
                 }
                 else
                 {
-                    // Use the generic IPayloadReader path for signal args — simpler, supports any
-                    // serializer impl, and signals are not hot enough to justify MemoryPack fast-path.
-                    // The ApiClient serialization is driven by the same DetectedSerializer, so bytes
-                    // on the wire match either way through IMetaSerializer.CreateReader/CreateWriter.
-                    sb.AppendLine("                    using var reader = serializer.CreateReader(payload);");
-                    var argNames = new System.Collections.Generic.List<string>();
-                    foreach (var param in method.ParameterList.Parameters)
+                    sb.AppendLine("                    switch (methodVersion)");
+                    sb.AppendLine("                    {");
+                    foreach (var entry in versions)
                     {
-                        var paramType = param.Type!.ToString();
-                        var paramName = param.Identifier.Text;
-                        sb.AppendLine($"                    var {paramName} = reader.Read<{paramType}>();");
-                        argNames.Add(paramName);
+                        sb.AppendLine($"                        case {entry.Info.Version}:");
+                        if (entry.Info.Version == minVersion)
+                            sb.AppendLine("                        case 0:  // legacy/unversioned caller routes to lowest Version");
+                        sb.AppendLine("                        {");
+                        EmitSignalBody(sb, entry.Method, entry.Info, symbol);
+                        sb.AppendLine("                        }");
                     }
-                    var callArgs = string.Join(", ", argNames);
-                    sb.AppendLine($"                    service.{methodName}({callArgs});");
+                    sb.AppendLine($"                        default: throw new MissingMethodException($\"Signal '{symbol}.{alias}' has no version {{methodVersion}} (available: {string.Join(", ", versions.Select(v => v.Info.Version))})\");");
+                    sb.AppendLine("                    }");
                 }
 
-                // Signals are void. If the impl decided to return Task we'd need await — but the
-                // generator's ApiClient-side validator rejected non-void signatures via #error, so
-                // reaching here with a Task-returning service method is impossible in valid code.
                 sb.AppendLine("                    break;");
                 sb.AppendLine("                }");
             }
@@ -318,6 +219,42 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            await Task.CompletedTask;  // keeps the method async for future async bridge calls inside signal bodies");
             sb.AppendLine("        }");
             sb.AppendLine("    }");
+        }
+
+        /// <summary>
+        /// Emit a single signal method body inside a case block: the GenerateClientApi gate plus
+        /// the synchronous void call. No return value, no DispatchResult — signals run read-only
+        /// by contract. Mirrors <see cref="EmitMethodBody"/> for the regular dispatcher.
+        /// </summary>
+        private static void EmitSignalBody(StringBuilder sb, MethodDeclarationSyntax method, MetaMethodInfo info, string symbol)
+        {
+            var methodName = method.Identifier.Text;
+            var paramCount = method.ParameterList.Parameters.Count;
+
+            if (!info.GenerateClientApi)
+            {
+                sb.AppendLine("                    if (_ctx.IsClientCall)");
+                sb.AppendLine($"                        throw new System.InvalidOperationException(\"Method '{symbol}.{info.Alias}' is not callable from clients\");");
+            }
+
+            if (paramCount == 0)
+            {
+                sb.AppendLine($"                    service.{methodName}();");
+            }
+            else
+            {
+                sb.AppendLine("                    using var reader = serializer.CreateReader(payload);");
+                var argNames = new List<string>();
+                foreach (var param in method.ParameterList.Parameters)
+                {
+                    var paramType = param.Type!.ToString();
+                    var paramName = param.Identifier.Text;
+                    sb.AppendLine($"                    var {paramName} = reader.Read<{paramType}>();");
+                    argNames.Add(paramName);
+                }
+                var callArgs = string.Join(", ", argNames);
+                sb.AppendLine($"                    service.{methodName}({callArgs});");
+            }
         }
 
         /// <summary>
@@ -566,6 +503,143 @@ namespace SharedMeta.Generator.Generators
             else
             {
                 sb.AppendLine($"{indent}return new DispatchResult {{ ResultBytes = {resultBytesExpr}{forcePersistPart} }};");
+            }
+        }
+
+        /// <summary>
+        /// Bag of parsed <c>[MetaMethod]</c> args used by the dispatcher emit (0.22.0+).
+        /// </summary>
+        private class MetaMethodInfo
+        {
+            public string Alias { get; set; } = "";
+            public int Version { get; set; }
+            public bool ForcePersist { get; set; }
+            public bool GenerateClientApi { get; set; } = true;
+        }
+
+        /// <summary>
+        /// Read <c>[MetaMethod]</c> attribute args from the interface method declaration:
+        /// <c>Alias</c> (default = method name), <c>Version</c> (default 0), <c>ForcePersist</c>,
+        /// <c>GenerateClientApi</c>. Used by the dispatcher emit to group declarations sharing
+        /// an alias and route by <c>(Alias, Version)</c>.
+        /// </summary>
+        private static MetaMethodInfo ReadMetaMethodInfo(MethodDeclarationSyntax method)
+        {
+            var info = new MetaMethodInfo { Alias = method.Identifier.Text };
+            var metaMethod = method.AttributeLists.SelectMany(a => a.Attributes)
+                .FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
+            if (metaMethod?.ArgumentList == null) return info;
+
+            foreach (var arg in metaMethod.ArgumentList.Arguments)
+            {
+                if (arg.NameEquals == null) continue;
+                var name = arg.NameEquals.Name.Identifier.Text;
+                switch (name)
+                {
+                    case "Alias":
+                        if (arg.Expression is LiteralExpressionSyntax aliasLit)
+                            info.Alias = aliasLit.Token.ValueText;
+                        break;
+                    case "Version":
+                        if (arg.Expression is LiteralExpressionSyntax verLit && int.TryParse(verLit.Token.ValueText, out var v))
+                            info.Version = v;
+                        break;
+                    case "ForcePersist":
+                        if (arg.Expression is LiteralExpressionSyntax fpLit)
+                            info.ForcePersist = fpLit.Token.ValueText == "true";
+                        break;
+                    case "GenerateClientApi":
+                        if (arg.Expression is LiteralExpressionSyntax gaLit && gaLit.Token.ValueText == "false")
+                            info.GenerateClientApi = false;
+                        break;
+                }
+            }
+            return info;
+        }
+
+        /// <summary>
+        /// Emit a single method body inside a dispatcher case: the GenerateClientApi gate, argument
+        /// unpacking (MemoryPack fast path or generic IPayloadReader with transformers), and the
+        /// service call + trigger collection. Indentation matches an unconditional case body (was
+        /// previously inlined under <c>case "{alias}":</c>); for multi-version aliases the caller
+        /// wraps additional <c>case N:</c> + braces around this block, but the inner indentation
+        /// remains the same — C# tolerates extra leading whitespace.
+        /// </summary>
+        private static void EmitMethodBody(StringBuilder sb, MethodDeclarationSyntax method, MetaMethodInfo info,
+            string symbol, Dictionary<string, List<TriggerInfo>> triggersByMethod, DetectedSerializer serializer)
+        {
+            var methodName = method.Identifier.Text;
+            var returnType = method.ReturnType.ToString();
+            var paramCount = method.ParameterList.Parameters.Count;
+
+            // 0.20.0 security gate (mirrored): see main switch comment for the rationale.
+            if (!info.GenerateClientApi)
+            {
+                sb.AppendLine("                    if (context.IsClientCall)");
+                sb.AppendLine($"                        throw new System.InvalidOperationException(\"Method '{symbol}.{info.Alias}' is not callable from clients\");");
+            }
+
+            if (paramCount > 0)
+            {
+                var hasTransformers = method.ParameterList.Parameters.Any(p =>
+                {
+                    var attrs = p.AttributeLists.SelectMany(a => a.Attributes).ToList();
+                    return attrs.Any(a => a.Name.ToString().Contains("Transform"));
+                });
+
+                if (serializer == DetectedSerializer.MemoryPack && !hasTransformers)
+                {
+                    GenerateMemoryPackArgumentUnpacking(sb, method, out var argNames);
+                    var callArgs = string.Join(", ", argNames);
+                    GenerateMethodCallWithTriggers(sb, methodName, callArgs, returnType, triggersByMethod, serializer, info.ForcePersist);
+                }
+                else
+                {
+                    sb.AppendLine("                    using var reader = serializer.CreateReader(payload);");
+                    var argNames = new List<string>();
+                    foreach (var param in method.ParameterList.Parameters)
+                    {
+                        var paramType = param.Type!.ToString();
+                        var paramName = param.Identifier.Text;
+                        var paramAttrs = param.AttributeLists.SelectMany(a => a.Attributes).ToList();
+                        var hasSkipTransform = paramAttrs.Any(a => a.Name.ToString().Contains("SkipTransform"));
+                        var transformAttr = paramAttrs.FirstOrDefault(a =>
+                            a.Name.ToString().Contains("Transform") && !a.Name.ToString().Contains("SkipTransform"));
+
+                        if (hasSkipTransform)
+                        {
+                            sb.AppendLine($"                    var {paramName} = reader.Read<{paramType}>();");
+                        }
+                        else if (transformAttr != null && transformAttr.ArgumentList?.Arguments.Count > 0)
+                        {
+                            var transformerTypeArg = transformAttr.ArgumentList.Arguments.First();
+                            if (transformerTypeArg.Expression is TypeOfExpressionSyntax typeOf)
+                            {
+                                var transformerTypeName = typeOf.Type.ToString();
+                                sb.AppendLine($"                    // Unbox {paramName} using explicit {transformerTypeName}");
+                                sb.AppendLine($"                    var boxedBytes_{paramName} = reader.Read<byte[]>();");
+                                sb.AppendLine($"                    var simpleType_{paramName} = MetaContext.GetSimpleType(typeof({transformerTypeName}));");
+                                sb.AppendLine($"                    var boxed_{paramName} = serializer.Unpack(simpleType_{paramName}, boxedBytes_{paramName});");
+                                sb.AppendLine($"                    var {paramName} = ({paramType})context.UnboxValue(typeof({transformerTypeName}), boxed_{paramName}!);");
+                            }
+                            else
+                            {
+                                sb.AppendLine($"                    var {paramName} = reader.Read<{paramType}>();");
+                            }
+                        }
+                        else
+                        {
+                            sb.AppendLine($"                    var {paramName} = context.ReadWithAutoUnbox<{paramType}>(reader, serializer);");
+                        }
+                        argNames.Add(paramName);
+                    }
+                    var callArgs = string.Join(", ", argNames);
+                    GenerateMethodCallWithTriggers(sb, methodName, callArgs, returnType, triggersByMethod, serializer, info.ForcePersist);
+                }
+            }
+            else
+            {
+                GenerateMethodCallWithTriggers(sb, methodName, "", returnType, triggersByMethod, serializer, info.ForcePersist);
             }
         }
     }

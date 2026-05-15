@@ -16,5 +16,12 @@ namespace SharedMeta.Server.Core.Session
         [Id(4)] public byte[]? OptimisticRandomBytes { get; set; }
         [Id(5)] public MetaConfigVersion ConfigVersion { get; set; }
         [Id(6)] public byte[]? NamedRandomsBytes { get; set; }
+        /// <summary>
+        /// 0.22.0+: structured rejection details when Success=false and the failure was a
+        /// version-compatibility mismatch (Breaking schema gate, RejectedMethods entry, etc.).
+        /// Populated by SessionManagerGrain when EntityGrain throws <c>IncompatibleFeatureException</c>;
+        /// propagated to <c>SubscribeResponse.FeatureRequirement</c> by MetaConnectionHandler.
+        /// </summary>
+        [Id(7)] public FeatureRequirement? FeatureRequirement { get; set; }
     }
 }

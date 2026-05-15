@@ -183,7 +183,17 @@ namespace SharedMeta.Client
             var result = await _connection.SubscribeAsync(entityId, stateTypeName ?? "");
 
             if (!result.Success)
+            {
+                // 0.22.0+: structured rejection (Breaking schema gate, RejectedMethods, …)
+                // surfaces as IncompatibleFeatureException with the full FeatureRequirement
+                // so game UI can render a "feature requires app update" non-blocking notification
+                // instead of a generic error dialog. Generic transport / business errors keep
+                // the legacy InvalidOperationException for backward-compat with existing catch
+                // blocks in user code.
+                if (result.FeatureRequirement != null)
+                    throw new IncompatibleFeatureException(result.FeatureRequirement);
                 throw new InvalidOperationException($"Failed to subscribe to entity '{entityId}': {result.Error}");
+            }
 
             lock (_lock)
             {

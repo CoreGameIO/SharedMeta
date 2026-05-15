@@ -267,6 +267,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                // Direct service routing");
             sb.AppendLine("                var serviceName = call.ServiceName ?? \"\";");
             sb.AppendLine("                var methodName = call.MethodName ?? \"\";");
+            sb.AppendLine("                var methodVersion = call.MethodVersion;  // 0.22.0+: route (Alias, Version) tuple");
             sb.AppendLine("                var payloadBytes = call.Payload ?? Array.Empty<byte>();");
             sb.AppendLine();
             sb.AppendLine("                DispatchResult result = serviceName switch");
@@ -275,7 +276,7 @@ namespace SharedMeta.Generator.Generators
             foreach (var service in services)
             {
                 var baseName = GetBaseName(service.InterfaceName);
-                sb.AppendLine($"                    \"{service.InterfaceName}\" => await Dispatch{baseName}Async(methodName, payloadBytes),");
+                sb.AppendLine($"                    \"{service.InterfaceName}\" => await Dispatch{baseName}Async(methodName, payloadBytes, methodVersion),");
             }
 
             sb.AppendLine("                    _ => throw new InvalidOperationException($\"Unknown service: {serviceName}\")");
@@ -411,10 +412,10 @@ namespace SharedMeta.Generator.Generators
         {
             var baseName = GetBaseName(service.InterfaceName);
 
-            sb.AppendLine($"        private async Task<DispatchResult> Dispatch{baseName}Async(string methodName, byte[] payloadBytes)");
+            sb.AppendLine($"        private async Task<DispatchResult> Dispatch{baseName}Async(string methodName, byte[] payloadBytes, int methodVersion)");
             sb.AppendLine("        {");
             sb.AppendLine($"            var service = Get{baseName}Service();");
-            sb.AppendLine($"            return await {service.InterfaceName}Dispatcher.Dispatch(service, methodName, payloadBytes, Context!.Serializer);");
+            sb.AppendLine($"            return await {service.InterfaceName}Dispatcher.Dispatch(service, methodName, payloadBytes, methodVersion, Context!.Serializer);");
             sb.AppendLine("        }");
         }
 

@@ -247,7 +247,8 @@ namespace SharedMeta.Server.Core.Transport
                     NamedRandomsBytes = result.NamedRandomsBytes,
                     ConfigMajorVersion = result.ConfigVersion.Major,
                     ConfigMinorVersion = result.ConfigVersion.Minor,
-                    ConfigPatchVersion = result.ConfigVersion.Patch
+                    ConfigPatchVersion = result.ConfigVersion.Patch,
+                    FeatureRequirement = result.FeatureRequirement,   // 0.22.0+ structured rejection
                 };
             }
             catch (Exception ex)
@@ -352,6 +353,7 @@ namespace SharedMeta.Server.Core.Transport
                 {
                     ServiceName = request.ServiceName,
                     MethodName = request.MethodName,
+                    MethodVersion = request.MethodVersion,
                     CallerId = PlayerId,
                     CallerClientVersion = _clientVersion,
                     Payload = request.Payload,
@@ -385,6 +387,7 @@ namespace SharedMeta.Server.Core.Transport
                 {
                     ServiceName = request.ServiceName,
                     MethodName = request.MethodName,
+                    MethodVersion = request.MethodVersion,
                     CallerId = PlayerId,
                     CallerClientVersion = _clientVersion,
                     Payload = request.Payload,

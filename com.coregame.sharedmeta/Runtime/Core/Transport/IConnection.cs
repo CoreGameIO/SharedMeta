@@ -163,5 +163,13 @@ namespace SharedMeta.Core.Transport
         public byte[]? OptimisticRandomBytes { get; set; }
         public byte[]? NamedRandomsBytes { get; set; }
         public MetaConfigVersion ConfigVersion { get; set; }
+        /// <summary>
+        /// 0.22.0+: structured rejection details when Success=false and the failure was a
+        /// compatibility mismatch (e.g. <c>[MetaStateVersion(..., Breaking = true)]</c> gate).
+        /// Client-side <c>ClientDispatcher.SubscribeAsync</c> rethrows this as
+        /// <see cref="IncompatibleFeatureException"/> instead of a generic <see cref="InvalidOperationException"/>
+        /// so game UI can surface a "update required for this feature" notification.
+        /// </summary>
+        public FeatureRequirement? FeatureRequirement { get; set; }
     }
 }

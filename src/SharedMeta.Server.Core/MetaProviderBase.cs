@@ -246,8 +246,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
 
     /// <summary>
     /// Dispatch a service method call. Implemented by generated code.
+    /// <para><c>methodVersion</c> (0.22.0+) selects between coexisting versions of the same
+    /// <c>(serviceName, methodName)</c> declared with <c>[MetaMethod(Version = N)]</c>. Pass
+    /// <c>0</c> for the legacy / unversioned route — the generated dispatcher resolves it to
+    /// the lowest-versioned implementation under the alias so older clients still dispatch.</para>
     /// </summary>
-    protected abstract Task<DispatchResult> DispatchCall(string serviceName, string methodName, byte[] payload);
+    protected abstract Task<DispatchResult> DispatchCall(string serviceName, string methodName, byte[] payload, int methodVersion);
 
     /// <summary>
     /// 0.20.0: Resolve a sibling-service impl instance by interface type. Default returns
@@ -263,8 +267,11 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// Dispatch a signal method call (void return, fire-and-forget). Default no-op;
     /// generated code overrides when the provider has one or more <c>[MetaMethod(Signal = true)]</c>
     /// methods and wires them into a generated <c>{Service}SignalDispatcher.Dispatch</c>.
+    /// <para><c>methodVersion</c> (0.22.0+) routes to a specific declared body when multiple
+    /// <c>[MetaMethod]</c> declarations share the same alias; legacy callers (methodVersion=0)
+    /// resolve to the lowest-versioned signal implementation under the alias.</para>
     /// </summary>
-    protected virtual Task DispatchSignal(string serviceName, string methodName, byte[] payload)
+    protected virtual Task DispatchSignal(string serviceName, string methodName, byte[] payload, int methodVersion)
         => Task.CompletedTask;
 
     /// <summary>
@@ -635,7 +642,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContext.BeginOperation();
 
             // Dispatch the call
-            var result = await DispatchCall(call.ServiceName, call.MethodName, call.Payload);
+            var result = await DispatchCall(call.ServiceName, call.MethodName, call.Payload, call.MethodVersion);
 
             // End recording and get replay payload
             var replayPayload = MetaContext.EndOperation();
@@ -733,7 +740,11 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                     }
 
                     MetaContext.BeginOperation();
-                    var triggerResult = await DispatchCall(call.ServiceName, triggerMethod, []);
+                    // Triggers always dispatch via the legacy/unversioned route (methodVersion=0).
+                    // They're internal hop-overs, not external calls — there is no client-side
+                    // [MetaMethod(Version)] choice in play, so the dispatcher resolves them to
+                    // the lowest-versioned trigger implementation under the alias.
+                    var triggerResult = await DispatchCall(call.ServiceName, triggerMethod, [], 0);
                     var triggerReplay = MetaContext.EndOperation();
 
                     // Collect trigger patch bytes
@@ -831,7 +842,9 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         DispatchResult result;
         try
         {
-            result = await DispatchCall(serviceName, methodName, argsBytes);
+            // Sibling/cross-entity nested call. Routes via the legacy/unversioned method-version
+            // bucket — internal hop, not a client call carrying a specific [MetaMethod(Version)].
+            result = await DispatchCall(serviceName, methodName, argsBytes, 0);
         }
         finally
         {
@@ -968,7 +981,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContextAccessor.Current = MetaContext;
 
             // Dispatch the call — same dispatcher, but no replay/random/broadcast machinery
-            var result = await DispatchCall(call.ServiceName, call.MethodName, call.Payload);
+            var result = await DispatchCall(call.ServiceName, call.MethodName, call.Payload, call.MethodVersion);
 
             return new QueryCallResponse
             {
@@ -1024,7 +1037,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContext.SignalMode = true;
             MetaContextAccessor.Current = MetaContext;
 
-            await DispatchSignal(call.ServiceName, call.MethodName, call.Payload);
+            await DispatchSignal(call.ServiceName, call.MethodName, call.Payload, call.MethodVersion);
         }
         catch (Exception ex)
         {

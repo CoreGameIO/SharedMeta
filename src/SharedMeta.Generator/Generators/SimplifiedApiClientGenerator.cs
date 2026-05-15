@@ -472,6 +472,10 @@ namespace SharedMeta.Generator.Generators
 
             // Parse MetaMethod attribute for default mode
             var methodAlias = GetMethodAlias(method, methodName);
+            // 0.22.0: [MetaMethod(Version = N)] stamped onto RpcCall.MethodVersion so the
+            // server dispatcher routes (Alias, Version) to the matching impl. Default 0 =
+            // legacy/unversioned — server treats it as the lowest-versioned method under the alias.
+            var methodVersion = GetMethodVersion(method);
             var defaultMode = "Server";
             bool isQueryMethod = false;
             bool isSignalMethod = false;
@@ -752,6 +756,7 @@ namespace SharedMeta.Generator.Generators
             DetectedSerializer serializer, string? stateTypeName = null, bool hasDeepDesync = false, ResultComparerInfo? resultComparer = null)
         {
             var methodName = method.Identifier.Text;
+            var methodVersion = GetMethodVersion(method);
             var parameters = string.Join(", ", method.ParameterList.Parameters);
             string asyncReturnType = isVoidReturn ? "Task" : $"Task<{returnType}>";
 
@@ -778,11 +783,11 @@ namespace SharedMeta.Generator.Generators
             // Call server
             if (isVoidReturn)
             {
-                sb.AppendLine($"                var response = await _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks);");
+                sb.AppendLine($"                var response = await _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion});");
             }
             else
             {
-                sb.AppendLine($"                var response = await _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks);");
+                sb.AppendLine($"                var response = await _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion});");
                 sb.AppendLine();
                 // Deserialize result based on serializer
                 GenerateResultDeserializationIndented(sb, returnType, serializer);
@@ -974,6 +979,7 @@ namespace SharedMeta.Generator.Generators
             DetectedSerializer serializer, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null)
         {
             var methodName = method.Identifier.Text;
+            var methodVersion = GetMethodVersion(method);
             var parameters = string.Join(", ", method.ParameterList.Parameters);
             string asyncReturnType = isVoidReturn ? "Task" : $"Task<{returnType}>";
 
@@ -1066,7 +1072,7 @@ namespace SharedMeta.Generator.Generators
             // Fire-and-forget to server with background validation
             if (isVoidReturn)
             {
-                sb.AppendLine($"            _ = _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks)");
+                sb.AppendLine($"            _ = _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion})");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1098,7 +1104,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"            if (!System.Collections.Generic.EqualityComparer<{returnType}>.Default.Equals(localResult, default!))");
                     sb.AppendLine("            {");
                 }
-                sb.AppendLine($"            _ = _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks)");
+                sb.AppendLine($"            _ = _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion})");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1140,6 +1146,7 @@ namespace SharedMeta.Generator.Generators
             DetectedSerializer serializer, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null)
         {
             var methodName = method.Identifier.Text;
+            var methodVersion = GetMethodVersion(method);
             var parameters = string.Join(", ", method.ParameterList.Parameters);
             string syncReturnType = isVoidReturn ? "void" : returnType;
 
@@ -1226,7 +1233,7 @@ namespace SharedMeta.Generator.Generators
             // sync method returns immediately.
             if (isVoidReturn)
             {
-                sb.AppendLine($"            _ = _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks)");
+                sb.AppendLine($"            _ = _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion})");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1255,7 +1262,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"            if (!System.Collections.Generic.EqualityComparer<{returnType}>.Default.Equals(localResult, default!))");
                     sb.AppendLine("            {");
                 }
-                sb.AppendLine($"            _ = _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks)");
+                sb.AppendLine($"            _ = _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion})");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1292,6 +1299,7 @@ namespace SharedMeta.Generator.Generators
             DetectedSerializer serializer, string? stateTypeName, bool hasDeepDesync = false, ResultComparerInfo? resultComparer = null)
         {
             var methodName = method.Identifier.Text;
+            var methodVersion = GetMethodVersion(method);
             var parameters = string.Join(", ", method.ParameterList.Parameters);
             string asyncReturnType = isVoidReturn ? "Task" : $"Task<{returnType}>";
             string awaitPrefix = isAsyncServiceMethod ? "await " : "";
@@ -1382,7 +1390,7 @@ namespace SharedMeta.Generator.Generators
             // Fire-and-forget to server with IsCrossOptimistic flag + validation
             if (isVoidReturn)
             {
-                sb.AppendLine($"            _ = _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, isCrossOptimistic: true, serverTimeTicks: serverTimeTicks)");
+                sb.AppendLine($"            _ = _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, isCrossOptimistic: true, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion})");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1410,7 +1418,7 @@ namespace SharedMeta.Generator.Generators
             }
             else
             {
-                sb.AppendLine($"            _ = _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, isCrossOptimistic: true, serverTimeTicks: serverTimeTicks)");
+                sb.AppendLine($"            _ = _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, isCrossOptimistic: true, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion})");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1454,6 +1462,7 @@ namespace SharedMeta.Generator.Generators
             DetectedSerializer serializer, string? stateTypeName)
         {
             var methodName = method.Identifier.Text;
+            var methodVersion = GetMethodVersion(method);
             var parameters = string.Join(", ", method.ParameterList.Parameters);
             string asyncReturnType = isVoidReturn ? "Task" : $"Task<{returnType}>";
             string awaitPrefix = isAsyncServiceMethod ? "await " : "";
@@ -1479,11 +1488,11 @@ namespace SharedMeta.Generator.Generators
             // Call server — always use CallBytesAsync (we need ResultBytes + PatchBytes)
             if (isVoidReturn)
             {
-                sb.AppendLine($"                var response = await _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks);");
+                sb.AppendLine($"                var response = await _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion});");
             }
             else
             {
-                sb.AppendLine($"                var response = await _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks);");
+                sb.AppendLine($"                var response = await _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion});");
             }
             sb.AppendLine();
 
@@ -1544,6 +1553,7 @@ namespace SharedMeta.Generator.Generators
             DetectedSerializer serializer, string? stateTypeName)
         {
             var methodName = method.Identifier.Text;
+            var methodVersion = GetMethodVersion(method);
             var parameters = string.Join(", ", method.ParameterList.Parameters);
             string asyncReturnType = isVoidReturn ? "Task" : $"Task<{returnType}>";
             string awaitPrefix = isAsyncServiceMethod ? "await " : "";
@@ -1566,11 +1576,11 @@ namespace SharedMeta.Generator.Generators
             // Call server
             if (isVoidReturn)
             {
-                sb.AppendLine($"                var response = await _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks);");
+                sb.AppendLine($"                var response = await _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion});");
             }
             else
             {
-                sb.AppendLine($"                var response = await _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks);");
+                sb.AppendLine($"                var response = await _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion});");
             }
             sb.AppendLine();
 
@@ -2062,6 +2072,23 @@ namespace SharedMeta.Generator.Generators
         }
 
         /// <summary>
+        /// Reads <c>[MetaMethod(Version = N)]</c> from a service-interface method declaration.
+        /// Defaults to 0 (legacy / unversioned). Stamped onto the wire as <c>RpcCall.MethodVersion</c>
+        /// so the server dispatcher routes <c>(Alias, Version)</c> to the correct impl.
+        /// </summary>
+        internal static int GetMethodVersion(MethodDeclarationSyntax method)
+        {
+            var attributes = method.AttributeLists.SelectMany(a => a.Attributes);
+            var metaMethod = attributes.FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
+            if (metaMethod == null) return 0;
+            var versionArg = metaMethod.ArgumentList?.Arguments
+                .FirstOrDefault(arg => arg.NameEquals != null && arg.NameEquals.Name.Identifier.Text == "Version");
+            if (versionArg?.Expression is LiteralExpressionSyntax lit && int.TryParse(lit.Token.ValueText, out var v))
+                return v;
+            return 0;
+        }
+
+        /// <summary>
         /// Generates a local-only query method that executes on the client's local state.
         /// No network call — just a direct call to the service instance.
         /// </summary>
@@ -2149,7 +2176,8 @@ namespace SharedMeta.Generator.Generators
             // Fire-and-forget: discard the ValueTask returned by SendSignalAsync.
             // Note: _ = (ValueTask) is allowed in C# 7.3+. GetAwaiter().GetResult() not used
             // because we never want to block or observe completion.
-            sb.AppendLine($"            _ = _network.SendSignalAsync(ServiceName, \"{methodAlias}\", argsBytes);");
+            var methodVersion = GetMethodVersion(method);
+            sb.AppendLine($"            _ = _network.SendSignalAsync(ServiceName, \"{methodAlias}\", argsBytes, methodVersion: {methodVersion});");
             sb.AppendLine("        }");
         }
 

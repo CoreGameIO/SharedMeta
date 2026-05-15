@@ -40,5 +40,15 @@ namespace SharedMeta.Core.Transport
 
         /// <summary>Config patch version (content). 0 = no patch versioning / pre-0.19.0 entity.</summary>
         [Id(8), Key(8)] public int ConfigPatchVersion { get; set; }
+
+        /// <summary>
+        /// 0.22.0+: structured rejection payload — populated when subscribe failed because
+        /// the client lacks support for a feature (state-schema breaking change, missing
+        /// method version, config structure boundary). When non-null, <see cref="Success"/>
+        /// is false and <see cref="Error"/> carries the human-readable form; the client
+        /// framework rethrows <see cref="IncompatibleFeatureException"/> instead of a
+        /// generic exception so game UI can render a "feature requires update" notification.
+        /// </summary>
+        [Id(9), Key(9)] public FeatureRequirement? FeatureRequirement { get; set; }
     }
 }
