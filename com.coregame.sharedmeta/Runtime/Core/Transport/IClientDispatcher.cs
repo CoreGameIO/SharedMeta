@@ -126,6 +126,25 @@ namespace SharedMeta.Core.Transport
         string? PlayerId { get; set; }
 
         /// <summary>
+        /// 0.22.0+: Client signature transmitted during <c>ConnectSessionAsync</c>. Set by the
+        /// consumer (typically <c>MetaClient</c> startup wiring) to the generated
+        /// <c>GameServiceDiscoveryBase.ClientSignature</c> so the server can negotiate
+        /// per-build compatibility (rejected methods, force-ServerPatch). Null = opt-out;
+        /// the handshake transmits <c>ClientSignatureHash = 0</c> and the server treats the
+        /// session as fully compatible (legacy behaviour).
+        /// </summary>
+        MetaClientSignature? ClientSignature { get; set; }
+
+        /// <summary>
+        /// 0.22.0+: Session-scoped capabilities returned by the server during
+        /// <c>ConnectSessionAsync</c> (phase-1) or <c>RegisterClientSignatureAsync</c>
+        /// (phase-2). Consumed by generated <c>*ApiClient</c> classes to short-circuit
+        /// rejected calls locally. Null until handshake resolves or when negotiation is
+        /// disabled.
+        /// </summary>
+        ClientCapabilities? Capabilities { get; }
+
+        /// <summary>
         /// True if session has been established with server.
         /// </summary>
         bool IsSessionConnected { get; }

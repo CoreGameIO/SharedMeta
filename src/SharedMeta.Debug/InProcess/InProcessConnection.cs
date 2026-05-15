@@ -113,6 +113,7 @@ namespace SharedMeta.Debug.InProcess
                 NamedRandomsBytes = response.NamedRandomsBytes,
                 ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion, response.ConfigPatchVersion),
                 FeatureRequirement = response.FeatureRequirement,
+                AugmentedCapabilities = response.AugmentedCapabilities,
             };
         }
 

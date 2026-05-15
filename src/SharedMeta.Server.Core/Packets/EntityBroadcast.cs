@@ -64,5 +64,13 @@ namespace SharedMeta.Server.Core.Grains
         /// system" — observers fall back to their session-resolved version.
         /// </summary>
         [Id(11)] public MetaConfigVersion ExecutedConfigVersion { get; set; }
+
+        /// <summary>
+        /// 0.22.0+: Method version the server dispatched under. Mirrors
+        /// <c>RpcCall.MethodVersion</c> from the original call. Used by subscribers'
+        /// generated broadcast dispatch to route to the matching <c>[MetaMethod(Version = N)]</c>
+        /// body when multiple coexisting versions share an alias.
+        /// </summary>
+        [Id(12)] public int MethodVersion { get; set; }
     }
 }

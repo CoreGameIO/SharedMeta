@@ -29,6 +29,13 @@ namespace SharedMeta.Server.Core.Transport
         private readonly ClientVersionPolicy? _versionPolicy;
         private readonly IMetaSerializer? _serializer;
         private readonly SharedMeta.Core.Patch.IPatchSchemaRegistry? _schemaRegistry;
+        /// <summary>
+        /// 0.22.0+: silo-local cache fronting the cluster's client-signature directory.
+        /// Null when the host hasn't called <c>AddSharedMetaClientSignatureRegistry()</c> —
+        /// in that mode the handler treats every connection as "negotiation disabled" and
+        /// returns empty capabilities on every SessionConnect / RegisterClientSignature.
+        /// </summary>
+        private readonly Session.IClientSignatureRegistry? _signatureRegistry;
         private ISessionObserver? _observerRef;
         private Timer? _observerRenewalTimer;
         private static readonly TimeSpan ObserverRenewalInterval = TimeSpan.FromSeconds(60);
@@ -54,6 +61,15 @@ namespace SharedMeta.Server.Core.Transport
         /// so it can resolve the correct [MetaConfigVersion] branch for this client.</summary>
         private string? _clientVersion;
 
+        /// <summary>
+        /// 0.22.0+ session-scoped capabilities. Populated from
+        /// <see cref="Session.IClientSignatureRegistry"/> at SessionConnect (phase-1) or
+        /// RegisterClientSignature (phase-2). Consulted on every RpcCall as a back-stop:
+        /// even forged clients that bypassed their local <c>CapabilitiesGate</c> get
+        /// rejected here.
+        /// </summary>
+        private SharedMeta.Core.Transport.ClientCapabilities? _clientCapabilities;
+
         public MetaConnectionHandler(
             string connectionId,
             IGrainFactory grainFactory,
@@ -64,7 +80,8 @@ namespace SharedMeta.Server.Core.Transport
             MetaTransportOptions? transportOptions = null,
             IMetaSerializer? serializer = null,
             SharedMeta.Core.Patch.IPatchSchemaRegistry? schemaRegistry = null,
-            ClientVersionPolicy? versionPolicy = null)
+            ClientVersionPolicy? versionPolicy = null,
+            Session.IClientSignatureRegistry? signatureRegistry = null)
         {
             _connectionId = connectionId ?? throw new ArgumentNullException(nameof(connectionId));
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
@@ -76,6 +93,7 @@ namespace SharedMeta.Server.Core.Transport
             _serializer = serializer;
             _schemaRegistry = schemaRegistry;
             _versionPolicy = versionPolicy;
+            _signatureRegistry = signatureRegistry;
         }
 
         #region IMetaConnectionHandler
@@ -186,6 +204,32 @@ namespace SharedMeta.Server.Core.Transport
                     }
                 }
 
+                // 0.22.0+ compatibility negotiation. Non-zero ClientSignatureHash means the
+                // client opted in. Registry lookup is per-silo cache-first; on miss we ask
+                // the cluster directory before declaring the signature unknown. An unknown
+                // signature ships NeedsSignatureRegistration = true so the client follows up
+                // with phase-2 (RegisterClientSignature). Hash == 0 = legacy / opted-out =
+                // no capabilities attached (server treats client as fully compatible).
+                bool needsSignatureRegistration = false;
+                ClientCapabilities? capabilities = null;
+                if (request.ClientSignatureHash != 0 && _signatureRegistry != null && result.Success)
+                {
+                    capabilities = await _signatureRegistry.TryGetCapabilitiesAsync(request.ClientSignatureHash);
+                    needsSignatureRegistration = capabilities == null;
+                }
+                // Stash for the per-RPC back-stop. Null capabilities (negotiation disabled, or
+                // pending phase-2) means the back-stop runs in pass-through mode.
+                _clientCapabilities = capabilities;
+
+                // 0.22.0 push capabilities into the player's SessionManagerGrain so subscribe-time
+                // aggregation and broadcast-time tailoring can consult them. Safe to push null
+                // (resets to pass-through). Only push when SessionManager was successfully set up.
+                if (result.Success)
+                {
+                    var capsGrain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                    await capsGrain.SetClientCapabilitiesAsync(capabilities);
+                }
+
                 return new SessionConnectResponse
                 {
                     Success = result.Success,
@@ -196,6 +240,8 @@ namespace SharedMeta.Server.Core.Transport
                     SignatureMismatches = signatureMismatches,
                     ServerTimeTicks = result.ServerTimeTicks,
                     ServerVersion = _versionPolicy?.ServerVersion ?? _transportOptions?.ServerVersion,
+                    NeedsSignatureRegistration = needsSignatureRegistration,
+                    Capabilities = capabilities,
                     ResubscribedEntities = result.ResubscribedEntities?.Select(e => new ResubscribedEntityInfo
                     {
                         EntityId = e.EntityId,
@@ -213,6 +259,62 @@ namespace SharedMeta.Server.Core.Transport
             {
                 _logger.HandlerSessionConnectError(ex);
                 return new SessionConnectResponse { Success = false, Error = ex.Message };
+            }
+        }
+
+        public async Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(RegisterClientSignatureRequest request)
+        {
+            // The session must be established and the SessionId must match — phase-2 belongs
+            // to the same connection that received NeedsSignatureRegistration in phase-1.
+            // We don't reject mismatches harshly (no enforced session state machine yet) but
+            // log so a misrouted register call is at least observable.
+            if (request.SessionId != SessionId)
+            {
+                _logger.LogWarning(
+                    "[Handler] RegisterClientSignature with stale SessionId — request={RequestSessionId} handler={HandlerSessionId}",
+                    request.SessionId, SessionId);
+            }
+
+            if (_signatureRegistry == null)
+            {
+                // Host hasn't wired the registry. Fall through to default no-op capabilities so
+                // a client that opted in still gets a coherent reply (and won't retry forever
+                // because of an exception bubble).
+                return new RegisterClientSignatureResponse
+                {
+                    Success = true,
+                    Capabilities = new ClientCapabilities(),
+                };
+            }
+
+            try
+            {
+                var capabilities = await _signatureRegistry.RegisterAsync(request.Signature);
+                _clientCapabilities = capabilities;
+                // Push to SessionManager so subscribe-time aggregation + broadcast tailoring
+                // pick up the freshly-resolved capabilities.
+                if (!string.IsNullOrEmpty(PlayerId))
+                {
+                    var capsGrain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                    await capsGrain.SetClientCapabilitiesAsync(capabilities);
+                }
+                return new RegisterClientSignatureResponse
+                {
+                    Success = true,
+                    Capabilities = capabilities,
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "[Handler] RegisterClientSignature failed for hash {Hash}",
+                    request.Signature.SignatureHash);
+                return new RegisterClientSignatureResponse
+                {
+                    Success = false,
+                    Error = ex.Message,
+                    Capabilities = new ClientCapabilities(),
+                };
             }
         }
 
@@ -292,10 +394,25 @@ namespace SharedMeta.Server.Core.Transport
                     return SessionResponse.ForError("EntityId is required");
                 }
 
+                // 0.22.0 server-side back-stop: even if the client bypassed the local
+                // CapabilitiesGate, the server enforces rejection here based on the cached
+                // capabilities for this session's signature. Force-ServerPatch is intentionally
+                // NOT enforced server-side — the server still executes whatever the client
+                // declared, since downgrading the mode mid-flight would change semantics for
+                // a well-behaved client that already complied at the gate.
+                if (_clientCapabilities != null
+                    && SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(
+                        _clientCapabilities, request.ServiceName, request.MethodName, request.MethodVersion))
+                {
+                    return SessionResponse.ForError(
+                        $"Method '{request.ServiceName}.{request.MethodName}' (v{request.MethodVersion}) is rejected for this client signature.");
+                }
+
                 var call = new RpcCall
                 {
                     ServiceName = request.ServiceName,
                     MethodName = request.MethodName,
+                    MethodVersion = request.MethodVersion,
                     CallerId = PlayerId,
                     CallerClientVersion = _clientVersion,
                     Payload = request.Payload,
@@ -737,6 +854,7 @@ namespace SharedMeta.Server.Core.Transport
         private readonly IMetaSerializer? _serializer;
         private readonly SharedMeta.Core.Patch.IPatchSchemaRegistry? _schemaRegistry;
         private readonly ClientVersionPolicy? _versionPolicy;
+        private readonly Session.IClientSignatureRegistry? _signatureRegistry;
 
         public MetaConnectionHandlerFactory(
             IGrainFactory grainFactory,
@@ -746,7 +864,8 @@ namespace SharedMeta.Server.Core.Transport
             MetaTransportOptions? transportOptions = null,
             IMetaSerializer? serializer = null,
             SharedMeta.Core.Patch.IPatchSchemaRegistry? schemaRegistry = null,
-            ClientVersionPolicy? versionPolicy = null)
+            ClientVersionPolicy? versionPolicy = null,
+            Session.IClientSignatureRegistry? signatureRegistry = null)
         {
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
@@ -756,13 +875,14 @@ namespace SharedMeta.Server.Core.Transport
             _serializer = serializer;
             _schemaRegistry = schemaRegistry;
             _versionPolicy = versionPolicy;
+            _signatureRegistry = signatureRegistry;
         }
 
         public IMetaConnectionHandler Create(string connectionId, IBroadcastSender broadcastSender)
         {
             var logger = _loggerFactory.CreateLogger<MetaConnectionHandler>();
             return new MetaConnectionHandler(connectionId, _grainFactory, _entityGrainResolver, broadcastSender, logger,
-                _signatureValidator, _transportOptions, _serializer, _schemaRegistry, _versionPolicy);
+                _signatureValidator, _transportOptions, _serializer, _schemaRegistry, _versionPolicy, _signatureRegistry);
         }
     }
 }

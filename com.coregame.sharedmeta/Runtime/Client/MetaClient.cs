@@ -140,7 +140,11 @@ namespace SharedMeta.Client
                     var connectResponse = await _dispatcher.SubscribeAsync(entityId, stateTypeName);
                     var network = new DispatcherNetworkAdapter(_dispatcher, Serializer, entityId, () => _dispatcher.ServerTimeTicks, stateTypeName)
                     {
-                        PlayerId = PlayerId
+                        PlayerId = PlayerId,
+                        // 0.22.0 Per-entity capability overlay from SubscribeResponse →
+                        // ConnectResponse.AugmentedCapabilities. CapabilitiesGate consults this
+                        // alongside session-level Capabilities at the generated *ApiClient gate.
+                        EntityCapabilities = connectResponse.AugmentedCapabilities,
                     };
                     return new NetworkSubscribeResult
                     {

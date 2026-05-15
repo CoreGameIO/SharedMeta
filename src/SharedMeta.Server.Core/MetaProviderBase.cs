@@ -548,7 +548,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     // then calls base.HandleCallAsync. Generation is conditional — the override is only
     // produced when at least one method opts out of client API. For projects with no such
     // methods, this entry point is reached directly with zero validation overhead.
-    public virtual async Task<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true)
+    public virtual async Task<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true, bool requirePatchForFanOut = false)
     {
         if (MetaContext == null || Context == null)
         {
@@ -628,11 +628,15 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             var executionMode = ExecutionModeProvider?.GetMode(
                 call.ServiceName, call.MethodName, ExecutionMode.Optimistic) ?? ExecutionMode.Optimistic;
 
-            // Set up patch tracking for ServerPatch mode or deep desync detection
+            // Set up patch tracking for ServerPatch mode or deep desync detection.
+            // 0.22.0+: also activate when EntityGrain signals that at least one subscriber
+            // needs the patch payload (via requirePatchForFanOut) — the broadcast will then
+            // carry BOTH replay payload AND patch bytes, and SessionManagerGrain tailors per
+            // subscriber (legacy keeps patch, modern keeps replay).
             PatchNode? patchRoot = null;
             bool isServerReplace = executionMode == ExecutionMode.ServerReplace;
             bool deepDesyncActive = DeepDesyncEnabled || call.DeepDesyncRequested;
-            if (executionMode == ExecutionMode.ServerPatch || deepDesyncActive)
+            if (executionMode == ExecutionMode.ServerPatch || deepDesyncActive || requirePatchForFanOut)
             {
                 patchRoot = new PatchNode(-1);
                 MetaContext.PatchWrapper = CreatePatchWrapper(patchRoot);

@@ -29,6 +29,25 @@ namespace SharedMeta.Server.Core.Session
         Task SetObserverAsync(ISessionObserver observer);
 
         /// <summary>
+        /// 0.22.0+ Push the player's compatibility capabilities to the grain. Called by
+        /// <c>MetaConnectionHandler</c> immediately after SessionConnect (phase-1) or
+        /// RegisterClientSignature (phase-2) resolves. The grain stores the snapshot and
+        /// uses it for two purposes:
+        /// <list type="bullet">
+        ///   <item>During <see cref="SubscribeToEntityAsync"/>: it forwards the subset of
+        ///     <see cref="ClientCapabilities.ForceServerPatchMethods"/> applicable to the target
+        ///     entity to the <c>EntityGrain</c>, so the entity can aggregate "does any
+        ///     subscriber need patch tracking for this method?" cheaply at dispatch time.</item>
+        ///   <item>During broadcast fan-out: <c>BroadcastToSessionOp</c> tailors each
+        ///     <see cref="SessionResponse"/> per this player — modern subscribers receive
+        ///     replay payload only, force-patch subscribers receive patch bytes only.</item>
+        /// </list>
+        /// Null caps (negotiation disabled or pending) means the grain stays in pass-through
+        /// mode and broadcasts go out untouched.
+        /// </summary>
+        Task SetClientCapabilitiesAsync(ClientCapabilities? capabilities);
+
+        /// <summary>
         /// Clear the observer when disconnecting.
         /// </summary>
         Task ClearObserverAsync();

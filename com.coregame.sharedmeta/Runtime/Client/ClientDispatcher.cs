@@ -19,6 +19,7 @@ namespace SharedMeta.Client
         public string EntityId { get; init; } = "";
         public string ServiceName { get; init; } = "";
         public string MethodName { get; init; } = "";
+        public int MethodVersion { get; init; }  // 0.22.0+: stamped from RpcCall.MethodVersion
         public byte[] Payload { get; init; } = Array.Empty<byte>();
         public bool IsCrossOptimistic { get; init; }
         public long ServerTimeTicks { get; init; }
@@ -208,7 +209,8 @@ namespace SharedMeta.Client
                 NamedRandomsBytes = result.NamedRandomsBytes,
                 ConfigMajorVersion = result.ConfigVersion.Major,
                 ConfigMinorVersion = result.ConfigVersion.Minor,
-                ConfigPatchVersion = result.ConfigVersion.Patch
+                ConfigPatchVersion = result.ConfigVersion.Patch,
+                AugmentedCapabilities = result.AugmentedCapabilities,
             };
         }
 
@@ -245,6 +247,7 @@ namespace SharedMeta.Client
                     EntityId = entityId,
                     ServiceName = call.ServiceName,
                     MethodName = call.MethodName,
+                    MethodVersion = call.MethodVersion,
                     Payload = payloadBytes,
                     IsCrossOptimistic = call.IsCrossOptimistic,
                     ServerTimeTicks = call.ServerTimeTicks
@@ -334,6 +337,12 @@ namespace SharedMeta.Client
         /// </summary>
         public string? PlayerId { get; set; }
 
+        /// <inheritdoc />
+        public MetaClientSignature? ClientSignature { get; set; }
+
+        /// <inheritdoc />
+        public ClientCapabilities? Capabilities { get; private set; }
+
         /// <summary>
         /// True if session has been established with server.
         /// </summary>
@@ -351,7 +360,11 @@ namespace SharedMeta.Client
                 _clientAppVersion = clientAppVersion;
             }
 
-            var result = await _connection.SessionConnectAsync(PlayerId, sessionId == Guid.Empty ? null : sessionId, lastAcknowledgedSequence, clientAppVersion);
+            // 0.22.0: phase-1 of the compatibility handshake. Transmit the generated
+            // ClientSignature.SignatureHash when negotiation is enabled (consumer assigned
+            // ClientSignature); otherwise pass 0 so the server treats us as legacy/opt-out.
+            var signatureHash = ClientSignature?.SignatureHash ?? 0UL;
+            var result = await _connection.SessionConnectAsync(PlayerId, sessionId == Guid.Empty ? null : sessionId, lastAcknowledgedSequence, clientAppVersion, signatureHash);
 
             if (!result.Success)
             {
@@ -366,6 +379,30 @@ namespace SharedMeta.Client
                     Success = false,
                     Error = result.Error
                 };
+            }
+
+            // 0.22.0: pick up server-supplied capabilities OR fall through to phase-2 if the
+            // server didn't recognize our signature hash. Phase-2 is only performed when the
+            // consumer wired a ClientSignature — opted-out clients stay capability-less.
+            Capabilities = result.Capabilities;
+            if (result.NeedsSignatureRegistration && ClientSignature != null)
+            {
+                try
+                {
+                    var phase2 = await _connection.RegisterClientSignatureAsync(result.SessionId, ClientSignature);
+                    if (phase2.Success)
+                    {
+                        Capabilities = phase2.Capabilities;
+                    }
+                    else
+                    {
+                        MetaLog.Warning($"[ClientDispatcher] Phase-2 signature registration failed: {phase2.Error}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MetaLog.Warning($"[ClientDispatcher] Phase-2 signature registration threw: {ex.Message}");
+                }
             }
 
             lock (_lock)
@@ -898,6 +935,7 @@ namespace SharedMeta.Client
             RequestId = pending.RequestId,
             ServiceName = pending.ServiceName,
             MethodName = pending.MethodName,
+            MethodVersion = pending.MethodVersion,
             Payload = pending.Payload,
             LastAcknowledgedSequence = _lastAcknowledgedSequence,
             IsCrossOptimistic = pending.IsCrossOptimistic,

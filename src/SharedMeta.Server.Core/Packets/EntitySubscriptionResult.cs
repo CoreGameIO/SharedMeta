@@ -1,5 +1,6 @@
 using Orleans;
 using SharedMeta.Core;
+using SharedMeta.Core.Transport;
 
 namespace SharedMeta.Server.Core.Session
 {
@@ -23,5 +24,14 @@ namespace SharedMeta.Server.Core.Session
         /// propagated to <c>SubscribeResponse.FeatureRequirement</c> by MetaConnectionHandler.
         /// </summary>
         [Id(7)] public FeatureRequirement? FeatureRequirement { get; set; }
+
+        /// <summary>
+        /// 0.22.0+ Per-entity capability deltas (RejectedServices / ForceServerPatchServices).
+        /// EntityGrain computes these from its resolved config version + the entity's bound
+        /// config's <c>[MetaConfigStructureBoundary]</c> entries. SessionManagerGrain caches
+        /// them by entityId for broadcast-fan-out tailoring, and the value is forwarded to the
+        /// client via <c>SubscribeResponse.AugmentedCapabilities</c>.
+        /// </summary>
+        [Id(8)] public EntityAugmentedCapabilities? AugmentedCapabilities { get; set; }
     }
 }

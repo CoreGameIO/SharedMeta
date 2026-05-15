@@ -203,5 +203,14 @@ namespace SharedMeta.Core.Transport
         /// so game UI can surface a "update required for this feature" notification.
         /// </summary>
         public FeatureRequirement? FeatureRequirement { get; set; }
+
+        /// <summary>
+        /// 0.22.0+ Per-entity capability deltas. Server-side <c>EntityGrain</c> computes these
+        /// at subscribe time from the entity's resolved config version + its bound config's
+        /// <c>[MetaConfigStructureBoundary]</c> declarations. Forwarded to <c>ClientDispatcher</c>
+        /// which stashes them on the per-entity <c>DispatcherNetworkAdapter</c> so generated
+        /// <c>*ApiClient</c> code can consult both session-level and per-entity caps in its gate.
+        /// </summary>
+        public EntityAugmentedCapabilities? AugmentedCapabilities { get; set; }
     }
 }

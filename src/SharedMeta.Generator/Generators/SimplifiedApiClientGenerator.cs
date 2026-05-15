@@ -24,6 +24,12 @@ namespace SharedMeta.Generator.Generators
                 a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaServiceAttribute");
             if (attr == null) return null;
 
+            // 0.22.0 opt-out: assembly-level [SharedMetaCompatibilityOptions(Enabled = false)]
+            // suppresses the capabilities gate emit. Default = enabled (no attribute) preserves
+            // the negotiation surface; the runtime stays no-op until the consumer wires the registry.
+            bool capabilitiesEnabled = compilation == null
+                || IsCompatibilityNegotiationEnabled(compilation);
+
             var interfaceName = symbol.Name;
             var namespaceName = symbol.ContainingNamespace.ToDisplayString();
 
@@ -421,7 +427,7 @@ namespace SharedMeta.Generator.Generators
             {
                 if (IsGenerateClientApiFalse(method)) continue;
                 methodComparers.TryGetValue(method, out var comparer);
-                GenerateMethod(sb, method, interfaceName, namespaceName, implClassName, stateTypeName, serializer, hasDeepDesync, comparer);
+                GenerateMethod(sb, method, interfaceName, namespaceName, implClassName, stateTypeName, serializer, hasDeepDesync, comparer, capabilitiesEnabled);
             }
 
             // Context management
@@ -463,7 +469,8 @@ namespace SharedMeta.Generator.Generators
 
         private static void GenerateMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string interfaceName, string namespaceName, string implClassName, string? stateTypeName,
-            DetectedSerializer serializer, bool hasDeepDesync = false, ResultComparerInfo? resultComparer = null)
+            DetectedSerializer serializer, bool hasDeepDesync = false, ResultComparerInfo? resultComparer = null,
+            bool capabilitiesEnabled = true)
         {
             var methodName = method.Identifier.Text;
             var returnType = method.ReturnType.ToString();
@@ -612,6 +619,24 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"        public {asyncReturnType} {methodName}Async({parameters})");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
+                if (capabilitiesEnabled)
+                {
+                    // 0.22.0 capabilities gate. Short-circuits server-rejected methods before any
+                    // local work or wire round trip. Two layers checked:
+                    //   * session-level _network.Capabilities (signature-level method versioning)
+                    //   * per-entity _network.EntityCapabilities (config-boundary overlay)
+                    // Both are allocation-free on the common path (null / empty lists).
+                    sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(_network.Capabilities, ServiceName, \"{methodAlias}\", {methodVersion})");
+                    sb.AppendLine($"                || global::SharedMeta.Core.Transport.CapabilitiesGate.IsServiceRejectedByEntity(_network.EntityCapabilities, ServiceName))");
+                    sb.AppendLine($"                throw global::SharedMeta.Core.Transport.CapabilitiesGate.RejectedException(ServiceName, \"{methodAlias}\", {methodVersion});");
+                    // 0.22.0 force-ServerPatch downgrade — server flagged this method (or its whole
+                    // service) as incompatible with optimistic local execution. The generator already
+                    // emits a _ServerPatch variant for every method, so the downgrade is a direct
+                    // route, no extra plumbing needed.
+                    sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsForcedServerPatch(_network.Capabilities, ServiceName, \"{methodAlias}\", {methodVersion})");
+                    sb.AppendLine($"                || global::SharedMeta.Core.Transport.CapabilitiesGate.IsServiceForcedServerPatchByEntity(_network.EntityCapabilities, ServiceName))");
+                    sb.AppendLine($"                return {methodName}Async_ServerPatch({callArgs});");
+                }
                 sb.AppendLine($"            var mode = _modeProvider.GetMode(ServiceName, \"{methodAlias}\", ExecutionMode.{defaultMode});");
                 sb.AppendLine($"            if (mode == ExecutionMode.ServerPatch)");
                 sb.AppendLine($"                return {methodName}Async_ServerPatch({callArgs});");
@@ -643,6 +668,13 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"        public {syncRet} {methodName}Sync({parameters})");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
+                if (capabilitiesEnabled)
+                {
+                    // 0.22.0 capabilities gate — same contract as the async overload (session + per-entity).
+                    sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(_network.Capabilities, ServiceName, \"{methodAlias}\", {methodVersion})");
+                    sb.AppendLine($"                || global::SharedMeta.Core.Transport.CapabilitiesGate.IsServiceRejectedByEntity(_network.EntityCapabilities, ServiceName))");
+                    sb.AppendLine($"                throw global::SharedMeta.Core.Transport.CapabilitiesGate.RejectedException(ServiceName, \"{methodAlias}\", {methodVersion});");
+                }
                 sb.AppendLine($"            var mode = _modeProvider.GetMode(ServiceName, \"{methodAlias}\", ExecutionMode.{defaultMode});");
                 sb.AppendLine("            if (mode != ExecutionMode.Optimistic && mode != ExecutionMode.Local)");
                 sb.AppendLine("            {");
@@ -1733,6 +1765,35 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("        }");
             sb.AppendLine();
+
+            // 0.22.0: SetupQueryContext / RestoreQueryContext — read-only context bracket for
+            // [MetaMethod(Mode = ExecutionMode.Query)] local sync wrappers. The local query
+            // path calls _service.{method} synchronously and the impl reads Context.State /
+            // Context.EntityId etc., which require MetaContextAccessor.Current to be set.
+            // Async methods set context inline (SetContext/ClearContext); the local query path
+            // needed its own bracket because BeginReplay/EndReplay aren't applicable (no replay
+            // payload). The previous-context save/restore avoids clobbering an in-flight context
+            // when a Query is invoked from inside an async method body.
+            sb.AppendLine("        private SharedMeta.Core.MetaContext? SetupQueryContext()");
+            sb.AppendLine("        {");
+            sb.AppendLine("            var prev = MetaContextAccessor.Current;");
+            sb.AppendLine($"            var ctx = new ClientMetaContext<{stateTypeName}>(_state, _serializer);");
+            sb.AppendLine("            ctx.EntityId = _network.EntityId ?? string.Empty;");
+            sb.AppendLine("            ctx.Config = _config;");
+            sb.AppendLine("            ctx.NamedRandoms = _namedRandoms;");
+            sb.AppendLine("            ctx.SiblingServiceResolver = type => _crossEntityResolver?.ResolveSibling(type, ctx);");
+            sb.AppendLine("            _service.Context = ctx;");
+            if (hasDeepDesync)
+                sb.AppendLine("            _patchTrackedService.Context = ctx;");
+            sb.AppendLine("            MetaContextAccessor.Current = ctx;");
+            sb.AppendLine("            return prev;");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+            sb.AppendLine("        private void RestoreQueryContext(SharedMeta.Core.MetaContext? prev)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            MetaContextAccessor.Current = prev;");
+            sb.AppendLine("        }");
+            sb.AppendLine();
         }
 
         private static void GenerateHandleBroadcast(StringBuilder sb,
@@ -1772,92 +1833,65 @@ namespace SharedMeta.Generator.Generators
             // Compute PatchApplier full name
             var applierName = stateTypeName + "PatchApplier";
 
-            foreach (var method in methods)
+            // 0.22.0+: per-version broadcast routing. Methods grouped by alias; single-version
+            // aliases emit a flat case body (zero overhead, unchanged from 0.21). Multi-version
+            // aliases emit one case "alias": then switch (broadcast.MethodVersion) routing to
+            // the matching method body. Each per-version body has its own arg deserialization
+            // (parameter shape may differ between versions), service-method call, and event fire.
+            // Default branch handles broadcasts for a version this client doesn't know — those
+            // MUST arrive with PatchBytes or StateBytes (server-side fan-out compensates), so the
+            // default takes the state-data/patch path with no body replay.
+            var methodsByAlias = methods
+                .Where(m => !IsQueryMethod(m))
+                .GroupBy(m => GetMethodAlias(m, m.Identifier.Text))
+                .Select(g => g.OrderBy(m => GetMethodVersion(m)).ToList())
+                .ToList();
+
+            foreach (var group in methodsByAlias)
             {
-                // Skip query methods — they don't produce broadcasts
-                if (IsQueryMethod(method)) continue;
-
-                var methodName = method.Identifier.Text;
-                var methodAlias = GetMethodAlias(method, methodName);
-                var eventName = GetEventName(methodName);
-                var paramCount = method.ParameterList.Parameters.Count;
-                var returnTypeStr = method.ReturnType.ToString();
-                bool isAsyncMethod = returnTypeStr.StartsWith("Task") || returnTypeStr.StartsWith("System.Threading.Tasks.Task");
-
-                sb.AppendLine($"                case \"{methodAlias}\":");
+                var alias = GetMethodAlias(group[0], group[0].Identifier.Text);
+                sb.AppendLine($"                case \"{alias}\":");
                 sb.AppendLine("                {");
 
-                if (paramCount > 0)
+                if (group.Count == 1)
                 {
-                    // Deserialize arguments (needed for event even when using patch)
-                    GenerateBroadcastArgumentDeserialization(sb, method, paramCount, serializer);
-                }
-
-                var argNames = paramCount > 0
-                    ? method.ParameterList.Parameters.Select(p => p.Identifier.Text).ToList()
-                    : new List<string>();
-                var callArgsStr = string.Join(", ", argNames);
-
-                // State-data paths: state was already applied centrally by EntityConnection's
-                // entity-level handler (so foreign-service ApiClients also see the change).
-                // We only refresh per-ApiClient bookkeeping (random skip) here.
-                sb.AppendLine("                    if (broadcast.StateBytes is { Length: > 0 })");
-                sb.AppendLine("                    {");
-                sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
-                sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
-                sb.AppendLine("                    }");
-                sb.AppendLine("                    else if (broadcast.PatchBytes is { Length: > 0 })");
-                sb.AppendLine("                    {");
-                sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
-                sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
-                sb.AppendLine("                    }");
-                sb.AppendLine("                    else");
-                sb.AppendLine("                    {");
-                // Pure replay path: no state-data on the wire, we run the method body here to
-                // mutate state in place. Foreign-service ApiClients can't take this path —
-                // documented limitation when the server emits Optimistic broadcasts without state-data.
-                sb.AppendLine("                        SetContext(broadcast.ReplayContext, broadcast.CallerId, broadcast.ServerTimeTicks, broadcast.ExecutedConfigVersion);");
-                if (paramCount == 0)
-                {
-                    if (isAsyncMethod)
-                    {
-                        sb.AppendLine($"                        BroadcastValidator.EnsureSyncCompletion(_service.{methodName}(), ServiceName, \"{methodAlias}\");");
-                    }
-                    else
-                    {
-                        sb.AppendLine($"                        _service.{methodName}();");
-                    }
+                    EmitBroadcastReplayBody(sb, group[0], alias, serializer, indent: "                    ");
                 }
                 else
                 {
-                    if (isAsyncMethod)
+                    // Multi-version: nested switch on broadcast.MethodVersion. Lowest version
+                    // also handles methodVersion=0 (legacy/unversioned caller) so an older
+                    // client interpreting a v1 broadcast from a 0.22 server doesn't fall through.
+                    var minVersion = GetMethodVersion(group[0]);
+                    sb.AppendLine("                    switch (broadcast.MethodVersion)");
+                    sb.AppendLine("                    {");
+                    foreach (var versioned in group)
                     {
-                        sb.AppendLine($"                        BroadcastValidator.EnsureSyncCompletion(_service.{methodName}({callArgsStr}), ServiceName, \"{methodAlias}\");");
+                        var v = GetMethodVersion(versioned);
+                        sb.AppendLine($"                        case {v}:");
+                        if (v == minVersion)
+                            sb.AppendLine("                        case 0:  // legacy/unversioned broadcast routes to lowest declared Version");
+                        sb.AppendLine("                        {");
+                        EmitBroadcastReplayBody(sb, versioned, alias, serializer, indent: "                            ");
+                        sb.AppendLine("                            break;");
+                        sb.AppendLine("                        }");
                     }
-                    else
-                    {
-                        sb.AppendLine($"                        _service.{methodName}({callArgsStr});");
-                    }
-                }
-                sb.AppendLine("                        ClearContext();");
-                sb.AppendLine($"                        _stateContainer.NotifyMutated();");
-                sb.AppendLine("                    }");
-
-                // Trigger replay (always, may also have their own patches)
-                sb.AppendLine("                    ReplayTriggerOperations(broadcast.TriggerOperations, broadcast.CallerId, broadcast.ServerTimeTicks);");
-
-                // Fire event
-                if (paramCount == 0)
-                {
-                    sb.AppendLine($"                    {eventName}?.Invoke();");
-                }
-                else if (paramCount == 1)
-                {
-                    sb.AppendLine($"                    {eventName}?.Invoke({argNames[0]});");
-                }
-                else
-                {
-                    sb.AppendLine($"                    {eventName}?.Invoke(({callArgsStr}));");
+                    // Unknown future version. Per the per-broadcast format selection contract,
+                    // the server must include PatchBytes/StateBytes when fan-out hits a subscriber
+                    // that doesn't know the version. Apply if present; otherwise log + skip so a
+                    // forged broadcast doesn't crash the client.
+                    sb.AppendLine("                        default:");
+                    sb.AppendLine("                        {");
+                    sb.AppendLine("                            if (broadcast.StateBytes is { Length: > 0 } || broadcast.PatchBytes is { Length: > 0 })");
+                    sb.AppendLine("                            {");
+                    sb.AppendLine("                                _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
+                    sb.AppendLine("                                ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
+                    sb.AppendLine("                            }");
+                    sb.AppendLine($"                            else SharedMeta.Core.Logging.MetaLog.Warning(\"[{alias}] broadcast for unknown MethodVersion=\" + broadcast.MethodVersion + \" arrived without patch/state bytes; ignoring.\");");
+                    sb.AppendLine("                            ReplayTriggerOperations(broadcast.TriggerOperations, broadcast.CallerId, broadcast.ServerTimeTicks);");
+                    sb.AppendLine("                            break;");
+                    sb.AppendLine("                        }");
+                    sb.AppendLine("                    }");
                 }
 
                 sb.AppendLine("                    break;");
@@ -2072,6 +2106,106 @@ namespace SharedMeta.Generator.Generators
         }
 
         /// <summary>
+        /// Internal helper for sibling generators (e.g. <c>ServiceRegistrationGenerator</c>) that
+        /// need the same <c>[MetaMethod(Alias)]</c> resolution rule without re-implementing it.
+        /// Defaults to the method's identifier text when no alias is declared.
+        /// </summary>
+        internal static string GetMethodAliasInternal(MethodDeclarationSyntax method)
+            => GetMethodAlias(method, method.Identifier.Text);
+
+        /// <summary>
+        /// 0.22.0 helper: emit the per-version body of a service broadcast case. Identical
+        /// shape to the pre-0.22 single-version case body (arg deserialization, state-data /
+        /// patch / pure-replay branches, trigger replay, event fire), parametrized on the
+        /// method so multi-version aliases can inline one body per declared version.
+        /// <para>
+        /// <paramref name="indent"/> threads the C# indentation into the right depth for
+        /// either a top-level case (single-version) or a nested switch case (multi-version).
+        /// </para>
+        /// </summary>
+        private static void EmitBroadcastReplayBody(StringBuilder sb, MethodDeclarationSyntax method,
+            string methodAlias, DetectedSerializer serializer, string indent)
+        {
+            var methodName = method.Identifier.Text;
+            var eventName = GetEventName(methodName);
+            var paramCount = method.ParameterList.Parameters.Count;
+            var returnTypeStr = method.ReturnType.ToString();
+            bool isAsyncMethod = returnTypeStr.StartsWith("Task") || returnTypeStr.StartsWith("System.Threading.Tasks.Task");
+
+            if (paramCount > 0)
+            {
+                // Per-version arg deserialization: the underlying serializer reads from the
+                // broadcast's ArgsBytes (which the server tailored for this version's parameter
+                // shape). The output local variables are scoped to this body's case block.
+                GenerateBroadcastArgumentDeserialization(sb, method, paramCount, serializer);
+            }
+
+            var argNames = paramCount > 0
+                ? method.ParameterList.Parameters.Select(p => p.Identifier.Text).ToList()
+                : new List<string>();
+            var callArgsStr = string.Join(", ", argNames);
+
+            sb.AppendLine($"{indent}if (broadcast.StateBytes is {{ Length: > 0 }})");
+            sb.AppendLine($"{indent}{{");
+            sb.AppendLine($"{indent}    _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
+            sb.AppendLine($"{indent}    ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
+            sb.AppendLine($"{indent}}}");
+            sb.AppendLine($"{indent}else if (broadcast.PatchBytes is {{ Length: > 0 }})");
+            sb.AppendLine($"{indent}{{");
+            sb.AppendLine($"{indent}    _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
+            sb.AppendLine($"{indent}    ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
+            sb.AppendLine($"{indent}}}");
+            sb.AppendLine($"{indent}else");
+            sb.AppendLine($"{indent}{{");
+            sb.AppendLine($"{indent}    SetContext(broadcast.ReplayContext, broadcast.CallerId, broadcast.ServerTimeTicks, broadcast.ExecutedConfigVersion);");
+            if (paramCount == 0)
+            {
+                if (isAsyncMethod)
+                    sb.AppendLine($"{indent}    BroadcastValidator.EnsureSyncCompletion(_service.{methodName}(), ServiceName, \"{methodAlias}\");");
+                else
+                    sb.AppendLine($"{indent}    _service.{methodName}();");
+            }
+            else
+            {
+                if (isAsyncMethod)
+                    sb.AppendLine($"{indent}    BroadcastValidator.EnsureSyncCompletion(_service.{methodName}({callArgsStr}), ServiceName, \"{methodAlias}\");");
+                else
+                    sb.AppendLine($"{indent}    _service.{methodName}({callArgsStr});");
+            }
+            sb.AppendLine($"{indent}    ClearContext();");
+            sb.AppendLine($"{indent}    _stateContainer.NotifyMutated();");
+            sb.AppendLine($"{indent}}}");
+
+            sb.AppendLine($"{indent}ReplayTriggerOperations(broadcast.TriggerOperations, broadcast.CallerId, broadcast.ServerTimeTicks);");
+
+            if (paramCount == 0)
+                sb.AppendLine($"{indent}{eventName}?.Invoke();");
+            else if (paramCount == 1)
+                sb.AppendLine($"{indent}{eventName}?.Invoke({argNames[0]});");
+            else
+                sb.AppendLine($"{indent}{eventName}?.Invoke(({callArgsStr}));");
+        }
+
+        /// <summary>
+        /// 0.22.0 opt-out reader. Looks for an assembly-level
+        /// <c>[SharedMetaCompatibilityOptions(Enabled = false)]</c> declaration and returns
+        /// <c>false</c> when found. Default <c>true</c> — absence of the attribute means the
+        /// negotiation generator features stay on.
+        /// </summary>
+        internal static bool IsCompatibilityNegotiationEnabled(Compilation compilation)
+        {
+            foreach (var attr in compilation.Assembly.GetAttributes())
+            {
+                if (attr.AttributeClass?.ToDisplayString() != "SharedMeta.Core.SharedMetaCompatibilityOptionsAttribute")
+                    continue;
+                var enabledArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "Enabled");
+                if (!enabledArg.Value.IsNull && enabledArg.Value.Value is bool b)
+                    return b;
+            }
+            return true;
+        }
+
+        /// <summary>
         /// Reads <c>[MetaMethod(Version = N)]</c> from a service-interface method declaration.
         /// Defaults to 0 (legacy / unversioned). Stamped onto the wire as <c>RpcCall.MethodVersion</c>
         /// so the server dispatcher routes <c>(Alias, Version)</c> to the correct impl.
@@ -2118,10 +2252,21 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        /// </summary>");
             sb.AppendLine($"        public {syncReturnType} {methodName}({parameters})");
             sb.AppendLine("        {");
+            // 0.22.0: bracket the synchronous body with Setup/Restore so the impl can read
+            // Context.State / Context.EntityId via MetaContextAccessor.Current. Without this,
+            // the call only worked when an async method had left a context set in AsyncLocal.
+            sb.AppendLine("            var __prev = SetupQueryContext();");
+            sb.AppendLine("            try");
+            sb.AppendLine("            {");
             if (isVoid)
-                sb.AppendLine($"            _service.{methodName}({callArgs});");
+                sb.AppendLine($"                _service.{methodName}({callArgs});");
             else
-                sb.AppendLine($"            return _service.{methodName}({callArgs});");
+                sb.AppendLine($"                return _service.{methodName}({callArgs});");
+            sb.AppendLine("            }");
+            sb.AppendLine("            finally");
+            sb.AppendLine("            {");
+            sb.AppendLine("                RestoreQueryContext(__prev);");
+            sb.AppendLine("            }");
             sb.AppendLine("        }");
         }
 

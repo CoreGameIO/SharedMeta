@@ -164,39 +164,24 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        public async {asyncReturnType} {method.Name}Async({paramList})");
             sb.AppendLine("        {");
 
-            // Serialize arguments
+            // Serialize arguments via IPayloadWriter (length-prefixed format). Matches the
+            // server query dispatcher's expected framing: serializer.CreateReader(payload) +
+            // context.ReadWithAutoUnbox<T>(reader, serializer) reads length+bytes per arg.
+            // 0.22.0 fix: previously the MemoryPack branch used raw MemoryPackSerializer.Serialize
+            // for 1 primitive arg, which produced 4 raw bytes that the server's reader
+            // mis-interpreted as a length prefix → "Requires size is N but buffer length is 0".
+            // Aligning with SimplifiedApiClientGenerator's _serializer.CreateWriter() pattern
+            // (see [SimplifiedApiClientGenerator.cs:953-963]).
             if (method.Parameters.Length == 0)
             {
                 sb.AppendLine("            byte[] argsBytes = System.Array.Empty<byte>();");
             }
-            else if (method.Parameters.Length == 1)
-            {
-                var paramType = method.Parameters[0].Type.ToDisplayString();
-                var paramName = method.Parameters[0].Name;
-                if (serializer == DetectedSerializer.MemoryPack)
-                    sb.AppendLine($"            byte[] argsBytes = MemoryPackSerializer.Serialize({paramName});");
-                else
-                    sb.AppendLine($"            byte[] argsBytes = _serializer.Pack<{paramType}>({paramName});");
-            }
             else
             {
-                if (serializer == DetectedSerializer.MemoryPack)
-                {
-                    sb.AppendLine("            var mpState = new MemoryPack.MemoryPackWriterOptionalState();");
-                    sb.AppendLine("            using var memWriter = new System.Buffers.ArrayBufferWriter<byte>();");
-                    sb.AppendLine("            var writer = new MemoryPack.MemoryPackWriter<System.Buffers.ArrayBufferWriter<byte>>(ref memWriter, mpState);");
-                    foreach (var p in method.Parameters)
-                        sb.AppendLine($"            writer.WriteValue({p.Name});");
-                    sb.AppendLine("            writer.Flush();");
-                    sb.AppendLine("            byte[] argsBytes = memWriter.WrittenSpan.ToArray();");
-                }
-                else
-                {
-                    sb.AppendLine("            using var payloadWriter = _serializer.CreateWriter();");
-                    foreach (var p in method.Parameters)
-                        sb.AppendLine($"            payloadWriter.Write({p.Name});");
-                    sb.AppendLine("            byte[] argsBytes = payloadWriter.ToBytes();");
-                }
+                sb.AppendLine("            using var payloadWriter = _serializer.CreateWriter();");
+                foreach (var p in method.Parameters)
+                    sb.AppendLine($"            payloadWriter.Write({p.Name});");
+                sb.AppendLine("            byte[] argsBytes = payloadWriter.Complete();");
             }
 
             sb.AppendLine();

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Orleans;
 using Orleans.Concurrency;
 using SharedMeta.Core;
@@ -14,8 +15,16 @@ namespace SharedMeta.Server.Core.Grains
     {
         /// <summary>
         /// Subscribe to this entity. Returns current state.
+        /// <para>
+        /// 0.22.0+ <paramref name="forceServerPatchMethods"/> — caller passes the subset of
+        /// <see cref="ClientCapabilities.ForceServerPatchMethods"/> applicable to this entity.
+        /// The grain refcounts these into <c>_forcePatchMethodRefs</c>; subsequent
+        /// <c>HandleCallAsync</c> calls activate patch tracking when the dispatched method is
+        /// present in the set so the broadcast carries both replay payload and patch bytes.
+        /// Null = pass-through (no force-patch tracking added).
+        /// </para>
         /// </summary>
-        Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null);
+        Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null, IReadOnlyList<MethodIdentity>? forceServerPatchMethods = null);
 
         /// <summary>
         /// Unsubscribe from this entity.

@@ -96,8 +96,15 @@ namespace SharedMeta.Server.Core
         /// only direct client RPC is rejected; cross-entity calls always pass through. Sibling-bypass
         /// dispatches in-process and never reaches this method.
         /// </param>
+        /// <param name="requirePatchForFanOut">
+        /// 0.22.0+ When <c>true</c>, the provider activates patch tracking even for non-ServerPatch
+        /// execution modes — the resulting broadcast carries both <c>ReplayPayload</c> and
+        /// <c>PatchBytes</c>, and <c>SessionManagerGrain</c> tailors per-subscriber on fan-out
+        /// (modern keeps replay, legacy keeps patch). EntityGrain sets this when its aggregated
+        /// force-patch refcount contains the call's <c>(Service, Alias, MethodVersion)</c> tuple.
+        /// </param>
         /// <returns>Response and broadcasts to distribute.</returns>
-        Task<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true);
+        Task<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true, bool requirePatchForFanOut = false);
 
         /// <summary>
         /// Handle an external event from a framework service asynchronously.

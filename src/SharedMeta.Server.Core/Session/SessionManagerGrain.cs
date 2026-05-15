@@ -58,6 +58,19 @@ namespace SharedMeta.Server.Core.Session
         // Saved subscriptions for reconnect after transport disconnect
         private List<SavedSubscription>? _savedSubscriptions;
 
+        // 0.22.0+ Per-player compatibility verdict. Set by MetaConnectionHandler after
+        // SessionConnect (phase-1) or RegisterClientSignature (phase-2). Drives two
+        // decisions: (1) which methods to flag as force-patch when this player subscribes
+        // to an entity, (2) how to tailor inbound broadcasts during BroadcastToSessionOp.
+        // Null = negotiation disabled / pending — grain stays in pass-through mode.
+        private ClientCapabilities? _clientCapabilities;
+
+        // 0.22.0+ Per-entity capability overlays returned by EntityGrain at subscribe time.
+        // Cached here so BroadcastToSessionOp can consult them alongside session-level caps
+        // when tailoring per-broadcast payloads. Empty entries (no boundary triggers for
+        // this entity) are NOT stored to keep the dictionary tight.
+        private readonly Dictionary<string, EntityAugmentedCapabilities> _entityAugmentedCaps = new();
+
         // ── RPC ordering / stash ─────────────────────────────────────────
         // When SessionManagerOptions.EnforceRpcOrder is true, RPC calls that arrive with
         // RequestId > NextExpected are parked in this ring buffer until the gap is filled.
@@ -301,6 +314,15 @@ namespace SharedMeta.Server.Core.Session
             return Task.CompletedTask;
         }
 
+        /// <inheritdoc />
+        public Task SetClientCapabilitiesAsync(ClientCapabilities? capabilities)
+        {
+            _clientCapabilities = capabilities;
+            // No-op when null — broadcast fan-out stays in pass-through mode and per-call
+            // patch-tracking activation falls through to "no force-patch subscribers."
+            return Task.CompletedTask;
+        }
+
         public async Task GracefulDisconnectAsync()
         {
             _observerManager.Clear();
@@ -406,8 +428,27 @@ namespace SharedMeta.Server.Core.Session
                     };
                 }
 
+                // 0.22.0 Forward this player's force-patch capability subset so the entity
+                // grain can refcount-aggregate "does any subscriber need patch tracking for
+                // method (S, A, V)?" — O(1) lookup at dispatch time. Empty / null lists
+                // contribute nothing; modern subscribers add no refcount.
+                var forcePatchMethods = _clientCapabilities?.ForceServerPatchMethods;
+
                 // Subscribe to entity (pass clientVersion for per-client config resolution)
-                var snapshot = await entityGrain.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>(), clientVersion);
+                var snapshot = await entityGrain.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>(), clientVersion, forcePatchMethods);
+
+                // 0.22.0 Cache per-entity capability overlay returned by EntityGrain. Drives
+                // per-entity-aware tailoring in BroadcastToSessionOp and gets forwarded to the
+                // client through EntitySubscriptionResult.AugmentedCapabilities → SubscribeResponse.
+                if (snapshot.AugmentedCapabilities is { } aug
+                    && (aug.ForceServerPatchServices.Count > 0 || aug.RejectedServices.Count > 0))
+                {
+                    _entityAugmentedCaps[entityId] = aug;
+                }
+                else
+                {
+                    _entityAugmentedCaps.Remove(entityId);
+                }
 
                 _subscribedEntities[entityId] = new EntitySubscriptionInfo(
                     entityId: entityId,
@@ -430,7 +471,8 @@ namespace SharedMeta.Server.Core.Session
                     EntitySequenceNumber = snapshot.CurrentSequenceNumber,
                     OptimisticRandomBytes = snapshot.OptimisticRandomBytes,
                     NamedRandomsBytes = snapshot.NamedRandomsBytes,
-                    ConfigVersion = snapshot.ConfigVersion
+                    ConfigVersion = snapshot.ConfigVersion,
+                    AugmentedCapabilities = snapshot.AugmentedCapabilities,
                 };
             }
             catch (SharedMeta.Core.IncompatibleFeatureException incompat)
@@ -474,6 +516,7 @@ namespace SharedMeta.Server.Core.Session
                 // Clean up ordering state
                 _entityStates.Remove(entityId);
                 _deferredResponses.RemoveAll(d => d.EntityId == entityId);
+                _entityAugmentedCaps.Remove(entityId);
 
                 _logger.UnsubscribedFromEntity(playerId, entityId);
             }
@@ -1034,9 +1077,28 @@ namespace SharedMeta.Server.Core.Session
 
         /// <summary>
         /// Convert an EntityBroadcast to a SessionOp (no sequence number).
+        /// <para>
+        /// 0.22.0+: per-subscriber tailoring. When this player's capabilities flag the
+        /// broadcast's <c>(Service, Alias, Version)</c> as force-ServerPatch, send only
+        /// the patch bytes (strip <c>ReplayPayload</c>) — the client doesn't know the
+        /// method body and would crash trying to replay. When NOT flagged, send only the
+        /// replay payload (strip <c>PatchBytes</c>) — the client knows the body, replay
+        /// is more efficient and exercises the actual code path. <c>StateBytes</c> is
+        /// preserved either way (ServerReplace mode applies regardless of compatibility).
+        /// </para>
         /// </summary>
         private SessionOp BroadcastToSessionOp(string entityId, EntityBroadcast broadcast)
         {
+            // 0.22.0 Per-entity caps lookup. Augmented overlays apply only to broadcasts from
+            // the matching entity; trigger broadcasts share the same entityId so the same overlay
+            // applies to them too.
+            _entityAugmentedCaps.TryGetValue(entityId, out var entityCaps);
+
+            var mainResponse = TailorResponseForPlayer(
+                broadcast.ServiceName, broadcast.MethodName, broadcast.MethodVersion,
+                broadcast.ReplayPayload, broadcast.PatchBytes, broadcast.StateBytes,
+                broadcast.RandomScrollDelta, broadcast.NamedRandomScrollDeltas, entityCaps);
+
             return new SessionOp
             {
                 EntityId = entityId,
@@ -1047,11 +1109,12 @@ namespace SharedMeta.Server.Core.Session
                     {
                         ServiceName = broadcast.ServiceName,
                         MethodName = broadcast.MethodName,
+                        MethodVersion = broadcast.MethodVersion,
                         Payload = broadcast.Payload ?? Array.Empty<byte>(),
                         CallerId = broadcast.ExcludePlayerId,
                         ServerTimeTicks = broadcast.ServerTimeTicks
                     },
-                    Response = new RpcResponse { ReplayPayload = broadcast.ReplayPayload, RandomScrollDelta = broadcast.RandomScrollDelta, NamedRandomScrollDeltas = broadcast.NamedRandomScrollDeltas, PatchBytes = broadcast.PatchBytes, StateBytes = broadcast.StateBytes }
+                    Response = mainResponse
                 },
                 TriggerOperations = broadcast.TriggerBroadcasts?.Select(t => new OperationResult
                 {
@@ -1059,11 +1122,49 @@ namespace SharedMeta.Server.Core.Session
                     {
                         ServiceName = t.ServiceName,
                         MethodName = t.MethodName,
+                        MethodVersion = t.MethodVersion,
                         Payload = t.Payload ?? Array.Empty<byte>(),
                         ServerTimeTicks = t.ServerTimeTicks
                     },
-                    Response = new RpcResponse { ReplayPayload = t.ReplayPayload, RandomScrollDelta = t.RandomScrollDelta, NamedRandomScrollDeltas = t.NamedRandomScrollDeltas, PatchBytes = t.PatchBytes, StateBytes = t.StateBytes }
+                    Response = TailorResponseForPlayer(
+                        t.ServiceName, t.MethodName, t.MethodVersion,
+                        t.ReplayPayload, t.PatchBytes, t.StateBytes,
+                        t.RandomScrollDelta, t.NamedRandomScrollDeltas, entityCaps)
                 }).ToList()
+            };
+        }
+
+        /// <summary>
+        /// 0.22.0+ Build an <see cref="RpcResponse"/> tailored to this player's compatibility
+        /// verdict. When capabilities are not set (null) or the method isn't flagged as
+        /// force-ServerPatch, the response carries both replay and patch as the server produced
+        /// them. When force-ServerPatch fires, replay is stripped (legacy client doesn't know
+        /// the body); when modern (no force-patch), patch is stripped (client prefers replay).
+        /// <c>StateBytes</c> is preserved unconditionally — ServerReplace is independent of the
+        /// patch/replay axis.
+        /// </summary>
+        private RpcResponse TailorResponseForPlayer(
+            string serviceName, string methodName, int methodVersion,
+            byte[]? replayPayload, byte[]? patchBytes, byte[]? stateBytes,
+            long randomScrollDelta, long[]? namedRandomScrollDeltas,
+            EntityAugmentedCapabilities? entityCaps)
+        {
+            // Delegates to the pure static helper for testability — see
+            // CapabilitiesGate.TailorBroadcastPayload. StateBytes is preserved here
+            // unconditionally since ServerReplace is independent of the patch/replay axis.
+            // 0.22.0 entityCaps stacks on top of session-level _clientCapabilities — services
+            // listed in entityCaps.ForceServerPatchServices ALSO trigger the strip-replay path.
+            var (replayOut, patchOut) = SharedMeta.Core.Transport.CapabilitiesGate.TailorBroadcastPayload(
+                _clientCapabilities, entityCaps, serviceName, methodName, methodVersion,
+                replayPayload, patchBytes);
+
+            return new RpcResponse
+            {
+                ReplayPayload = replayOut,
+                RandomScrollDelta = randomScrollDelta,
+                NamedRandomScrollDeltas = namedRandomScrollDeltas,
+                PatchBytes = patchOut,
+                StateBytes = stateBytes
             };
         }
 

@@ -158,6 +158,7 @@ namespace SharedMeta.Transport.HttpPolling
                 NamedRandomsBytes = response.NamedRandomsBytes,
                 ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion, response.ConfigPatchVersion),
                 FeatureRequirement = response.FeatureRequirement,
+                AugmentedCapabilities = response.AugmentedCapabilities,
             };
         }
 

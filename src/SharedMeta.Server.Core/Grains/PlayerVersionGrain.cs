@@ -1,12 +1,10 @@
-using System;
 using System.Threading.Tasks;
 using MemoryPack;
 using MessagePack;
 using Orleans;
 using Orleans.Runtime;
-using SharedMeta.Server.Core.Grains;
 
-namespace SharedMeta.Auth
+namespace SharedMeta.Server.Core.Grains
 {
     [MemoryPackable(GenerateType.VersionTolerant), MessagePackObject, GenerateSerializer]
     public partial class PlayerVersionGrainState
@@ -17,6 +15,12 @@ namespace SharedMeta.Auth
         [Id(1), Key(1), MemoryPackOrder(1)] public int MaxMinor { get; set; }
     }
 
+    /// <summary>
+    /// Default implementation of the version-history gate consulted by
+    /// <see cref="SharedMeta.Server.Core.Transport.MetaConnectionHandler"/> on connect.
+    /// Lives next to its interface in Server.Core so every host that wires the connection
+    /// handler picks it up automatically — no extra package reference required.
+    /// </summary>
     public class PlayerVersionGrain : Grain, IPlayerVersionGrain
     {
         private readonly IPersistentState<PlayerVersionGrainState> _state;
@@ -36,12 +40,11 @@ namespace SharedMeta.Auth
         public async Task<ClientVersionRecordResult> RecordClientVersionAsync(string clientVersion)
         {
             if (!TryParseMajorMinor(clientVersion, out int cMaj, out int cMin))
-                return new ClientVersionRecordResult { Accepted = true }; // unparseable — allow through
+                return new ClientVersionRecordResult { Accepted = true };
 
             var s = _state.State;
             if (s.MaxMajor >= 0)
             {
-                // Reject downgrade: major or minor decreased
                 if (cMaj < s.MaxMajor || (cMaj == s.MaxMajor && cMin < s.MaxMinor))
                     return new ClientVersionRecordResult
                     {
@@ -50,7 +53,6 @@ namespace SharedMeta.Auth
                     };
             }
 
-            // Accept and update if this version is strictly newer (or first record)
             if (cMaj > s.MaxMajor || (cMaj == s.MaxMajor && cMin > s.MaxMinor))
             {
                 s.MaxMajor = cMaj;

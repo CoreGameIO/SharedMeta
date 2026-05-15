@@ -28,6 +28,27 @@ namespace SharedMeta.Core.Network
         string? EntityId { get; }
 
         /// <summary>
+        /// 0.22.0+: Server-supplied capabilities for this session. Set by the higher-level
+        /// client (<c>ClientDispatcher</c>) after <c>SessionConnect</c> (or phase-2
+        /// <c>RegisterClientSignature</c>) completes. Consumed by generated <c>*ApiClient</c>
+        /// classes to short-circuit calls the server has flagged as rejected, and to force
+        /// ServerPatch execution mode on calls the server has flagged as incompatible with
+        /// optimistic local execution. Null when negotiation is disabled / not yet completed.
+        /// </summary>
+        SharedMeta.Core.Transport.ClientCapabilities? Capabilities { get; set; }
+
+        /// <summary>
+        /// 0.22.0+: Per-entity capability overlay supplied by the server's
+        /// <c>SubscribeResponse.AugmentedCapabilities</c>. Stored on the per-entity adapter
+        /// (one INetwork per entity). Generated <c>*ApiClient</c> checks this alongside
+        /// session-level <see cref="Capabilities"/> at the gate — service-level rejection or
+        /// force-ServerPatch can be triggered on a single entity even when the rest of the
+        /// session is unrestricted (typical case: <c>[MetaConfigStructureBoundary]</c> hit
+        /// for this entity's resolved config version).
+        /// </summary>
+        SharedMeta.Core.Transport.EntityAugmentedCapabilities? EntityCapabilities { get; set; }
+
+        /// <summary>
         /// Approximate current server time (UTC ticks).
         /// Computed from last received server time + local elapsed delta.
         /// Used by generated code to capture time at method start.
@@ -109,6 +130,11 @@ namespace SharedMeta.Core.Network
 
         /// <summary>Method name (e.g., "SetName").</summary>
         public string MethodName { get; set; } = "";
+
+        /// <summary>0.22.0+: Method version the server dispatched under. Used by generated
+        /// broadcast handlers to route to the matching <c>[MetaMethod(Version = N)]</c> body
+        /// when multiple coexisting versions share an alias.</summary>
+        public int MethodVersion { get; set; }
 
         /// <summary>Caller who initiated this action.</summary>
         public string? CallerId { get; set; }

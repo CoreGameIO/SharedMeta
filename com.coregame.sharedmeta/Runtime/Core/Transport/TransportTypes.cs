@@ -39,6 +39,14 @@ namespace SharedMeta.Core.Transport
 
         /// <summary>Config patch version (content). 0 = no patch versioning / pre-0.19.0 entity.</summary>
         [Id(6), Key(6)] public int ConfigPatchVersion { get; set; }
+
+        /// <summary>
+        /// 0.22.0+ Per-entity capability overlay returned by the server's subscribe path.
+        /// Passes through to <c>DispatcherNetworkAdapter.EntityCapabilities</c> on the
+        /// per-entity adapter so generated <c>*ApiClient</c> can consult both session-level
+        /// and entity-level capabilities at the gate.
+        /// </summary>
+        [Id(7), Key(7)] public EntityAugmentedCapabilities? AugmentedCapabilities { get; set; }
     }
 
     /// <summary>

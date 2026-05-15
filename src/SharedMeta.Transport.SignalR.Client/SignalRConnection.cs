@@ -159,6 +159,7 @@ namespace SharedMeta.Transport.SignalR
                 NamedRandomsBytes = response.NamedRandomsBytes,
                 ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion, response.ConfigPatchVersion),
                 FeatureRequirement = response.FeatureRequirement,
+                AugmentedCapabilities = response.AugmentedCapabilities,
             };
         }
 

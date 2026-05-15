@@ -213,17 +213,32 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                        switch (methodName)");
             sb.AppendLine($"                        {{");
 
-            foreach (var member in node.Members)
-            {
-                if (member is not MethodDeclarationSyntax method) continue;
-                if (IsQueryOrSignalMethod(method)) continue;
+            // 0.22.0+: dedup by alias for multi-version coexistence. Lowest-versioned method
+            // wins the case; higher versions emit a #warning explaining the routing limitation.
+            // Replay/cross-entity sibling-bypass currently doesn't carry MethodVersion, so
+            // routing higher versions would require additional wire-format work.
+            var seenAliases = new HashSet<string>();
+            var methodGroups = node.Members.OfType<MethodDeclarationSyntax>()
+                .Where(m => !IsQueryOrSignalMethod(m))
+                .GroupBy(m => SimplifiedApiClientGenerator.GetMethodAliasInternal(m))
+                .Select(g => g.OrderBy(m => SimplifiedApiClientGenerator.GetMethodVersion(m)).ToList())
+                .ToList();
 
+            foreach (var group in methodGroups)
+            {
+                var method = group[0];  // lowest-versioned
                 var methodName = method.Identifier.Text;
                 var alias = GetMethodAlias(method, methodName);
                 var paramCount = method.ParameterList.Parameters.Count;
                 var returnType = method.ReturnType.ToString();
                 bool isAsync = returnType.StartsWith("Task");
                 bool isVoid = returnType == "void" || returnType == "Task";
+
+                if (group.Count > 1)
+                {
+                    var higherVersions = string.Join(", ", group.Skip(1).Select(m => $"v{SimplifiedApiClientGenerator.GetMethodVersion(m)}"));
+                    sb.AppendLine($"#warning SharedMeta 0.22.0 limitation: alias \"{alias}\" has multiple versions ({higherVersions} besides v{SimplifiedApiClientGenerator.GetMethodVersion(method)}). Sibling/replay invocation routes to v{SimplifiedApiClientGenerator.GetMethodVersion(method)} only; per-version routing is a follow-up.");
+                }
 
                 sb.AppendLine($"                            case \"{alias}\":");
                 sb.AppendLine($"                            {{");

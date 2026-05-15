@@ -25,6 +25,32 @@ namespace SharedMeta.Client.Network
         public string? EntityId => _entityId;
         public long ServerTimeTicks => _serverTimeClock();
 
+        /// <summary>
+        /// 0.22.0+ session-scoped capabilities, sourced from the parent <see cref="IClientDispatcher"/>.
+        /// The dispatcher populates these after <c>SessionConnectAsync</c> completes (phase-1) or
+        /// after <c>RegisterClientSignatureAsync</c> resolves (phase-2). Generated <c>*ApiClient</c>
+        /// consults this object before going on the wire. Null = negotiation disabled / pending.
+        /// <para>
+        /// Setter is honored for test scaffolding (a unit test can inject a fake capabilities
+        /// object directly on the adapter) but in production the value flows from the dispatcher.
+        /// </para>
+        /// </summary>
+        public ClientCapabilities? Capabilities
+        {
+            get => _capabilitiesOverride ?? _dispatcher.Capabilities;
+            set => _capabilitiesOverride = value;
+        }
+        private ClientCapabilities? _capabilitiesOverride;
+
+        /// <summary>
+        /// 0.22.0+ Per-entity capability overlay. Stored on the per-entity adapter so generated
+        /// <c>*ApiClient</c> consults it at the gate alongside session-level
+        /// <see cref="Capabilities"/>. <c>ClientDispatcher.SubscribeAsync</c> sets this from
+        /// <c>SubscribeResponse.AugmentedCapabilities</c> when the server returned a non-null
+        /// overlay; otherwise stays null (no per-entity restrictions for this session).
+        /// </summary>
+        public EntityAugmentedCapabilities? EntityCapabilities { get; set; }
+
         public event Action<NetworkBroadcast>? OnBroadcast;
         public event Action<string>? OnDisconnected;
 

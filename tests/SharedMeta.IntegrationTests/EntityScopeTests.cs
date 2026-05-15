@@ -134,18 +134,25 @@ public class EntityScopeTests
     }
 
     // ═════════════════════════════════════════════════════════════════════════════
-    //  3) Shared: subscriber on an incompatible Major.Minor is rejected.
+    //  3) Shared: subscribers on different Major.Minor branches are ALLOWED to join
+    //     (0.22.0 — was a hard reject pre-0.22.0).
     //
     //  Setup: SharedScopeState entity. Client A subscribes with "1.0.0" → pin = 1.0.
     //  Client C subscribes with "2.0.0" (resolves to 2.0.0). Pin Major.Minor=1.0,
-    //  joiner Major.Minor=2.0 → mismatch → ValidateClientCompatibleWithPins returns
-    //  false → EntityGrain throws EntityAccessDeniedException → client sees it as
-    //  a subscribe failure ("Cannot join this shared session...").
+    //  joiner Major.Minor=2.0 — Open-Closed evolution + [MetaConfigStructureBoundary]
+    //  driven force-patch handle compatibility; ValidateClientCompatibleWithPins is now
+    //  permissive. Subscribe must succeed.
+    //
+    //  When the SharedScopeService config has NO declared boundary in the joiner→pin
+    //  range, both clients run native against the pinned 1.0 branch (joiner C just
+    //  ignores any 2.0-only fields it might have). When a boundary IS declared (see
+    //  ConfigBoundaryEvaluatorTests + ClientSignatureCapabilitiesTests for the
+    //  asymmetric force-patch direction), the boundary path kicks in instead.
     // ═════════════════════════════════════════════════════════════════════════════
     [Fact(Timeout = 60_000)]
-    public async Task Shared_IncompatibleMajorMinorJoiner_RejectsSubscribe()
+    public async Task Shared_DifferentMajorMinorJoiner_AllowedAfterOpenClosedRelaxation()
     {
-        var entityId = UniqueId("scope-shared-mismatch-");
+        var entityId = UniqueId("scope-shared-crossver-");
         var aId = UniqueId("a-");
         var cId = UniqueId("c-");
         var server = CreateServer();
@@ -158,12 +165,10 @@ public class EntityScopeTests
         await using var clientC = new TestClientSetup(server, cId, clientAppVersion: "2.0.0");
         await clientC.ConnectAsync();
 
-        // C's subscribe must fail — Major.Minor mismatch against the pin.
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-            await clientC.CreateResolver().GetServiceAsync<SharedScopeServiceApiClient>(entityId));
-        // The wrapped reason carries "Cannot join this shared session" from EntityGrain — assert
-        // we get a descriptive message rather than a silent NRE / generic transport error.
-        Assert.Contains("shared session", ex.Message, StringComparison.OrdinalIgnoreCase);
+        // C's subscribe must succeed despite Major.Minor mismatch against the pin —
+        // boundary-driven force-patch + native execution handle cross-version safely.
+        var capi = await clientC.CreateResolver().GetServiceAsync<SharedScopeServiceApiClient>(entityId);
+        Assert.NotNull(capi);
     }
 
     // ═════════════════════════════════════════════════════════════════════════════

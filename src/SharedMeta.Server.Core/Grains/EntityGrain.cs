@@ -66,6 +66,28 @@ namespace SharedMeta.Server.Core.Grains
         /// </summary>
         private readonly Dictionary<string, ISessionManagerReference> _subscriberRefs = new();
 
+        // 0.22.0+ Aggregated force-ServerPatch refcount across all active subscribers,
+        // keyed by (ServiceName, Alias, MethodVersion). HandleCallAsync consults this to
+        // decide whether to activate patch tracking for the current dispatch even when the
+        // method's declared mode isn't ServerPatch — so the broadcast can carry both replay
+        // and patch payloads, and per-subscriber tailoring in SessionManagerGrain ships only
+        // what each player needs. Refcounted to handle subscribe/unsubscribe churn in O(1).
+        private readonly Dictionary<(string Service, string Alias, int Version), int> _forcePatchMethodRefs = new();
+
+        // Per-subscriber snapshot of contributed methods so Unsubscribe can decrement the
+        // refcounts deterministically without re-asking the session for capabilities.
+        private readonly Dictionary<string, List<(string Service, string Alias, int Version)>> _subscriberForcePatchContributions = new();
+
+        // 0.22.0+ Aggregated service-level force-ServerPatch refcount. Populated from
+        // per-entity capabilities (config-boundary effects) that EntityGrain computes locally
+        // at subscribe time + from session-level ForceServerPatchServices forwarded by
+        // SessionManager. HandleCallAsync ORs this with _forcePatchMethodRefs to decide patch
+        // tracking activation. Keyed by ServiceName so any method on that service triggers.
+        private readonly Dictionary<string, int> _forcePatchServiceRefs = new();
+
+        // Per-subscriber service-level contribution snapshot for symmetric Unsubscribe.
+        private readonly Dictionary<string, List<string>> _subscriberForcePatchServiceContributions = new();
+
         public EntityGrain(
             [PersistentState("entity", "Default")] IPersistentState<EntityGrainState<TState>> persistentState,
             IMetaProviderFactory<TState> providerFactory,
@@ -74,7 +96,8 @@ namespace SharedMeta.Server.Core.Grains
             IOptions<EntityGrainOptions> options,
             IEntityGrainResolver entityGrainResolver,
             IExecutionModeProvider? executionModeProvider = null,
-            IConfigVersionResolver? configVersionResolver = null)
+            IConfigVersionResolver? configVersionResolver = null,
+            SharedMeta.Server.Core.Session.MetaServerSignature? serverSignature = null)
         {
             _persistentState = persistentState ?? throw new ArgumentNullException(nameof(persistentState));
             _providerFactory = providerFactory ?? throw new ArgumentNullException(nameof(providerFactory));
@@ -84,7 +107,15 @@ namespace SharedMeta.Server.Core.Grains
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
             _executionModeProvider = executionModeProvider;
             _configVersionResolver = configVersionResolver;
+            _serverSignature = serverSignature;
         }
+
+        /// <summary>
+        /// 0.22.0+ Injected server signature carrying <c>ConfigBoundaries</c> + service-to-config
+        /// bindings. Null when the host hasn't registered <c>MetaServerSignature</c> in DI —
+        /// in that mode <see cref="SubscribeAsync"/> emits no per-entity capability overlay.
+        /// </summary>
+        private readonly SharedMeta.Server.Core.Session.MetaServerSignature? _serverSignature;
 
         public override async Task OnActivateAsync(CancellationToken cancellationToken)
         {
@@ -257,7 +288,7 @@ namespace SharedMeta.Server.Core.Grains
             await base.OnDeactivateAsync(reason, cancellationToken);
         }
 
-        public async Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null)
+        public async Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null, IReadOnlyList<MethodIdentity>? forceServerPatchMethods = null)
         {
             // Access policy check
             if (_provider != null)
@@ -379,6 +410,64 @@ namespace SharedMeta.Server.Core.Grains
             };
             _subscriberRefs[playerId] = sessionManager;
 
+            // 0.22.0 Aggregate this player's force-patch declarations. Only methods on services
+            // hosted on THIS entity matter; other-service entries from the player's global
+            // capabilities are ignored. The provider knows which services it hosts via
+            // _provider.AccessPolicy / generated infrastructure; for now we accept everything
+            // the caller passed since they pre-filtered to this entity's bound services.
+            if (forceServerPatchMethods is { Count: > 0 })
+            {
+                // Discard any prior contribution for this player (defensive — resubscribe after
+                // reconnect, capabilities may have changed). Refcount stays consistent.
+                if (_subscriberForcePatchContributions.TryGetValue(playerId, out var prior))
+                {
+                    foreach (var key in prior)
+                    {
+                        if (_forcePatchMethodRefs.TryGetValue(key, out var c) && c > 0)
+                            _forcePatchMethodRefs[key] = c - 1;
+                        if (_forcePatchMethodRefs.TryGetValue(key, out var c2) && c2 == 0)
+                            _forcePatchMethodRefs.Remove(key);
+                    }
+                }
+                var contributions = new List<(string, string, int)>(forceServerPatchMethods.Count);
+                foreach (var m in forceServerPatchMethods)
+                {
+                    var key = (m.ServiceName, m.Alias, m.Version);
+                    contributions.Add(key);
+                    _forcePatchMethodRefs[key] = _forcePatchMethodRefs.TryGetValue(key, out var c) ? c + 1 : 1;
+                }
+                _subscriberForcePatchContributions[playerId] = contributions;
+            }
+
+            // 0.22.0 Compute per-entity capability overlay from [MetaConfigStructureBoundary]
+            // declarations. Resolved config version for this player + this entity's bound
+            // config(s) → which services need force-patch. Stored in BOTH the local refcount
+            // (so HandleCallAsync activates patch tracking) AND the returned snapshot (so
+            // SessionManagerGrain can cache for broadcast fan-out tailoring + forward to client).
+            var augmentedCaps = ComputePerEntityCapabilities(clientVersion);
+            if (augmentedCaps is { ForceServerPatchServices.Count: > 0 })
+            {
+                // Drop prior contribution to keep refcount in sync across resubscribe.
+                if (_subscriberForcePatchServiceContributions.TryGetValue(playerId, out var priorSvc))
+                {
+                    foreach (var svc in priorSvc)
+                    {
+                        if (_forcePatchServiceRefs.TryGetValue(svc, out var sc))
+                        {
+                            if (sc <= 1) _forcePatchServiceRefs.Remove(svc);
+                            else _forcePatchServiceRefs[svc] = sc - 1;
+                        }
+                    }
+                }
+                var svcContributions = new List<string>(augmentedCaps.ForceServerPatchServices.Count);
+                foreach (var svc in augmentedCaps.ForceServerPatchServices)
+                {
+                    svcContributions.Add(svc);
+                    _forcePatchServiceRefs[svc] = _forcePatchServiceRefs.TryGetValue(svc, out var sc) ? sc + 1 : 1;
+                }
+                _subscriberForcePatchServiceContributions[playerId] = svcContributions;
+            }
+
             _logger.PlayerSubscribed(this.GetPrimaryKeyString(), playerId);
 
             await _persistentState.WriteStateAsync();
@@ -400,7 +489,43 @@ namespace SharedMeta.Server.Core.Grains
                 // server-driven config regardless of who's calling.
                 ConfigVersion = (_provider as MetaProviderBase<TState>)?.ResolveEffectiveConfigVersion(clientVersion)
                                ?? _provider?.ResolveClientConfigVersion(clientVersion)
-                               ?? default
+                               ?? default,
+                AugmentedCapabilities = augmentedCaps,
+            };
+        }
+
+        /// <summary>
+        /// 0.22.0+ Compute per-entity capability overlay for a specific subscriber. Delegates
+        /// the pure boundary check to <see cref="SharedMeta.Server.Core.Session.ConfigBoundaryEvaluator.ComputeAffectedServices"/>
+        /// (unit-tested independently). Returns <c>null</c> when no boundaries apply.
+        /// </summary>
+        private SharedMeta.Core.Transport.EntityAugmentedCapabilities? ComputePerEntityCapabilities(string? clientVersion)
+        {
+            if (_serverSignature == null
+                || _serverSignature.ConfigBoundaries == null
+                || _serverSignature.ConfigBoundaries.Count == 0
+                || _provider == null)
+                return null;
+
+            // Two versions in play:
+            //   * pinned     — what the server executes under (Private/Shared pin, or Global's
+            //                  CurrentClientVersion resolution). The bytes on the wire reflect this.
+            //   * clientCode — what the client's code was built to interpret, derived purely
+            //                  from its ClientVersion via [MetaConfigVersion] rules. Unclamped
+            //                  by the entity pin — it's the client's natural schema.
+            var pinned = (_provider as MetaProviderBase<TState>)?.ResolveEffectiveConfigVersion(clientVersion)
+                       ?? _provider.ResolveClientConfigVersion(clientVersion);
+            var clientCode = _provider.ResolveClientConfigVersion(clientVersion);
+
+            var services = SharedMeta.Server.Core.Session.ConfigBoundaryEvaluator.ComputeAffectedServices(
+                _serverSignature.ConfigBoundaries, _serverSignature.Methods, pinned, clientCode);
+            if (services.Count == 0) return null;
+
+            return new SharedMeta.Core.Transport.EntityAugmentedCapabilities
+            {
+                ForceServerPatchServices = services
+                // RejectedServices stays empty — boundaries only trigger force-patch, not reject.
+                // A future severity enum on [MetaConfigStructureBoundary] could populate this.
             };
         }
 
@@ -408,6 +533,33 @@ namespace SharedMeta.Server.Core.Grains
         {
             _persistentState.State.Subscribers.Remove(playerId);
             _subscriberRefs.Remove(playerId);
+
+            // 0.22.0 Decrement force-patch refcounts for what this player contributed at
+            // subscribe time. Removing zero-count entries keeps the dispatch-time lookup tight.
+            if (_subscriberForcePatchContributions.Remove(playerId, out var contributions))
+            {
+                foreach (var key in contributions)
+                {
+                    if (_forcePatchMethodRefs.TryGetValue(key, out var c))
+                    {
+                        if (c <= 1) _forcePatchMethodRefs.Remove(key);
+                        else _forcePatchMethodRefs[key] = c - 1;
+                    }
+                }
+            }
+            // Service-level (per-entity boundary) symmetric decrement.
+            if (_subscriberForcePatchServiceContributions.Remove(playerId, out var svcContributions))
+            {
+                foreach (var svc in svcContributions)
+                {
+                    if (_forcePatchServiceRefs.TryGetValue(svc, out var sc))
+                    {
+                        if (sc <= 1) _forcePatchServiceRefs.Remove(svc);
+                        else _forcePatchServiceRefs[svc] = sc - 1;
+                    }
+                }
+            }
+
             _logger.PlayerUnsubscribed(this.GetPrimaryKeyString(), playerId);
 
             // 0.21.0: pin lives only while there are active subscribers. When the last
@@ -447,9 +599,22 @@ namespace SharedMeta.Server.Core.Grains
 
             try
             {
+                // 0.22.0 Decide if this dispatch needs patch tracking to satisfy any legacy
+                // subscriber's force-patch capability. O(1) lookup — refcount Dictionary
+                // populated at subscribe time. When true, the provider activates the
+                // PatchWrapper alongside normal replay recording, so the resulting broadcast
+                // carries both PatchBytes and ReplayPayload. SessionManagerGrain then strips
+                // per-subscriber on fan-out.
+                // ORs two refcounts:
+                //   * _forcePatchMethodRefs   — session-level MinCompatibleVersion mismatches.
+                //   * _forcePatchServiceRefs  — per-entity ConfigStructureBoundary triggers.
+                bool requirePatchForFanOut =
+                       _forcePatchMethodRefs.ContainsKey((call.ServiceName, call.MethodName, call.MethodVersion))
+                    || _forcePatchServiceRefs.ContainsKey(call.ServiceName);
+
                 // isClientOriginated: true → provider rejects [MetaMethod(GenerateClientApi=false)]
                 // methods. Cross-entity peers land at HandleCallFromEntityAsync below with false.
-                var providerResult = await _provider.HandleCallAsync(call, isClientOriginated: true);
+                var providerResult = await _provider.HandleCallAsync(call, isClientOriginated: true, requirePatchForFanOut: requirePatchForFanOut);
                 forcePersist = providerResult.ForcePersist;
 
                 // Lazy migration: if CheckAndRunLazyMigrationAsync ran a migration, persist the
@@ -760,8 +925,14 @@ namespace SharedMeta.Server.Core.Grains
 
                     try
                     {
-                        _logger.SendingBroadcast(playerId, entityId, operationSequence, broadcast.ServiceName, broadcast.MethodName);
-                        await sessionManager.ReceiveBroadcastAsync(entityId, broadcast, operationSequence);
+                        // 0.22.0 Per-subscriber tailoring at fan-out. Decide once whether THIS
+                        // subscriber needs the patch variant (legacy: their session-level or
+                        // per-entity caps mark this method/service as force-patch) or the replay
+                        // variant (modern: native execution). Then send the appropriately-stripped
+                        // broadcast — no extra bytes on the wire and no work for SessionManagerGrain.
+                        var tailored = TailorBroadcastForSubscriber(broadcast, playerId);
+                        _logger.SendingBroadcast(playerId, entityId, operationSequence, tailored.ServiceName, tailored.MethodName);
+                        await sessionManager.ReceiveBroadcastAsync(entityId, tailored, operationSequence);
                         sentCount++;
                     }
                     catch (Exception ex)
@@ -772,6 +943,17 @@ namespace SharedMeta.Server.Core.Grains
 
                 _logger.BroadcastSent(sentCount, subscriberCount, broadcast.ServiceName, broadcast.MethodName);
             }
+        }
+
+        /// <summary>
+        /// 0.22.0+ Per-subscriber tailoring at fan-out. Delegates to the pure static helper
+        /// <see cref="BroadcastTailor.TailorForSubscriber"/> for the actual strip logic.
+        /// </summary>
+        private EntityBroadcast TailorBroadcastForSubscriber(EntityBroadcast original, string playerId)
+        {
+            _subscriberForcePatchContributions.TryGetValue(playerId, out var methodContribs);
+            _subscriberForcePatchServiceContributions.TryGetValue(playerId, out var serviceContribs);
+            return BroadcastTailor.TailorForSubscriber(original, methodContribs, serviceContribs);
         }
     }
 }

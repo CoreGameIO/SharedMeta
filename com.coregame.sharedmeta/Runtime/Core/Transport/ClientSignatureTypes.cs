@@ -142,6 +142,40 @@ namespace SharedMeta.Core.Transport
     }
 
     /// <summary>
+    /// 0.22.0+ Per-entity capability deltas on top of session-level <see cref="ClientCapabilities"/>.
+    /// Returned by <c>EntityGrain.SubscribeAsync</c> via <c>SubscribeResponse.AugmentedCapabilities</c>.
+    /// <para>
+    /// Session-level caps describe what's stable per build (method versioning, arg-hash drift).
+    /// Per-entity caps describe what's specific to ONE entity's resolved config version —
+    /// notably <c>[MetaConfigStructureBoundary]</c> effects that depend on the entity's pinned
+    /// config branch (Private/Shared) or the server's <c>CurrentClientVersion</c> resolution
+    /// (Global). Two entities of the same state type can sit on different config branches and
+    /// produce different per-entity verdicts for the same client.
+    /// </para>
+    /// <para>
+    /// Combines with <see cref="ClientCapabilities"/> at dispatch / broadcast / gate time —
+    /// EntityGrain refcounts these alongside session-level force-patch methods, the client's
+    /// generated <c>*ApiClient</c> consults them at the gate for per-entity rejection /
+    /// forced-ServerPatch decisions.
+    /// </para>
+    /// </summary>
+    [MemoryPackable, MessagePackObject, GenerateSerializer]
+    public partial class EntityAugmentedCapabilities
+    {
+        /// <summary>Services on this entity the client cannot invoke at all. Per-entity equivalent
+        /// of session-level <c>RejectedMethods</c> but at service granularity. The gate throws
+        /// <see cref="IncompatibleFeatureException"/> locally when a call's ServiceName hits this
+        /// list; server back-stop rejects forged calls that bypassed the gate.</summary>
+        [Id(0), Key(0), MemoryPackOrder(0)] public List<string> RejectedServices { get; set; } = new();
+
+        /// <summary>Services on this entity that must execute as ServerPatch. Combined with
+        /// session-level <c>ForceServerPatchServices</c>/<c>ForceServerPatchMethods</c> at
+        /// dispatch (EntityGrain activates patch tracking) and at broadcast fan-out
+        /// (SessionManagerGrain tailors per subscriber).</summary>
+        [Id(1), Key(1), MemoryPackOrder(1)] public List<string> ForceServerPatchServices { get; set; } = new();
+    }
+
+    /// <summary>
     /// Phase-2 request: client sends its full <see cref="MetaClientSignature"/>
     /// when the server replies to phase-1 with
     /// <c>SessionConnectResponse.NeedsSignatureRegistration = true</c>. The

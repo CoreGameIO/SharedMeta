@@ -167,6 +167,47 @@ namespace SharedMeta.Core
     }
 
     /// <summary>
+    /// 0.22.0+ Declares a structural-change cutoff on a config class. Clients running on
+    /// config versions <c>&lt;</c> <see cref="MinConfigVersion"/> must execute every method
+    /// of any service bound to this config as <see cref="ExecutionMode.ServerPatch"/> — the
+    /// config structure changed enough that optimistic local execution would interpret data
+    /// differently from the server and produce a desync.
+    /// <para>
+    /// Annotate the config class wherever a structural break shipped: a renamed field, a
+    /// re-typed column, a re-keyed table. Additive config changes (new fields, new rows)
+    /// do <b>not</b> need this annotation — the existing config-version pin handles them.
+    /// </para>
+    /// <para>
+    /// Multiple attributes may stack to mark several cutoffs across the config's history.
+    /// The compute pipeline applies the highest <c>MinConfigVersion</c> that exceeds the
+    /// client's resolved config version, picking the most-restrictive applicable boundary.
+    /// </para>
+    /// <para>Example:</para>
+    /// <code>
+    /// [MetaConfig]
+    /// [MetaConfigStructureBoundary("2.0", Reason = "ExpeditionConfig.Difficulty was split into two enums.")]
+    /// public class ExpeditionConfig { ... }
+    /// </code>
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class, AllowMultiple = true, Inherited = false)]
+    public class MetaConfigStructureBoundaryAttribute : Attribute
+    {
+        /// <summary>Minimum config version (Major.Minor) above which structure is stable.
+        /// Clients below this version are force-downgraded to ServerPatch for all services
+        /// bound to this config.</summary>
+        public string MinConfigVersion { get; }
+
+        /// <summary>Optional developer-facing explanation of what broke and why. Surfaced
+        /// in diagnostic logs and dev tooling but never shown to end users.</summary>
+        public string Reason { get; set; } = "";
+
+        public MetaConfigStructureBoundaryAttribute(string minConfigVersion)
+        {
+            MinConfigVersion = minConfigVersion;
+        }
+    }
+
+    /// <summary>
     /// Attribute to mark an interface as a shared meta service.
     /// The generator will produce Client Proxies and Server Dispatchers.
     /// </summary>
@@ -682,6 +723,35 @@ namespace SharedMeta.Core
         {
             Type = type;
         }
+    }
+
+    /// <summary>
+    /// 0.22.0+ Project-level opt-out for the compatibility-negotiation generator features
+    /// (client signature emit, capabilities gate in <c>*ApiClient</c>, force-ServerPatch
+    /// routing). Default is <see cref="Enabled"/> = <c>true</c> — the generator emits the
+    /// full negotiation surface, the runtime behaviour stays no-op until the consumer
+    /// wires up the registry (so an unused negotiation is essentially free).
+    /// <para>
+    /// Apply this on a project's assembly with <c>Enabled = false</c> when you've decided
+    /// not to use compatibility negotiation at all and want to drop the generated code from
+    /// your build. The generator emits empty / no-op fallbacks in that mode.
+    /// </para>
+    /// <para>Example:</para>
+    /// <code>
+    /// [assembly: SharedMeta.Core.SharedMetaCompatibilityOptions(Enabled = false)]
+    /// </code>
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Assembly)]
+    public sealed class SharedMetaCompatibilityOptionsAttribute : Attribute
+    {
+        /// <summary>
+        /// When <c>true</c> (default), the generator emits client signature + capabilities
+        /// gate machinery. When <c>false</c>, those emits are skipped — generated client
+        /// code never consults capabilities, and <c>GameServiceDiscoveryBase.ClientSignature</c>
+        /// is still emitted but with an empty <see cref="SharedMeta.Core.Transport.MetaClientSignature.KnownMethods"/>
+        /// list (so the type is still resolvable for opt-in test scaffolding).
+        /// </summary>
+        public bool Enabled { get; set; } = true;
     }
 
     /// <summary>

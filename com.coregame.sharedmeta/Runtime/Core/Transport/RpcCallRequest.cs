@@ -50,5 +50,14 @@ namespace SharedMeta.Core.Transport
         /// Server sets this on MetaContext for deterministic execution.
         /// </summary>
         [Id(7), Key(7)] public long ServerTimeTicks { get; set; }
+
+        /// <summary>
+        /// 0.22.0+: Method version (mirrors <c>RpcCall.MethodVersion</c>). Stamped by the
+        /// generated client from <c>[MetaMethod(Version = N)]</c>. The server validates
+        /// <c>(ServiceName, MethodName, MethodVersion)</c> against the caller's
+        /// <see cref="ClientCapabilities"/> before dispatching — a forged client that bypasses
+        /// the local <c>CapabilitiesGate</c> still gets rejected at this back-stop.
+        /// </summary>
+        [Id(8), Key(8)] public int MethodVersion { get; set; }
     }
 }

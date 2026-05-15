@@ -927,41 +927,26 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("        }");
                 sb.AppendLine();
 
-                // 0.21.0 Phase 6: ValidateClientCompatibleWithPins override — emitted only
-                // for Shared scope. Resolves the joiner's version per config type, compares
-                // against pins on Major.Minor. Patch difference is tolerated (joiner downgrades).
-                // Private has one subscriber so this never runs; Global never pins.
+                // 0.22.0: ValidateClientCompatibleWithPins is now permissive on shared-scope
+                // cross-version subscriptions. Open-Closed config evolution + boundary-driven
+                // force-patch (see [MetaConfigStructureBoundary] + EntityGrain.ComputePerEntityCapabilities)
+                // handle compatibility:
+                //   • joiner.Version > pin.Version → newer client has all old code paths;
+                //     runs native on the older-pinned data (additive fields default to zero).
+                //   • joiner.Version < pin.Version, no boundary in range → old code paths still
+                //     valid on new data (additive evolution); native execution.
+                //   • joiner.Version < pin.Version, boundary declared → ComputePerEntityCapabilities
+                //     emits ForceServerPatchServices for the affected services; broadcasts to this
+                //     subscriber are tailored to PatchBytes by BroadcastTailor.
+                // The supported version range is enforced upstream at the transport level
+                // (MetaTransportOptions.MinClientVersion / MaxClientVersion). The pre-0.22.0
+                // strict reject was redundant once boundary-driven force-patch landed.
                 if (stateScope == 1) // EntityScope.Shared
                 {
                     sb.AppendLine("        public override bool ValidateClientCompatibleWithPins(string? clientVersion, out string? reason)");
                     sb.AppendLine("        {");
+                    sb.AppendLine("            // 0.22.0: permissive — Open-Closed + boundary force-patch handles cross-version subscribe.");
                     sb.AppendLine("            reason = null;");
-                    if (configType != null)
-                    {
-                        sb.AppendLine("            if (_configProvider != null");
-                        sb.AppendLine($"                && TryGetConfigPin(typeof({configType}).FullName!, out var _pp))");
-                        sb.AppendLine("            {");
-                        sb.AppendLine("                var _jv = _configProvider.ResolveForClient(clientVersion, _configVersionPolicyResolver);");
-                        sb.AppendLine("                if (_jv.Major != _pp.Major || _jv.Minor != _pp.Minor)");
-                        sb.AppendLine("                {");
-                        sb.AppendLine($"                    reason = $\"config '{configType}' pinned at \" + _pp.Major + \".\" + _pp.Minor + \", joiner resolved to \" + _jv.Major + \".\" + _jv.Minor;");
-                        sb.AppendLine("                    return false;");
-                        sb.AppendLine("                }");
-                        sb.AppendLine("            }");
-                    }
-                    foreach (var sec in secondaryProviders)
-                    {
-                        sb.AppendLine($"            if (_configProvider_{sec.Ident} != null");
-                        sb.AppendLine($"                && TryGetConfigPin(typeof({sec.ConfigType}).FullName!, out var _sp_{sec.Ident}))");
-                        sb.AppendLine("            {");
-                        sb.AppendLine($"                var _sj_{sec.Ident} = _configProvider_{sec.Ident}.ResolveForClient(clientVersion, null);");
-                        sb.AppendLine($"                if (_sj_{sec.Ident}.Major != _sp_{sec.Ident}.Major || _sj_{sec.Ident}.Minor != _sp_{sec.Ident}.Minor)");
-                        sb.AppendLine("                {");
-                        sb.AppendLine($"                    reason = $\"config '{sec.ConfigType}' pinned at \" + _sp_{sec.Ident}.Major + \".\" + _sp_{sec.Ident}.Minor + \", joiner resolved to \" + _sj_{sec.Ident}.Major + \".\" + _sj_{sec.Ident}.Minor;");
-                        sb.AppendLine("                    return false;");
-                        sb.AppendLine("                }");
-                        sb.AppendLine("            }");
-                    }
                     sb.AppendLine("            return true;");
                     sb.AppendLine("        }");
                     sb.AppendLine();

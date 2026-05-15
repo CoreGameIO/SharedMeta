@@ -35,6 +35,25 @@ namespace SharedMeta.Generator.Generators
         /// remain available because they don't traverse the client-RPC boundary.
         /// </summary>
         public bool GenerateClientApi { get; set; } = true;
+
+        /// <summary>0.22.0+: <c>[MetaMethod(Version = N)]</c>. Default 0 (legacy/unversioned).</summary>
+        public int Version { get; set; }
+
+        /// <summary>0.22.0+: <c>[MetaMethod(MinCompatibleVersion = N)]</c>. Default 0 — no
+        /// compatibility floor (any client version may call this method body locally).</summary>
+        public int MinCompatibleVersion { get; set; }
+
+        /// <summary>0.22.0+: FNV-1a hash over canonical parameter-type sequence ("p1,p2,...->R").
+        /// Used by the Stage 6 compute pipeline to detect signature drift even when
+        /// <c>(Alias, Version)</c> happens to match. Distinct from <see cref="SignatureHash"/>,
+        /// which is per-fully-qualified-method (includes service + method names).</summary>
+        public ulong ArgHash { get; set; }
+
+        /// <summary>0.22.0+ Fully-qualified config class this method's service is bound to.
+        /// Mirrors <see cref="DiscoveredServiceInfo.ConfigTypeFullName"/>. Used by
+        /// <c>EntityGrain</c>'s per-entity boundary compute to find services affected by a
+        /// <c>[MetaConfigStructureBoundary]</c> trigger.</summary>
+        public string ConfigTypeFullName { get; set; } = "";
     }
 
     /// <summary>
@@ -49,6 +68,30 @@ namespace SharedMeta.Generator.Generators
         public string Namespace { get; set; } = "";
         public List<string> SubscriberInterfaces { get; set; } = new();
         public List<MethodSignatureInfo> MethodSignatures { get; set; } = new();
+
+        /// <summary>0.22.0+ Fully-qualified config class bound to this service via
+        /// <c>[MetaService(ConfigType = X)]</c>. Empty if no config (or default-config
+        /// resolution not implemented yet at this point in the pipeline). Used by
+        /// <c>ServerMethodEntry.ConfigTypeFullName</c> emit so EntityGrain can map
+        /// config-boundary triggers back to affected services.</summary>
+        public string ConfigTypeFullName { get; set; } = "";
+
+        /// <summary>0.22.0+ <c>[MetaConfigStructureBoundary]</c> declarations harvested from
+        /// the service's bound config class (when one is resolvable from <c>[MetaService]</c>
+        /// attribute args). Each entry contributes a row to <c>MetaServerSignature.ConfigBoundaries</c>.</summary>
+        public List<ConfigBoundaryInfo> ConfigBoundaries { get; set; } = new();
+    }
+
+    /// <summary>
+    /// 0.22.0+ generator-side mirror of <c>SharedMeta.Server.Core.Session.ConfigBoundaryEntry</c>.
+    /// Lives in the generator project to avoid coupling generator code to the server runtime;
+    /// projected into the emitted code via the standard <c>global::</c> path.
+    /// </summary>
+    public class ConfigBoundaryInfo
+    {
+        public string ConfigTypeFullName { get; set; } = "";
+        public string MinConfigVersion { get; set; } = "";
+        public string Reason { get; set; } = "";
     }
 
     /// <summary>
@@ -84,6 +127,30 @@ namespace SharedMeta.Generator.Generators
                 info.StateTypeFullName = stateType.ToDisplayString();
             }
 
+            // 0.22.0+: harvest [MetaConfigStructureBoundary] from the service's bound config
+            // class. Used for force-ServerPatch decisions when a client's resolved config
+            // sits below the declared structural break.
+            var configTypeArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "ConfigType");
+            if (configTypeArg.Value.Value is INamedTypeSymbol configType)
+            {
+                info.ConfigTypeFullName = configType.ToDisplayString();
+                foreach (var boundary in configType.GetAttributes()
+                    .Where(a => a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaConfigStructureBoundaryAttribute"))
+                {
+                    var minVer = boundary.ConstructorArguments.Length > 0
+                        ? boundary.ConstructorArguments[0].Value as string ?? ""
+                        : "";
+                    var reasonArg = boundary.NamedArguments.FirstOrDefault(a => a.Key == "Reason");
+                    var reason = !reasonArg.Value.IsNull && reasonArg.Value.Value is string r ? r : "";
+                    info.ConfigBoundaries.Add(new ConfigBoundaryInfo
+                    {
+                        ConfigTypeFullName = configType.ToDisplayString(),
+                        MinConfigVersion = minVer,
+                        Reason = reason,
+                    });
+                }
+            }
+
             // Get subscriber interfaces
             var subscriberInterfacesArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "SubscriberInterfaces");
             if (!subscriberInterfacesArg.Value.IsNull && subscriberInterfacesArg.Value.Values.Length > 0)
@@ -102,11 +169,14 @@ namespace SharedMeta.Generator.Generators
             {
                 if (member.MethodKind != MethodKind.Ordinary) continue;
 
-                // Get method alias from [MetaMethod] attribute
+                // Get method alias + 0.22.0 versioning args from [MetaMethod] attribute
                 var metaMethodAttr = member.GetAttributes().FirstOrDefault(a =>
                     a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaMethodAttribute");
 
                 var methodAlias = member.Name;
+                int methodVersion = 0;
+                int minCompatibleVersion = 0;
+                bool generateClientApi = true;
                 if (metaMethodAttr != null)
                 {
                     var aliasArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Alias");
@@ -114,17 +184,35 @@ namespace SharedMeta.Generator.Generators
                     {
                         methodAlias = alias;
                     }
+                    var versionArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Version");
+                    if (!versionArg.Value.IsNull && versionArg.Value.Value is int v) methodVersion = v;
+                    var minCompatArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "MinCompatibleVersion");
+                    if (!minCompatArg.Value.IsNull && minCompatArg.Value.Value is int mcv) minCompatibleVersion = mcv;
+                    var genApiArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "GenerateClientApi");
+                    if (!genApiArg.Value.IsNull && genApiArg.Value.Value is bool g) generateClientApi = g;
                 }
 
                 var signatureString = SignatureHashGenerator.BuildSignatureString(info.InterfaceName, methodAlias, member);
                 var signatureHash = SignatureHashGenerator.ComputeFnv1aHash(signatureString);
+
+                // ArgHash — purely the parameter+return shape, no service/method name. Used by
+                // Stage 6 compute to detect Case 4 (signature drift) even when alias matches.
+                var argShape = string.Join(",", member.Parameters.Select(p =>
+                    SignatureHashGenerator.GetCanonicalTypeName(p.Type)))
+                    + "->" + SignatureHashGenerator.GetCanonicalTypeName(member.ReturnType);
+                var argHash = SignatureHashGenerator.ComputeFnv1aHash(argShape);
 
                 info.MethodSignatures.Add(new MethodSignatureInfo
                 {
                     ServiceName = info.InterfaceName,
                     MethodAlias = methodAlias,
                     SignatureString = signatureString,
-                    SignatureHash = signatureHash
+                    SignatureHash = signatureHash,
+                    Version = methodVersion,
+                    MinCompatibleVersion = minCompatibleVersion,
+                    ArgHash = argHash,
+                    GenerateClientApi = generateClientApi,
+                    ConfigTypeFullName = info.ConfigTypeFullName,
                 });
             }
 
@@ -331,6 +419,132 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        /// Get all method signatures for session connect validation.");
             sb.AppendLine("        /// </summary>");
             sb.AppendLine("        public static Dictionary<string, ulong> GetMethodSignatures() => new(MethodSignatures);");
+            sb.AppendLine();
+
+            // 0.22.0: emit MetaClientSignature static instance. Sorted canonical form so the
+            // hash is stable across builds with the same protocol surface; mutating the sort
+            // (e.g. by reordering interface members) does NOT change the hash.
+            EmitClientSignature(sb, allSignatures, services);
+        }
+
+        /// <summary>
+        /// 0.22.0: Emits a <c>public static readonly MetaClientSignature ClientSignature</c>
+        /// on <c>GameServiceDiscoveryBase</c>. The constant is what the client transmits in
+        /// <c>SessionConnectRequest.ClientSignatureHash</c> (phase-1) and inside
+        /// <c>RegisterClientSignatureRequest.Signature</c> (phase-2). Identical bits across
+        /// every client build that ships the same set of <c>[MetaMethod]</c> declarations.
+        /// </summary>
+        private static void EmitClientSignature(StringBuilder sb, List<MethodSignatureInfo> allSignatures, List<DiscoveredServiceInfo> services)
+        {
+            // Sort by (ServiceName, Alias, Version) for canonical form. Signal/query methods are
+            // included — they're still part of the client's protocol surface and the server may
+            // reject them too (e.g. structural break to a signal arg shape).
+            var sorted = allSignatures
+                .OrderBy(s => s.ServiceName, System.StringComparer.Ordinal)
+                .ThenBy(s => s.MethodAlias, System.StringComparer.Ordinal)
+                .ThenBy(s => s.Version)
+                .ToList();
+
+            // Compute the aggregate signature hash from the sorted canonical string. The string
+            // includes service.alias@version#argHash for each method, joined by '|'. FNV-1a over
+            // the whole thing keeps the hash deterministic but tiny (8 bytes on the wire).
+            var canonicalSb = new StringBuilder();
+            foreach (var s in sorted)
+            {
+                if (canonicalSb.Length > 0) canonicalSb.Append('|');
+                canonicalSb.Append(s.ServiceName).Append('.').Append(s.MethodAlias)
+                    .Append('@').Append(s.Version)
+                    .Append('#').Append(s.ArgHash.ToString("X16"));
+            }
+            var signatureHash = SignatureHashGenerator.ComputeFnv1aHash(canonicalSb.ToString());
+
+            sb.AppendLine("        /// <summary>");
+            sb.AppendLine("        /// 0.22.0+: Compile-time client signature. Stable across builds that ship the");
+            sb.AppendLine("        /// same set of <c>[MetaMethod]</c> declarations under identical (Alias, Version)");
+            sb.AppendLine("        /// tuples and parameter shapes. The hash drives the SessionConnect compatibility");
+            sb.AppendLine("        /// handshake — see <c>SessionConnectRequest.ClientSignatureHash</c>.");
+            sb.AppendLine("        /// </summary>");
+            sb.AppendLine("        public static readonly global::SharedMeta.Core.Transport.MetaClientSignature ClientSignature =");
+            sb.AppendLine("            new global::SharedMeta.Core.Transport.MetaClientSignature");
+            sb.AppendLine("            {");
+            sb.AppendLine($"                SignatureHash = {SignatureHashGenerator.FormatHashLiteral(signatureHash)},");
+            sb.AppendLine("                KnownMethods = new System.Collections.Generic.List<global::SharedMeta.Core.Transport.KnownMethodEntry>");
+            sb.AppendLine("                {");
+            foreach (var s in sorted)
+            {
+                sb.AppendLine("                    new global::SharedMeta.Core.Transport.KnownMethodEntry");
+                sb.AppendLine("                    {");
+                sb.AppendLine($"                        ServiceName = \"{s.ServiceName}\",");
+                sb.AppendLine($"                        Alias = \"{s.MethodAlias}\",");
+                sb.AppendLine($"                        Version = {s.Version},");
+                sb.AppendLine($"                        ArgHash = {SignatureHashGenerator.FormatHashLiteral(s.ArgHash)},");
+                sb.AppendLine("                    },");
+            }
+            sb.AppendLine("                },");
+            sb.AppendLine("            };");
+            sb.AppendLine();
+
+            // Server-side mirror — same data plus MinCompatibleVersion + GenerateClientApi.
+            // Wrapped in #if SHAREDMETA_SERVER so client builds don't reference the
+            // server-only MetaServerSignature type.
+            sb.AppendLine("#if SHAREDMETA_SERVER");
+            sb.AppendLine("        /// <summary>");
+            sb.AppendLine("        /// 0.22.0+: Server-side mirror of the same protocol surface, enriched with");
+            sb.AppendLine("        /// <c>MinCompatibleVersion</c> and <c>GenerateClientApi</c> per method, plus");
+            sb.AppendLine("        /// <c>[MetaConfigStructureBoundary]</c> declarations harvested from every bound");
+            sb.AppendLine("        /// config class. Consumed by the Stage 6 capabilities compute pipeline.");
+            sb.AppendLine("        /// </summary>");
+            sb.AppendLine("        public static readonly global::SharedMeta.Server.Core.Session.MetaServerSignature ServerSignature =");
+            sb.AppendLine("            new global::SharedMeta.Server.Core.Session.MetaServerSignature");
+            sb.AppendLine("            {");
+            sb.AppendLine("                Methods = new System.Collections.Generic.List<global::SharedMeta.Server.Core.Session.ServerMethodEntry>");
+            sb.AppendLine("                {");
+            foreach (var s in sorted)
+            {
+                sb.AppendLine("                    new global::SharedMeta.Server.Core.Session.ServerMethodEntry");
+                sb.AppendLine("                    {");
+                sb.AppendLine($"                        ServiceName = \"{s.ServiceName}\",");
+                sb.AppendLine($"                        Alias = \"{s.MethodAlias}\",");
+                sb.AppendLine($"                        Version = {s.Version},");
+                sb.AppendLine($"                        MinCompatibleVersion = {s.MinCompatibleVersion},");
+                sb.AppendLine($"                        ArgHash = {SignatureHashGenerator.FormatHashLiteral(s.ArgHash)},");
+                sb.AppendLine($"                        GenerateClientApi = {(s.GenerateClientApi ? "true" : "false")},");
+                sb.AppendLine($"                        ConfigTypeFullName = \"{s.ConfigTypeFullName}\",");
+                sb.AppendLine("                    },");
+            }
+            sb.AppendLine("                },");
+
+            // Collapse boundary entries to (ConfigTypeFullName, MinConfigVersion, Reason) tuples.
+            // Same config may appear in multiple services — emit each unique tuple once.
+            var uniqueBoundaries = services
+                .SelectMany(s => s.ConfigBoundaries)
+                .GroupBy(b => (b.ConfigTypeFullName, b.MinConfigVersion))
+                .Select(g => g.First())
+                .OrderBy(b => b.ConfigTypeFullName, System.StringComparer.Ordinal)
+                .ThenBy(b => b.MinConfigVersion, System.StringComparer.Ordinal)
+                .ToList();
+            sb.AppendLine("                ConfigBoundaries = new System.Collections.Generic.List<global::SharedMeta.Server.Core.Session.ConfigBoundaryEntry>");
+            sb.AppendLine("                {");
+            foreach (var b in uniqueBoundaries)
+            {
+                sb.AppendLine("                    new global::SharedMeta.Server.Core.Session.ConfigBoundaryEntry");
+                sb.AppendLine("                    {");
+                sb.AppendLine($"                        ConfigTypeFullName = \"{b.ConfigTypeFullName}\",");
+                sb.AppendLine($"                        MinConfigVersion = \"{b.MinConfigVersion}\",");
+                sb.AppendLine($"                        Reason = {EscapeLiteral(b.Reason)},");
+                sb.AppendLine("                    },");
+            }
+            sb.AppendLine("                },");
+            sb.AppendLine("            };");
+            sb.AppendLine("#endif");
+        }
+
+        /// <summary>Escape a string for safe embedding as a C# string literal.</summary>
+        private static string EscapeLiteral(string s)
+        {
+            if (s == null) return "\"\"";
+            var escaped = s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
+            return "\"" + escaped + "\"";
         }
     }
 }
