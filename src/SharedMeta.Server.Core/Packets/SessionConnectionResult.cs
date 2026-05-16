@@ -7,7 +7,7 @@ namespace SharedMeta.Server.Core.Session
     /// <summary>
     /// Result of a connection attempt to SessionManager.
     /// </summary>
-    [GenerateSerializer]
+    [GenerateSerializer, Immutable]
     public class SessionConnectionResult
     {
         /// <summary>Whether the connection was accepted.</summary>

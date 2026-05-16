@@ -7,7 +7,7 @@ namespace SharedMeta.Server.Core.Grains
     /// <summary>
     /// Snapshot of entity state.
     /// </summary>
-    [GenerateSerializer]
+    [GenerateSerializer, Immutable]
     public class EntitySnapshot
     {
         [Id(0)] public byte[] StateBytes { get; set; } = Array.Empty<byte>();

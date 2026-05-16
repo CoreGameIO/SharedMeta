@@ -56,9 +56,17 @@ public class PersistencePolicy
     public static PersistencePolicy EveryNMinutes(double minutes)
         => new() { Mode = PersistenceMode.EveryNMinutes, TimeIntervalMinutes = minutes };
 
+    /// <summary>Save when N seconds have passed since last save (checked on each request).</summary>
+    public static PersistencePolicy EveryNSeconds(double seconds)
+        => new() { Mode = PersistenceMode.EveryNMinutes, TimeIntervalMinutes = seconds / 60.0 };
+
     /// <summary>Save every N requests OR M minutes, whichever comes first.</summary>
     public static PersistencePolicy RequestsOrTime(int requests, double minutes)
         => new() { Mode = PersistenceMode.RequestsOrTime, RequestInterval = requests, TimeIntervalMinutes = minutes };
+
+    /// <summary>Save every N requests OR S seconds, whichever comes first.</summary>
+    public static PersistencePolicy RequestsOrSeconds(int requests, double seconds)
+        => new() { Mode = PersistenceMode.RequestsOrTime, RequestInterval = requests, TimeIntervalMinutes = seconds / 60.0 };
 
     /// <summary>Only save when grain deactivates.</summary>
     public static PersistencePolicy OnDeactivationOnly()

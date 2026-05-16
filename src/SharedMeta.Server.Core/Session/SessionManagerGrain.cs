@@ -37,6 +37,20 @@ namespace SharedMeta.Server.Core.Session
         private readonly List<SessionResponse> _pendingPackets = [];
         private const int MaxPendingPackets = 1000;
 
+        // Cached delegate for ObserverManager.Notify in FlushOutgoingBatch. Constructed once per
+        // grain activation from the instance method group `NotifyOnBatch` — that allocates one
+        // Func<ISessionObserver, Task> at construction time and reuses it for every flush.
+        // Replaces an in-place lambda `o => o.OnBatch(response)` which used to allocate both the
+        // Func and a compiler-generated DisplayClass closure on every flush (4.2 MB/s combined in
+        // Run #9 alloc profile).
+        // The shared `response` instance is parked in _pendingNotifyResponse before each Notify
+        // call and read inside NotifyOnBatch. Safe because Orleans grains are single-threaded:
+        // ObserverManager.Notify invokes the delegate synchronously per observer before the first
+        // await (it gathers all Tasks then WhenAll's them), so no other grain message can clobber
+        // the field mid-iteration.
+        private SessionResponse? _pendingNotifyResponse;
+        private readonly Func<ISessionObserver, Task> _onBatchInvoker;
+
         // Subscriptions
         private readonly Dictionary<string, EntitySubscriptionInfo> _subscribedEntities = new();
 
@@ -59,17 +73,14 @@ namespace SharedMeta.Server.Core.Session
         private List<SavedSubscription>? _savedSubscriptions;
 
         // 0.22.0+ Per-player compatibility verdict. Set by MetaConnectionHandler after
-        // SessionConnect (phase-1) or RegisterClientSignature (phase-2). Drives two
-        // decisions: (1) which methods to flag as force-patch when this player subscribes
-        // to an entity, (2) how to tailor inbound broadcasts during BroadcastToSessionOp.
+        // SessionConnect (phase-1) or RegisterClientSignature (phase-2). Drives the decision
+        // of which methods to flag as force-patch when this player subscribes to an entity —
+        // EntityGrain.SubscribeAsync receives the per-entity subset and stores it as the
+        // per-subscriber force-patch contribution. From there on, all per-broadcast tailoring
+        // is owned by EntityGrain (see BroadcastTailor.TailorForSubscriber) — SessionManager
+        // doesn't re-decide payload variants per recipient.
         // Null = negotiation disabled / pending — grain stays in pass-through mode.
         private ClientCapabilities? _clientCapabilities;
-
-        // 0.22.0+ Per-entity capability overlays returned by EntityGrain at subscribe time.
-        // Cached here so BroadcastToSessionOp can consult them alongside session-level caps
-        // when tailoring per-broadcast payloads. Empty entries (no boundary triggers for
-        // this entity) are NOT stored to keep the dictionary tight.
-        private readonly Dictionary<string, EntityAugmentedCapabilities> _entityAugmentedCaps = new();
 
         // ── RPC ordering / stash ─────────────────────────────────────────
         // When SessionManagerOptions.EnforceRpcOrder is true, RPC calls that arrive with
@@ -148,7 +159,12 @@ namespace SharedMeta.Server.Core.Session
             _observerManager = new ObserverManager<ISessionObserver>(TimeSpan.FromMinutes(2), _logger);
             _playerId = this.GetPrimaryKeyString();
             _orderingBuffer = new RpcOrderingBuffer<StashedRpcCall>(Math.Max(1, _options.StashCapacity));
+            _onBatchInvoker = NotifyOnBatch;  // one delegate alloc per grain lifetime
         }
+
+        // Delegate target for ObserverManager.Notify — reads _pendingNotifyResponse set by
+        // FlushOutgoingBatch immediately before the Notify call. See _onBatchInvoker doc.
+        private Task NotifyOnBatch(ISessionObserver observer) => observer.OnBatch(_pendingNotifyResponse!);
 
         public override Task OnActivateAsync(CancellationToken cancellationToken)
         {
@@ -434,21 +450,14 @@ namespace SharedMeta.Server.Core.Session
                 // contribute nothing; modern subscribers add no refcount.
                 var forcePatchMethods = _clientCapabilities?.ForceServerPatchMethods;
 
-                // Subscribe to entity (pass clientVersion for per-client config resolution)
+                // Subscribe to entity (pass clientVersion for per-client config resolution).
+                // 0.22.0 The per-entity capability overlay returned by EntityGrain
+                // (snapshot.AugmentedCapabilities) is forwarded to the client unchanged through
+                // EntitySubscriptionResult.AugmentedCapabilities → SubscribeResponse. No copy is
+                // cached here — broadcast tailoring lives entirely on EntityGrain side
+                // (BroadcastTailor.TailorForSubscriber), and SubscribeAsync already received the
+                // per-subscriber force-patch contributions to drive that.
                 var snapshot = await entityGrain.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>(), clientVersion, forcePatchMethods);
-
-                // 0.22.0 Cache per-entity capability overlay returned by EntityGrain. Drives
-                // per-entity-aware tailoring in BroadcastToSessionOp and gets forwarded to the
-                // client through EntitySubscriptionResult.AugmentedCapabilities → SubscribeResponse.
-                if (snapshot.AugmentedCapabilities is { } aug
-                    && (aug.ForceServerPatchServices.Count > 0 || aug.RejectedServices.Count > 0))
-                {
-                    _entityAugmentedCaps[entityId] = aug;
-                }
-                else
-                {
-                    _entityAugmentedCaps.Remove(entityId);
-                }
 
                 _subscribedEntities[entityId] = new EntitySubscriptionInfo(
                     entityId: entityId,
@@ -516,7 +525,6 @@ namespace SharedMeta.Server.Core.Session
                 // Clean up ordering state
                 _entityStates.Remove(entityId);
                 _deferredResponses.RemoveAll(d => d.EntityId == entityId);
-                _entityAugmentedCaps.Remove(entityId);
 
                 _logger.UnsubscribedFromEntity(playerId, entityId);
             }
@@ -538,13 +546,32 @@ namespace SharedMeta.Server.Core.Session
             if (lastAcknowledgedSequence > 0)
                 CleanupPendingPacketsBySequence(lastAcknowledgedSequence);
 
-            // Idempotency: return cached response for duplicate requests (reconnection)
-            var cached = _pendingPackets.FirstOrDefault(p =>
-                p.Operations.Any(o => o.RequestId == requestId && o.RequestId > 0));
-            if (cached != null)
+            // Idempotency: return cached response for duplicate requests (reconnection).
+            // Inlined nested loops — LINQ Any/FirstOrDefault on List<T> boxes the struct
+            // enumerator, and this is a hot path (per-RPC, ~3K calls/sec): per-stack alloc
+            // profile traced 32 MB/s to Enumerator[SessionOp] here.
+            if (requestId > 0)
             {
-                _logger.CachedResponseReturned(requestId);
-                return cached;
+                SessionResponse? cached = null;
+                for (int i = 0; i < _pendingPackets.Count; i++)
+                {
+                    var packet = _pendingPackets[i];
+                    var ops = packet.Operations;
+                    for (int j = 0; j < ops.Count; j++)
+                    {
+                        if (ops[j].RequestId == requestId)
+                        {
+                            cached = packet;
+                            break;
+                        }
+                    }
+                    if (cached != null) break;
+                }
+                if (cached != null)
+                {
+                    _logger.CachedResponseReturned(requestId);
+                    return cached;
+                }
             }
 
             // ── RPC reordering: stash out-of-order requests ──────────────
@@ -885,13 +912,28 @@ namespace SharedMeta.Server.Core.Session
         }
 
         /// <summary>
-        /// Order operations by entity for deterministic delivery.
+        /// Order operations by entity for deterministic delivery. Sorted in place using a
+        /// cached ordinal comparer — Enumerable.OrderBy + ToList allocates a sort buffer,
+        /// an OrderedEnumerable, an EnumerableSorter, and walks via Comparer&lt;string&gt;.Default
+        /// (CultureAwareComparer). All visible in the per-stack alloc profile.
         /// </summary>
         private static List<SessionOp> OrderOps(List<SessionOp> ops)
         {
-            if (ops.Count <= 1) return ops;
-            return ops.OrderBy(o => o.EntityId).ToList();
+            if (ops.Count > 1)
+                ops.Sort(SessionOpByEntityIdOrdinal);
+            return ops;
         }
+
+        // Cached ordinal comparers — avoid the OrderBy + CultureAwareComparer allocation graph.
+        private static readonly Comparison<SessionOp> SessionOpByEntityIdOrdinal =
+            static (a, b) => string.CompareOrdinal(a.EntityId, b.EntityId);
+
+        private static readonly Comparison<QueuedBroadcast> QueuedBroadcastByEntityThenSequence =
+            static (a, b) =>
+            {
+                var c = string.CompareOrdinal(a.EntityId, b.EntityId);
+                return c != 0 ? c : a.EntitySequenceNumber.CompareTo(b.EntitySequenceNumber);
+            };
 
         #endregion
 
@@ -963,10 +1005,15 @@ namespace SharedMeta.Server.Core.Session
             if (_outgoingBatch.Count == 0) return;
 
             var sessionSeq = ++_sequenceNumber;
+            // Sort the in-flight batch in place, then snapshot into a new list for the response
+            // (caller `_outgoingBatch` is cleared at the end of this method; the response keeps
+            // its own list since it lives on in _pendingPackets).
+            if (_outgoingBatch.Count > 1)
+                _outgoingBatch.Sort(SessionOpByEntityIdOrdinal);
             var response = new SessionResponse
             {
                 SequenceNumber = sessionSeq,
-                Operations = _outgoingBatch.OrderBy(o => o.EntityId).ToList(),
+                Operations = new List<SessionOp>(_outgoingBatch),
                 ServerTimeTicks = DateTime.UtcNow.Ticks
             };
 
@@ -976,7 +1023,18 @@ namespace SharedMeta.Server.Core.Session
             _pendingPackets.Add(response);
             CleanupPendingPacketsByCount();
 
-            await _observerManager.Notify(o => o.OnBatch(response));
+            // Park response on the grain instance so the cached _onBatchInvoker delegate can read
+            // it without allocating a closure. Cleared in finally so a thrown OnBatch doesn't leave
+            // a dangling ref pinning the SessionResponse (and its byte[] payloads).
+            _pendingNotifyResponse = response;
+            try
+            {
+                await _observerManager.Notify(_onBatchInvoker);
+            }
+            finally
+            {
+                _pendingNotifyResponse = null;
+            }
             _outgoingBatch.Clear();
         }
 
@@ -1002,14 +1060,13 @@ namespace SharedMeta.Server.Core.Session
         {
             if (_rpcBroadcastQueue.Count == 0) return null;
 
-            // Group by entity and sort by entity sequence within each group
-            var sorted = _rpcBroadcastQueue
-                .OrderBy(b => b.EntityId)
-                .ThenBy(b => b.EntitySequenceNumber)
-                .ToList();
+            // Sort the queue in place — caller clears it after this method runs (see
+            // ExecuteOneCallAsync / outer RPC handler). Avoids OrderBy/ThenBy/ToList alloc graph.
+            if (_rpcBroadcastQueue.Count > 1)
+                _rpcBroadcastQueue.Sort(QueuedBroadcastByEntityThenSequence);
 
             var result = new List<SessionOp>();
-            foreach (var b in sorted)
+            foreach (var b in _rpcBroadcastQueue)
             {
                 var state = GetOrCreateEntityState(b.EntityId);
                 var expectedNext = state.KnownEntitySequence + 1;
@@ -1076,29 +1133,17 @@ namespace SharedMeta.Server.Core.Session
         }
 
         /// <summary>
-        /// Convert an EntityBroadcast to a SessionOp (no sequence number).
-        /// <para>
-        /// 0.22.0+: per-subscriber tailoring. When this player's capabilities flag the
-        /// broadcast's <c>(Service, Alias, Version)</c> as force-ServerPatch, send only
-        /// the patch bytes (strip <c>ReplayPayload</c>) — the client doesn't know the
-        /// method body and would crash trying to replay. When NOT flagged, send only the
-        /// replay payload (strip <c>PatchBytes</c>) — the client knows the body, replay
-        /// is more efficient and exercises the actual code path. <c>StateBytes</c> is
-        /// preserved either way (ServerReplace mode applies regardless of compatibility).
-        /// </para>
+        /// Convert an already-per-subscriber-tailored <see cref="EntityBroadcast"/> to a
+        /// <see cref="SessionOp"/> for delivery to the client. By contract, the broadcast
+        /// arriving here has been stripped per-recipient by <c>EntityGrain.DistributeBroadcasts</c>
+        /// → <c>BroadcastTailor.TailorForSubscriber</c> (recursively, including trigger
+        /// broadcasts): exactly one of <c>ReplayPayload</c>/<c>PatchBytes</c> is populated based
+        /// on this player's force-patch contributions, and <c>StateBytes</c> is preserved.
+        /// SessionManager does NO capability decisioning — it only reshapes the payload from
+        /// broadcast-frame to wire-frame.
         /// </summary>
         private SessionOp BroadcastToSessionOp(string entityId, EntityBroadcast broadcast)
         {
-            // 0.22.0 Per-entity caps lookup. Augmented overlays apply only to broadcasts from
-            // the matching entity; trigger broadcasts share the same entityId so the same overlay
-            // applies to them too.
-            _entityAugmentedCaps.TryGetValue(entityId, out var entityCaps);
-
-            var mainResponse = TailorResponseForPlayer(
-                broadcast.ServiceName, broadcast.MethodName, broadcast.MethodVersion,
-                broadcast.ReplayPayload, broadcast.PatchBytes, broadcast.StateBytes,
-                broadcast.RandomScrollDelta, broadcast.NamedRandomScrollDeltas, entityCaps);
-
             return new SessionOp
             {
                 EntityId = entityId,
@@ -1114,9 +1159,27 @@ namespace SharedMeta.Server.Core.Session
                         CallerId = broadcast.ExcludePlayerId,
                         ServerTimeTicks = broadcast.ServerTimeTicks
                     },
-                    Response = mainResponse
+                    Response = new RpcResponse
+                    {
+                        ReplayPayload = broadcast.ReplayPayload,
+                        RandomScrollDelta = broadcast.RandomScrollDelta,
+                        NamedRandomScrollDeltas = broadcast.NamedRandomScrollDeltas,
+                        PatchBytes = broadcast.PatchBytes,
+                        StateBytes = broadcast.StateBytes
+                    }
                 },
-                TriggerOperations = broadcast.TriggerBroadcasts?.Select(t => new OperationResult
+                TriggerOperations = BuildTriggerOperations(broadcast.TriggerBroadcasts)
+            };
+        }
+
+        private static List<OperationResult>? BuildTriggerOperations(List<EntityBroadcast>? triggers)
+        {
+            if (triggers == null || triggers.Count == 0) return null;
+            var result = new List<OperationResult>(triggers.Count);
+            for (int i = 0; i < triggers.Count; i++)
+            {
+                var t = triggers[i];
+                result.Add(new OperationResult
                 {
                     Call = new RpcCall
                     {
@@ -1126,46 +1189,17 @@ namespace SharedMeta.Server.Core.Session
                         Payload = t.Payload ?? Array.Empty<byte>(),
                         ServerTimeTicks = t.ServerTimeTicks
                     },
-                    Response = TailorResponseForPlayer(
-                        t.ServiceName, t.MethodName, t.MethodVersion,
-                        t.ReplayPayload, t.PatchBytes, t.StateBytes,
-                        t.RandomScrollDelta, t.NamedRandomScrollDeltas, entityCaps)
-                }).ToList()
-            };
-        }
-
-        /// <summary>
-        /// 0.22.0+ Build an <see cref="RpcResponse"/> tailored to this player's compatibility
-        /// verdict. When capabilities are not set (null) or the method isn't flagged as
-        /// force-ServerPatch, the response carries both replay and patch as the server produced
-        /// them. When force-ServerPatch fires, replay is stripped (legacy client doesn't know
-        /// the body); when modern (no force-patch), patch is stripped (client prefers replay).
-        /// <c>StateBytes</c> is preserved unconditionally — ServerReplace is independent of the
-        /// patch/replay axis.
-        /// </summary>
-        private RpcResponse TailorResponseForPlayer(
-            string serviceName, string methodName, int methodVersion,
-            byte[]? replayPayload, byte[]? patchBytes, byte[]? stateBytes,
-            long randomScrollDelta, long[]? namedRandomScrollDeltas,
-            EntityAugmentedCapabilities? entityCaps)
-        {
-            // Delegates to the pure static helper for testability — see
-            // CapabilitiesGate.TailorBroadcastPayload. StateBytes is preserved here
-            // unconditionally since ServerReplace is independent of the patch/replay axis.
-            // 0.22.0 entityCaps stacks on top of session-level _clientCapabilities — services
-            // listed in entityCaps.ForceServerPatchServices ALSO trigger the strip-replay path.
-            var (replayOut, patchOut) = SharedMeta.Core.Transport.CapabilitiesGate.TailorBroadcastPayload(
-                _clientCapabilities, entityCaps, serviceName, methodName, methodVersion,
-                replayPayload, patchBytes);
-
-            return new RpcResponse
-            {
-                ReplayPayload = replayOut,
-                RandomScrollDelta = randomScrollDelta,
-                NamedRandomScrollDeltas = namedRandomScrollDeltas,
-                PatchBytes = patchOut,
-                StateBytes = stateBytes
-            };
+                    Response = new RpcResponse
+                    {
+                        ReplayPayload = t.ReplayPayload,
+                        RandomScrollDelta = t.RandomScrollDelta,
+                        NamedRandomScrollDeltas = t.NamedRandomScrollDeltas,
+                        PatchBytes = t.PatchBytes,
+                        StateBytes = t.StateBytes
+                    }
+                });
+            }
+            return result;
         }
 
         /// <summary>

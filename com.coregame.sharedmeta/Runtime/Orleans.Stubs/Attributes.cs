@@ -8,6 +8,10 @@ namespace Orleans
     [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Enum, Inherited = false)]
     public sealed class GenerateSerializerAttribute : Attribute { }
 
+    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Field | AttributeTargets.Property | AttributeTargets.Parameter | AttributeTargets.ReturnValue, Inherited = false)]
+    public sealed class ImmutableAttribute : Attribute
+    { }
+
     [AttributeUsage(AttributeTargets.Property | AttributeTargets.Field)]
     public sealed class IdAttribute : Attribute
     {

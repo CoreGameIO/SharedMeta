@@ -8,7 +8,7 @@ namespace SharedMeta.Server.Core.Grains
     /// A broadcast to be sent to subscribers.
     /// Contains both the original arguments (Payload) and the server-side replay context (ReplayPayload).
     /// </summary>
-    [GenerateSerializer]
+    [GenerateSerializer, Immutable]
     public class EntityBroadcast
     {
         [Id(0)] public string ServiceName { get; set; } = "";

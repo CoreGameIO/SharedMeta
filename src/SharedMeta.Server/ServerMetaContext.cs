@@ -72,6 +72,9 @@ namespace SharedMeta.Server
         {
             if (_writer == null) throw new InvalidOperationException("No operation in progress.");
             var payloadBytes = _writer.Complete();
+            // Dispose returns any pool-rented buffers (e.g. MemoryPackPayloadWriter's ArrayPool
+            // buffer). Required for the pooled-writer optimization to actually return memory.
+            _writer.Dispose();
             _writer = null;
             return payloadBytes;
         }
@@ -120,6 +123,7 @@ namespace SharedMeta.Server
         {
             if (_writer == null) throw new InvalidOperationException("No nested operation in progress.");
             var innerBytes = _writer.Complete();
+            _writer.Dispose();   // return inner writer's pool buffer
             nestedCrossEntityCalls = _crossEntityCalls;
             _writer = frame.OuterWriter;
             _debug = frame.OuterDebug;

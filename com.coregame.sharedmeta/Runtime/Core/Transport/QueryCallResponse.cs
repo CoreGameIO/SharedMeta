@@ -1,13 +1,13 @@
-using Orleans;
 using MemoryPack;
 using MessagePack;
+using Orleans;
 
 namespace SharedMeta.Core.Transport
 {
     /// <summary>
     /// Response from a query call. Simple success/error with result bytes.
     /// </summary>
-    [MemoryPackable, MessagePackObject, GenerateSerializer]
+    [MemoryPackable, MessagePackObject, GenerateSerializer, Immutable]
     public partial class QueryCallResponse
     {
         [Id(0), Key(0)] public bool Success { get; set; }

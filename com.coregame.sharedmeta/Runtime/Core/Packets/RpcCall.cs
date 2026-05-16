@@ -9,7 +9,7 @@ namespace SharedMeta.Core
     /// Unified RPC call structure for both requests and responses.
     /// Payload contains serialized arguments (request) or result + replay data (response).
     /// </summary>
-    [MemoryPackable, MessagePackObject, GenerateSerializer]
+    [MemoryPackable, MessagePackObject, GenerateSerializer, Immutable]
     public partial class RpcCall
     {
         [Id(0), Key(0)] public string ServiceName { get; set; } = "";

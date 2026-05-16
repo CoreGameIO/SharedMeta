@@ -15,7 +15,7 @@ namespace SharedMeta.Server.Core.Grains
     /// - MainOperation + TriggerOperations: business data (Business layer)
     /// - SessionSequenceNumber: added by SessionManager (Transport layer)
     /// </summary>
-    [GenerateSerializer]
+    [GenerateSerializer, Immutable]
     public class EntityCallResult
     {
         /// <summary>

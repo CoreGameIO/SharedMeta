@@ -108,7 +108,7 @@ namespace SharedMeta.Server.Core.Session
         /// <c>HandleSignalAsync</c>. No subscription check, no sequence numbers, no broadcasts,
         /// no response. Server-side errors are logged, not propagated.
         /// </summary>
-        Task SignalEntityAsync(string entityId, string serviceName, RpcCall call);
+        Task SignalEntityAsync(string entityId, string serviceName, [Immutable]RpcCall call);
 
         /// <summary>
         /// Acknowledge that all packets up to and including this sequence have been received.

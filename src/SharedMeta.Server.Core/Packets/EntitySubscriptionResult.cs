@@ -7,7 +7,7 @@ namespace SharedMeta.Server.Core.Session
     /// <summary>
     /// Result of subscribing to an entity.
     /// </summary>
-    [GenerateSerializer]
+    [GenerateSerializer, Immutable]
     public class EntitySubscriptionResult
     {
         [Id(0)] public bool Success { get; set; }

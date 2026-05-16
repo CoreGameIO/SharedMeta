@@ -114,7 +114,7 @@ namespace SharedMeta.Core.Transport
     /// </list>
     /// Empty lists = no restrictions (the common case for an up-to-date client).
     /// </summary>
-    [MemoryPackable, MessagePackObject, GenerateSerializer]
+    [MemoryPackable, MessagePackObject, GenerateSerializer, Immutable]
     public partial class ClientCapabilities
     {
         /// <summary>

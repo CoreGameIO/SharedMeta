@@ -13,7 +13,7 @@ namespace SharedMeta.Core
     /// - SessionSequenceNumber: in SessionResponse (Transport layer)
     /// - RpcResponse: pure business data (no sequence numbers)
     /// </summary>
-    [MemoryPackable, MessagePackObject, GenerateSerializer]
+    [MemoryPackable, MessagePackObject, GenerateSerializer, Immutable]
     public partial class RpcResponse
     {
         /// <summary>

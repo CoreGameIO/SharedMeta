@@ -11,7 +11,7 @@ namespace SharedMeta.Core.Transport
     /// Used for BOTH broadcasts and RPC responses — only RequestId distinguishes them.
     /// Contains the primary operation, optional triggered operations, and routing info.
     /// </summary>
-    [MemoryPackable, MessagePackObject, GenerateSerializer]
+    [MemoryPackable, MessagePackObject, GenerateSerializer, Immutable]
     public partial class SessionOp
     {
         /// <summary>
