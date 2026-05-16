@@ -7,7 +7,7 @@
     <LangVersion>latest</LangVersion>
     <PackageId>CoreGame.SharedMeta.Debug</PackageId>
     <IsPackable>true</IsPackable>
-    <Description>Debug and testing utilities: InProcessServer, InProcessConnection for network-free testing.</Description>
+    <Description>Debug and testing utilities: InProcessServer/InProcessConnection for network-free tests, and Mux transport (one SignalR socket carrying N logical client sessions) for high-fanout stress tests.</Description>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,6 +21,10 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <!-- Mux transport: SignalR client (HubConnectionBuilder, HubConnection) -->
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />
+    <!-- Mux transport: server-side SignalR Hub + Endpoint mapping (Microsoft.AspNetCore.SignalR is in the framework, plus we need MapHub from Routing) -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
 </Project>
