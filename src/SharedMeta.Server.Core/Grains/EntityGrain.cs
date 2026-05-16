@@ -55,6 +55,12 @@ namespace SharedMeta.Server.Core.Grains
 
         private IMetaProvider<TState>? _provider;
 
+        // 0.23.0+ Cache for `_entityId` — Orleans allocates a fresh string
+        // on every call. EntityGrain hot paths (HandleCallAsync, DistributeBroadcasts, logger
+        // args, telemetry tags) hit this 5-10× per RPC, and at 60K RPS that's noticeable in
+        // the allocation profile. Set once in OnActivateAsync.
+        private string _entityId = string.Empty;
+
         // Persistence policy tracking
         private int _requestsSinceLastSave;
         private DateTime _lastSaveTime = DateTime.UtcNow;
@@ -119,11 +125,18 @@ namespace SharedMeta.Server.Core.Grains
 
         public override async Task OnActivateAsync(CancellationToken cancellationToken)
         {
-            var entityId = this.GetPrimaryKeyString();
+            _entityId = this.GetPrimaryKeyString();   // cache once for the grain lifetime
+            var entityId = _entityId;
             var state = _persistentState.State;
 
             _logger.EntityGrainActivated(typeof(TState).Name, entityId);
             _logger.EntityStateLoaded(typeof(TState).Name, entityId, state.Subscribers.Count, state.EntitySequenceNumber);
+
+            // 0.23.0+ Telemetry: grain lifecycle counters.
+            SharedMeta.Server.Core.Telemetry.SharedMetaMeters.GrainActivation.Add(1,
+                new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
+            SharedMeta.Server.Core.Telemetry.SharedMetaMeters.GrainsActive.Add(1,
+                new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
 
             // Prune expired subscribers
             var cutoff = DateTime.UtcNow - _options.SubscriberTtl;
@@ -162,7 +175,7 @@ namespace SharedMeta.Server.Core.Grains
                     // self-call, which can never start). Instead, dispatch the call locally
                     // on this provider as a nested operation — same MetaContext, same state,
                     // same randoms, fresh inner replay buffer.
-                    if (targetEntityId == this.GetPrimaryKeyString())
+                    if (targetEntityId == _entityId)
                     {
                         var resolved = _entityGrainResolver.GetEntityGrainByService(
                             GrainFactory, serviceName, targetEntityId);
@@ -307,7 +320,7 @@ namespace SharedMeta.Server.Core.Grains
 
         public override async Task OnDeactivateAsync(DeactivationReason reason, CancellationToken cancellationToken)
         {
-            var entityId = this.GetPrimaryKeyString();
+            var entityId = _entityId;
             _logger.EntityGrainDeactivating(typeof(TState).Name, entityId);
 
             _provider?.OnDeactivating();
@@ -319,11 +332,30 @@ namespace SharedMeta.Server.Core.Grains
                 _logger.EntityStatePersisted(entityId);
             }
 
+            // 0.23.0+ Telemetry: grain lifecycle counters.
+            SharedMeta.Server.Core.Telemetry.SharedMetaMeters.GrainDeactivation.Add(1,
+                new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
+                new KeyValuePair<string, object?>("reason", reason.ReasonCode.ToString()));
+            SharedMeta.Server.Core.Telemetry.SharedMetaMeters.GrainsActive.Add(-1,
+                new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
+
             await base.OnDeactivateAsync(reason, cancellationToken);
         }
 
         public async Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null, IReadOnlyList<MethodIdentity>? forceServerPatchMethods = null)
         {
+            using var __subActivity = SharedMeta.Server.Core.Telemetry.SharedMetaActivities.Source.StartActivity(
+                SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanEntitySubscribe);
+            if (__subActivity != null)
+            {
+                __subActivity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagStateType, typeof(TState).Name);
+                __subActivity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagEntityId, _entityId);
+                __subActivity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagPlayerId, playerId);
+            }
+            var __subStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            string __subResult = "success";
+            try
+            {
             // Access policy check
             if (_provider != null)
             {
@@ -332,15 +364,15 @@ namespace SharedMeta.Server.Core.Grains
                 {
                     bool allowed;
                     if (policy is EntityAccessPolicy.OwnerOnly or EntityAccessPolicy.UserOwned)
-                        allowed = this.GetPrimaryKeyString() == playerId;
+                        allowed = _entityId == playerId;
                     else // Authorized
                         allowed = await _provider.CheckAccessAsync(playerId);
 
                     if (!allowed)
                     {
-                        _logger.EntityAccessDenied(this.GetPrimaryKeyString(), playerId, policy.ToString());
+                        _logger.EntityAccessDenied(_entityId, playerId, policy.ToString());
                         throw new EntityAccessDeniedException(
-                            $"Player '{playerId}' is not authorized to access entity '{this.GetPrimaryKeyString()}'");
+                            $"Player '{playerId}' is not authorized to access entity '{_entityId}'");
                     }
                 }
             }
@@ -376,7 +408,7 @@ namespace SharedMeta.Server.Core.Grains
                     PersistRandomBytes();
                     await _persistentState.WriteStateAsync();
                     ResetPersistenceTracking();
-                    _logger.EntityStateInitialized(typeof(TState).Name, this.GetPrimaryKeyString(), state.Version);
+                    _logger.EntityStateInitialized(typeof(TState).Name, _entityId, state.Version);
                 }
             }
 
@@ -394,7 +426,7 @@ namespace SharedMeta.Server.Core.Grains
                     _logger.LogWarning(
                         "[EntityGrain] Subscribe rejected (breaking schema): entity={EntityId} player={PlayerId} " +
                         "clientConfig={ConfigVersion} is below the minimum required for the current state schema.",
-                        this.GetPrimaryKeyString(), playerId, resolvedConfigVersion);
+                        _entityId, playerId, resolvedConfigVersion);
                     // Throw structured exception so SessionManagerGrain / MetaConnectionHandler
                     // can propagate FeatureRequirement to the client via SubscribeResponse.
                     throw new IncompatibleFeatureException(new FeatureRequirement
@@ -431,7 +463,7 @@ namespace SharedMeta.Server.Core.Grains
                 {
                     _logger.LogWarning(
                         "[EntityGrain] Shared-session pin mismatch: entity={EntityId} player={PlayerId} reason={Reason}",
-                        this.GetPrimaryKeyString(), playerId, pinReason);
+                        _entityId, playerId, pinReason);
                     throw new EntityAccessDeniedException(
                         $"Cannot join this shared session — your app version is on a different config branch. {pinReason}");
                 }
@@ -502,7 +534,7 @@ namespace SharedMeta.Server.Core.Grains
                 _subscriberForcePatchServiceContributions[playerId] = svcContributions;
             }
 
-            _logger.PlayerSubscribed(this.GetPrimaryKeyString(), playerId);
+            _logger.PlayerSubscribed(_entityId, playerId);
 
             await _persistentState.WriteStateAsync();
             ResetPersistenceTracking();
@@ -526,6 +558,25 @@ namespace SharedMeta.Server.Core.Grains
                                ?? default,
                 AugmentedCapabilities = augmentedCaps,
             };
+            }
+            catch
+            {
+                __subResult = "error";
+                throw;
+            }
+            finally
+            {
+                var __subElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(__subStart).TotalMilliseconds;
+                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SubscribeDuration.Record(__subElapsed,
+                    new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
+                    new KeyValuePair<string, object?>("result", __subResult));
+                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SubscribeCount.Add(1,
+                    new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
+                if (__subResult == "success")
+                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SubscribersActive.Add(1,
+                        new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
+                __subActivity?.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagResult, __subResult);
+            }
         }
 
         /// <summary>
@@ -565,6 +616,13 @@ namespace SharedMeta.Server.Core.Grains
 
         public async Task UnsubscribeAsync(string playerId)
         {
+            // Telemetry: decrement subscriber gauge regardless of whether the player was
+            // actually present (idempotency — UnsubscribeAsync may fire from disposed sessions).
+            if (_persistentState.State.Subscribers.ContainsKey(playerId))
+            {
+                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SubscribersActive.Add(-1,
+                    new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
+            }
             _persistentState.State.Subscribers.Remove(playerId);
             _subscriberRefs.Remove(playerId);
 
@@ -594,7 +652,7 @@ namespace SharedMeta.Server.Core.Grains
                 }
             }
 
-            _logger.PlayerUnsubscribed(this.GetPrimaryKeyString(), playerId);
+            _logger.PlayerUnsubscribed(_entityId, playerId);
 
             // 0.21.0: pin lives only while there are active subscribers. When the last
             // subscriber leaves, drop pins so the next first-subscriber re-establishes
@@ -609,7 +667,7 @@ namespace SharedMeta.Server.Core.Grains
                 mpbClear.ClearConfigPins();
                 _logger.LogDebug(
                     "[EntityGrain] Cleared config pins on '{EntityId}' — no active subscribers remain.",
-                    this.GetPrimaryKeyString());
+                    _entityId);
             }
 
             await _persistentState.WriteStateAsync();
@@ -622,6 +680,19 @@ namespace SharedMeta.Server.Core.Grains
             {
                 return new EntityCallResult { Error = "Provider not initialized" };
             }
+
+            using var activity = SharedMeta.Server.Core.Telemetry.SharedMetaActivities.Source.StartActivity(
+                SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanEntityRpc);
+            if (activity != null)
+            {
+                activity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagService, call.ServiceName);
+                activity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagMethod, call.MethodName);
+                activity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagEntityId, _entityId);
+                if (call.CallerId != null)
+                    activity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagPlayerId, call.CallerId);
+            }
+            var __metricStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            string __metricResult = "success";
 
             var state = _persistentState.State;
             var operationSequence = ++state.EntitySequenceNumber;
@@ -645,6 +716,13 @@ namespace SharedMeta.Server.Core.Grains
                 bool requirePatchForFanOut =
                        _forcePatchMethodRefs.ContainsKey((call.ServiceName, call.MethodName, call.MethodVersion))
                     || _forcePatchServiceRefs.ContainsKey(call.ServiceName);
+                if (requirePatchForFanOut)
+                {
+                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.ForcePatchApplied.Add(1,
+                        new KeyValuePair<string, object?>("service", call.ServiceName),
+                        new KeyValuePair<string, object?>("method", call.MethodName),
+                        new KeyValuePair<string, object?>("kind", _forcePatchServiceRefs.ContainsKey(call.ServiceName) ? "service" : "method"));
+                }
 
                 // isClientOriginated: true → provider rejects [MetaMethod(GenerateClientApi=false)]
                 // methods. Cross-entity peers land at HandleCallFromEntityAsync below with false.
@@ -688,6 +766,7 @@ namespace SharedMeta.Server.Core.Grains
             }
             catch (Exception ex)
             {
+                __metricResult = "error";
                 _logger.ErrorHandlingCall(ex);
                 return new EntityCallResult
                 {
@@ -698,6 +777,18 @@ namespace SharedMeta.Server.Core.Grains
             finally
             {
                 await PersistIfNeeded(forcePersist);
+                var __elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(__metricStart).TotalMilliseconds;
+                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.RpcDuration.Record(__elapsed,
+                    new KeyValuePair<string, object?>("service", call.ServiceName),
+                    new KeyValuePair<string, object?>("method", call.MethodName),
+                    new KeyValuePair<string, object?>("result", __metricResult));
+                if (call.Payload != null && call.Payload.Length > 0)
+                {
+                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.RpcRequestBytes.Record(call.Payload.Length,
+                        new KeyValuePair<string, object?>("service", call.ServiceName),
+                        new KeyValuePair<string, object?>("method", call.MethodName));
+                }
+                activity?.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagResult, __metricResult);
             }
         }
 
@@ -714,6 +805,18 @@ namespace SharedMeta.Server.Core.Grains
             {
                 return new EntityCallResult { Error = "Provider not initialized" };
             }
+
+            using var __xeActivity = SharedMeta.Server.Core.Telemetry.SharedMetaActivities.Source.StartActivity(
+                SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanCrossEntityCall);
+            if (__xeActivity != null)
+            {
+                __xeActivity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagService, call.ServiceName);
+                __xeActivity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagMethod, call.MethodName);
+                __xeActivity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagKind, "normal");
+                __xeActivity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagEntityId, _entityId);
+            }
+            var __xeStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            string __xeResult = "success";
 
             var state = _persistentState.State;
             var operationSequence = ++state.EntitySequenceNumber;
@@ -755,6 +858,7 @@ namespace SharedMeta.Server.Core.Grains
             }
             catch (Exception ex)
             {
+                __xeResult = "error";
                 _logger.ErrorHandlingCrossEntityCall(ex);
                 return new EntityCallResult
                 {
@@ -765,6 +869,15 @@ namespace SharedMeta.Server.Core.Grains
             finally
             {
                 await PersistIfNeeded(forcePersist);
+                var __xeElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(__xeStart).TotalMilliseconds;
+                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.CrossEntityCallDuration.Record(__xeElapsed,
+                    new KeyValuePair<string, object?>("to_service", call.ServiceName),
+                    new KeyValuePair<string, object?>("kind", "normal"),
+                    new KeyValuePair<string, object?>("result", __xeResult));
+                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.CrossEntityCallCount.Add(1,
+                    new KeyValuePair<string, object?>("to_service", call.ServiceName),
+                    new KeyValuePair<string, object?>("kind", "normal"));
+                __xeActivity?.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagResult, __xeResult);
             }
         }
 
@@ -775,6 +888,15 @@ namespace SharedMeta.Server.Core.Grains
         // subscribers even though the source grain isn't waiting).
         public async Task HandleCallFromEntityOneWayAsync(RpcCall call)
         {
+            // OneWay (Notification mode) telemetry: separate count from the awaited cross-entity
+            // path so dashboards can see how much of the cross-entity traffic is fire-and-forget.
+            // The inner HandleCallFromEntityAsync also records its own normal-kind cross-entity
+            // metric for the same call — that's intentional (we want both "outer dispatch" and
+            // "inner execution" perspectives). For Activity tracing the inner span nests under
+            // this one via Activity.Current.
+            SharedMeta.Server.Core.Telemetry.SharedMetaMeters.CrossEntityCallCount.Add(1,
+                new KeyValuePair<string, object?>("to_service", call.ServiceName),
+                new KeyValuePair<string, object?>("kind", "notification"));
             try
             {
                 // Reuse the standard cross-entity path. The result is computed (state mutates,
@@ -840,7 +962,7 @@ namespace SharedMeta.Server.Core.Grains
             PersistRandomBytes();
             await _persistentState.WriteStateAsync();
             ResetPersistenceTracking();
-            _logger.EntityStateInitialized(typeof(TState).Name, this.GetPrimaryKeyString(), state.Version);
+            _logger.EntityStateInitialized(typeof(TState).Name, _entityId, state.Version);
             return true;
         }
 
@@ -929,15 +1051,31 @@ namespace SharedMeta.Server.Core.Grains
 
             if (ShouldPersist(forcePersist))
             {
-                await _persistentState.WriteStateAsync();
-                var entityId = this.GetPrimaryKeyString();
+                // 0.23.0+ Telemetry: per-write duration. Payload-size bucket is left to the
+                // underlying storage provider to surface (the grain doesn't see the serialized
+                // bytes — that's deep inside IPersistentState's pipeline).
+                var __pStart = System.Diagnostics.Stopwatch.GetTimestamp();
+                using var __pActivity = SharedMeta.Server.Core.Telemetry.SharedMetaActivities.Source.StartActivity(
+                    SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanPersistenceWrite);
+                __pActivity?.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagStateType, typeof(TState).Name);
+                try
+                {
+                    await _persistentState.WriteStateAsync();
+                }
+                finally
+                {
+                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.PersistenceWriteDuration.Record(
+                        System.Diagnostics.Stopwatch.GetElapsedTime(__pStart).TotalMilliseconds,
+                        new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
+                }
+                var entityId = _entityId;
                 if (forcePersist || _options.PersistencePolicy.Mode != PersistenceMode.EveryCall)
                     _logger.PersistenceForced(entityId, _requestsSinceLastSave);
                 ResetPersistenceTracking();
             }
             else if (_options.PersistencePolicy.Mode != PersistenceMode.EveryCall)
             {
-                _logger.PersistenceDeferred(this.GetPrimaryKeyString(),
+                _logger.PersistenceDeferred(_entityId,
                     _requestsSinceLastSave, _options.PersistencePolicy.Mode.ToString());
             }
         }
@@ -961,7 +1099,7 @@ namespace SharedMeta.Server.Core.Grains
 
         private async Task DistributeBroadcasts(List<EntityBroadcast> broadcasts, long operationSequence, string? excludePlayerId)
         {
-            var entityId = this.GetPrimaryKeyString();
+            var entityId = _entityId;
             var subscriberCount = _subscriberRefs.Count;
 
             _logger.DistributingBroadcasts(entityId, operationSequence, broadcasts.Count, subscriberCount, excludePlayerId ?? "none");
@@ -969,6 +1107,8 @@ namespace SharedMeta.Server.Core.Grains
             foreach (var broadcast in broadcasts)
             {
                 var sentCount = 0;
+                int patchCount = 0;
+                int replayCount = 0;
                 foreach (var (playerId, sessionManager) in _subscriberRefs)
                 {
                     if (excludePlayerId != null && playerId == excludePlayerId)
@@ -988,6 +1128,10 @@ namespace SharedMeta.Server.Core.Grains
                         _logger.SendingBroadcast(playerId, entityId, operationSequence, tailored.ServiceName, tailored.MethodName);
                         await sessionManager.ReceiveBroadcastAsync(entityId, tailored, operationSequence);
                         sentCount++;
+                        // Telemetry: which path did this subscriber receive? Tailor produces a
+                        // broadcast with only ReplayPayload (modern) OR only PatchBytes (legacy).
+                        if (tailored.PatchBytes is { Length: > 0 }) patchCount++;
+                        else replayCount++;
                     }
                     catch (Exception ex)
                     {
@@ -996,6 +1140,36 @@ namespace SharedMeta.Server.Core.Grains
                 }
 
                 _logger.BroadcastSent(sentCount, subscriberCount, broadcast.ServiceName, broadcast.MethodName);
+
+                // 0.23.0+ Telemetry: fan-out size + per-payload-kind size distribution.
+                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastFanOutSize.Record(sentCount,
+                    new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
+                if (broadcast.ReplayPayload is { Length: > 0 } replay)
+                {
+                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastPayloadBytes.Record(replay.Length,
+                        new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
+                        new KeyValuePair<string, object?>("kind", "replay"));
+                }
+                if (broadcast.PatchBytes is { Length: > 0 } patch)
+                {
+                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastPayloadBytes.Record(patch.Length,
+                        new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
+                        new KeyValuePair<string, object?>("kind", "patch"));
+                }
+                if (broadcast.StateBytes is { Length: > 0 } stateBytes)
+                {
+                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastPayloadBytes.Record(stateBytes.Length,
+                        new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
+                        new KeyValuePair<string, object?>("kind", "state"));
+                }
+                if (patchCount > 0)
+                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastTailored.Add(patchCount,
+                        new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
+                        new KeyValuePair<string, object?>("path", "patch"));
+                if (replayCount > 0)
+                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastTailored.Add(replayCount,
+                        new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
+                        new KeyValuePair<string, object?>("path", "replay"));
             }
         }
 

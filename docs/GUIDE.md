@@ -3758,6 +3758,94 @@ for (int player = 0; player < 1000; player++)
 
 **When to use:** load-testing the server's throughput and broadcast fan-out machinery without paying the socket cost of "one WebSocket per simulator." Reference: `examples/ClanWars/ClanWars.Client.Common/StressTestRunner.cs` — pass `--mux-channels 10` to fan 1000 players across 10 sockets.
 
+### Observability (0.23.0+)
+
+SharedMeta instruments the server-side hot paths with built-in `System.Diagnostics.Metrics` meters and `ActivitySource` traces. **No OpenTelemetry NuGet dependency in the framework packages** — hosts opt-in by subscribing to the static `Meter` and `ActivitySource` instances:
+
+| Source | Where defined | What it produces |
+|---|---|---|
+| `SharedMeta` (Meter + ActivitySource) | `SharedMeta.Server.Core.Telemetry.SharedMetaMeters` / `.SharedMetaActivities` | Server-side instruments: RPC duration, broadcast fan-out, persistence, cross-entity, grain lifecycle, force-patch, sessions |
+| `SharedMeta.Client` (Meter + ActivitySource) | `SharedMeta.Client.Telemetry.SharedMetaClientMeters` / `.SharedMetaClientActivities` | Client-side instruments: RPC round-trip, replay duration, connection state transitions, desync detection, config cache |
+
+#### Server-side wire-up (host)
+
+```csharp
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
+using OpenTelemetry.Resources;
+
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService(serviceName: "MyGame.Server", serviceVersion: "1.0.0"))
+    .WithMetrics(m => m
+        .AddMeter(SharedMeta.Server.Core.Telemetry.SharedMetaMeters.MeterName)
+        .AddRuntimeInstrumentation()        // .NET GC, ThreadPool, JIT, exceptions
+        .AddPrometheusExporter())           // scrape endpoint at /metrics
+    .WithTracing(t => t
+        .AddSource(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SourceName)
+        .AddOtlpExporter());                 // or AddJaegerExporter, AddConsoleExporter, etc.
+
+var app = builder.Build();
+app.MapPrometheusScrapingEndpoint();        // GET http://server/metrics
+```
+
+NuGets required (host project only, NOT the SharedMeta packages): `OpenTelemetry.Extensions.Hosting`, `OpenTelemetry.Instrumentation.Runtime`, `OpenTelemetry.Exporter.Prometheus.AspNetCore` (or `OpenTelemetry.Exporter.OpenTelemetryProtocol`).
+
+Reference: `examples/ClanWars/ClanWars.Server/Program.cs`.
+
+#### Client-side wire-up (.NET client host)
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(m => m
+        .AddMeter(SharedMeta.Client.Telemetry.SharedMetaClientMeters.MeterName)
+        .AddRuntimeInstrumentation()
+        .AddOtlpExporter());
+```
+
+On Unity hosts the same `Meter` / `ActivitySource` is reachable via `MeterListener` / `ActivityListener` directly — OpenTelemetry SDK is optional. If you don't subscribe at all, every instrumented call is a single volatile-flag check with no allocation.
+
+#### Metric catalog (server-side `SharedMeta` meter)
+
+| Metric | Type | Tags | Notes |
+|---|---|---|---|
+| `sharedmeta.session.connect.duration` | Histogram (ms) | `result` | Handshake including version-gate + signature lookup |
+| `sharedmeta.session.active` | UpDownCounter | — | Currently connected sessions |
+| `sharedmeta.session.terminated.count` | Counter | `reason` | Disconnects grouped by reason |
+| `sharedmeta.entity.subscribe.duration` | Histogram (ms) | `state_type`, `result` | Includes grain activation when cold |
+| `sharedmeta.entity.subscribe.count` | Counter | `state_type` | Subscribe events |
+| `sharedmeta.entity.subscribers.active` | UpDownCounter | `state_type` | Currently subscribed player-entity pairs |
+| `sharedmeta.entity.rpc.duration` | Histogram (ms) | `service`, `method`, `result` | Per-method server processing |
+| `sharedmeta.entity.rpc.request_bytes` | Histogram (bytes) | `service`, `method` | Incoming payload size |
+| `sharedmeta.cross_entity.call.duration` | Histogram (ms) | `to_service`, `kind`, `result` | Cross-entity hops |
+| `sharedmeta.cross_entity.call.count` | Counter | `to_service`, `kind` | `kind = normal | notification` |
+| `sharedmeta.broadcast.fan_out_size` | Histogram | `state_type` | Subscribers per broadcast |
+| `sharedmeta.broadcast.payload_bytes` | Histogram (bytes) | `state_type`, `kind` | `kind = replay | patch | state` |
+| `sharedmeta.broadcast.tailored.count` | Counter | `state_type`, `path` | `path = patch | replay` — per-subscriber routing |
+| `sharedmeta.persistence.write.duration` | Histogram (ms) | `state_type` | `WriteStateAsync` |
+| `sharedmeta.compat.force_patch.applied` | Counter | `service`, `method`, `kind` | Force-patch decisions on RPC |
+| `sharedmeta.grain.activation.count` | Counter | `state_type` | Cold starts |
+| `sharedmeta.grain.active` | UpDownCounter | `state_type` | Currently active entity grains |
+
+Plus the standard runtime instrumentation (GC, ThreadPool, JIT) provided by `OpenTelemetry.Instrumentation.Runtime`.
+
+#### Cardinality budget
+
+`service`, `method`, `state_type`, `kind`, `result`, `reason` are all schema-bounded. Typical project: 5–20 services × 5–30 methods + a handful of state types = 100–600 unique series total. Entity IDs are NOT used as metric tags — they go on `Activity` tags instead (no aggregation cost there).
+
+#### Distributed tracing
+
+Server-side spans nest naturally via in-process `Activity.Current` propagation through Orleans grain calls:
+
+```
+sharedmeta.session.connect
+sharedmeta.entity.subscribe   [state_type=ProfileState, player=p1]
+sharedmeta.entity.rpc         [service=IProfileService, method=GainPoints]
+└─ sharedmeta.cross_entity.call [to=IClanService, kind=normal]
+sharedmeta.persistence.write
+```
+
+Client → server wire-level W3C trace propagation (i.e., `traceparent` on `RpcCallRequest`) is **not yet implemented** — client and server traces are independent for now. Planned follow-up.
+
 ---
 
 ## 23. Capability Overview

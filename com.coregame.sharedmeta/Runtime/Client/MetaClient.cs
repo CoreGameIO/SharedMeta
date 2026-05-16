@@ -175,14 +175,36 @@ namespace SharedMeta.Client
         /// </summary>
         public async Task ConnectAsync()
         {
-            await Connection.ConnectAsync();
-
-            _dispatcher.PlayerId = PlayerId;
-            var sessionResult = await _dispatcher.ConnectSessionAsync(Guid.NewGuid(), 0, ClientAppVersion);
-
-            if (!sessionResult.Success)
+            // 0.23.0+ Telemetry: state transition disconnected → connecting → connected/failed.
+            SharedMeta.Client.Telemetry.SharedMetaClientMeters.ConnectionStateTransition.Add(1,
+                new KeyValuePair<string, object?>("from", "disconnected"),
+                new KeyValuePair<string, object?>("to", "connecting"));
+            using var __connActivity = SharedMeta.Client.Telemetry.SharedMetaClientActivities.Source.StartActivity(
+                SharedMeta.Client.Telemetry.SharedMetaClientActivities.SpanClientConnect);
+            try
             {
-                throw new InvalidOperationException($"Failed to establish session: {sessionResult.Error}");
+                await Connection.ConnectAsync();
+
+                _dispatcher.PlayerId = PlayerId;
+                var sessionResult = await _dispatcher.ConnectSessionAsync(Guid.NewGuid(), 0, ClientAppVersion);
+
+                if (!sessionResult.Success)
+                {
+                    SharedMeta.Client.Telemetry.SharedMetaClientMeters.ConnectionStateTransition.Add(1,
+                        new KeyValuePair<string, object?>("from", "connecting"),
+                        new KeyValuePair<string, object?>("to", "failed"));
+                    throw new InvalidOperationException($"Failed to establish session: {sessionResult.Error}");
+                }
+                SharedMeta.Client.Telemetry.SharedMetaClientMeters.ConnectionStateTransition.Add(1,
+                    new KeyValuePair<string, object?>("from", "connecting"),
+                    new KeyValuePair<string, object?>("to", "connected"));
+            }
+            catch
+            {
+                SharedMeta.Client.Telemetry.SharedMetaClientMeters.ConnectionStateTransition.Add(1,
+                    new KeyValuePair<string, object?>("from", "connecting"),
+                    new KeyValuePair<string, object?>("to", "failed"));
+                throw;
             }
         }
 

@@ -25,4 +25,10 @@
     <ProjectReference Include="..\SharedMeta.Core\SharedMeta.Core.csproj" />
   </ItemGroup>
 
+  <!-- System.Diagnostics.Metrics (Meter/Counter/Histogram) lives in System.Diagnostics.DiagnosticSource
+       6+. Built into the BCL on net6+, needs an explicit NuGet on netstandard2.1 (Unity target). -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+    <PackageReference Include="System.Diagnostics.DiagnosticSource" />
+  </ItemGroup>
+
 </Project>

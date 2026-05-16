@@ -1365,6 +1365,29 @@ Assert.Empty(client.DetectedIssues);  // No desyncs
 
 Use when you want 1000+ simulated players from one client process without burning a WebSocket per simulator. See `examples/ClanWars/ClanWars.Client.Common/StressTestRunner.cs` for a runner pattern with channel-pool construction and round-robin tag assignment, and [docs/GUIDE.md § Mux Transport](../docs/GUIDE.md#mux-transport--high-fanout-stress-tests-0220) for the full API + trade-offs.
 
+### Observability (0.23.0+)
+
+SharedMeta exposes two static `Meter` + `ActivitySource` pairs — server-side `"SharedMeta"` (in `SharedMeta.Server.Core.Telemetry.SharedMetaMeters`) and client-side `"SharedMeta.Client"` (in `SharedMeta.Client.Telemetry.SharedMetaClientMeters`). Hosts subscribe via OpenTelemetry:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(b => b
+        .AddMeter(SharedMetaMeters.MeterName)         // "SharedMeta"
+        .AddRuntimeInstrumentation()
+        .AddPrometheusExporter())
+    .WithTracing(t => t
+        .AddSource(SharedMetaActivities.SourceName)); // also "SharedMeta"
+app.MapPrometheusScrapingEndpoint();
+```
+
+No OpenTelemetry NuGet dependency in framework packages — meters use only built-in `System.Diagnostics.Metrics`. When no listener is attached, every `Counter.Add` / `Histogram.Record` is a volatile-flag check, no allocation.
+
+Server-side instrumentation covers: `session.connect.duration`, `session.active`, `entity.subscribe.duration`, `entity.rpc.duration` (per service+method+result), `entity.rpc.request_bytes`, `cross_entity.call.duration` (kind = `normal | notification`), `broadcast.fan_out_size`, `broadcast.payload_bytes` (kind = `replay | patch | state`), `broadcast.tailored.count`, `persistence.write.duration`, `compat.force_patch.applied`, `grain.activation.count`, `grain.active`. Plus distributed-tracing spans nested via in-process `Activity.Current`.
+
+Client → server W3C `traceparent` propagation on RPC envelopes is **not yet implemented** — client and server traces are independent for now.
+
+Reference wire-up: `examples/ClanWars/ClanWars.Server/Program.cs` (Prometheus exporter on `/metrics`). Full catalog: [docs/GUIDE.md § Observability](../docs/GUIDE.md#observability-0230).
+
 ---
 
 ## Desync Diagnostics

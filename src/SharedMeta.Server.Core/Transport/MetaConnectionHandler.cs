@@ -100,6 +100,13 @@ namespace SharedMeta.Server.Core.Transport
 
         public async Task<SessionConnectResponse> SessionConnectAsync(SessionConnectRequest request)
         {
+            // 0.23.0+ Telemetry: bracket the whole handshake (version-gate, sig lookup, session
+            // create/resume). The result tag is derived from the response right before return.
+            using var __scActivity = SharedMeta.Server.Core.Telemetry.SharedMetaActivities.Source.StartActivity(
+                SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanSessionConnect);
+            __scActivity?.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagPlayerId, request.PlayerId);
+            var __scStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            SessionConnectResponse? __scResponse = null;
             try
             {
                 if (string.IsNullOrEmpty(request.PlayerId))
@@ -230,7 +237,7 @@ namespace SharedMeta.Server.Core.Transport
                     await capsGrain.SetClientCapabilitiesAsync(capabilities);
                 }
 
-                return new SessionConnectResponse
+                __scResponse = new SessionConnectResponse
                 {
                     Success = result.Success,
                     Error = result.Error,
@@ -254,11 +261,25 @@ namespace SharedMeta.Server.Core.Transport
                         ConfigPatchVersion = e.ConfigVersion.Patch
                     }).ToList()
                 };
+                return __scResponse;
             }
             catch (Exception ex)
             {
                 _logger.HandlerSessionConnectError(ex);
-                return new SessionConnectResponse { Success = false, Error = ex.Message };
+                __scResponse = new SessionConnectResponse { Success = false, Error = ex.Message };
+                return __scResponse;
+            }
+            finally
+            {
+                var __scElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(__scStart).TotalMilliseconds;
+                var __scResult = __scResponse?.Success == true ? "success"
+                    : __scResponse?.NeedsSignatureRegistration == true ? "needs_signature_registration"
+                    : "rejected";
+                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SessionConnectDuration.Record(__scElapsed,
+                    new KeyValuePair<string, object?>("result", __scResult));
+                if (__scResponse?.Success == true)
+                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SessionsActive.Add(1);
+                __scActivity?.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagResult, __scResult);
             }
         }
 
@@ -771,6 +792,12 @@ namespace SharedMeta.Server.Core.Transport
             // happens before SessionConnect (e.g. handshake failure, immediate close) leaves
             // it empty and there's nothing to clean up at the grain level.
             if (!IsSessionConnected) return;
+
+            // 0.23.0+ Telemetry: session was active (we passed IsSessionConnected gate) and is
+            // closing now. Symmetric to the +1 in SessionConnectAsync success branch.
+            SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SessionsActive.Add(-1);
+            SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SessionTerminated.Add(1,
+                new KeyValuePair<string, object?>("reason", "transport_drop"));
 
             _logger.HandlerDisconnected(_connectionId, PlayerId);
 

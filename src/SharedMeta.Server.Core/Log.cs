@@ -6,16 +6,16 @@ internal static partial class Log
 {
     // ── SessionManagerGrain ──────────────────────────────────────────
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Activated for player: {PlayerId}")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Activated for player: {PlayerId}")]
     public static partial void SessionActivated(this ILogger logger, string playerId);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Deactivating for player: {PlayerId}")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Deactivating for player: {PlayerId}")]
     public static partial void SessionDeactivating(this ILogger logger, string playerId);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Error unsubscribing from {EntityId} during deactivation")]
     public static partial void ErrorUnsubscribingOnDeactivate(this ILogger logger, Exception ex, string entityId);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "New session started for {PlayerId}: {SessionId}")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "New session started for {PlayerId}: {SessionId}")]
     public static partial void NewSessionStarted(this ILogger logger, string playerId, Guid sessionId);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Resumed session for {PlayerId}, {MissedCount} missed packets")]
@@ -33,7 +33,7 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Debug, Message = "Observers cleared for {PlayerId}")]
     public static partial void ObserversCleared(this ILogger logger, string playerId);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "{PlayerId} subscribed to {EntityId} (entitySeq={EntitySeq})")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "{PlayerId} subscribed to {EntityId} (entitySeq={EntitySeq})")]
     public static partial void SubscribedToEntity(this ILogger logger, string playerId, string entityId, long entitySeq);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Error subscribing to {EntityId}")]
@@ -42,64 +42,64 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Error, Message = "Error unsubscribing from {EntityId}")]
     public static partial void ErrorUnsubscribing(this ILogger logger, Exception ex, string entityId);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "{PlayerId} unsubscribed from {EntityId}")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "{PlayerId} unsubscribed from {EntityId}")]
     public static partial void UnsubscribedFromEntity(this ILogger logger, string playerId, string entityId);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Returning cached response for requestId {RequestId}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Returning cached response for requestId {RequestId}")]
     public static partial void CachedResponseReturned(this ILogger logger, long requestId);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "SendToEntityAsync: player={PlayerId}, entity={EntityId}, reqId={RequestId}, method={ServiceName}.{MethodName}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "SendToEntityAsync: player={PlayerId}, entity={EntityId}, reqId={RequestId}, method={ServiceName}.{MethodName}")]
     public static partial void SendToEntity(this ILogger logger, string playerId, string entityId, long requestId, string serviceName, string methodName);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "RPC returned: player={PlayerId}, entity={EntityId}, entitySeq={EntitySeq}, knownSeq={KnownSeq}, queuedBroadcasts={QueuedCount}, hasError={HasError}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "RPC returned: player={PlayerId}, entity={EntityId}, entitySeq={EntitySeq}, knownSeq={KnownSeq}, queuedBroadcasts={QueuedCount}, hasError={HasError}")]
     public static partial void RpcReturned(this ILogger logger, string playerId, string entityId, long entitySeq, long knownSeq, int queuedCount, bool hasError);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Error calling entity {EntityId}")]
     public static partial void ErrorCallingEntity(this ILogger logger, Exception ex, string entityId);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "FAST PATH: player={PlayerId}, sessionSeq={SessionSeq}, totalOps={TotalOps}, knownSeq={KnownSeq}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "FAST PATH: player={PlayerId}, sessionSeq={SessionSeq}, totalOps={TotalOps}, knownSeq={KnownSeq}")]
     public static partial void FastPath(this ILogger logger, string playerId, long sessionSeq, int totalOps, long knownSeq);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "DEFERRED PATH: player={PlayerId}, requestId={RequestId}, entitySeq={EntitySeq}, knownSeq={KnownSeq}, precedingCount={PrecedingCount}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "DEFERRED PATH: player={PlayerId}, requestId={RequestId}, entitySeq={EntitySeq}, knownSeq={KnownSeq}, precedingCount={PrecedingCount}")]
     public static partial void DeferredPath(this ILogger logger, string playerId, long requestId, long entitySeq, long knownSeq, int precedingCount);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "ReceiveBroadcast: player={PlayerId}, entityId={EntityId}, entitySeq={EntitySeq}, knownSeq={KnownSeq}, inActiveRpc={InActiveRpc}, observers={Observers}, method={ServiceName}.{MethodName}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "ReceiveBroadcast: player={PlayerId}, entityId={EntityId}, entitySeq={EntitySeq}, knownSeq={KnownSeq}, inActiveRpc={InActiveRpc}, observers={Observers}, method={ServiceName}.{MethodName}")]
     public static partial void BroadcastReceived(this ILogger logger, string playerId, string entityId, long entitySeq, long knownSeq, bool inActiveRpc, int observers, string serviceName, string methodName);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Queued broadcast for RPC bundling: player={PlayerId}, entitySeq={EntitySeq}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Queued broadcast for RPC bundling: player={PlayerId}, entitySeq={EntitySeq}")]
     public static partial void BroadcastQueuedForRpc(this ILogger logger, string playerId, long entitySeq);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Holding out-of-order broadcast for {EntityId}: entitySeq={EntitySeq}, expected={Expected}")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Holding out-of-order broadcast for {EntityId}: entitySeq={EntitySeq}, expected={Expected}")]
     public static partial void BroadcastOutOfOrder(this ILogger logger, string entityId, long entitySeq, long expected);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Ignoring duplicate/old broadcast: player={PlayerId}, entitySeq={EntitySeq}, expected={Expected}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Ignoring duplicate/old broadcast: player={PlayerId}, entitySeq={EntitySeq}, expected={Expected}")]
     public static partial void BroadcastDuplicate(this ILogger logger, string playerId, long entitySeq, long expected);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "BufferBroadcast: player={PlayerId}, entityId={EntityId}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "BufferBroadcast: player={PlayerId}, entityId={EntityId}")]
     public static partial void BufferBroadcast(this ILogger logger, string playerId, string entityId);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "FlushOutgoingBatch: player={PlayerId}, sessionSeq={SessionSeq}, count={Count}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "FlushOutgoingBatch: player={PlayerId}, sessionSeq={SessionSeq}, count={Count}")]
     public static partial void FlushBatch(this ILogger logger, string playerId, long sessionSeq, int count);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Resolved deferred response for requestId {RequestId}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Resolved deferred response for requestId {RequestId}")]
     public static partial void DeferredResolved(this ILogger logger, long requestId);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Entity {EntityId} deactivated, removed subscription")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Entity {EntityId} deactivated, removed subscription")]
     public static partial void EntityDeactivated(this ILogger logger, string entityId);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Cleaned up {Removed} packets (ack seq={AcknowledgedSeq})")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Cleaned up {Removed} packets (ack seq={AcknowledgedSeq})")]
     public static partial void PacketsCleanedBySeq(this ILogger logger, int removed, long acknowledgedSeq);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Cleaned up {Removed} packets by count limit")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Cleaned up {Removed} packets by count limit")]
     public static partial void PacketsCleanedByCount(this ILogger logger, int removed);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Graceful disconnect for {PlayerId}: session reset")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Graceful disconnect for {PlayerId}: session reset")]
     public static partial void GracefulDisconnect(this ILogger logger, string playerId);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Transport disconnected for {PlayerId}: saved {Count} subscriptions")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Transport disconnected for {PlayerId}: saved {Count} subscriptions")]
     public static partial void TransportDisconnected(this ILogger logger, string playerId, int count);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Graceful disconnect: {ConnectionId} (player={PlayerId})")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Graceful disconnect: {ConnectionId} (player={PlayerId})")]
     public static partial void HandlerGracefulDisconnect(this ILogger logger, string connectionId, string? playerId);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "GracefulDisconnect error")]
@@ -107,19 +107,19 @@ internal static partial class Log
 
     // ── EntityGrain ──────────────────────────────────────────────────
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Activated: {StateType}/{EntityId}")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Activated: {StateType}/{EntityId}")]
     public static partial void EntityGrainActivated(this ILogger logger, string stateType, string entityId);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Deactivating: {StateType}/{EntityId}")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Deactivating: {StateType}/{EntityId}")]
     public static partial void EntityGrainDeactivating(this ILogger logger, string stateType, string entityId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "{EntityId}: access denied for {PlayerId} (policy={Policy})")]
     public static partial void EntityAccessDenied(this ILogger logger, string entityId, string playerId, string policy);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "{EntityId}: {PlayerId} subscribed")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "{EntityId}: {PlayerId} subscribed")]
     public static partial void PlayerSubscribed(this ILogger logger, string entityId, string playerId);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "{EntityId}: {PlayerId} unsubscribed")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "{EntityId}: {PlayerId} unsubscribed")]
     public static partial void PlayerUnsubscribed(this ILogger logger, string entityId, string playerId);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Error handling call")]
@@ -131,19 +131,19 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Error, Message = "Error handling external event")]
     public static partial void ErrorHandlingExternalEvent(this ILogger logger, Exception ex);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "DistributeBroadcasts: entity={EntityId}, entitySeq={EntitySeq}, broadcastCount={BroadcastCount}, subscribers={Subscribers}, exclude={Exclude}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "DistributeBroadcasts: entity={EntityId}, entitySeq={EntitySeq}, broadcastCount={BroadcastCount}, subscribers={Subscribers}, exclude={Exclude}")]
     public static partial void DistributingBroadcasts(this ILogger logger, string entityId, long entitySeq, int broadcastCount, int subscribers, string exclude);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Skipping excluded subscriber: {PlayerId}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Skipping excluded subscriber: {PlayerId}")]
     public static partial void SkippingExcludedSubscriber(this ILogger logger, string playerId);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Sending broadcast to {PlayerId}: entity={EntityId}, entitySeq={EntitySeq}, method={ServiceName}.{MethodName}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Sending broadcast to {PlayerId}: entity={EntityId}, entitySeq={EntitySeq}, method={ServiceName}.{MethodName}")]
     public static partial void SendingBroadcast(this ILogger logger, string playerId, string entityId, long entitySeq, string serviceName, string methodName);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Error broadcasting to {PlayerId}")]
     public static partial void ErrorBroadcasting(this ILogger logger, Exception ex, string playerId);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Broadcast sent to {SentCount}/{TotalCount} subscribers (method={ServiceName}.{MethodName})")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Broadcast sent to {SentCount}/{TotalCount} subscribers (method={ServiceName}.{MethodName})")]
     public static partial void BroadcastSent(this ILogger logger, int sentCount, int totalCount, string serviceName, string methodName);
 
     // ── EntityGrain — Persistence ──────────────────────────────────
@@ -151,27 +151,27 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Debug, Message = "State loaded: {StateType}/{EntityId}, subscribers={SubscriberCount}, entitySeq={SequenceNumber}")]
     public static partial void EntityStateLoaded(this ILogger logger, string stateType, string entityId, int subscriberCount, long sequenceNumber);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Pruned {Count} expired subscriber(s) from {EntityId}")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Pruned {Count} expired subscriber(s) from {EntityId}")]
     public static partial void ExpiredSubscribersPruned(this ILogger logger, string entityId, int count);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "State initialized: {StateType}/{EntityId}, version={Version}")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "State initialized: {StateType}/{EntityId}, version={Version}")]
     public static partial void EntityStateInitialized(this ILogger logger, string stateType, string entityId, int version);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "State persisted: {EntityId}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "State persisted: {EntityId}")]
     public static partial void EntityStatePersisted(this ILogger logger, string entityId);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Persistence deferred: {EntityId}, requests={Requests}, policy={Policy}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Persistence deferred: {EntityId}, requests={Requests}, policy={Policy}")]
     public static partial void PersistenceDeferred(this ILogger logger, string entityId, int requests, string policy);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Persistence forced: {EntityId}, requests={Requests}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Persistence forced: {EntityId}, requests={Requests}")]
     public static partial void PersistenceForced(this ILogger logger, string entityId, int requests);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Restored subscriber {PlayerId} for {EntityId}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Restored subscriber {PlayerId} for {EntityId}")]
     public static partial void SubscriberRestored(this ILogger logger, string entityId, string playerId);
 
     // ── MetaConnectionHandler ────────────────────────────────────────
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "SessionConnect: {PlayerId} (success={Success}, isNew={IsNew})")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "SessionConnect: {PlayerId} (success={Success}, isNew={IsNew})")]
     public static partial void HandlerSessionConnect(this ILogger logger, string playerId, bool success, bool isNew);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Signature mismatches for {PlayerId}: {Mismatches}")]
@@ -180,13 +180,13 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Error, Message = "SessionConnect error")]
     public static partial void HandlerSessionConnectError(this ILogger logger, Exception ex);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Subscribe: {PlayerId} -> {EntityId} (success={Success})")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Subscribe: {PlayerId} -> {EntityId} (success={Success})")]
     public static partial void HandlerSubscribe(this ILogger logger, string playerId, string entityId, bool success);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Subscribe error")]
     public static partial void HandlerSubscribeError(this ILogger logger, Exception ex);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Unsubscribe: {PlayerId} -> {EntityId}")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Unsubscribe: {PlayerId} -> {EntityId}")]
     public static partial void HandlerUnsubscribe(this ILogger logger, string playerId, string entityId);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Unsubscribe error")]
@@ -201,7 +201,7 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Error, Message = "AcknowledgeSequence error")]
     public static partial void HandlerAcknowledgeError(this ILogger logger, Exception ex);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Disconnected: {ConnectionId} (player={PlayerId})")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Disconnected: {ConnectionId} (player={PlayerId})")]
     public static partial void HandlerDisconnected(this ILogger logger, string connectionId, string? playerId);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Error clearing observer")]
@@ -210,7 +210,7 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Error, Message = "Observer renewal failed")]
     public static partial void ObserverRenewalFailed(this ILogger logger, Exception ex);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "OnBatch: player={PlayerId}, seq={Seq}, count={Count}")]
+    [LoggerMessage(Level = LogLevel.Trace, Message = "OnBatch: player={PlayerId}, seq={Seq}, count={Count}")]
     public static partial void ObserverOnBatch(this ILogger logger, string? playerId, long seq, int count);
 
     // ── MetaProviderBase ─────────────────────────────────────────────
