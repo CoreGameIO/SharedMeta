@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)Generated</CompilerGeneratedFilesOutputPath>
+    <IsPackable>false</IsPackable>
+    <!-- Enables the generator's server-only emit (GameServiceDiscovery.ServerSignature with
+         ConfigBoundaries, plus the concrete dispatcher hookups). -->
+    <DefineConstants>$(DefineConstants);SHAREDMETA_SERVER</DefineConstants>
+  </PropertyGroup>
+
+  <!-- Source generator runs here too — scans both Shared (services) and Server-only types. -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\SharedMeta.Generator\SharedMeta.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\SharedMeta.Server\SharedMeta.Server.csproj" />
+    <ProjectReference Include="..\..\..\src\SharedMeta.Orleans\SharedMeta.Orleans.csproj" />
+    <ProjectReference Include="..\..\..\src\SharedMeta.Transport.SignalR\SharedMeta.Transport.SignalR.csproj" />
+    <ProjectReference Include="..\..\..\src\SharedMeta.Serialization.MemoryPack\SharedMeta.Serialization.MemoryPack.csproj" />
+    <!-- Mux transport for stress tests (one SignalR socket per N simulated players) -->
+    <ProjectReference Include="..\..\..\src\SharedMeta.Debug\SharedMeta.Debug.csproj" />
+    <ProjectReference Include="..\ClanWars.Shared\ClanWars.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Orleans.Server" />
+  </ItemGroup>
+
+</Project>

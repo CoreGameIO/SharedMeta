@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\SharedMeta.Client\SharedMeta.Client.csproj" />
+    <ProjectReference Include="..\..\..\src\SharedMeta.Transport.SignalR.Client\SharedMeta.Transport.SignalR.Client.csproj" />
+    <ProjectReference Include="..\..\..\src\SharedMeta.Serialization.MemoryPack\SharedMeta.Serialization.MemoryPack.csproj" />
+    <!-- Mux transport (debug/load-test only — shares one SignalR socket across many simulators) -->
+    <ProjectReference Include="..\..\..\src\SharedMeta.Debug\SharedMeta.Debug.csproj" />
+    <ProjectReference Include="..\ClanWars.Shared\ClanWars.Shared.csproj" />
+  </ItemGroup>
+
+</Project>
