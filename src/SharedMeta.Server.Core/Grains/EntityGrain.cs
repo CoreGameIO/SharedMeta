@@ -214,6 +214,40 @@ namespace SharedMeta.Server.Core.Grains
                     };
                 };
 
+                // 0.22.0+: Fire-and-forget cross-entity dispatch for [MetaMethod(OneWay = true)]
+                // methods. Mirrors EntityCallHandler's lookup logic but routes through the
+                // [OneWay]-marked grain entry point so the source grain doesn't wait. No result
+                // recording, no return — the handler is void.
+                providerBase.EntityCallOneWayHandler = (targetEntityId, serviceName, methodName, argsBytes, serverTimeTicks) =>
+                {
+                    var targetGrain = _entityGrainResolver.GetEntityGrainByService(
+                        GrainFactory, serviceName, targetEntityId);
+                    if (targetGrain == null)
+                    {
+                        _logger.LogWarning(
+                            "[EntityGrain] OneWay {Service}.{Method} dropped: cannot resolve grain for entity {EntityId}",
+                            serviceName, methodName, targetEntityId);
+                        return;
+                    }
+
+                    var callerClientVersion = SharedMeta.Core.MetaContextAccessor.Current?.CallerClientVersion
+                        ?? _configVersionResolver?.CurrentClientVersion;
+                    var rpcCall = new RpcCall
+                    {
+                        ServiceName = serviceName,
+                        MethodName = methodName,
+                        Payload = argsBytes,
+                        ServerTimeTicks = serverTimeTicks,
+                        CallerClientVersion = callerClientVersion
+                    };
+
+                    // [OneWay] on IEntityGrainBase.HandleCallFromEntityOneWayAsync makes this a
+                    // genuine fire-and-forget on the Orleans wire — the discard `_ =` makes the
+                    // C# compiler happy about the unobserved Task and ensures no SynchronizationContext
+                    // hop happens here.
+                    _ = targetGrain.HandleCallFromEntityOneWayAsync(rpcCall);
+                };
+
                 providerBase.EntityStateHandler = async (targetEntityId, stateTypeName) =>
                 {
                     var targetGrain = _entityGrainResolver.GetEntityGrain(
@@ -731,6 +765,26 @@ namespace SharedMeta.Server.Core.Grains
             finally
             {
                 await PersistIfNeeded(forcePersist);
+            }
+        }
+
+        // 0.22.0+: Fire-and-forget cross-entity entry. Same body as HandleCallFromEntityAsync
+        // but no result is sent back — caller side dispatched via Orleans [OneWay], so even
+        // unhandled exceptions die here in the catch and are only logged. Broadcasts still
+        // reach THIS entity's own subscribers normally (clan-power change is visible to clan
+        // subscribers even though the source grain isn't waiting).
+        public async Task HandleCallFromEntityOneWayAsync(RpcCall call)
+        {
+            try
+            {
+                // Reuse the standard cross-entity path. The result is computed (state mutates,
+                // broadcasts produced) and we just discard the returned EntityCallResult.
+                await HandleCallFromEntityAsync(call);
+            }
+            catch (Exception ex)
+            {
+                // Source grain isn't waiting; surface only in the log.
+                _logger.ErrorHandlingCrossEntityCall(ex);
             }
         }
 

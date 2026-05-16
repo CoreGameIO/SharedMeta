@@ -45,6 +45,17 @@ namespace SharedMeta.Server.Core.Grains
         Task<EntityCallResult> HandleCallFromEntityAsync(RpcCall call);
 
         /// <summary>
+        /// 0.22.0+: Fire-and-forget cross-entity call entry point. Marked <c>[OneWay]</c> so the
+        /// source grain dispatches and continues without waiting for the target to finish.
+        /// Target executes the same body as <see cref="HandleCallFromEntityAsync"/>; the result
+        /// is computed but ignored (no reply envelope, no result recording). Errors are logged
+        /// inside the target and never surfaced to the source. Used for methods declared with
+        /// <c>[MetaMethod(OneWay = true)]</c>.
+        /// </summary>
+        [OneWay]
+        Task HandleCallFromEntityOneWayAsync(RpcCall call);
+
+        /// <summary>
         /// Handle an external event (from framework services like Lobby).
         /// Broadcasts to ALL subscribers.
         /// </summary>

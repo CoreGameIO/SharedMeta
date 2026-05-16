@@ -50,6 +50,13 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     public Func<string, string, string, byte[], long, Task<CrossEntityCallInfo>>? EntityCallHandler { get; set; }
 
     /// <summary>
+    /// 0.22.0+: Handler for fire-and-forget cross-entity calls (methods marked
+    /// <c>[MetaMethod(OneWay = true)]</c>). Source grain dispatches via Orleans <c>[OneWay]</c>
+    /// and continues immediately — handler returns void.
+    /// </summary>
+    public Action<string, string, string, byte[], long>? EntityCallOneWayHandler { get; set; }
+
+    /// <summary>
     /// Handler for read-only cross-entity state access.
     /// Returns serialized state bytes of the target entity, or null if not found.
     /// Set via constructor or before Initialize is called.
@@ -87,6 +94,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             : NullMetaLogger.Instance;
         MetaContext.ServiceResolver = ServiceResolver;
         MetaContext.EntityCallHandler = EntityCallHandler;
+        MetaContext.EntityCallOneWayHandler = EntityCallOneWayHandler;
         MetaContext.EntityStateHandler = EntityStateHandler;
         MetaContext.SaveStateHandler = SaveStateHandler;
         // 0.20.0: Wire sibling-service resolver so generated cross-entity accessors can

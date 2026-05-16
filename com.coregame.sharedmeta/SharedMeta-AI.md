@@ -297,6 +297,49 @@ api.NotifyHeartbeatSignal(DateTime.UtcNow.Ticks);  // returns instantly
 
 **Transport shape:** InProcess dispatches directly to the grain; SignalR uses `HubConnection.SendAsync`; HttpPolling POSTs to `/meta-http/signal` and responds `202 Accepted` before execution completes.
 
+### Notification Methods (Entity → Entity Fire-and-Forget) — 0.22.0+
+
+Peer of Signal on the cross-entity axis — Signal is "client → entity, no wait", Notification is "entity → entity, no wait". Use when the caller doesn't need to block on the target's completion.
+
+```csharp
+[MetaService(StateType = typeof(ClanState))]
+public interface IClanService : IMetaService
+{
+    [MetaMethod(Mode = ExecutionMode.Notification)]
+    Task AddPower(int delta);
+}
+
+[MetaServiceImpl(typeof(IProfileService), typeof(ProfileState), typeof(IClanService))]
+public partial class ProfileService : IProfileService
+{
+    public Task GainPoints(int amount)
+    {
+        S.Score += amount;
+        if (!string.IsNullOrEmpty(S.ClanId))
+            GetIClanService(S.ClanId).AddPower(amount);  // void call, no await
+        return Task.CompletedTask;
+    }
+}
+```
+
+**Generator emit:** EntityCaller method is `void {Name}(args)` — not `Task {Name}Async(args)`. Recorder fires `_context.CallEntityOneWay(...)` without recording a result. Replayer is a no-op for this call site (server didn't record anything).
+
+**Server route:** caller-grain → `IEntityGrain.HandleCallFromEntityOneWayAsync` (marked Orleans `[OneWay]`) → `EntityGrain.HandleCallFromEntityAsync` internally → result discarded. Source grain doesn't await; target grain processes normally, broadcasts to its own subscribers, persists per impl method's `ForcePersist`.
+
+**Constraints (validated via `#error`):**
+- Return type must be `Task` or `void` — no `Task<T>` (no value to return)
+- Implicit `GenerateClientApi = false` — clients never originate Notifications (the `IsGenerateClientApiFalse` helper auto-returns true for `Mode = Notification`)
+- Cannot be overridden at runtime — structural trait
+
+**Caller-side effects you lose:**
+- Errors in the target are logged server-side, never propagated to caller
+- Caller cannot observe target's state after the call (no observable order)
+- No transactional consistency (if target fails, caller's mutation still committed)
+
+**Use when:** caller doesn't read target state after the call AND target's broadcasts independently reach its subscribers. Textbook fit: `ProfileService.GainPoints → ClanService.AddPower` — profile never reads clan state, clan broadcasts power change to clan subscribers independently. Removes one grain-to-grain await from the latency path.
+
+**Performance impact (ClanWars stress, 1000+1000 simulators, single dev machine):** cold-path RPCs (Connect, ResolveProfile, CreateClan) p99 dropped 8–21× after flipping `AddPower` to `Notification`. High-volume RPCs gained +20% throughput at the same p99 wall under CPU saturation.
+
 ### Runtime Execution Mode Override
 
 Override the `[MetaMethod]` default at runtime without recompilation:
@@ -1315,6 +1358,12 @@ var state = resolver.GetState<MyState>(entityId);
 Assert.Equal(expected, state.Value);
 Assert.Empty(client.DetectedIssues);  // No desyncs
 ```
+
+### Mux Transport (Stress Tests, 0.22.0+)
+
+`SharedMeta.Debug.Mux` — debug-only transport where N logical client sessions share one physical SignalR socket. Map `app.MapMetaMuxHub("/meta-mux")` on the server (alongside `/meta`); on the client build a pool of `MuxChannel` instances and call `channel.CreateConnection(tag)` per simulator. Each `MuxConnection` implements `IConnection`, so the rest of the MetaClient stack is unchanged.
+
+Use when you want 1000+ simulated players from one client process without burning a WebSocket per simulator. See `examples/ClanWars/ClanWars.Client.Common/StressTestRunner.cs` for a runner pattern with channel-pool construction and round-robin tag assignment, and [docs/GUIDE.md § Mux Transport](../docs/GUIDE.md#mux-transport--high-fanout-stress-tests-0220) for the full API + trade-offs.
 
 ---
 

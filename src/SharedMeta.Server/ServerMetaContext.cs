@@ -180,6 +180,12 @@ namespace SharedMeta.Server
         public Func<string, string, string, byte[], long, Task<CrossEntityCallInfo>>? EntityCallHandler { get; set; }
 
         /// <summary>
+        /// 0.22.0+: Handler for fire-and-forget cross-entity calls. Source grain dispatches
+        /// without waiting; <see cref="CallEntityOneWay"/> returns immediately.
+        /// </summary>
+        public Action<string, string, string, byte[], long>? EntityCallOneWayHandler { get; set; }
+
+        /// <summary>
         /// Handler for read-only cross-entity state access.
         /// Returns serialized state bytes, or null if entity doesn't exist.
         /// Set by the MetaProvider to enable cross-entity state reading.
@@ -233,6 +239,23 @@ namespace SharedMeta.Server
             _crossEntityCalls.Add(info);
 
             return info.ResultBytes ?? Array.Empty<byte>();
+        }
+
+        /// <summary>
+        /// 0.22.0+: Fire-and-forget variant. Returns immediately; the target grain is invoked
+        /// via an Orleans <c>[OneWay]</c> entry point. No <see cref="CrossEntityCallInfo"/> is
+        /// recorded (nothing to replay client-side), and no result is observed by the caller.
+        /// </summary>
+        public void CallEntityOneWay(string targetEntityId, string serviceName, string methodName, byte[] argsBytes)
+        {
+            if (EntityCallOneWayHandler == null)
+            {
+                throw new InvalidOperationException(
+                    $"EntityCallOneWayHandler not set. Cannot OneWay-call {serviceName}.{methodName} on entity {targetEntityId}. " +
+                    "The MetaProvider must set EntityCallOneWayHandler to enable fire-and-forget cross-entity calls.");
+            }
+
+            EntityCallOneWayHandler(targetEntityId, serviceName, methodName, argsBytes, ServerTimeTicks);
         }
 
         // EntityId is inherited from MetaContext base class

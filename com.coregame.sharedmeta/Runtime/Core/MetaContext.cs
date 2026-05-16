@@ -598,6 +598,21 @@ namespace SharedMeta.Core
         /// <param name="argsBytes">Serialized method arguments.</param>
         /// <returns>Serialized result bytes (empty for void methods).</returns>
         Task<byte[]> CallEntityAsync(string targetEntityId, string serviceName, string methodName, byte[] argsBytes);
+
+        /// <summary>
+        /// 0.22.0+: Fire-and-forget cross-entity call. Used by generated EntityCaller wrappers
+        /// for methods marked <c>[MetaMethod(OneWay = true)]</c>. The source grain returns
+        /// immediately; the target grain processes asynchronously via an Orleans <c>[OneWay]</c>
+        /// invocation. No result is recorded into the replay payload — the client-side replayer
+        /// for the same call site consumes nothing.
+        /// <para>
+        /// Default implementation throws — implementations that don't support OneWay (e.g.
+        /// <see cref="NullServerRecordContext"/>) can remain on the default.
+        /// </para>
+        /// </summary>
+        void CallEntityOneWay(string targetEntityId, string serviceName, string methodName, byte[] argsBytes)
+            => throw new NotSupportedException(
+                "This IServerRecordContext does not support OneWay cross-entity calls.");
     }
 
     /// <summary>

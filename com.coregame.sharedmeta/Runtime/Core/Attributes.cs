@@ -295,7 +295,33 @@ namespace SharedMeta.Core
         /// no sequence increment, no persistence); errors are logged and swallowed.
         /// Cannot be overridden at runtime — this is a structural trait, not a routing strategy.
         /// </summary>
-        Signal
+        Signal,
+
+        /// <summary>
+        /// 0.22.0+: Entity-to-entity fire-and-forget notification. The peer of <see cref="Signal"/>
+        /// on the cross-entity axis — Signal is "client → entity, no wait", Notification is
+        /// "entity → entity, no wait". Source grain dispatches via an Orleans <c>[OneWay]</c>
+        /// path and continues without awaiting; the target processes normally (state mutates,
+        /// broadcasts its own subscribers), but no result is recorded into the replay payload
+        /// and no exception is propagated back to the source.
+        /// <para>
+        /// Constraints (validated by the generator with <c>#error</c>):
+        /// <list type="bullet">
+        /// <item>Return type must be <c>Task</c> or <c>void</c> — no <c>Task&lt;T&gt;</c>.</item>
+        /// <item>Implicit <c>GenerateClientApi = false</c> — clients never originate notifications.</item>
+        /// <item>Cannot combine with <c>Sync</c>, <c>SkipServerOnFalse</c>, <c>ForcePersist</c>.</item>
+        /// <item>Cannot be overridden at runtime — structural trait.</item>
+        /// </list>
+        /// </para>
+        /// <para>
+        /// Use when the cross-entity call doesn't need to block the caller — e.g.
+        /// <c>ProfileService.GainPoints → ClanService.AddPower</c>: the profile doesn't need
+        /// to wait for the clan to apply the delta because clan broadcasts to its own
+        /// subscribers and the profile never reads clan state after the call. Removes one
+        /// grain-to-grain await from the latency path.
+        /// </para>
+        /// </summary>
+        Notification
     }
 
     /// <summary>

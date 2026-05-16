@@ -2369,6 +2369,13 @@ namespace SharedMeta.Generator.Generators
                     && arg.Expression is LiteralExpressionSyntax lit
                     && lit.Token.Text == "false")
                     return true;
+                // 0.22.0+: Mode = ExecutionMode.Notification is implicitly server-only — clients
+                // never originate notifications, so the client ApiClient surface skips them
+                // without requiring an explicit GenerateClientApi = false.
+                if (arg.NameEquals?.Name.Identifier.Text == "Mode"
+                    && arg.Expression is MemberAccessExpressionSyntax modeAccess
+                    && modeAccess.Name.Identifier.Text == "Notification")
+                    return true;
             }
             return false;
         }

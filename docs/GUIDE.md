@@ -1028,6 +1028,66 @@ api.RecordTelemetrySignal("purchase", jsonBlob);     // same
 
 **Error handling:** server-side exceptions are caught in `MetaProviderBase.HandleSignalAsync` and logged via `Logger.ProviderCallError`. They never reach the client. If you need confirmation of delivery, don't use Signal — use a regular method or a Query.
 
+### Notification Methods (Entity → Entity Fire-and-Forget) — 0.22.0+
+
+Peer of Signal on the cross-entity axis. **Signal** is "client → entity, no wait"; **Notification** is "entity → entity, no wait". Use when one entity needs to inform another about a state change without blocking on the round-trip.
+
+```csharp
+[MetaService(StateType = typeof(ClanState))]
+public interface IClanService : IMetaService
+{
+    // ProfileService.GainPoints fires this and continues without awaiting.
+    [MetaMethod(Mode = ExecutionMode.Notification)]
+    Task AddPower(int delta);
+}
+
+[MetaServiceImpl(typeof(IProfileService), typeof(ProfileState), typeof(IClanService))]
+public partial class ProfileService : IProfileService
+{
+    public Task GainPoints(int amount)
+    {
+        S.Score += amount;
+        if (!string.IsNullOrEmpty(S.ClanId))
+            GetIClanService(S.ClanId).AddPower(amount);  // void call — no await
+        return Task.CompletedTask;
+    }
+}
+```
+
+**What changes vs `Mode = Server` cross-entity call:**
+| | `Server` cross-entity (await) | `Notification` |
+|---|---|---|
+| Caller waits for target | Yes | No |
+| Result observable to caller | Yes | No (target's return is discarded) |
+| Recorded in caller's replay payload | Yes | No (client replay skips this call entirely) |
+| Target broadcasts to its subscribers | Yes | Yes (independent of caller) |
+| Errors in target | Propagate to caller as `InvalidOperationException` | Logged on the target only — never reach the caller |
+| Caller can read target state after this call | Yes | **No** — there's no observable order |
+
+**Contract:**
+- Return type must be `Task` or `void` — no `Task<T>` (there is no return value)
+- `GenerateClientApi = false` is implicit — clients never originate Notifications
+- Cannot combine with `Sync`, `SkipServerOnFalse`, `ForcePersist`
+- Cannot be overridden at runtime — structural trait
+- Generator emits cross-entity caller as `void {Method}(args)` (not `Task {Method}Async(args)`) — any pre-0.22.0 `await GetIFoo(id).BarAsync(...)` call site is forced to compile-error and migrate
+
+**Server routing:** caller-grain dispatches via `IEntityGrain.HandleCallFromEntityOneWayAsync` (marked Orleans `[OneWay]`). Source grain returns immediately; target grain processes the call body normally (state mutates, broadcasts to its own subscribers, persists if `ForcePersist` was set on the impl method) but the `EntityCallResult` is discarded. No `CrossEntityCallInfo` is recorded into the caller's replay payload, so client-side replay reads nothing for this call site.
+
+**When to use Notification:**
+- Caller doesn't read the target's state after the call (clan-power delta from profile is a textbook fit: profile never reads clan state)
+- Target's broadcasts independently reach its own subscribers (clan-state broadcasts to clan subscribers — caller doesn't need to act as the bridge)
+- The caller-target sync round-trip dominates the latency budget (visible in p99 of high-volume cross-entity paths)
+
+**When NOT to use Notification:**
+- You need transactional consistency (e.g. "transfer money A→B" — must observe success of debit before commit)
+- Caller reads target state immediately after the call
+- A failure in the target must roll back the caller's mutation
+- The result value drives caller logic
+
+**Performance:** removes one grain-to-grain `await` from the latency path. In the ClanWars stress test (1000 + 1000 simulated players, 120s, single dev machine), flipping `AddPower` to `Notification` produced:
+- Cold-path operations (`Connect`, `ResolveProfile`, `CreateClan`) — p99 dropped 8–21× (clan grain no longer holds the caller while activating)
+- High-volume RPCs (`GainPoints`, `ApplyToClan`) — throughput +20% at the same p99 wall under CPU saturation
+
 ---
 
 ## 5. Deterministic Random
@@ -3648,6 +3708,55 @@ private class SiloConfigurator : ISiloConfigurator
 - **Orleans TestCluster** — needed for session management, broadcast ordering, reconnection, cross-entity calls, and persistence
 
 See `tests/SharedMeta.IntegrationTests/` for complete examples.
+
+### Mux Transport — High-Fanout Stress Tests (0.22.0+)
+
+`SharedMeta.Debug.Mux` is a debug-only transport that lets one physical SignalR socket carry **N logical client sessions** identified by a per-session tag. Use it when you want to drive thousands of simulated players from a single client process without exhausting socket / thread-pool resources.
+
+**Server side** — map the hub alongside the regular `/meta`:
+
+```csharp
+using SharedMeta.Debug.Mux;
+
+var app = builder.Build();
+app.MapHub<MetaHub>("/meta");           // production / real clients
+app.MapMetaMuxHub("/meta-mux");          // stress-test transport, opt-in
+```
+
+`MuxHub` reuses your existing `IMetaConnectionHandlerFactory` — every tag gets its own `IMetaConnectionHandler` keyed in `HubCallerContext.Items`, so all server-side machinery (sessions, capability negotiation, broadcasts, persistence) works exactly the way it does for a regular per-connection client.
+
+**Client side** — build a channel pool once, hand each simulator a logical connection:
+
+```csharp
+using SharedMeta.Debug.Mux;
+
+// 10 physical SignalR sockets shared across 1000 simulators (100 sessions/socket).
+var channels = new MuxChannel[10];
+for (int i = 0; i < channels.Length; i++)
+    channels[i] = new MuxChannel("http://localhost:5050/meta-mux");
+await Task.WhenAll(channels.Select(c => c.StartAsync()));
+
+for (int player = 0; player < 1000; player++)
+{
+    IConnection connection = channels[player % channels.Length].CreateConnection(tag: player);
+    var client = new MetaClient(connection, new MemoryPackMetaSerializer(), new MetaClientOptions
+    {
+        PlayerId = $"player-{player}",
+        ClientAppVersion = "1.0.0",
+    });
+    // ... usual MetaClient flow ...
+}
+```
+
+`MuxConnection` implements `IConnection`, so generated `*ApiClient`, dispatcher, replay, and capability gates work without changes.
+
+**Trade-offs:**
+- One physical socket = shared head-of-line behavior. SignalR's protocol serializes frames on the wire; per-tag frames interleave but don't parallelize beyond what SignalR can chunk.
+- Capability handshake runs per tag, so the registry sees the same `ClientSignatureHash` from many sessions — cheap.
+- Disconnect tears down all tags riding the channel; `GracefulDisconnect(tag)` removes a single session without affecting siblings.
+- `SetDebugOptions` / `SendDesyncReport` are intentionally not bridged — use the regular `/meta` hub when you need deep-desync tracing.
+
+**When to use:** load-testing the server's throughput and broadcast fan-out machinery without paying the socket cost of "one WebSocket per simulator." Reference: `examples/ClanWars/ClanWars.Client.Common/StressTestRunner.cs` — pass `--mux-channels 10` to fan 1000 players across 10 sockets.
 
 ---
 

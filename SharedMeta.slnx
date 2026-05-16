@@ -11,6 +11,13 @@
     <Project Path="examples/Expedition/Expedition.Server/Expedition.Server.csproj" />
     <Project Path="examples/Expedition/Expedition.Shared/Expedition.Shared.csproj" />
   </Folder>
+  <Folder Name="/examples/ClanWars/">
+    <Project Path="examples/ClanWars/ClanWars.Shared/ClanWars.Shared.csproj" />
+    <Project Path="examples/ClanWars/ClanWars.Server/ClanWars.Server.csproj" />
+    <Project Path="examples/ClanWars/ClanWars.Client.Common/ClanWars.Client.Common.csproj" />
+    <Project Path="examples/ClanWars/ClanWars.Client.V1/ClanWars.Client.V1.csproj" />
+    <Project Path="examples/ClanWars/ClanWars.Client.V2/ClanWars.Client.V2.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/SharedMeta.Core/SharedMeta.Core.csproj" />
     <Project Path="src/SharedMeta.Client/SharedMeta.Client.csproj" />

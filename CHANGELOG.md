@@ -1,65 +1,52 @@
 # Changelog
 
-## [0.22.0] - 2026-05-15
+## [0.22.0] - 2026-05-16
 
-Compatibility-negotiation pipeline that lets old clients keep running against newer servers via four explicit cases: structural state breaks, config-structure breaks, method-body changes, and method-signature changes. The pipeline runs at session connect (phase-1 hash + phase-2 full signature on miss), stores per-build capabilities in an Orleans-backed registry, and ships back a `ClientCapabilities` object that the generated `*ApiClient` consults before every call.
+Backwards-compatible multi-version operation. Old clients keep working against newer servers; new clients keep working against entities pinned at older config branches. Plus `ExecutionMode.Notification` for entity → entity fire-and-forget, and `SharedMeta.Debug.Mux` for stress tests that need many simulated players on few sockets.
 
-### Added — `[MetaStateVersion(Breaking = bool)]`
+### Added — Compatibility negotiation pipeline
 
-`Breaking = true` on a state's `[MetaStateVersion]` step rejects clients whose resolved config sits below that threshold with `IncompatibleFeatureException` (structured `FeatureRequirement` payload describing the gated feature). Default `false` stays permissive — additive schema bumps tolerated, old clients miss new fields but the game still progresses. `IncompatibleFeatureException` is Orleans-serializable so the typed throw survives grain boundaries.
+Two-phase handshake (`ClientSignatureHash` → `RegisterClientSignature` if missing) populates a per-build `ClientCapabilities` blob; generated `*ApiClient` consults it before every call and the server-side `MetaConnectionHandler` enforces the same on receive. Covers four kinds of drift: structural state breaks, config-structure breaks, method-body version drift, method-signature drift.
 
-### Added — `[MetaMethod(Version, MinCompatibleVersion, Alias)]`
+- `[MetaStateVersion(Breaking = bool)]` — `Breaking = true` rejects clients below threshold with structured `IncompatibleFeatureException`.
+- `[MetaMethod(Version, MinCompatibleVersion, Alias)]` — `(Alias, Version)` dispatch with `case 0` legacy fallback.
+- `[MetaConfigStructureBoundary("X.Y", Reason)]` — asymmetric force-patch trigger: fires iff `clientCode < V && pinned >= V`. New client on old entity runs natively.
+- `[assembly: SharedMetaCompatibilityOptions(Enabled = false)]` opt-out for projects that don't use negotiation.
+- Per-subscriber broadcast tailoring: legacy subscribers get `PatchBytes`, modern subscribers get `ReplayPayload` — single execution, dual-format fan-out.
+- Per-entity overlay (`EntityAugmentedCapabilities`) stacks on session-level caps; computed at subscribe time from the entity's pinned config version.
 
-`Version` (default 0) stamped onto `RpcCall.MethodVersion`, `SignalCallRequest.MethodVersion`, `QueryCallRequest.MethodVersion`. Server dispatchers group by alias and route `(Alias, Version)` with a `case 0` fallback to the lowest-versioned implementation under the alias — legacy callers still dispatch even after a v2 sibling ships. `MinCompatibleVersion` declares the lowest client `Version` that may still run the method body optimistically; below the floor, capabilities flag the method for force-ServerPatch downgrade.
+Full design in [docs/GUIDE.md § Per-Client Config Branches & State Migration](docs/GUIDE.md#per-client-config-branches--state-migration) and [com.coregame.sharedmeta/SharedMeta-AI.md](com.coregame.sharedmeta/SharedMeta-AI.md). Reference example: `examples/ClanWars` (v1 + v2 clients sharing a pinned-2.0 clan).
 
-### Added — Client-signature handshake and capabilities
+### Added — `ExecutionMode.Notification`
 
-Two-phase handshake during `SessionConnect`:
-1. Client transmits `ClientSignatureHash` (FNV-1a over sorted KnownMethods + per-method `ArgHash`).
-2. Server's `IClientSignatureRegistry` (per-silo cache fronting cluster-singleton `IClientSignatureManagerGrain` directory + per-hash `IClientSignatureGrain`) returns cached `ClientCapabilities`, or sets `NeedsSignatureRegistration = true` and the client follows up with `RegisterClientSignature(fullSignature)`. Server computes capabilities once per distinct signature: rejected methods (missing server-side / server-only / arg-hash drift) plus force-ServerPatch methods (client below `MinCompatibleVersion`).
+Entity → entity fire-and-forget — peer of `Signal` on the cross-entity axis. Source grain dispatches via Orleans `[OneWay]` and continues; no result recorded into replay payload. Generator emits `void {Name}(args)` on the EntityCaller (any pre-0.22 `await GetIFoo(id).BarAsync(...)` site compile-errors and migrates).
 
-Generated `GameServiceDiscoveryBase.ClientSignature` is the constant the client transmits; `GameServiceDiscovery.ServerSignature` is the server-side mirror enriched with `MinCompatibleVersion`, `GenerateClientApi`, and harvested `[MetaConfigStructureBoundary]` entries. `CapabilitiesGate` static helpers do the per-call lookup at the top of every generated `*ApiClient` method (allocation-free on the no-restrictions path).
+```csharp
+[MetaMethod(Mode = ExecutionMode.Notification)]
+Task AddPower(int delta);
+```
 
-### Added — `[MetaConfigStructureBoundary("X.Y", Reason)]`
+Implicit `GenerateClientApi = false`. Removes one grain-to-grain await from the latency path when caller doesn't read target state after the call. Full contract + perf in [docs/GUIDE.md § Notification Methods](docs/GUIDE.md#notification-methods-entity--entity-fire-and-forget--0220).
 
-Annotates a config class with a structural-break version. Collected per service's bound config and emitted into `MetaServerSignature.ConfigBoundaries` for per-session compute (server can force-ServerPatch every service bound to a structurally-changed config when the client's resolved config sits below the boundary).
+### Added — `SharedMeta.Debug.Mux` transport
 
-### Added — Server-side back-stop
+Debug-only transport where N logical client sessions share one physical SignalR socket. Map `app.MapMetaMuxHub("/meta-mux")` server-side; build a `MuxChannel` pool client-side and call `channel.CreateConnection(tag)` per simulator. Each `MuxConnection` implements `IConnection`, so the rest of MetaClient is unchanged. Useful for stress tests driving thousands of simulated players from one process. See [docs/GUIDE.md § Mux Transport](docs/GUIDE.md#mux-transport--high-fanout-stress-tests-0220).
 
-`MetaConnectionHandler.RpcCallAsync` re-runs the rejection check against the session's cached `ClientCapabilities` before dispatching. A forged client that bypassed its local `CapabilitiesGate` still gets blocked at this boundary.
+### Changed — `PlayerVersionGrain` moved into `SharedMeta.Server.Core`
 
-### Added — Opt-out via `[assembly: SharedMetaCompatibilityOptions(Enabled = false)]`
+The default version-gate grain (consulted by `MetaConnectionHandler` on connect when the client transmits `ClientVersion`) now ships with `SharedMeta.Server.Core` instead of `SharedMeta.Auth` — no transitive ASP.NET/JWT dependency needed for the base version-gate.
 
-Default `Enabled = true` — generator emits the full negotiation surface; runtime stays no-op until the consumer wires `services.AddSharedMetaClientSignatureRegistry()` + injects `GameServiceDiscovery.ServerSignature`. Opt-out skips the gate emit in `*ApiClient` for projects that don't use negotiation at all.
+### Changed — `ValidateClientCompatibleWithPins` is now permissive
 
-### Added — Per-subscriber broadcast fan-out
+Cross-version subscribe to a shared-scoped entity is **allowed** by default. Open-Closed config evolution + `[MetaConfigStructureBoundary]`-driven force-patch handle compatibility — the pre-0.22 strict reject was redundant once boundary-driven force-patch landed.
 
-When an entity has subscribers with different compatibility verdicts on the same method (e.g. v1-only legacy + v2 modern, same entity), the server runs the method **once** with patch tracking activated alongside normal replay recording. The resulting `EntityBroadcast` carries both `ReplayPayload` and `PatchBytes`. `SessionManagerGrain.BroadcastToSessionOp` then tailors per player on fan-out:
+### Fixed — Query method local sync wrapper now establishes `MetaContext`
 
-- **Modern subscriber** (no force-patch for this method): receives `ReplayPayload` only; `PatchBytes` is stripped. Modern client runs the typed method body.
-- **Legacy subscriber** (`ForceServerPatchMethods` hit): receives `PatchBytes` only; `ReplayPayload` is stripped. Legacy client applies the state diff without needing the unknown v2 body.
+`SimplifiedApiClientGenerator.GenerateLocalQueryMethod` now wraps the body with `SetupQueryContext()` / `RestoreQueryContext(prev)` so `Context.State` / `Context.EntityId` reads always succeed (previously worked only when AsyncLocal happened to carry a context from a prior async op).
 
-Wiring: `MetaConnectionHandler` pushes `ClientCapabilities` to `SessionManagerGrain` after handshake. `SessionManagerGrain` forwards the relevant subset to `EntityGrain.SubscribeAsync`, which refcounts force-patch methods across subscribers in O(1). `MetaProviderBase.HandleCallAsync(call, isClientOriginated, requirePatchForFanOut)` activates `PatchWrapper` when the call's `(Service, Alias, Version)` is in the entity's aggregated force-patch set.
+### Fixed — Query single-primitive-arg framing
 
-### Added — Per-version broadcast replay routing
-
-Generated `*ApiClient.DispatchServiceBroadcast` now emits one `case "alias":` per alias group. Single-version aliases stay flat (zero overhead). Multi-version aliases produce a nested `switch (broadcast.MethodVersion)` so modern clients route each broadcast to the matching `[MetaMethod(Version = N)]` body. The `default:` arm handles broadcasts for a version the client doesn't know — by contract such broadcasts must arrive with `PatchBytes` or `StateBytes` (server's per-subscriber tailoring guarantees that), so the default just applies the diff and skips body replay.
-
-### Added — Per-entity capability overlay (`EntityAugmentedCapabilities`)
-
-Capabilities have two layers that combine at the gate / dispatch / fan-out layers:
-
-1. **Session-level** (`ClientCapabilities`) — derived once per client signature. Covers method versioning (`MinCompatibleVersion`) and arg-shape drift. Cacheable per signature hash; no invalidation on config rollout.
-2. **Per-entity** (`EntityAugmentedCapabilities`) — computed by `EntityGrain` at subscribe time from this entity's pinned config version + the bound config's `[MetaConfigStructureBoundary]` declarations. Config evolution is assumed open-closed (new fields added, old kept and deprecated), so the trigger is asymmetric: a boundary V fires iff `clientCode < V && pinned >= V` (old client trying to read new bytes — only direction that breaks). New client on old entity works natively. Different entities of the same state type on different pinned config branches produce different verdicts for the same client.
-
-`EntityAugmentedCapabilities.ForceServerPatchServices` lists services that must use ServerPatch on this entity. `RejectedServices` lists services the client cannot invoke at all on this entity (reserved for future severity levels on `[MetaConfigStructureBoundary]`).
-
-Wiring:
-- `EntityGrain.SubscribeAsync` returns the overlay in `EntitySnapshot.AugmentedCapabilities`. Also refcounts the overlay services into `_forcePatchServiceRefs` so `HandleCallAsync` activates patch tracking when any subscriber needs patch.
-- `SessionManagerGrain` caches the per-entity overlay by `entityId`; `BroadcastToSessionOp` consults it alongside session-level caps for per-subscriber fan-out tailoring.
-- Client side: `SubscribeResponse.AugmentedCapabilities` → `DispatcherNetworkAdapter.EntityCapabilities`. Generated `*ApiClient` gate consults both `_network.Capabilities` and `_network.EntityCapabilities`.
-
-`MetaServerSignature.ConfigBoundaries` carries the boundaries; `ServerMethodEntry.ConfigTypeFullName` tells the compute which services are bound to which config so a triggered boundary fans out to all affected services on a given entity.
+`QueryClientGenerator` now uses `_serializer.CreateWriter()` / `writer.Complete()` for all arg counts and serializers, matching the server-side dispatcher's length-prefixed framing (previously raw `MemoryPackSerializer.Serialize(int)` produced 4 raw bytes that the dispatcher's `ReadWithAutoUnbox<int>` mis-interpreted).
 
 ## [0.21.1] - 2026-05-13
 

@@ -506,6 +506,32 @@ namespace SharedMeta.Generator.Generators
 
             var (isAsync, innerType) = ParseReturnType(returnType);
 
+            // 0.22.0+: Notification sibling — same-grain self-target. Just call the impl and
+            // discard the Task. No grain RPC, no recording. The impl mutates this entity's state
+            // in place; subscribers of this entity get the broadcast as part of the outer op.
+            if (IsNotificationMode(method))
+            {
+                sb.AppendLine();
+                sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
+                sb.AppendLine($"        public void {methodName}({parameters})");
+                sb.AppendLine("        {");
+                if (isAsync)
+                {
+                    // Original returns Task — discard so we behave like a fire-and-forget.
+                    sb.AppendLine($"            _ = _impl.{methodName}({callArgs});");
+                }
+                else if (returnType == "void")
+                {
+                    sb.AppendLine($"            _impl.{methodName}({callArgs});");
+                }
+                else
+                {
+                    sb.AppendLine($"            _impl.{methodName}({callArgs});");
+                }
+                sb.AppendLine("        }");
+                return;
+            }
+
             // Match the EntityCaller naming/return convention: void/sync→Task with Async
             // suffix, async stays as-is. The inner call to _impl uses the original signature.
             string asyncReturnType;
@@ -640,6 +666,21 @@ namespace SharedMeta.Generator.Generators
 
             var (isAsync, innerType) = ParseReturnType(returnType);
 
+            // 0.22.0+: Mode = ExecutionMode.Notification flips this to a void cross-entity call
+            // (entity → entity fire-and-forget, peer of Signal on the cross-entity axis). Async
+            // variant is suppressed — the caller pattern becomes `GetIClanService(id).AddPower(delta);`
+            // (no await), forcing any existing `await ...` call site to be updated.
+            if (IsNotificationMode(method))
+            {
+                if (innerType != null && (isAsync == false || returnType != "System.Threading.Tasks.Task" && returnType != "Task"))
+                {
+                    sb.AppendLine($"#error SharedMeta: '{interfaceFqn}.{methodName}' has Mode = ExecutionMode.Notification but returns a value. Notification methods must return Task or void.");
+                }
+                sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
+                sb.AppendLine($"        void {methodName}({parameters});");
+                return;
+            }
+
             // Generate async version of the method
             string asyncReturnType;
             string asyncMethodName;
@@ -665,6 +706,23 @@ namespace SharedMeta.Generator.Generators
 
             sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
             sb.AppendLine($"        {asyncReturnType} {asyncMethodName}({parameters});");
+        }
+
+        /// <summary>
+        /// 0.22.0+: True when the method carries <c>[MetaMethod(Mode = ExecutionMode.Notification)]</c>.
+        /// Cross-entity callers for Notification methods receive a void fire-and-forget variant
+        /// on the EntityCaller interface instead of the async one — the source grain dispatches
+        /// via the Orleans <c>[OneWay]</c> entry on the target and continues without awaiting.
+        /// ExecutionMode.Notification = 8 (after Local=0, Optimistic=1, Server=2, CrossOptimistic=3,
+        /// ServerPatch=4, ServerReplace=5, Query=6, Signal=7).
+        /// </summary>
+        private static bool IsNotificationMode(IMethodSymbol method)
+        {
+            var attr = method.GetAttributes().FirstOrDefault(a =>
+                a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaMethodAttribute");
+            if (attr == null) return false;
+            var modeArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "Mode");
+            return !modeArg.Value.IsNull && modeArg.Value.Value is int m && m == 8;
         }
 
         /// <summary>
@@ -734,6 +792,21 @@ namespace SharedMeta.Generator.Generators
             var paramNames = method.Parameters.Select(p => p.Name).ToList();
 
             var (isAsync, innerType) = ParseReturnType(returnType);
+
+            // 0.22.0+: OneWay variant — emit void method that packs args and fires
+            // _context.CallEntityOneWay(...) without awaiting or recording any result.
+            if (IsNotificationMode(method))
+            {
+                sb.AppendLine();
+                sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
+                sb.AppendLine($"        public void {methodName}({parameters})");
+                sb.AppendLine("        {");
+                GenerateArgumentPacking(sb, method.Parameters, paramNames, serializer);
+                sb.AppendLine();
+                sb.AppendLine($"            _context.CallEntityOneWay(_entityId, \"{interfaceName}\", \"{methodAlias}\", argsBytes);");
+                sb.AppendLine("        }");
+                return;
+            }
 
             // Determine async method signature
             string asyncReturnType;
@@ -847,6 +920,20 @@ namespace SharedMeta.Generator.Generators
             var parameters = string.Join(", ", method.Parameters.Select(p => $"{p.Type.ToDisplayString()} {p.Name}"));
 
             var (isAsync, innerType) = ParseReturnType(returnType);
+
+            // 0.22.0+: OneWay → emit void method that does nothing on replay. The server did
+            // not record anything for this call (it was fire-and-forget), so the client-side
+            // replay simply skips. Generated body intentionally consumes no payload bytes.
+            if (IsNotificationMode(method))
+            {
+                sb.AppendLine();
+                sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
+                sb.AppendLine($"        public void {methodName}({parameters})");
+                sb.AppendLine("        {");
+                sb.AppendLine("            // OneWay: nothing recorded server-side → nothing to replay.");
+                sb.AppendLine("        }");
+                return;
+            }
 
             // Determine async method signature
             string asyncReturnType;
@@ -972,6 +1059,23 @@ namespace SharedMeta.Generator.Generators
             var callArgs = string.Join(", ", paramNames);
 
             var (isAsync, innerType) = ParseReturnType(returnType);
+
+            // 0.22.0+: OneWay variant for CrossOptimistic mode is a void no-op locally — the
+            // server-side dispatch happens via the optimistic→server confirm flow as usual,
+            // but the caller doesn't observe a result, so the local-side call body is just empty.
+            // Keep the subscription gate so CrossOptimistic continues to treat unknown entities
+            // as a soft-fail (no exception, no state mutation).
+            if (IsNotificationMode(method))
+            {
+                sb.AppendLine();
+                sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
+                sb.AppendLine($"        public void {methodName}({parameters})");
+                sb.AppendLine("        {");
+                sb.AppendLine("            // OneWay + CrossOptimistic: no local execution. The server-side path");
+                sb.AppendLine("            // fires the cross-entity OneWay; the client observes nothing here.");
+                sb.AppendLine("        }");
+                return;
+            }
 
             string asyncReturnType;
             string asyncMethodName;

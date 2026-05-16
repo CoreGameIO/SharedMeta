@@ -544,6 +544,41 @@ api.NotifyHeartbeatSignal(DateTime.UtcNow.Ticks);  // returns instantly, no awai
 
 **Transport shape:** InProcess dispatches directly to the grain; SignalR uses `HubConnection.SendAsync` (no wire-level ACK awaited); HttpPolling `POST /meta-http/signal` → `202 Accepted` before execution completes.
 
+### Notification Methods (Entity → Entity Fire-and-Forget) — 0.22.0+
+
+Peer of Signal on the **cross-entity axis**: Signal = client → entity fire-and-forget, Notification = entity → entity fire-and-forget. Use when one service wants to inform another entity about a state change without paying for a grain-to-grain round-trip.
+
+```csharp
+[MetaService(StateType = typeof(ClanState))]
+public interface IClanService : IMetaService
+{
+    [MetaMethod(Mode = ExecutionMode.Notification)]
+    Task AddPower(int delta);
+}
+
+[MetaServiceImpl(typeof(IProfileService), typeof(ProfileState), typeof(IClanService))]
+public partial class ProfileService : IProfileService
+{
+    public Task GainPoints(int amount)
+    {
+        S.Score += amount;
+        if (!string.IsNullOrEmpty(S.ClanId))
+            GetIClanService(S.ClanId).AddPower(amount);  // void, no await
+        return Task.CompletedTask;
+    }
+}
+```
+
+- Method must return `Task` or `void` (no `Task<T>`)
+- Implicit `GenerateClientApi = false` — clients never originate notifications
+- Caller never observes the target's result; errors in target are logged server-side only
+- Generator emits the cross-entity caller as `void {Method}(args)`, not `Task {Method}Async(args)` — pre-0.22 `await GetIFoo(id).BarAsync(...)` call sites compile-error and migrate
+- Server-side runs through Orleans `[OneWay]` grain entry — source grain does not wait
+
+**Do not use** when caller reads target state after the call, or needs transactional consistency, or needs to react to target's failure.
+
+See [docs/GUIDE.md § Notification Methods](../docs/GUIDE.md#notification-methods-entity--entity-fire-and-forget--0220) for the full contract + perf numbers.
+
 ---
 
 ## Deterministic Random
