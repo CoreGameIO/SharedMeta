@@ -96,6 +96,94 @@ namespace ClanWars.Shared
         }
 
         public ProfileSummary GetSummary()
-            => new() { Score = S.Score, Money = S.Money, ClanId = S.ClanId };
+            => new()
+            {
+                Score = S.Score,
+                Money = S.Money,
+                ClanId = S.ClanId,
+                ApprovedInvitations = S.ApprovedInvitations.Count == 0
+                    ? null
+                    : new List<string>(S.ApprovedInvitations),
+            };
+
+        /// <summary>
+        /// Receive a membership offer from a clan that accepted our application. If we're free,
+        /// commit immediately (set ClanId + send ConfirmJoin to clan). If we're already in
+        /// another clan, park the offer for a later switch decision.
+        /// </summary>
+        public async Task OfferMembership(string clanId)
+        {
+            if (string.IsNullOrEmpty(clanId)) return;
+            // Always drop the matching pending app — the leader's decision is now reflected.
+            S.PendingApplications.Remove(clanId);
+
+            // IMPORTANT: this method is called CROSS-ENTITY from clan.AcceptApplication, so
+            // Context.CallerId here is NOT the player — it's the previous-hop grain (clan) /
+            // original client caller (the leader of that clan). We need our OWN playerId, which
+            // for a Private-scoped Profile entity equals Context.EntityId.
+            var playerId = Context.EntityId ?? "anon";
+
+            if (string.IsNullOrEmpty(S.ClanId))
+            {
+                // Free — join immediately. Await ConfirmJoin so we only commit S.ClanId on
+                // confirmed-in-roster: a concurrent join via another path may have filled the
+                // clan since AcceptApplication left a slot open, in which case ConfirmJoin
+                // returns false and we leave S.ClanId null. This also closes the race window
+                // that previously caused ResolveClan failures (subscribe before IsAuthorized
+                // saw the new Member).
+                var joined = await GetIClanService(clanId).ConfirmJoin(playerId, S.Score);
+                if (joined)
+                {
+                    S.ClanId = clanId;
+                    S.PendingApplications.Clear();
+                    S.ApprovedInvitations.Remove(clanId);
+                }
+            }
+            else if (S.ClanId != clanId && !S.ApprovedInvitations.Contains(clanId))
+            {
+                // Busy — park as approved invitation for later AcceptInvitation.
+                S.ApprovedInvitations.Add(clanId);
+            }
+        }
+
+        /// <summary>
+        /// Switch from current clan (if any) to a previously-approved invitation. Returns false
+        /// when the target invitation is unknown or the leave step rejects.
+        /// </summary>
+        public async Task<bool> AcceptInvitation(string clanId)
+        {
+            if (string.IsNullOrEmpty(clanId)) return false;
+            if (!S.ApprovedInvitations.Contains(clanId)) return false;
+
+            // Use EntityId rather than CallerId — same reasoning as in OfferMembership. Even
+            // though AcceptInvitation is client-initiated (where CallerId == EntityId for a
+            // UserOwned entity), keep the canonical reference so a future caller-chain change
+            // can't silently misroute the playerId argument.
+            var playerId = Context.EntityId ?? "anon";
+
+            if (!string.IsNullOrEmpty(S.ClanId) && S.ClanId != clanId)
+            {
+                var current = GetIClanService(S.ClanId);
+                var removed = await current.RemoveMember(playerId, S.Score);
+                if (!removed) return false;
+                S.ClanId = null;
+            }
+
+            // Await ConfirmJoin so the new clan has us in Members before we declare S.ClanId.
+            // Subsequent ResolveClan would otherwise race the fire-and-forget and fail
+            // IsAuthorized. If ConfirmJoin returns false (roster full), drop the invitation
+            // and leave the player clan-less.
+            var joined = await GetIClanService(clanId).ConfirmJoin(playerId, S.Score);
+            S.ApprovedInvitations.Remove(clanId);
+            if (!joined) return false;
+            S.ClanId = clanId;
+            S.PendingApplications.Clear();
+            return true;
+        }
+
+        public Task<bool> DeclineInvitation(string clanId)
+        {
+            return Task.FromResult(S.ApprovedInvitations.Remove(clanId));
+        }
     }
 }

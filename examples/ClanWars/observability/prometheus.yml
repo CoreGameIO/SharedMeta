@@ -1,0 +1,19 @@
+# Prometheus config — scrapes the ClanWars.Server /metrics endpoint running on the host.
+#
+# host.docker.internal points at the Windows/macOS host running Docker Desktop. On vanilla
+# Linux Docker, docker-compose.yml maps it via extra_hosts: host-gateway.
+
+global:
+  scrape_interval: 5s         # how often Prometheus pulls /metrics
+  evaluation_interval: 15s
+
+scrape_configs:
+  # The SharedMeta server with OpenTelemetry Prometheus exporter on /metrics
+  - job_name: "clanwars-server"
+    static_configs:
+      - targets: ["host.docker.internal:5050"]
+        labels:
+          service: "ClanWars.Server"
+          env: "dev"
+    metrics_path: /metrics
+    scheme: http

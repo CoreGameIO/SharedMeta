@@ -30,6 +30,13 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Orleans.Server" />
+    <!-- 0.23.0+: OpenTelemetry metrics + tracing for stress-test observability.
+         AddMeter(SharedMetaMeters.MeterName) + AddSource(SharedMetaActivities.SourceName)
+         + Runtime instrumentation + Prometheus scrape endpoint at /metrics. -->
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" />
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" />
+    <PackageReference Include="OpenTelemetry.Exporter.Console" />
   </ItemGroup>
 
 </Project>
