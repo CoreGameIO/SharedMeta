@@ -429,12 +429,15 @@ public class ClientSignatureCapabilitiesTests
         string service, string method, int version, byte[]? replay, byte[]? patch)
         => new()
         {
-            ServiceName = service,
-            MethodName = method,
-            MethodVersion = version,
-            ReplayPayload = replay,
-            PatchBytes = patch,
-            StateBytes = null,
+            Op = new SharedMeta.Core.Packets.MetaOperation
+            {
+                ServiceName = service,
+                MethodName = method,
+                MethodVersion = version,
+                ReplayPayload = replay,
+                PatchBytes = patch,
+                StateBytes = null,
+            },
         };
 
     [Fact]
@@ -459,8 +462,8 @@ public class ClientSignatureCapabilitiesTests
         var result = SharedMeta.Server.Core.Grains.BroadcastTailor.TailorForSubscriber(
             b, methodContribs, subscriberServiceContributions: null);
         Assert.NotSame(b, result);
-        Assert.Null(result.ReplayPayload);
-        Assert.Same(Patch, result.PatchBytes);
+        Assert.Null(result.Op.ReplayPayload);
+        Assert.Same(Patch, result.Op.PatchBytes);
     }
 
     [Fact]
@@ -473,8 +476,8 @@ public class ClientSignatureCapabilitiesTests
         var result = SharedMeta.Server.Core.Grains.BroadcastTailor.TailorForSubscriber(
             b, subscriberMethodContributions: null, serviceContribs);
         Assert.NotSame(b, result);
-        Assert.Null(result.ReplayPayload);
-        Assert.Same(Patch, result.PatchBytes);
+        Assert.Null(result.Op.ReplayPayload);
+        Assert.Same(Patch, result.Op.PatchBytes);
     }
 
     [Fact]
@@ -496,12 +499,15 @@ public class ClientSignatureCapabilitiesTests
         var stateBytes = new byte[] { 0xEE };
         var b = new SharedMeta.Server.Core.Grains.EntityBroadcast
         {
-            ServiceName = "IService", MethodName = "Do", MethodVersion = 1,
-            ReplayPayload = Replay, PatchBytes = Patch, StateBytes = stateBytes,
+            Op = new SharedMeta.Core.Packets.MetaOperation
+            {
+                ServiceName = "IService", MethodName = "Do", MethodVersion = 1,
+                ReplayPayload = Replay, PatchBytes = Patch, StateBytes = stateBytes,
+            },
         };
         var methodContribs = new List<(string, string, int)> { ("IService", "Do", 1) };
         var result = SharedMeta.Server.Core.Grains.BroadcastTailor.TailorForSubscriber(
             b, methodContribs, subscriberServiceContributions: null);
-        Assert.Same(stateBytes, result.StateBytes);
+        Assert.Same(stateBytes, result.Op.StateBytes);
     }
 }

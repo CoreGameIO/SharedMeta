@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using SharedMeta.Core;
 using SharedMeta.Core.Logging;
 using SharedMeta.Core.Network;
+using SharedMeta.Core.Packets;
 using SharedMeta.Core.Patch;
 using SharedMeta.Core.Random;
 using SharedMeta.Core.Transport;
@@ -560,7 +561,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     {
         if (MetaContext == null || Context == null)
         {
-            return new HandleCallResult { Response = new RpcResponse { Error = "Provider not initialized" } };
+            return new HandleCallResult { Response = new MetaOperation { Error = "Provider not initialized" } };
         }
 
         // Per-call migration policy. Two caps stack:
@@ -693,11 +694,16 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // Capture cross-entity calls made during this operation
             var crossEntityCalls = MetaContext.CrossEntityCalls;
 
-            // Build response
+            // Build response (canonical MetaOperation payload — same shape used on both
+            // the RPC response side and the EntityBroadcast side after the 0.24 unification).
             var response = new HandleCallResult
             {
-                Response = new RpcResponse
+                Response = new MetaOperation
                 {
+                    ServiceName = call.ServiceName,
+                    MethodName = call.MethodName,
+                    MethodVersion = call.MethodVersion,
+                    Payload = call.Payload,
                     ResultBytes = result.ResultBytes,
                     ReplayPayload = replayPayload,
                     Error = null,
@@ -705,6 +711,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                     NamedRandomScrollDeltas = namedRandomScrollDeltas,
                     PatchBytes = patchBytes,
                     DeepDesyncCrc = deepDesyncCrc,
+                    ServerTimeTicks = call.ServerTimeTicks,
                     // 0.21.0: tell the client which config version was actually in effect for
                     // this call. Caller's optimistic replay path uses this to materialize
                     // the same config branch the server used, decoupling replay from
@@ -716,14 +723,19 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                 ForcePersist = result.ForcePersist
             };
 
-            // Create broadcast for this call (to other subscribers)
-            var mainBroadcast = new EntityBroadcast
+            // Create broadcast for this call (to other subscribers). The broadcast carries
+            // the same MetaOperation shape as the response — only the routing/exclusion
+            // fields live on the outer wrapper. CallerId is set so subscribers' broadcast
+            // replay path can attribute the operation to the right originator (Context.CallerId
+            // flows from this field on the wire).
+            var mainBroadcastOp = new MetaOperation
             {
                 ServiceName = call.ServiceName,
                 MethodName = call.MethodName,
+                MethodVersion = call.MethodVersion,
                 Payload = call.Payload,
+                CallerId = call.CallerId,
                 ReplayPayload = replayPayload,
-                ExcludePlayerId = call.CallerId, // Don't broadcast back to caller
                 ServerTimeTicks = call.ServerTimeTicks,
                 RandomScrollDelta = randomScrollDelta,
                 NamedRandomScrollDeltas = namedRandomScrollDeltas,
@@ -734,11 +746,16 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                 // mid-session config rollouts that haven't reached all observers yet.
                 ExecutedConfigVersion = MetaContext.ConfigVersion
             };
+            var mainBroadcast = new EntityBroadcast
+            {
+                ExcludePlayerId = call.CallerId, // Don't broadcast back to caller
+                Op = mainBroadcastOp,
+            };
 
-            // Handle triggers if any — nest inside main broadcast
+            // Handle triggers if any — nest inside main broadcast's MetaOperation.Triggers list.
             if (result.TriggersToExecute is { Count: > 0 } triggers)
             {
-                mainBroadcast.TriggerBroadcasts = new List<EntityBroadcast>();
+                mainBroadcastOp.Triggers = new List<MetaOperation>();
                 foreach (var triggerMethod in triggers)
                 {
                     var triggerScrollBefore = _optimisticRandom.ScrollId;
@@ -773,13 +790,14 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                     var triggerScrollDelta = _optimisticRandom.ScrollId - triggerScrollBefore;
                     var triggerNamedDeltas = ComputeNamedScrollDeltas(triggerNamedScrollsBefore);
 
-                    mainBroadcast.TriggerBroadcasts.Add(new EntityBroadcast
+                    mainBroadcastOp.Triggers.Add(new MetaOperation
                     {
                         ServiceName = call.ServiceName,
                         MethodName = triggerMethod,
+                        MethodVersion = 0, // triggers always run under the legacy alias
                         Payload = [], // Triggers have no arguments
+                        CallerId = call.CallerId, // triggers attribute to the outer call's originator
                         ReplayPayload = triggerReplay,
-                        ExcludePlayerId = null, // Broadcast triggers to everyone
                         ServerTimeTicks = call.ServerTimeTicks,
                         RandomScrollDelta = triggerScrollDelta,
                         NamedRandomScrollDeltas = triggerNamedDeltas,
@@ -797,8 +815,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                 stateBytes = GetStateBytes();
                 response.Response.StateBytes = stateBytes;
                 response.Response.ReplayPayload = null; // no replay needed
-                mainBroadcast.StateBytes = stateBytes;
-                mainBroadcast.ReplayPayload = null;
+                mainBroadcastOp.StateBytes = stateBytes;
+                mainBroadcastOp.ReplayPayload = null;
             }
 
             response.Broadcasts.Add(mainBroadcast);
@@ -808,7 +826,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         catch (Exception ex)
         {
             Logger.ProviderCallError(ex, call.ServiceName, call.MethodName);
-            return new HandleCallResult { Response = new RpcResponse { Error = ex.Message } };
+            return new HandleCallResult { Response = new MetaOperation { Error = ex.Message } };
         }
         finally
         {
@@ -901,13 +919,16 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // Create broadcast for this event
             broadcasts.Add(new EntityBroadcast
             {
-                ServiceName = subscriberInterface,
-                MethodName = methodName,
-                Payload = eventData,
-                ReplayPayload = replayPayload,
                 ExcludePlayerId = null, // Broadcast to everyone
-                ServerTimeTicks = MetaContext.ServerTimeTicks,
-                ExecutedConfigVersion = MetaContext.ConfigVersion
+                Op = new MetaOperation
+                {
+                    ServiceName = subscriberInterface,
+                    MethodName = methodName,
+                    Payload = eventData,
+                    ReplayPayload = replayPayload,
+                    ServerTimeTicks = MetaContext.ServerTimeTicks,
+                    ExecutedConfigVersion = MetaContext.ConfigVersion
+                }
             });
 
             return new HandleEventResult { Broadcasts = broadcasts };

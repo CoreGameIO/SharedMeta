@@ -74,22 +74,24 @@ namespace SharedMeta.Client.Network
             _dispatcher.Connection.OnDisconnected += HandleDisconnected;
         }
 
-        private void HandleBroadcast(SessionOp op)
+        private void HandleBroadcast(SessionOp sessionOp)
         {
+            var op = sessionOp.Op;
             OnBroadcast?.Invoke(new NetworkBroadcast
             {
-                ServiceName = op.MainOperation.Call.ServiceName,
-                MethodName = op.MainOperation.Call.MethodName,
-                CallerId = op.MainOperation.Call.CallerId,
-                ArgsBytes = op.MainOperation.Call.Payload ?? Array.Empty<byte>(),
-                ReplayContext = op.MainOperation.Response.ReplayPayload ?? Array.Empty<byte>(),
-                TriggerOperations = op.TriggerOperations,
-                ServerTimeTicks = op.MainOperation.Call.ServerTimeTicks,
-                RandomScrollDelta = op.MainOperation.Response.RandomScrollDelta,
-                NamedRandomScrollDeltas = op.MainOperation.Response.NamedRandomScrollDeltas,
-                PatchBytes = op.MainOperation.Response.PatchBytes,
-                StateBytes = op.MainOperation.Response.StateBytes,
-                ExecutedConfigVersion = op.MainOperation.Response.ExecutedConfigVersion
+                ServiceName = op.ServiceName,
+                MethodName = op.MethodName,
+                MethodVersion = op.MethodVersion,
+                CallerId = op.CallerId,
+                ArgsBytes = op.Payload ?? Array.Empty<byte>(),
+                ReplayContext = op.ReplayPayload ?? Array.Empty<byte>(),
+                TriggerOperations = op.Triggers,
+                ServerTimeTicks = op.ServerTimeTicks,
+                RandomScrollDelta = op.RandomScrollDelta,
+                NamedRandomScrollDeltas = op.NamedRandomScrollDeltas,
+                PatchBytes = op.PatchBytes,
+                StateBytes = op.StateBytes,
+                ExecutedConfigVersion = op.ExecutedConfigVersion
             });
         }
 
@@ -111,15 +113,16 @@ namespace SharedMeta.Client.Network
                 ServerTimeTicks = serverTimeTicks
             };
 
-            var rpcOp = await _dispatcher.SendAsync(_entityId, call, _stateTypeName);
+            var sessionOp = await _dispatcher.SendAsync(_entityId, call, _stateTypeName);
 
-            if (rpcOp.HasError)
+            if (sessionOp.HasError)
             {
-                throw new InvalidOperationException($"RPC call failed: {rpcOp.ErrorMessage}");
+                throw new InvalidOperationException($"RPC call failed: {sessionOp.ErrorMessage}");
             }
 
+            var op = sessionOp.Op;
             T result = default!;
-            var resultBytes = rpcOp.MainOperation.Response.ResultBytes;
+            var resultBytes = op.ResultBytes;
             if (resultBytes != null && resultBytes.Length > 0)
             {
                 result = _serializer.Unpack<T>(resultBytes);
@@ -128,16 +131,16 @@ namespace SharedMeta.Client.Network
             return new CallResponse<T>
             {
                 Result = result,
-                ReplayContext = rpcOp.MainOperation.Response.ReplayPayload ?? Array.Empty<byte>(),
-                TriggerOperations = rpcOp.TriggerOperations,
-                CrossEntityOperations = rpcOp.CrossEntityOperations,
-                ServerTimeTicks = rpcOp.MainOperation.Call.ServerTimeTicks,
-                RandomScrollDelta = rpcOp.MainOperation.Response.RandomScrollDelta,
-                NamedRandomScrollDeltas = rpcOp.MainOperation.Response.NamedRandomScrollDeltas,
-                PatchBytes = rpcOp.MainOperation.Response.PatchBytes,
-                StateBytes = rpcOp.MainOperation.Response.StateBytes,
-                DeepDesyncCrc = rpcOp.MainOperation.Response.DeepDesyncCrc,
-                ExecutedConfigVersion = rpcOp.MainOperation.Response.ExecutedConfigVersion
+                ReplayContext = op.ReplayPayload ?? Array.Empty<byte>(),
+                TriggerOperations = op.Triggers,
+                CrossEntityOperations = sessionOp.CrossEntityOperations,
+                ServerTimeTicks = op.ServerTimeTicks,
+                RandomScrollDelta = op.RandomScrollDelta,
+                NamedRandomScrollDeltas = op.NamedRandomScrollDeltas,
+                PatchBytes = op.PatchBytes,
+                StateBytes = op.StateBytes,
+                DeepDesyncCrc = op.DeepDesyncCrc,
+                ExecutedConfigVersion = op.ExecutedConfigVersion
             };
         }
 
@@ -154,26 +157,26 @@ namespace SharedMeta.Client.Network
                 ServerTimeTicks = serverTimeTicks
             };
 
-            var rpcOp = await _dispatcher.SendAsync(_entityId, call, _stateTypeName);
+            var sessionOp = await _dispatcher.SendAsync(_entityId, call, _stateTypeName);
 
-            if (rpcOp.HasError)
+            if (sessionOp.HasError)
             {
-                throw new InvalidOperationException($"RPC call failed: {rpcOp.ErrorMessage}");
+                throw new InvalidOperationException($"RPC call failed: {sessionOp.ErrorMessage}");
             }
 
-            var respNoResult = rpcOp.MainOperation.Response;
+            var op = sessionOp.Op;
             return new VoidCallResponse
             {
-                ReplayContext = respNoResult.ReplayPayload ?? Array.Empty<byte>(),
-                TriggerOperations = rpcOp.TriggerOperations,
-                CrossEntityOperations = rpcOp.CrossEntityOperations,
-                ServerTimeTicks = rpcOp.MainOperation.Call.ServerTimeTicks,
-                RandomScrollDelta = respNoResult.RandomScrollDelta,
-                NamedRandomScrollDeltas = respNoResult.NamedRandomScrollDeltas,
-                PatchBytes = respNoResult.PatchBytes,
-                StateBytes = respNoResult.StateBytes,
-                DeepDesyncCrc = respNoResult.DeepDesyncCrc,
-                ExecutedConfigVersion = respNoResult.ExecutedConfigVersion
+                ReplayContext = op.ReplayPayload ?? Array.Empty<byte>(),
+                TriggerOperations = op.Triggers,
+                CrossEntityOperations = sessionOp.CrossEntityOperations,
+                ServerTimeTicks = op.ServerTimeTicks,
+                RandomScrollDelta = op.RandomScrollDelta,
+                NamedRandomScrollDeltas = op.NamedRandomScrollDeltas,
+                PatchBytes = op.PatchBytes,
+                StateBytes = op.StateBytes,
+                DeepDesyncCrc = op.DeepDesyncCrc,
+                ExecutedConfigVersion = op.ExecutedConfigVersion
             };
         }
 
@@ -190,26 +193,27 @@ namespace SharedMeta.Client.Network
                 ServerTimeTicks = serverTimeTicks
             };
 
-            var rpcOp = await _dispatcher.SendAsync(_entityId, call, _stateTypeName);
+            var sessionOp = await _dispatcher.SendAsync(_entityId, call, _stateTypeName);
 
-            if (rpcOp.HasError)
+            if (sessionOp.HasError)
             {
-                throw new InvalidOperationException($"RPC call failed: {rpcOp.ErrorMessage}");
+                throw new InvalidOperationException($"RPC call failed: {sessionOp.ErrorMessage}");
             }
 
+            var op = sessionOp.Op;
             return new ByteCallResponse
             {
-                ResultBytes = rpcOp.MainOperation.Response.ResultBytes ?? Array.Empty<byte>(),
-                ReplayContext = rpcOp.MainOperation.Response.ReplayPayload ?? Array.Empty<byte>(),
-                TriggerOperations = rpcOp.TriggerOperations,
-                CrossEntityOperations = rpcOp.CrossEntityOperations,
-                ServerTimeTicks = rpcOp.MainOperation.Call.ServerTimeTicks,
-                RandomScrollDelta = rpcOp.MainOperation.Response.RandomScrollDelta,
-                NamedRandomScrollDeltas = rpcOp.MainOperation.Response.NamedRandomScrollDeltas,
-                PatchBytes = rpcOp.MainOperation.Response.PatchBytes,
-                StateBytes = rpcOp.MainOperation.Response.StateBytes,
-                DeepDesyncCrc = rpcOp.MainOperation.Response.DeepDesyncCrc,
-                ExecutedConfigVersion = rpcOp.MainOperation.Response.ExecutedConfigVersion
+                ResultBytes = op.ResultBytes ?? Array.Empty<byte>(),
+                ReplayContext = op.ReplayPayload ?? Array.Empty<byte>(),
+                TriggerOperations = op.Triggers,
+                CrossEntityOperations = sessionOp.CrossEntityOperations,
+                ServerTimeTicks = op.ServerTimeTicks,
+                RandomScrollDelta = op.RandomScrollDelta,
+                NamedRandomScrollDeltas = op.NamedRandomScrollDeltas,
+                PatchBytes = op.PatchBytes,
+                StateBytes = op.StateBytes,
+                DeepDesyncCrc = op.DeepDesyncCrc,
+                ExecutedConfigVersion = op.ExecutedConfigVersion
             };
         }
 

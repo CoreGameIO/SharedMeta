@@ -146,7 +146,7 @@ namespace SharedMeta.Core.Network
         public byte[] ReplayContext { get; set; } = Array.Empty<byte>();
 
         /// <summary>Triggered operations executed after the main call (if any).</summary>
-        public List<OperationResult>? TriggerOperations { get; set; }
+        public List<MetaOperation>? TriggerOperations { get; set; }
 
         /// <summary>Server time (UTC ticks) for deterministic replay.</summary>
         public long ServerTimeTicks { get; set; }

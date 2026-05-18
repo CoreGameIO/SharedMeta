@@ -1983,30 +1983,33 @@ namespace SharedMeta.Generator.Generators
         {
             var applierName = stateTypeName + "PatchApplier";
 
-            // ReplayTriggerOperations helper
-            sb.AppendLine("        private void ReplayTriggerOperations(List<OperationResult>? triggerOperations, string? callerId, long serverTimeTicks = 0)");
+            // ReplayTriggerOperations helper. After the 0.24 unification, trigger ops are
+            // canonical MetaOperation instances nested under the main MetaOperation.Triggers,
+            // so we read service/method/payload directly off the trigger op (no .Call/.Response
+            // split anymore).
+            sb.AppendLine("        private void ReplayTriggerOperations(List<MetaOperation>? triggerOperations, string? callerId, long serverTimeTicks = 0)");
             sb.AppendLine("        {");
             sb.AppendLine("            if (triggerOperations == null) return;");
             sb.AppendLine("            foreach (var triggerOp in triggerOperations)");
             sb.AppendLine("            {");
-            sb.AppendLine("                if (triggerOp.Response.StateBytes is { Length: > 0 } stateData)");
+            sb.AppendLine("                if (triggerOp.StateBytes is { Length: > 0 } stateData)");
             sb.AppendLine("                {");
             sb.AppendLine($"                    _stateContainer.Replace(_serializer.Unpack<{stateTypeName}>(stateData)!);");
-            sb.AppendLine("                    _optimisticRandom?.Skip(triggerOp.Response.RandomScrollDelta);");
-            sb.AppendLine("                    ApplyNamedScrollSkips(triggerOp.Response.NamedRandomScrollDeltas);");
+            sb.AppendLine("                    _optimisticRandom?.Skip(triggerOp.RandomScrollDelta);");
+            sb.AppendLine("                    ApplyNamedScrollSkips(triggerOp.NamedRandomScrollDeltas);");
             sb.AppendLine("                }");
-            sb.AppendLine("                else if (triggerOp.Response.PatchBytes is { Length: > 0 } patchData)");
+            sb.AppendLine("                else if (triggerOp.PatchBytes is { Length: > 0 } patchData)");
             sb.AppendLine("                {");
             sb.AppendLine($"                    var patch = _serializer.Unpack<PatchNode>(patchData);");
             sb.AppendLine($"                    {applierName}.Apply(_state, patch, _serializer);");
             sb.AppendLine($"                    _stateContainer.NotifyMutated();");
-            sb.AppendLine("                    _optimisticRandom?.Skip(triggerOp.Response.RandomScrollDelta);");
-            sb.AppendLine("                    ApplyNamedScrollSkips(triggerOp.Response.NamedRandomScrollDeltas);");
+            sb.AppendLine("                    _optimisticRandom?.Skip(triggerOp.RandomScrollDelta);");
+            sb.AppendLine("                    ApplyNamedScrollSkips(triggerOp.NamedRandomScrollDeltas);");
             sb.AppendLine("                }");
             sb.AppendLine("                else");
             sb.AppendLine("                {");
-            sb.AppendLine("                    SetContext(triggerOp.Response.ReplayPayload ?? Array.Empty<byte>(), callerId, serverTimeTicks);");
-            sb.AppendLine("                    DispatchTrigger(triggerOp.Call.MethodName);");
+            sb.AppendLine("                    SetContext(triggerOp.ReplayPayload ?? Array.Empty<byte>(), callerId, serverTimeTicks);");
+            sb.AppendLine("                    DispatchTrigger(triggerOp.MethodName);");
             sb.AppendLine("                    ClearContext();");
             sb.AppendLine($"                    _stateContainer.NotifyMutated();");
             sb.AppendLine("                }");

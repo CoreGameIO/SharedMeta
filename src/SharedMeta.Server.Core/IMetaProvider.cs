@@ -2,6 +2,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Orleans;
 using SharedMeta.Core;
+using SharedMeta.Core.Packets;
 using SharedMeta.Core.Transport;
 using SharedMeta.Server;
 using SharedMeta.Server.Core.Grains;
@@ -37,8 +38,11 @@ namespace SharedMeta.Server.Core
     /// </summary>
     public class HandleCallResult
     {
-        /// <summary>The RPC response.</summary>
-        public RpcResponse Response { get; set; } = new();
+        /// <summary>
+        /// The canonical operation payload (return bytes, replay payload, patch / state,
+        /// random deltas, executed config version, method-level error, nested triggers).
+        /// </summary>
+        public MetaOperation Response { get; set; } = new();
 
         /// <summary>Broadcasts to distribute to subscribers.</summary>
         public List<EntityBroadcast> Broadcasts { get; set; } = new();

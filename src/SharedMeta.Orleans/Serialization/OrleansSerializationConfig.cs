@@ -52,46 +52,4 @@ namespace SharedMeta.Orleans.Serialization
             };
         }
     }
-
-    /// <summary>
-    /// Orleans-serializable surrogate for RpcResponse.
-    /// Used for RPC responses through Orleans grains.
-    /// </summary>
-    [GenerateSerializer]
-    public struct RpcResponseSurrogate
-    {
-        [Id(0)] public byte[]? ResultBytes;
-        [Id(1)] public byte[]? ReplayPayload;
-        [Id(2)] public string? Debug;
-        [Id(3)] public string? Error;
-    }
-
-    /// <summary>
-    /// Converter between RpcResponse and RpcResponseSurrogate.
-    /// </summary>
-    [RegisterConverter]
-    public sealed class RpcResponseSurrogateConverter : IConverter<RpcResponse, RpcResponseSurrogate>
-    {
-        public RpcResponse ConvertFromSurrogate(in RpcResponseSurrogate surrogate)
-        {
-            return new RpcResponse
-            {
-                ResultBytes = surrogate.ResultBytes,
-                ReplayPayload = surrogate.ReplayPayload,
-                Debug = surrogate.Debug,
-                Error = surrogate.Error
-            };
-        }
-
-        public RpcResponseSurrogate ConvertToSurrogate(in RpcResponse value)
-        {
-            return new RpcResponseSurrogate
-            {
-                ResultBytes = value.ResultBytes,
-                ReplayPayload = value.ReplayPayload,
-                Debug = value.Debug,
-                Error = value.Error
-            };
-        }
-    }
 }

@@ -481,10 +481,10 @@ namespace SharedMeta.Server.Core.Transport
                     foreach (var op in response.Operations)
                     {
                         if (op.RequestId == request.RequestId
-                            && op.MainOperation?.Response?.PatchBytes != null)
+                            && op.Op?.PatchBytes != null)
                         {
                             CachePatch(request.EntityId, request.ServiceName, request.MethodName,
-                                op.MainOperation.Response.PatchBytes);
+                                op.Op.PatchBytes);
                             break;
                         }
                     }

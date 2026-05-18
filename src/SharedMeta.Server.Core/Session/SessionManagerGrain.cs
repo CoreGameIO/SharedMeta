@@ -678,7 +678,13 @@ namespace SharedMeta.Server.Core.Session
                                 EntityId = stashed.EntityId,
                                 RequestId = stashed.RequestId,
                                 Error = $"Not subscribed to entity {stashed.EntityId}",
-                                MainOperation = new OperationResult { Call = stashed.Call, Response = new RpcResponse() }
+                                Op = new MetaOperation
+                                {
+                                    ServiceName = stashed.Call.ServiceName,
+                                    MethodName = stashed.Call.MethodName,
+                                    MethodVersion = stashed.Call.MethodVersion,
+                                    Payload = stashed.Call.Payload,
+                                }
                             });
                             continue;
                         }
@@ -972,7 +978,7 @@ namespace SharedMeta.Server.Core.Session
         {
             var state = GetOrCreateEntityState(entityId);
 
-            _logger.BroadcastReceived(_playerId, entityId, entitySequenceNumber, state.KnownEntitySequence, _inActiveRpc, _observerManager.Count, broadcast.ServiceName, broadcast.MethodName);
+            _logger.BroadcastReceived(_playerId, entityId, entitySequenceNumber, state.KnownEntitySequence, _inActiveRpc, _observerManager.Count, broadcast.Op.ServiceName, broadcast.Op.MethodName);
 
             if (_inActiveRpc)
             {
@@ -1166,11 +1172,19 @@ namespace SharedMeta.Server.Core.Session
         /// Convert an already-per-subscriber-tailored <see cref="EntityBroadcast"/> to a
         /// <see cref="SessionOp"/> for delivery to the client. By contract, the broadcast
         /// arriving here has been stripped per-recipient by <c>EntityGrain.DistributeBroadcasts</c>
-        /// → <c>BroadcastTailor.TailorForSubscriber</c> (recursively, including trigger
-        /// broadcasts): exactly one of <c>ReplayPayload</c>/<c>PatchBytes</c> is populated based
-        /// on this player's force-patch contributions, and <c>StateBytes</c> is preserved.
-        /// SessionManager does NO capability decisioning — it only reshapes the payload from
-        /// broadcast-frame to wire-frame.
+        /// → <c>BroadcastTailor.TailorForSubscriber</c> (recursively, including nested trigger
+        /// ops in <c>Op.Triggers</c>): exactly one of <c>ReplayPayload</c>/<c>PatchBytes</c> is
+        /// populated based on this player's force-patch contributions, and <c>StateBytes</c> is
+        /// preserved. SessionManager does NO capability decisioning — it only reshapes the
+        /// payload from broadcast-frame to wire-frame.
+        /// <para>
+        /// 0.24 unification: the broadcast's <c>Op</c> already IS the canonical
+        /// <c>MetaOperation</c>, so no field-by-field reconstruction is needed. The pre-refactor
+        /// behaviour of repurposing <c>broadcast.ExcludePlayerId</c> into <c>Call.CallerId</c> on
+        /// the wire is DROPPED — clients no longer learn the originator id from the broadcast op,
+        /// and the server-side caller exclusion in <c>EntityGrain.DistributeBroadcasts</c>
+        /// already filters those subscribers out anyway.
+        /// </para>
         /// </summary>
         private SessionOp BroadcastToSessionOp(string entityId, EntityBroadcast broadcast)
         {
@@ -1178,58 +1192,8 @@ namespace SharedMeta.Server.Core.Session
             {
                 EntityId = entityId,
                 RequestId = 0,
-                MainOperation = new OperationResult
-                {
-                    Call = new RpcCall
-                    {
-                        ServiceName = broadcast.ServiceName,
-                        MethodName = broadcast.MethodName,
-                        MethodVersion = broadcast.MethodVersion,
-                        Payload = broadcast.Payload ?? Array.Empty<byte>(),
-                        CallerId = broadcast.ExcludePlayerId,
-                        ServerTimeTicks = broadcast.ServerTimeTicks
-                    },
-                    Response = new RpcResponse
-                    {
-                        ReplayPayload = broadcast.ReplayPayload,
-                        RandomScrollDelta = broadcast.RandomScrollDelta,
-                        NamedRandomScrollDeltas = broadcast.NamedRandomScrollDeltas,
-                        PatchBytes = broadcast.PatchBytes,
-                        StateBytes = broadcast.StateBytes
-                    }
-                },
-                TriggerOperations = BuildTriggerOperations(broadcast.TriggerBroadcasts)
+                Op = broadcast.Op,
             };
-        }
-
-        private static List<OperationResult>? BuildTriggerOperations(List<EntityBroadcast>? triggers)
-        {
-            if (triggers == null || triggers.Count == 0) return null;
-            var result = new List<OperationResult>(triggers.Count);
-            for (int i = 0; i < triggers.Count; i++)
-            {
-                var t = triggers[i];
-                result.Add(new OperationResult
-                {
-                    Call = new RpcCall
-                    {
-                        ServiceName = t.ServiceName,
-                        MethodName = t.MethodName,
-                        MethodVersion = t.MethodVersion,
-                        Payload = t.Payload ?? Array.Empty<byte>(),
-                        ServerTimeTicks = t.ServerTimeTicks
-                    },
-                    Response = new RpcResponse
-                    {
-                        ReplayPayload = t.ReplayPayload,
-                        RandomScrollDelta = t.RandomScrollDelta,
-                        NamedRandomScrollDeltas = t.NamedRandomScrollDeltas,
-                        PatchBytes = t.PatchBytes,
-                        StateBytes = t.StateBytes
-                    }
-                });
-            }
-            return result;
         }
 
         /// <summary>
@@ -1241,8 +1205,7 @@ namespace SharedMeta.Server.Core.Session
             {
                 EntityId = entityId,
                 RequestId = requestId,
-                MainOperation = result.MainOperation,
-                TriggerOperations = result.TriggerOperations,
+                Op = result.Op,
                 Error = result.Error,
                 CrossEntityOperations = result.CrossEntityCalls?.Select(c => new CrossEntityOperationInfo
                 {

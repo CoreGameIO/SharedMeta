@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using SharedMeta.Core.Packets;
 
 namespace SharedMeta.Server.Core.Grains
 {
@@ -18,9 +19,9 @@ namespace SharedMeta.Server.Core.Grains
         /// <c>ReplayPayload</c> when the subscriber needs the patch (force-patch on this
         /// method's identity OR on this service); strips <c>PatchBytes</c> otherwise.
         /// <c>StateBytes</c> always preserved — ServerReplace is orthogonal to the
-        /// patch/replay axis. Trigger broadcasts are tailored recursively (a single dispatch
-        /// can chain triggers that touch different services, and force-patch may flip arm
-        /// between main and trigger).
+        /// patch/replay axis. Nested trigger ops (<see cref="MetaOperation.Triggers"/>) are
+        /// tailored recursively (a single dispatch can chain triggers that touch different
+        /// services, and force-patch may flip arm between main and trigger).
         /// </summary>
         /// <param name="original">The broadcast as produced by the provider (contains both
         ///   replay and patch when fan-out needs both variants).</param>
@@ -38,41 +39,65 @@ namespace SharedMeta.Server.Core.Grains
             IReadOnlyList<(string Service, string Alias, int Version)>? subscriberMethodContributions,
             IReadOnlyList<string>? subscriberServiceContributions)
         {
-            bool forcePatch = IsForcePatch(
-                original.ServiceName, original.MethodName, original.MethodVersion,
-                subscriberMethodContributions, subscriberServiceContributions);
-
-            List<EntityBroadcast>? tailoredTriggers = null;
-            if (original.TriggerBroadcasts is { Count: > 0 })
-            {
-                tailoredTriggers = new List<EntityBroadcast>(original.TriggerBroadcasts.Count);
-                bool anyTriggerChanged = false;
-                foreach (var t in original.TriggerBroadcasts)
-                {
-                    var tailored = TailorForSubscriber(t, subscriberMethodContributions, subscriberServiceContributions);
-                    if (!ReferenceEquals(tailored, t)) anyTriggerChanged = true;
-                    tailoredTriggers.Add(tailored);
-                }
-                if (!anyTriggerChanged) tailoredTriggers = null;  // keep the original list ref
-            }
-
-            if (!forcePatch && tailoredTriggers == null) return original;
+            var tailoredOp = TailorOp(original.Op, subscriberMethodContributions, subscriberServiceContributions);
+            if (ReferenceEquals(tailoredOp, original.Op)) return original;
 
             return new EntityBroadcast
             {
-                ServiceName = original.ServiceName,
-                MethodName = original.MethodName,
-                MethodVersion = original.MethodVersion,
-                Payload = original.Payload,
                 ExcludePlayerId = original.ExcludePlayerId,
-                ReplayPayload = forcePatch ? null : original.ReplayPayload,
-                TriggerBroadcasts = tailoredTriggers ?? original.TriggerBroadcasts,
-                ServerTimeTicks = original.ServerTimeTicks,
-                RandomScrollDelta = original.RandomScrollDelta,
-                PatchBytes = forcePatch ? original.PatchBytes : null,
-                StateBytes = original.StateBytes,
-                NamedRandomScrollDeltas = original.NamedRandomScrollDeltas,
-                ExecutedConfigVersion = original.ExecutedConfigVersion,
+                Op = tailoredOp,
+            };
+        }
+
+        /// <summary>
+        /// Recursive helper that strips replay/patch on a single <see cref="MetaOperation"/>
+        /// according to force-patch rules and recurses into nested
+        /// <see cref="MetaOperation.Triggers"/>. Returns the original instance unchanged when
+        /// no transformation was needed (zero-alloc fast path).
+        /// </summary>
+        private static MetaOperation TailorOp(
+            MetaOperation op,
+            IReadOnlyList<(string Service, string Alias, int Version)>? methodContributions,
+            IReadOnlyList<string>? serviceContributions)
+        {
+            bool forcePatch = IsForcePatch(op.ServiceName, op.MethodName, op.MethodVersion,
+                methodContributions, serviceContributions);
+
+            List<MetaOperation>? tailoredTriggers = null;
+            if (op.Triggers is { Count: > 0 } triggers)
+            {
+                bool anyChanged = false;
+                tailoredTriggers = new List<MetaOperation>(triggers.Count);
+                for (int i = 0; i < triggers.Count; i++)
+                {
+                    var tailored = TailorOp(triggers[i], methodContributions, serviceContributions);
+                    if (!ReferenceEquals(tailored, triggers[i])) anyChanged = true;
+                    tailoredTriggers.Add(tailored);
+                }
+                if (!anyChanged) tailoredTriggers = null;
+            }
+
+            if (!forcePatch && tailoredTriggers == null) return op;
+
+            return new MetaOperation
+            {
+                ServiceName = op.ServiceName,
+                MethodName = op.MethodName,
+                MethodVersion = op.MethodVersion,
+                Payload = op.Payload,
+                CallerId = op.CallerId,
+                ResultBytes = op.ResultBytes,
+                ReplayPayload = forcePatch ? null : op.ReplayPayload,
+                PatchBytes = forcePatch ? op.PatchBytes : null,
+                StateBytes = op.StateBytes,
+                RandomScrollDelta = op.RandomScrollDelta,
+                NamedRandomScrollDeltas = op.NamedRandomScrollDeltas,
+                ServerTimeTicks = op.ServerTimeTicks,
+                ExecutedConfigVersion = op.ExecutedConfigVersion,
+                Error = op.Error,
+                DeepDesyncCrc = op.DeepDesyncCrc,
+                Triggers = tailoredTriggers ?? op.Triggers,
+                Debug = op.Debug,
             };
         }
 

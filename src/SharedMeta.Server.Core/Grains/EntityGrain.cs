@@ -232,7 +232,7 @@ namespace SharedMeta.Server.Core.Grains
                     {
                         EntityId = targetEntityId,
                         EntitySequenceNumber = result.EntitySequenceNumber,
-                        ResultBytes = result.MainOperation?.Response?.ResultBytes,
+                        ResultBytes = result.Op?.ResultBytes,
                         ServiceName = serviceName,
                         MethodName = methodName
                     };
@@ -762,23 +762,17 @@ namespace SharedMeta.Server.Core.Grains
                 // Distribute broadcasts to ALL EXCEPT caller
                 await DistributeBroadcasts(providerResult.Broadcasts, operationSequence, excludePlayerId: call.CallerId);
 
-                // Build trigger OperationResults from nested broadcasts
+                // The provider returns the call-side data on Broadcasts[0].Op.Triggers (nested
+                // trigger ops). The HandleCallResult.Response (which carries the response-side
+                // bytes for the originating caller) does NOT include triggers — that's a broadcast
+                // concern. Lift them onto the caller's Op so the EntityCallResult is fully populated.
                 var mainBroadcast = providerResult.Broadcasts.FirstOrDefault();
-                var triggerOps = mainBroadcast?.TriggerBroadcasts?.Select(t => new OperationResult
-                {
-                    Call = new RpcCall { ServiceName = t.ServiceName, MethodName = t.MethodName, Payload = t.Payload },
-                    Response = new RpcResponse { ReplayPayload = t.ReplayPayload, RandomScrollDelta = t.RandomScrollDelta, PatchBytes = t.PatchBytes }
-                }).ToList();
+                providerResult.Response.Triggers = mainBroadcast?.Op?.Triggers;
 
                 return new EntityCallResult
                 {
                     EntitySequenceNumber = operationSequence,
-                    MainOperation = new OperationResult
-                    {
-                        Call = call,
-                        Response = providerResult.Response
-                    },
-                    TriggerOperations = triggerOps,
+                    Op = providerResult.Response,
                     CrossEntityCalls = providerResult.CrossEntityCalls,
                     Error = providerResult.Response.Error
                 };
@@ -867,22 +861,14 @@ namespace SharedMeta.Server.Core.Grains
                 var excludeCaller = call.IsCrossOptimistic ? call.CallerId : null;
                 await DistributeBroadcasts(providerResult.Broadcasts, operationSequence, excludePlayerId: excludeCaller);
 
+                // Lift triggers from the broadcast onto the response Op (see HandleCallAsync above).
                 var mainBroadcast = providerResult.Broadcasts.FirstOrDefault();
-                var triggerOps = mainBroadcast?.TriggerBroadcasts?.Select(t => new OperationResult
-                {
-                    Call = new RpcCall { ServiceName = t.ServiceName, MethodName = t.MethodName, Payload = t.Payload },
-                    Response = new RpcResponse { ReplayPayload = t.ReplayPayload, RandomScrollDelta = t.RandomScrollDelta, PatchBytes = t.PatchBytes }
-                }).ToList();
+                providerResult.Response.Triggers = mainBroadcast?.Op?.Triggers;
 
                 return new EntityCallResult
                 {
                     EntitySequenceNumber = operationSequence,
-                    MainOperation = new OperationResult
-                    {
-                        Call = call,
-                        Response = providerResult.Response
-                    },
-                    TriggerOperations = triggerOps,
+                    Op = providerResult.Response,
                     CrossEntityCalls = providerResult.CrossEntityCalls,
                     Error = providerResult.Response.Error
                 };
@@ -1021,16 +1007,11 @@ namespace SharedMeta.Server.Core.Grains
                 return new EntityCallResult
                 {
                     EntitySequenceNumber = operationSequence,
-                    MainOperation = new OperationResult
+                    Op = new MetaOperation
                     {
-                        Call = new RpcCall
-                        {
-                            ServiceName = subscriberInterface,
-                            MethodName = methodName,
-                            Payload = eventData,
-                            CallerId = callerId
-                        },
-                        Response = new RpcResponse()
+                        ServiceName = subscriberInterface,
+                        MethodName = methodName,
+                        Payload = eventData,
                     }
                 };
             }
@@ -1156,12 +1137,12 @@ namespace SharedMeta.Server.Core.Grains
                         // variant (modern: native execution). Then send the appropriately-stripped
                         // broadcast — no extra bytes on the wire and no work for SessionManagerGrain.
                         var tailored = TailorBroadcastForSubscriber(broadcast, playerId);
-                        _logger.SendingBroadcast(playerId, entityId, operationSequence, tailored.ServiceName, tailored.MethodName);
+                        _logger.SendingBroadcast(playerId, entityId, operationSequence, tailored.Op.ServiceName, tailored.Op.MethodName);
                         await sessionManager.ReceiveBroadcastAsync(entityId, tailored, operationSequence);
                         sentCount++;
                         // Telemetry: which path did this subscriber receive? Tailor produces a
                         // broadcast with only ReplayPayload (modern) OR only PatchBytes (legacy).
-                        if (tailored.PatchBytes is { Length: > 0 }) patchCount++;
+                        if (tailored.Op.PatchBytes is { Length: > 0 }) patchCount++;
                         else replayCount++;
                     }
                     catch (Exception ex)
@@ -1170,24 +1151,24 @@ namespace SharedMeta.Server.Core.Grains
                     }
                 }
 
-                _logger.BroadcastSent(sentCount, subscriberCount, broadcast.ServiceName, broadcast.MethodName);
+                _logger.BroadcastSent(sentCount, subscriberCount, broadcast.Op.ServiceName, broadcast.Op.MethodName);
 
                 // 0.23.0+ Telemetry: fan-out size + per-payload-kind size distribution.
                 SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastFanOutSize.Record(sentCount,
                     new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
-                if (broadcast.ReplayPayload is { Length: > 0 } replay)
+                if (broadcast.Op.ReplayPayload is { Length: > 0 } replay)
                 {
                     SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastPayloadBytes.Record(replay.Length,
                         new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
                         new KeyValuePair<string, object?>("kind", "replay"));
                 }
-                if (broadcast.PatchBytes is { Length: > 0 } patch)
+                if (broadcast.Op.PatchBytes is { Length: > 0 } patch)
                 {
                     SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastPayloadBytes.Record(patch.Length,
                         new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
                         new KeyValuePair<string, object?>("kind", "patch"));
                 }
-                if (broadcast.StateBytes is { Length: > 0 } stateBytes)
+                if (broadcast.Op.StateBytes is { Length: > 0 } stateBytes)
                 {
                     SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastPayloadBytes.Record(stateBytes.Length,
                         new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
