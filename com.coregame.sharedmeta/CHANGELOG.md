@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — CrossOptimistic broadcast race against the originating caller
+
+`SessionManagerGrain.ExecuteOneCallAsync` previously bumped the cross-call target's `KnownEntitySequence` to `Math.Max(known, crossCall.EntitySequenceNumber)`. When a third-party server-side mutator (timer / background job / admin action) had incremented the target between our last-known sequence and the cross-call's sequence, that intermediate broadcast was silently dropped as "old/duplicate" because the bump overshot it. The fix is two changes that work together:
+
+- `EntityGrain.HandleCallFromEntityAsync` now propagates the outer call's `CallerId` + `IsCrossOptimistic` flag into the nested `RpcCall` (via `MetaContext.IsCrossOptimistic`, new) and conditionally excludes the originating caller from `DistributeBroadcasts` — only when `IsCrossOptimistic` is true. The cross-call's own broadcast for the target no longer races back to the caller's session, so the receive-side dedupe doesn't need to overshoot. Non-CrossOptimistic modes (`Server`, `ServerPatch`, `ServerReplace`, …) keep the prior behaviour: the broadcast reaches the caller so its client learns the target's state change.
+- `SessionManagerGrain.ExecuteOneCallAsync` replaces the `Math.Max` bump with a two-branch reservation: when there is no gap, bump `KnownEntitySequence` to the cross-call's sequence directly; when there is one, place a `CrossCallSlotMarker` sentinel in `HeldBroadcasts[crossCall.EntitySequenceNumber]`. The marker drains transparently in `DrainHeldBroadcasts` (it advances the counter but does not emit anything to the client), so once the intermediate third-party broadcasts arrive they fill the gap normally and the cross-call's slot drains right after.
+
+### Documentation — CrossOptimistic semantics clarified
+
+`docs/GUIDE.md` and `SharedMeta-AI.md` previously described CrossOptimistic as a mode for "trading, multiplayer moves" — multiplayer interactions where two entities mutate. That phrasing was misleading: the invariants that make CrossOptimistic safe (broadcast dedupe, sequence-slot accounting) only hold when the cross-call target is owned by the same player as the caller. The mode is the **split-profile pattern** — one player's data spans multiple `ISharedState` entities (`ProfileState` + `InventoryState` + `QuestState` etc.) and the client executes a method that touches several of them in one shot. Updated `docs/GUIDE.md § CrossOptimistic Mode`, `SharedMeta-AI.md § CrossOptimistic`, and the UserGuide quick-reference table.
+
 ## [0.22.0] - 2026-05-16
 
 Backwards-compatible multi-version operation. Old clients keep working against newer servers; new clients keep working against entities pinned at older config branches. Plus `ExecutionMode.Notification` for entity → entity fire-and-forget, and `SharedMeta.Debug.Mux` for stress tests that need many simulated players on few sockets.

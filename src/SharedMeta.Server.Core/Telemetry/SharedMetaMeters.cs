@@ -83,6 +83,16 @@ namespace SharedMeta.Server.Core.Telemetry
             Meter.CreateHistogram<double>("sharedmeta.entity.rpc.duration", "ms",
                 "Entity RPC processing time, server side");
 
+        /// <summary>End-to-end RPC time as seen at the server's transport entry point
+        /// (top of <c>MetaConnectionHandler.RpcCallAsync</c>): includes SessionManagerGrain
+        /// queueing, grain-hop to EntityGrain, the actual method body
+        /// (<see cref="RpcDuration"/>), broadcast scheduling, and response serialization.
+        /// Diff with <see cref="RpcDuration"/> reveals queue-time / grain-hop overhead.
+        /// Tags: <c>service</c>, <c>method</c>, <c>result</c>.</summary>
+        public static readonly Histogram<double> ServerRpcTotalDuration =
+            Meter.CreateHistogram<double>("sharedmeta.server.rpc.total_duration", "ms",
+                "Full server-side RPC time at transport entry (queue + grain hop + method + response build)");
+
         /// <summary>RPC request payload size in bytes. Tags: <c>service</c>, <c>method</c>.</summary>
         public static readonly Histogram<long> RpcRequestBytes =
             Meter.CreateHistogram<long>("sharedmeta.entity.rpc.request_bytes", "By",

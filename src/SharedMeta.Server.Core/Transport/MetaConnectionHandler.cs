@@ -40,6 +40,16 @@ namespace SharedMeta.Server.Core.Transport
         private Timer? _observerRenewalTimer;
         private static readonly TimeSpan ObserverRenewalInterval = TimeSpan.FromSeconds(60);
 
+        // 0.23.0+ Cached session-manager grain reference. PlayerId is fixed for the lifetime
+        // of a connection, so resolving the grain reference once at SessionConnect-time and
+        // reusing it on every RPC avoids the string-heavy `GrainFactory.GetGrain<T>(playerId)`
+        // path (RuntimeTypeNameParser + TypeRewriter run on every call, allocating ~6 MB/s of
+        // String + Char[] under 25K RPS in profiling).
+        private ISessionManager? _sessionManagerGrain;
+        private ISessionManager SessionManagerGrainOrThrow =>
+            _sessionManagerGrain ?? throw new InvalidOperationException(
+                "Session manager grain not resolved. SessionConnect must succeed first.");
+
         // Per-connection cache of recent server patches keyed by (entityId, service, method).
         // Stores the most recent patch per (entity,service,method) — used for desync follow-up.
         private readonly LinkedList<CachedServerPatch> _patchCache = new();
@@ -171,7 +181,11 @@ namespace SharedMeta.Server.Core.Transport
                 PlayerId = request.PlayerId;
                 _clientVersion = request.ClientVersion; // stored for per-client config resolution at subscribe time
 
+                // Cache the session-manager grain reference for the lifetime of this connection.
+                // Subsequent RPCs reuse it via SessionManagerGrainOrThrow without going through
+                // GrainFactory.GetGrain (which reparses the grain type name on every call).
                 var grain = _grainFactory.GetGrain<ISessionManager>(request.PlayerId);
+                _sessionManagerGrain = grain;
                 var result = await grain.ConnectAsync(request.SessionId ?? Guid.Empty, request.LastAcknowledgedSequence);
 
                 if (result.Success)
@@ -233,7 +247,7 @@ namespace SharedMeta.Server.Core.Transport
                 // (resets to pass-through). Only push when SessionManager was successfully set up.
                 if (result.Success)
                 {
-                    var capsGrain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                    var capsGrain = SessionManagerGrainOrThrow;
                     await capsGrain.SetClientCapabilitiesAsync(capabilities);
                 }
 
@@ -316,7 +330,7 @@ namespace SharedMeta.Server.Core.Transport
                 // pick up the freshly-resolved capabilities.
                 if (!string.IsNullOrEmpty(PlayerId))
                 {
-                    var capsGrain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                    var capsGrain = SessionManagerGrainOrThrow;
                     await capsGrain.SetClientCapabilitiesAsync(capabilities);
                 }
                 return new RegisterClientSignatureResponse
@@ -355,7 +369,7 @@ namespace SharedMeta.Server.Core.Transport
                     return new SubscribeResponse { Success = false, Error = "StateTypeName is required" };
                 }
 
-                var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                var grain = SessionManagerGrainOrThrow;
                 var result = await grain.SubscribeToEntityAsync(request.EntityId, request.StateTypeName, _clientVersion);
 
                 _logger.HandlerSubscribe(PlayerId!, request.EntityId, result.Success);
@@ -389,7 +403,7 @@ namespace SharedMeta.Server.Core.Transport
 
                 if (!string.IsNullOrEmpty(request.EntityId))
                 {
-                    var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                    var grain = SessionManagerGrainOrThrow;
                     await grain.UnsubscribeFromEntityAsync(request.EntityId);
                 }
 
@@ -406,12 +420,21 @@ namespace SharedMeta.Server.Core.Transport
 
         public async Task<SessionResponse> RpcCallAsync(RpcCallRequest request)
         {
+            // 0.23.0+ End-to-end server-side timing. Started at the very top of the transport
+            // entry point so the histogram includes SessionManagerGrain queue, grain-hop to
+            // EntityGrain, the actual method body (covered separately by RpcDuration), and
+            // response build. The diff with RpcDuration surfaces queue/hop overhead — large
+            // gaps point at SignalR MaximumParallelInvocationsPerClient (default 1!) and at
+            // hot SessionManagerGrain queues under burst load.
+            var __totalStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            string __totalResult = "success";
             try
             {
                 EnsureSessionConnected();
 
                 if (string.IsNullOrEmpty(request.EntityId))
                 {
+                    __totalResult = "bad_request";
                     return SessionResponse.ForError("EntityId is required");
                 }
 
@@ -425,6 +448,7 @@ namespace SharedMeta.Server.Core.Transport
                     && SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(
                         _clientCapabilities, request.ServiceName, request.MethodName, request.MethodVersion))
                 {
+                    __totalResult = "rejected";
                     return SessionResponse.ForError(
                         $"Method '{request.ServiceName}.{request.MethodName}' (v{request.MethodVersion}) is rejected for this client signature.");
                 }
@@ -442,7 +466,7 @@ namespace SharedMeta.Server.Core.Transport
                     DeepDesyncRequested = DeepDesyncRequested
                 };
 
-                var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                var grain = SessionManagerGrainOrThrow;
 
                 var response = await grain.SendToEntityAsync(
                     request.EntityId,
@@ -470,8 +494,17 @@ namespace SharedMeta.Server.Core.Transport
             }
             catch (Exception ex)
             {
+                __totalResult = "error";
                 _logger.HandlerRpcCallError(ex);
                 return SessionResponse.ForError(ex.Message);
+            }
+            finally
+            {
+                var __totalElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(__totalStart).TotalMilliseconds;
+                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.ServerRpcTotalDuration.Record(__totalElapsed,
+                    new KeyValuePair<string, object?>("service", request.ServiceName),
+                    new KeyValuePair<string, object?>("method", request.MethodName),
+                    new KeyValuePair<string, object?>("result", __totalResult));
             }
         }
 
@@ -498,7 +531,7 @@ namespace SharedMeta.Server.Core.Transport
                     ServerTimeTicks = DateTime.UtcNow.Ticks
                 };
 
-                var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                var grain = SessionManagerGrainOrThrow;
                 return await grain.QueryEntityAsync(request.EntityId, request.ServiceName, call);
             }
             catch (Exception ex)
@@ -532,7 +565,7 @@ namespace SharedMeta.Server.Core.Transport
                     ServerTimeTicks = DateTime.UtcNow.Ticks
                 };
 
-                var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                var grain = SessionManagerGrainOrThrow;
                 await grain.SignalEntityAsync(request.EntityId, request.ServiceName, call);
             }
             catch (Exception ex)
@@ -548,7 +581,7 @@ namespace SharedMeta.Server.Core.Transport
             {
                 EnsureSessionConnected();
 
-                var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                var grain = SessionManagerGrainOrThrow;
                 await grain.AcknowledgeSequenceAsync(request.SequenceNumber);
 
                 return new AcknowledgeResponse { Success = true };
@@ -773,7 +806,7 @@ namespace SharedMeta.Server.Core.Transport
 
                 try
                 {
-                    var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                    var grain = SessionManagerGrainOrThrow;
                     await grain.GracefulDisconnectAsync();
                 }
                 catch (Exception ex)
@@ -803,7 +836,7 @@ namespace SharedMeta.Server.Core.Transport
 
             try
             {
-                var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                var grain = SessionManagerGrainOrThrow;
                 await grain.OnTransportDisconnectedAsync();
             }
             catch (Exception ex)
@@ -817,7 +850,7 @@ namespace SharedMeta.Server.Core.Transport
             if (!IsSessionConnected || _observerRef == null) return;
             try
             {
-                var grain = _grainFactory.GetGrain<ISessionManager>(PlayerId);
+                var grain = SessionManagerGrainOrThrow;
                 await grain.SetObserverAsync(_observerRef);
             }
             catch (Exception ex)

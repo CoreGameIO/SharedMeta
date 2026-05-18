@@ -755,7 +755,7 @@ No server communication. Instant. State changes are client-only.
 
 ### CrossOptimistic Mode
 
-Client executes locally including cross-entity calls on cached local state. Server validates. Used for interactive cross-entity gameplay.
+Optimistic execution across **multiple states owned by the same player** — the split-profile pattern. When one player's data has grown large enough to be split across several `ISharedState` entities (e.g. `ProfileState` + `InventoryState` + `QuestState`, all keyed by the player's id), `CrossOptimistic` lets the client execute methods that touch more than one of those states locally without waiting for a round-trip.
 
 ```
 Client                                    Server
@@ -770,6 +770,13 @@ Client                                    Server
   ├─ Compare local vs server results         │
   │  Mismatch: desync callback               │
 ```
+
+**Intended use:** split-profile mechanics. The cross-call target must be an entity that **the caller owns** — i.e. no other client and no server-side process writes to it independently of this caller. The framework relies on this invariant in two places:
+
+1. **Broadcast suppression** — when `IsCrossOptimistic` is set on the outer call, the target's `HandleCallFromEntityAsync` excludes the originating caller from `DistributeBroadcasts` (the effect is already inlined in the outer call's replay payload; a duplicate broadcast would double-apply on the caller's client). Other subscribers of the target — typically none in the split-profile case — still receive the broadcast.
+2. **Sequence-slot reservation** — `SessionManagerGrain` reserves the target entity's seq slot for the cross-call via a marker in `HeldBroadcasts`. If a concurrent third-party writer (server-side timer, background job, admin tool) increments the target between our last-known sequence and the cross-call's sequence, the marker waits in the gap so the intermediate broadcast(s) can drain through without being mis-classified as "old/duplicate". This guards the split-profile pattern even when a server-side scheduler also writes to one of the player's split states.
+
+**Do not** use `CrossOptimistic` against entities that are concurrently mutated by other clients (clan-level state, lobby, market, two-player trade). Those need `Server` mode so the caller's client learns the target's state change through the normal broadcast path.
 
 ### Runtime Execution Mode Override
 

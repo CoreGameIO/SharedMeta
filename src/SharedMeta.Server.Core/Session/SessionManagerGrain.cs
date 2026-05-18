@@ -62,6 +62,13 @@ namespace SharedMeta.Server.Core.Session
         // Per-entity ordering state
         private readonly Dictionary<string, EntityOrderingState> _entityStates = new();
 
+        // Sentinel slot-reservation marker for HeldBroadcasts. Used by the CrossOptimistic path
+        // to claim the target entity's seq slot for a cross-call whose effect is already inlined
+        // in the outer call's replay payload — so when the intermediate (third-party) broadcasts
+        // arrive and the drain reaches this slot, the slot advances KnownEntitySequence without
+        // emitting anything to the client. Reference-equality-checked.
+        private static readonly EntityBroadcast CrossCallSlotMarker = new();
+
         // Active RPC state: when true, broadcasts are queued instead of sent
         private bool _inActiveRpc;
         private readonly List<QueuedBroadcast> _rpcBroadcastQueue = [];
@@ -723,15 +730,34 @@ namespace SharedMeta.Server.Core.Session
                 _inActiveRpc = false;
             }
 
-            // CrossOptimistic: advance KnownEntitySequence for cross-entity calls so their
-            // own broadcasts (queued in _rpcBroadcastQueue) are silently skipped.
+            // CrossOptimistic: reserve the target's sequence slot for this cross-call. The
+            // target's own broadcast no longer reaches us — EntityGrain.HandleCallFromEntityAsync
+            // now excludes the originating caller from DistributeBroadcasts — but we still
+            // need to account for the slot so concurrent third-party broadcasts (server-side
+            // timers, background jobs writing the target) don't get dropped by a Math.Max-style
+            // overshoot, and so the slot doesn't leave a permanent gap blocking later broadcasts.
+            //
+            //   * known == seq - 1 — no gap from concurrent writers: bump directly.
+            //   * known <  seq - 1 — a third-party mutator incremented the target between our
+            //     known and this cross-call. Reserve the cross-call slot with a NOP marker; when
+            //     the missing intermediate broadcast(s) arrive, DrainHeldBroadcasts advances
+            //     through our slot without emitting (effect is already inlined in this outer
+            //     call's replay payload).
             if (call.IsCrossOptimistic && result.CrossEntityCalls is { Count: > 0 })
             {
                 foreach (var crossCall in result.CrossEntityCalls)
                 {
                     var crossState = GetOrCreateEntityState(crossCall.EntityId);
-                    crossState.KnownEntitySequence = Math.Max(
-                        crossState.KnownEntitySequence, crossCall.EntitySequenceNumber);
+                    if (crossState.KnownEntitySequence == crossCall.EntitySequenceNumber - 1)
+                    {
+                        crossState.KnownEntitySequence = crossCall.EntitySequenceNumber;
+                    }
+                    else if (crossState.KnownEntitySequence < crossCall.EntitySequenceNumber - 1)
+                    {
+                        crossState.HeldBroadcasts[crossCall.EntitySequenceNumber] = CrossCallSlotMarker;
+                    }
+                    // crossState.KnownEntitySequence >= crossCall.EntitySequenceNumber: already
+                    // applied (shouldn't happen for a fresh cross-call result, but harmless).
                 }
             }
 
@@ -1047,7 +1073,11 @@ namespace SharedMeta.Server.Core.Session
 
                 state.HeldBroadcasts.Remove(first.Key);
                 state.KnownEntitySequence = first.Key;
-                BufferBroadcast(entityId, first.Value);
+                // CrossCallSlotMarker is a slot reservation, not a real broadcast — its effect
+                // is already inlined in the cross-call's replay payload. Skip emission; only
+                // advance the sequence counter so subsequent broadcasts aren't held forever.
+                if (!ReferenceEquals(first.Value, CrossCallSlotMarker))
+                    BufferBroadcast(entityId, first.Value);
             }
         }
 

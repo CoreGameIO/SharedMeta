@@ -621,6 +621,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         {
             MetaContext.CallerId = call.CallerId;
             MetaContext.CallerClientVersion = call.CallerClientVersion;
+            MetaContext.IsCrossOptimistic = call.IsCrossOptimistic;
             MetaContext.ServerTimeTicks = call.ServerTimeTicks;
             MetaContext.IsClientCall = isClientOriginated;
             MetaContext.Random = _optimisticRandom;

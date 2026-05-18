@@ -78,6 +78,18 @@ namespace SharedMeta.Core
         public string? CallerClientVersion { get; set; }
 
         /// <summary>
+        /// True when the active call is the server-side execution of a CrossOptimistic method
+        /// (i.e. the client already executed it locally and the server is verifying/replaying).
+        /// Propagated across cross-entity boundaries so the target's
+        /// <c>DistributeBroadcasts</c> can decide whether to exclude the originating caller:
+        /// for CrossOptimistic the cross-call's effect on the target is already inlined in the
+        /// outer call's replay payload, so a duplicate broadcast would double-apply on the
+        /// caller's client; for other modes the caller relies on that broadcast to learn the
+        /// target's state change.
+        /// </summary>
+        public bool IsCrossOptimistic { get; set; }
+
+        /// <summary>
         /// The entity ID of the current entity.
         /// Used for cross-entity calls and self-identification.
         /// </summary>

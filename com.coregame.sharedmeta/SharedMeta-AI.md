@@ -205,7 +205,7 @@ No server communication. Instant. State changes are client-only. Good for UI sta
 
 ### CrossOptimistic
 
-Client executes locally including cross-entity calls on cached local state. Server validates. Used for interactive cross-entity gameplay (trading, multiplayer moves).
+**Split-profile mode.** When a player's data is split across multiple `ISharedState` entities owned by the same player, `CrossOptimistic` lets the client execute methods that touch more than one of those states locally without waiting for a server round-trip.
 
 ```
 Client                                    Server
@@ -219,6 +219,13 @@ Client                                    Server
   │  ◄──── Return with cross-entity info ────┤
   ├─ Compare local vs server results         │
 ```
+
+**Invariant:** the cross-call target must be owned by the same player as the caller — no other client and no independent server-side mutator writes to it concurrently. Two framework behaviors depend on this:
+
+- `EntityGrain.HandleCallFromEntityAsync` excludes the originating caller from `DistributeBroadcasts` when the outer call's `IsCrossOptimistic` flag is true. The cross-call's effect on the target is inlined in the outer call's replay payload, so a duplicate broadcast back to the caller would double-apply.
+- `SessionManagerGrain.ExecuteOneCallAsync` reserves the target's sequence slot for the cross-call via a `CrossCallSlotMarker` in `HeldBroadcasts`. If a concurrent third-party server-side write to the target slipped between our `KnownEntitySequence` and the cross-call's sequence, the marker waits in the gap so the intermediate broadcast can drain through normally instead of being silently dropped as old/duplicate.
+
+**Do not** use `CrossOptimistic` against shared multi-writer entities (clans, lobbies, markets, two-player trades). Those need `Server` mode — the caller relies on broadcasts to learn the target's state change, and the cross-call's broadcast suppression here would block that.
 
 ### ServerPatch
 

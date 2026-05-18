@@ -204,13 +204,24 @@ namespace SharedMeta.Server.Core.Grains
                     // resolves under a defined version instead of throwing downstream.
                     var callerClientVersion = SharedMeta.Core.MetaContextAccessor.Current?.CallerClientVersion
                         ?? _configVersionResolver?.CurrentClientVersion;
+                    // Propagate originating CallerId + the outer call's CrossOptimistic flag.
+                    // The target's HandleCallFromEntityAsync uses both: when the outer call is
+                    // CrossOptimistic, the target excludes the caller from broadcast distribution
+                    // (its effect is already inlined in the outer call's replay payload — a
+                    // duplicate broadcast would double-apply on the caller). For non-CrossOptimistic
+                    // modes the caller needs the broadcast to learn the target's state change.
+                    var callerCtx = SharedMeta.Core.MetaContextAccessor.Current;
+                    var callerId = callerCtx?.CallerId;
+                    var isCrossOptimistic = callerCtx?.IsCrossOptimistic ?? false;
                     var result = await targetGrain.HandleCallFromEntityAsync(new RpcCall
                     {
                         ServiceName = serviceName,
                         MethodName = methodName,
                         Payload = argsBytes,
                         ServerTimeTicks = serverTimeTicks,
-                        CallerClientVersion = callerClientVersion
+                        CallerClientVersion = callerClientVersion,
+                        CallerId = callerId,
+                        IsCrossOptimistic = isCrossOptimistic
                     });
 
                     if (result.HasError)
@@ -245,13 +256,21 @@ namespace SharedMeta.Server.Core.Grains
 
                     var callerClientVersion = SharedMeta.Core.MetaContextAccessor.Current?.CallerClientVersion
                         ?? _configVersionResolver?.CurrentClientVersion;
+                    // Propagate originating CallerId + the outer call's CrossOptimistic flag.
+                    // Same reasoning as the awaited cross-call path above. OneWay delegates to
+                    // HandleCallFromEntityAsync, so the conditional broadcast-exclusion applies.
+                    var callerCtx = SharedMeta.Core.MetaContextAccessor.Current;
+                    var callerId = callerCtx?.CallerId;
+                    var isCrossOptimistic = callerCtx?.IsCrossOptimistic ?? false;
                     var rpcCall = new RpcCall
                     {
                         ServiceName = serviceName,
                         MethodName = methodName,
                         Payload = argsBytes,
                         ServerTimeTicks = serverTimeTicks,
-                        CallerClientVersion = callerClientVersion
+                        CallerClientVersion = callerClientVersion,
+                        CallerId = callerId,
+                        IsCrossOptimistic = isCrossOptimistic
                     };
 
                     // [OneWay] on IEntityGrainBase.HandleCallFromEntityOneWayAsync makes this a
@@ -833,8 +852,20 @@ namespace SharedMeta.Server.Core.Grains
 
                 PersistRandomBytes();
 
-                // Distribute broadcasts to ALL subscribers (no exclusion for cross-entity calls)
-                await DistributeBroadcasts(providerResult.Broadcasts, operationSequence, excludePlayerId: null);
+                // Conditional caller exclusion:
+                //   * CrossOptimistic outer call — exclude the originating client. The cross-call's
+                //     effect on this target is already inlined in the outer call's replay payload
+                //     (CrossEntityCallInfo.ResultBytes + inner replay tape), so a duplicate
+                //     broadcast would double-apply on the caller's client. SessionManagerGrain
+                //     still reserves the target's seq slot via a CrossCallSlotMarker so concurrent
+                //     third-party writes to the target don't leave a permanent gap.
+                //   * Non-CrossOptimistic outer call (Server/ServerPatch/ServerReplace/...) — the
+                //     caller did NOT execute the cross-call locally, so it relies on this very
+                //     broadcast to learn the target's state change. Don't exclude.
+                //   * Server-internal cross-entity invocation (no outer client) — call.CallerId
+                //     is null anyway, so this is a no-op exclusion either way.
+                var excludeCaller = call.IsCrossOptimistic ? call.CallerId : null;
+                await DistributeBroadcasts(providerResult.Broadcasts, operationSequence, excludePlayerId: excludeCaller);
 
                 var mainBroadcast = providerResult.Broadcasts.FirstOrDefault();
                 var triggerOps = mainBroadcast?.TriggerBroadcasts?.Select(t => new OperationResult
