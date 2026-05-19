@@ -363,16 +363,10 @@ namespace SharedMeta.Server.Core.Grains
 
         public async Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null, IReadOnlyList<MethodIdentity>? forceServerPatchMethods = null)
         {
-            using var __subActivity = SharedMeta.Server.Core.Telemetry.SharedMetaActivities.Source.StartActivity(
-                SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanEntitySubscribe);
-            if (__subActivity != null)
-            {
-                __subActivity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagStateType, typeof(TState).Name);
-                __subActivity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagEntityId, _entityId);
-                __subActivity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagPlayerId, playerId);
-            }
-            var __subStart = System.Diagnostics.Stopwatch.GetTimestamp();
-            string __subResult = "success";
+            // 0.23.0+ Telemetry bundled into a single disposable — span + duration histogram +
+            // count counter + subscribers-active gauge all flush on scope exit via Dispose().
+            // Mark error explicitly in catch so the result tag flows to all three sinks.
+            using var __m = SharedMeta.Server.Core.Telemetry.SubscribeMeasurement.Start(typeof(TState).Name, _entityId, playerId);
             try
             {
             // Access policy check
@@ -500,26 +494,24 @@ namespace SharedMeta.Server.Core.Grains
             // capabilities are ignored. The provider knows which services it hosts via
             // _provider.AccessPolicy / generated infrastructure; for now we accept everything
             // the caller passed since they pre-filtered to this entity's bound services.
+            //
+            // 0.23.0+ Always drop prior contributions unconditionally on resubscribe — even
+            // when the new list is null/empty — otherwise refcounts drift permanently upward
+            // when a player resubscribes with a smaller (or empty) force-patch set than before
+            // (e.g. client upgraded and no longer needs legacy patch path).
+            if (_subscriberForcePatchContributions.Remove(playerId, out var prior))
+            {
+                foreach (var key in prior)
+                    DecrementMethodRef(key);
+            }
             if (forceServerPatchMethods is { Count: > 0 })
             {
-                // Discard any prior contribution for this player (defensive — resubscribe after
-                // reconnect, capabilities may have changed). Refcount stays consistent.
-                if (_subscriberForcePatchContributions.TryGetValue(playerId, out var prior))
-                {
-                    foreach (var key in prior)
-                    {
-                        if (_forcePatchMethodRefs.TryGetValue(key, out var c) && c > 0)
-                            _forcePatchMethodRefs[key] = c - 1;
-                        if (_forcePatchMethodRefs.TryGetValue(key, out var c2) && c2 == 0)
-                            _forcePatchMethodRefs.Remove(key);
-                    }
-                }
                 var contributions = new List<(string, string, int)>(forceServerPatchMethods.Count);
                 foreach (var m in forceServerPatchMethods)
                 {
                     var key = (m.ServiceName, m.Alias, m.Version);
                     contributions.Add(key);
-                    _forcePatchMethodRefs[key] = _forcePatchMethodRefs.TryGetValue(key, out var c) ? c + 1 : 1;
+                    IncrementMethodRef(key);
                 }
                 _subscriberForcePatchContributions[playerId] = contributions;
             }
@@ -529,26 +521,21 @@ namespace SharedMeta.Server.Core.Grains
             // config(s) → which services need force-patch. Stored in BOTH the local refcount
             // (so HandleCallAsync activates patch tracking) AND the returned snapshot (so
             // SessionManagerGrain can cache for broadcast fan-out tailoring + forward to client).
+            //
+            // 0.23.0+ Same unconditional-drop pattern as method-level above.
             var augmentedCaps = ComputePerEntityCapabilities(clientVersion);
+            if (_subscriberForcePatchServiceContributions.Remove(playerId, out var priorSvc))
+            {
+                foreach (var svc in priorSvc)
+                    DecrementServiceRef(svc);
+            }
             if (augmentedCaps is { ForceServerPatchServices.Count: > 0 })
             {
-                // Drop prior contribution to keep refcount in sync across resubscribe.
-                if (_subscriberForcePatchServiceContributions.TryGetValue(playerId, out var priorSvc))
-                {
-                    foreach (var svc in priorSvc)
-                    {
-                        if (_forcePatchServiceRefs.TryGetValue(svc, out var sc))
-                        {
-                            if (sc <= 1) _forcePatchServiceRefs.Remove(svc);
-                            else _forcePatchServiceRefs[svc] = sc - 1;
-                        }
-                    }
-                }
                 var svcContributions = new List<string>(augmentedCaps.ForceServerPatchServices.Count);
                 foreach (var svc in augmentedCaps.ForceServerPatchServices)
                 {
                     svcContributions.Add(svc);
-                    _forcePatchServiceRefs[svc] = _forcePatchServiceRefs.TryGetValue(svc, out var sc) ? sc + 1 : 1;
+                    IncrementServiceRef(svc);
                 }
                 _subscriberForcePatchServiceContributions[playerId] = svcContributions;
             }
@@ -580,22 +567,11 @@ namespace SharedMeta.Server.Core.Grains
             }
             catch
             {
-                __subResult = "error";
+                __m.MarkError();
                 throw;
             }
-            finally
-            {
-                var __subElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(__subStart).TotalMilliseconds;
-                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SubscribeDuration.Record(__subElapsed,
-                    new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
-                    new KeyValuePair<string, object?>("result", __subResult));
-                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SubscribeCount.Add(1,
-                    new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
-                if (__subResult == "success")
-                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SubscribersActive.Add(1,
-                        new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
-                __subActivity?.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagResult, __subResult);
-            }
+            // SubscribeMeasurement.Dispose (via `using` above) flushes duration histogram,
+            // subscribe count, and active-subscribers gauge with the resolved result tag.
         }
 
         /// <summary>
@@ -647,28 +623,17 @@ namespace SharedMeta.Server.Core.Grains
 
             // 0.22.0 Decrement force-patch refcounts for what this player contributed at
             // subscribe time. Removing zero-count entries keeps the dispatch-time lookup tight.
+            // 0.23.0+ Uses shared Increment/Decrement helpers — single-lookup via
+            // CollectionsMarshal, identical semantics to the Subscribe path.
             if (_subscriberForcePatchContributions.Remove(playerId, out var contributions))
             {
                 foreach (var key in contributions)
-                {
-                    if (_forcePatchMethodRefs.TryGetValue(key, out var c))
-                    {
-                        if (c <= 1) _forcePatchMethodRefs.Remove(key);
-                        else _forcePatchMethodRefs[key] = c - 1;
-                    }
-                }
+                    DecrementMethodRef(key);
             }
-            // Service-level (per-entity boundary) symmetric decrement.
             if (_subscriberForcePatchServiceContributions.Remove(playerId, out var svcContributions))
             {
                 foreach (var svc in svcContributions)
-                {
-                    if (_forcePatchServiceRefs.TryGetValue(svc, out var sc))
-                    {
-                        if (sc <= 1) _forcePatchServiceRefs.Remove(svc);
-                        else _forcePatchServiceRefs[svc] = sc - 1;
-                    }
-                }
+                    DecrementServiceRef(svc);
             }
 
             _logger.PlayerUnsubscribed(_entityId, playerId);
@@ -700,18 +665,12 @@ namespace SharedMeta.Server.Core.Grains
                 return new EntityCallResult { Error = "Provider not initialized" };
             }
 
-            using var activity = SharedMeta.Server.Core.Telemetry.SharedMetaActivities.Source.StartActivity(
-                SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanEntityRpc);
-            if (activity != null)
-            {
-                activity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagService, call.ServiceName);
-                activity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagMethod, call.MethodName);
-                activity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagEntityId, _entityId);
-                if (call.CallerId != null)
-                    activity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagPlayerId, call.CallerId);
-            }
-            var __metricStart = System.Diagnostics.Stopwatch.GetTimestamp();
-            string __metricResult = "success";
+            // 0.23.0+ Telemetry bundled into one disposable — entity-rpc span + duration histogram +
+            // request-bytes histogram all flush on scope exit via Dispose(). Mark error explicitly
+            // in catch so the result tag flows to all sinks consistently.
+            using var __m = SharedMeta.Server.Core.Telemetry.RpcMeasurement.Start(
+                SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanEntityRpc,
+                call.ServiceName, call.MethodName, _entityId, call.CallerId, call.Payload?.Length ?? 0);
 
             var state = _persistentState.State;
             var operationSequence = ++state.EntitySequenceNumber;
@@ -779,7 +738,7 @@ namespace SharedMeta.Server.Core.Grains
             }
             catch (Exception ex)
             {
-                __metricResult = "error";
+                __m.MarkError();
                 _logger.ErrorHandlingCall(ex);
                 return new EntityCallResult
                 {
@@ -789,19 +748,8 @@ namespace SharedMeta.Server.Core.Grains
             }
             finally
             {
+                // Lifecycle work only — telemetry flushes via RpcMeasurement.Dispose.
                 await PersistIfNeeded(forcePersist);
-                var __elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(__metricStart).TotalMilliseconds;
-                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.RpcDuration.Record(__elapsed,
-                    new KeyValuePair<string, object?>("service", call.ServiceName),
-                    new KeyValuePair<string, object?>("method", call.MethodName),
-                    new KeyValuePair<string, object?>("result", __metricResult));
-                if (call.Payload != null && call.Payload.Length > 0)
-                {
-                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.RpcRequestBytes.Record(call.Payload.Length,
-                        new KeyValuePair<string, object?>("service", call.ServiceName),
-                        new KeyValuePair<string, object?>("method", call.MethodName));
-                }
-                activity?.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagResult, __metricResult);
             }
         }
 
@@ -819,17 +767,10 @@ namespace SharedMeta.Server.Core.Grains
                 return new EntityCallResult { Error = "Provider not initialized" };
             }
 
-            using var __xeActivity = SharedMeta.Server.Core.Telemetry.SharedMetaActivities.Source.StartActivity(
-                SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanCrossEntityCall);
-            if (__xeActivity != null)
-            {
-                __xeActivity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagService, call.ServiceName);
-                __xeActivity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagMethod, call.MethodName);
-                __xeActivity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagKind, "normal");
-                __xeActivity.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagEntityId, _entityId);
-            }
-            var __xeStart = System.Diagnostics.Stopwatch.GetTimestamp();
-            string __xeResult = "success";
+            // 0.23.0+ Cross-entity telemetry bundled via CrossEntityCallMeasurement.
+            // Kind = "normal" (awaited path); the [OneWay] notification path uses kind="notification".
+            using var __m = SharedMeta.Server.Core.Telemetry.CrossEntityCallMeasurement.Start(
+                call.ServiceName, call.MethodName, _entityId, "normal");
 
             var state = _persistentState.State;
             var operationSequence = ++state.EntitySequenceNumber;
@@ -875,7 +816,7 @@ namespace SharedMeta.Server.Core.Grains
             }
             catch (Exception ex)
             {
-                __xeResult = "error";
+                __m.MarkError();
                 _logger.ErrorHandlingCrossEntityCall(ex);
                 return new EntityCallResult
                 {
@@ -885,16 +826,8 @@ namespace SharedMeta.Server.Core.Grains
             }
             finally
             {
+                // Lifecycle work only — telemetry flushes via CrossEntityCallMeasurement.Dispose.
                 await PersistIfNeeded(forcePersist);
-                var __xeElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(__xeStart).TotalMilliseconds;
-                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.CrossEntityCallDuration.Record(__xeElapsed,
-                    new KeyValuePair<string, object?>("to_service", call.ServiceName),
-                    new KeyValuePair<string, object?>("kind", "normal"),
-                    new KeyValuePair<string, object?>("result", __xeResult));
-                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.CrossEntityCallCount.Add(1,
-                    new KeyValuePair<string, object?>("to_service", call.ServiceName),
-                    new KeyValuePair<string, object?>("kind", "normal"));
-                __xeActivity?.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagResult, __xeResult);
             }
         }
 
@@ -1079,22 +1012,13 @@ namespace SharedMeta.Server.Core.Grains
 
         private async Task PersistIfNeededImpl(bool forcePersist)
         {
-            // 0.23.0+ Telemetry: per-write duration. Payload-size bucket is left to the
-            // underlying storage provider to surface (the grain doesn't see the serialized
-            // bytes — that's deep inside IPersistentState's pipeline).
-            var __pStart = System.Diagnostics.Stopwatch.GetTimestamp();
-            using var __pActivity = SharedMeta.Server.Core.Telemetry.SharedMetaActivities.Source.StartActivity(
-                SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanPersistenceWrite);
-            __pActivity?.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagStateType, typeof(TState).Name);
-            try
+            // 0.23.0+ Telemetry bundled via PersistenceWriteMeasurement — duration histogram
+            // + span flush on scope exit. The grain doesn't see the serialized bytes (that's
+            // deep inside IPersistentState's pipeline), so payload-size buckets are left to
+            // the underlying storage provider to surface.
+            using (SharedMeta.Server.Core.Telemetry.PersistenceWriteMeasurement.Start(typeof(TState).Name))
             {
                 await _persistentState.WriteStateAsync();
-            }
-            finally
-            {
-                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.PersistenceWriteDuration.Record(
-                    System.Diagnostics.Stopwatch.GetElapsedTime(__pStart).TotalMilliseconds,
-                    new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
             }
             var entityId = _entityId;
             if (forcePersist || _options.PersistencePolicy.Mode != PersistenceMode.EveryCall)
@@ -1107,6 +1031,48 @@ namespace SharedMeta.Server.Core.Grains
             _requestsSinceLastSave = 0;
             _lastSaveTime = DateTime.UtcNow;
             _isDirty = false;
+        }
+
+        // ─── Force-patch refcount helpers (0.23.0+) ────────────────────────────
+        // Subscribe/Unsubscribe paths aggregate per-subscriber force-patch contributions
+        // into _forcePatchMethodRefs / _forcePatchServiceRefs. Helpers below collapse the
+        // two-lookup `TryGetValue` + indexer assignment into a single dictionary probe via
+        // `CollectionsMarshal.GetValueRefOrAddDefault` / `GetValueRefOrNullRef`, and keep
+        // the increment/decrement semantics consistent across all call sites.
+        //
+        // Decrement removes the entry when count drops to <= 1, so dispatch-time lookup
+        // (`ContainsKey` in HandleCallAsync's requirePatchForFanOut decision) stays tight.
+
+        private void IncrementMethodRef((string Service, string Alias, int Version) key)
+        {
+            ref var count = ref System.Runtime.InteropServices.CollectionsMarshal
+                .GetValueRefOrAddDefault(_forcePatchMethodRefs, key, out _);
+            count++;
+        }
+
+        private void DecrementMethodRef((string Service, string Alias, int Version) key)
+        {
+            ref var count = ref System.Runtime.InteropServices.CollectionsMarshal
+                .GetValueRefOrNullRef(_forcePatchMethodRefs, key);
+            if (System.Runtime.CompilerServices.Unsafe.IsNullRef(ref count)) return;
+            if (count <= 1) _forcePatchMethodRefs.Remove(key);
+            else count--;
+        }
+
+        private void IncrementServiceRef(string serviceName)
+        {
+            ref var count = ref System.Runtime.InteropServices.CollectionsMarshal
+                .GetValueRefOrAddDefault(_forcePatchServiceRefs, serviceName, out _);
+            count++;
+        }
+
+        private void DecrementServiceRef(string serviceName)
+        {
+            ref var count = ref System.Runtime.InteropServices.CollectionsMarshal
+                .GetValueRefOrNullRef(_forcePatchServiceRefs, serviceName);
+            if (System.Runtime.CompilerServices.Unsafe.IsNullRef(ref count)) return;
+            if (count <= 1) _forcePatchServiceRefs.Remove(serviceName);
+            else count--;
         }
 
         private void PersistRandomBytes()
