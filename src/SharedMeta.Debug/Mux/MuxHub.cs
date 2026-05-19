@@ -101,6 +101,33 @@ namespace SharedMeta.Debug.Mux
         public Task<SessionResponse> RpcCall(int sessionTag, RpcCallRequest request)
             => GetOrCreateHandler(sessionTag).RpcCallAsync(request);
 
+        public async Task<BatchRpcResponse> BatchRpcCall(BatchRpcRequest request)
+        {
+            // Dispatch all entries in parallel. Each entry routes to its own per-tag
+            // MetaConnectionHandler, which in turn enqueues to its SessionManagerGrain.
+            // Net effect: one client→server SignalR frame contains N requests, server
+            // processes them concurrently (subject to grain-level serialization per
+            // SessionManagerGrain), and one server→client frame carries all N responses.
+            var entries = request.Entries;
+            var tasks = new Task<SessionResponse>[entries.Count];
+            for (int i = 0; i < entries.Count; i++)
+            {
+                var entry = entries[i];
+                tasks[i] = GetOrCreateHandler(entry.SessionTag).RpcCallAsync(entry.Request);
+            }
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+            var response = new BatchRpcResponse { Results = new System.Collections.Generic.List<BatchRpcResult>(entries.Count) };
+            for (int i = 0; i < entries.Count; i++)
+            {
+                response.Results.Add(new BatchRpcResult
+                {
+                    CorrelationId = entries[i].CorrelationId,
+                    Response = tasks[i].Result,
+                });
+            }
+            return response;
+        }
+
         public Task<QueryCallResponse> QueryCall(int sessionTag, QueryCallRequest request)
             => GetOrCreateHandler(sessionTag).QueryCallAsync(request);
 
