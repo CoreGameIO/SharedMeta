@@ -108,7 +108,7 @@ namespace SharedMeta.Server.Core
         /// force-patch refcount contains the call's <c>(Service, Alias, MethodVersion)</c> tuple.
         /// </param>
         /// <returns>Response and broadcasts to distribute.</returns>
-        Task<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true, bool requirePatchForFanOut = false);
+        ValueTask<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true, bool requirePatchForFanOut = false);
 
         /// <summary>
         /// Handle an external event from a framework service asynchronously.
@@ -118,7 +118,7 @@ namespace SharedMeta.Server.Core
         /// <param name="eventData">The serialized event data.</param>
         /// <param name="callerId">Optional caller ID.</param>
         /// <returns>Broadcasts to distribute.</returns>
-        Task<HandleEventResult> HandleExternalEventAsync(
+        ValueTask<HandleEventResult> HandleExternalEventAsync(
             string subscriberInterface,
             string methodName,
             byte[] eventData,
@@ -175,7 +175,7 @@ namespace SharedMeta.Server.Core
         /// Handle a query call. Read-only: dispatches the method but skips
         /// replay recording, broadcast creation, random state, and persistence.
         /// </summary>
-        Task<QueryCallResponse> HandleQueryAsync(RpcCall call);
+        ValueTask<QueryCallResponse> HandleQueryAsync(RpcCall call);
 
         /// <summary>
         /// Handle a signal call — fire-and-forget, void return, read-only state.
@@ -188,7 +188,7 @@ namespace SharedMeta.Server.Core
         /// recording is a no-op.
         /// </para>
         /// </summary>
-        Task HandleSignalAsync(RpcCall call) => Task.CompletedTask;
+        ValueTask HandleSignalAsync(RpcCall call) => default;
 
         // Method-level classification hooks (IsQueryMethod / IsSignalMethod / IsOpenAccessQuery /
         // IsClientCallable) intentionally live as `protected virtual` on MetaProviderBase rather

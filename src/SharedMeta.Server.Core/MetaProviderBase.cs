@@ -260,7 +260,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// <c>0</c> for the legacy / unversioned route — the generated dispatcher resolves it to
     /// the lowest-versioned implementation under the alias so older clients still dispatch.</para>
     /// </summary>
-    protected abstract Task<DispatchResult> DispatchCall(string serviceName, string methodName, byte[] payload, int methodVersion);
+    protected abstract ValueTask<DispatchResult> DispatchCall(string serviceName, string methodName, byte[] payload, int methodVersion);
 
     /// <summary>
     /// 0.20.0: Resolve a sibling-service impl instance by interface type. Default returns
@@ -286,9 +286,9 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// <summary>
     /// Dispatch an external event. Override in derived class if needed.
     /// </summary>
-    protected virtual Task<DispatchResult> DispatchEvent(string subscriberInterface, string methodName, byte[] eventData)
+    protected virtual ValueTask<DispatchResult> DispatchEvent(string subscriberInterface, string methodName, byte[] eventData)
     {
-        return Task.FromResult(new DispatchResult { ResultBytes = null, TriggersToExecute = null });
+        return new ValueTask<DispatchResult>(new DispatchResult { ResultBytes = null, TriggersToExecute = null });
     }
 
     /// <summary>
@@ -557,7 +557,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     // then calls base.HandleCallAsync. Generation is conditional — the override is only
     // produced when at least one method opts out of client API. For projects with no such
     // methods, this entry point is reached directly with zero validation overhead.
-    public virtual async Task<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true, bool requirePatchForFanOut = false)
+    public virtual async ValueTask<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true, bool requirePatchForFanOut = false)
     {
         if (MetaContext == null || Context == null)
         {
@@ -893,7 +893,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         };
     }
 
-    public async Task<HandleEventResult> HandleExternalEventAsync(
+    public async ValueTask<HandleEventResult> HandleExternalEventAsync(
         string subscriberInterface,
         string methodName,
         byte[] eventData,
@@ -950,7 +950,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     // to base. Generation is conditional on the project containing at least one query method.
     // Default base behaviour: any HandleQueryAsync call without a generator override is
     // rejected — there are no registered query methods to dispatch.
-    public virtual async Task<QueryCallResponse> HandleQueryAsync(RpcCall call)
+    public virtual async ValueTask<QueryCallResponse> HandleQueryAsync(RpcCall call)
     {
         if (MetaContext == null || Context == null)
             return new QueryCallResponse { Error = "Provider not initialized" };
@@ -1053,7 +1053,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     // before base. Generation is conditional on the project containing at least one signal
     // method. Default base behaviour: a HandleSignalAsync without a generator override
     // silently no-ops on DispatchSignal — no signal methods registered.
-    public virtual async Task HandleSignalAsync(RpcCall call)
+    public virtual async ValueTask HandleSignalAsync(RpcCall call)
     {
         if (MetaContext == null || Context == null)
         {

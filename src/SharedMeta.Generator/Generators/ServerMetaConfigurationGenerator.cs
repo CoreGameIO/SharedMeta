@@ -1089,7 +1089,10 @@ namespace SharedMeta.Generator.Generators
             // Implement abstract DispatchCall — 0.22.0+: methodVersion routes (Alias, Version) tuples
             // to the matching declared body. Legacy/unversioned callers pass methodVersion=0 and the
             // generated dispatcher routes them to the lowest-versioned implementation under the alias.
-            sb.AppendLine("        protected override async Task<DispatchResult> DispatchCall(string serviceName, string methodName, byte[] payload, int methodVersion)");
+            // 0.23.0+ Non-async: dispatchers return ValueTask<DispatchResult> directly, sync-completed
+            // for sync-eligible methods. Removing `async` from this override skips the state-machine
+            // box at the DispatchCall layer.
+            sb.AppendLine("        protected override System.Threading.Tasks.ValueTask<DispatchResult> DispatchCall(string serviceName, string methodName, byte[] payload, int methodVersion)");
             sb.AppendLine("        {");
             sb.AppendLine("            return serviceName switch");
             sb.AppendLine("            {");
@@ -1100,12 +1103,12 @@ namespace SharedMeta.Generator.Generators
                 {
                     // Deep desync: use PatchTracked version when PatchWrapper is active
                     sb.AppendLine($"                \"{service.InterfaceName}\" => MetaContext!.PatchWrapper != null");
-                    sb.AppendLine($"                    ? await {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}PatchTracked(), methodName, payload, methodVersion, Context.Serializer)");
-                    sb.AppendLine($"                    : await {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}(), methodName, payload, methodVersion, Context.Serializer),");
+                    sb.AppendLine($"                    ? {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}PatchTracked(), methodName, payload, methodVersion, Context.Serializer)");
+                    sb.AppendLine($"                    : {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}(), methodName, payload, methodVersion, Context.Serializer),");
                 }
                 else
                 {
-                    sb.AppendLine($"                \"{service.InterfaceName}\" => await {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}(), methodName, payload, methodVersion, Context.Serializer),");
+                    sb.AppendLine($"                \"{service.InterfaceName}\" => {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}(), methodName, payload, methodVersion, Context.Serializer),");
                 }
             }
             sb.AppendLine("                _ => throw new InvalidOperationException($\"Unknown service: {serviceName}\")");
@@ -1116,7 +1119,7 @@ namespace SharedMeta.Generator.Generators
             if (servicesWithSubscribers.Count > 0)
             {
                 sb.AppendLine();
-                sb.AppendLine("        protected override Task<DispatchResult> DispatchEvent(string subscriberInterface, string methodName, byte[] eventData)");
+                sb.AppendLine("        protected override System.Threading.Tasks.ValueTask<DispatchResult> DispatchEvent(string subscriberInterface, string methodName, byte[] eventData)");
                 sb.AppendLine("        {");
                 sb.AppendLine("            switch (subscriberInterface)");
                 sb.AppendLine("            {");
@@ -1136,7 +1139,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                    Console.Error.WriteLine($\"Unknown subscriber: {subscriberInterface}\");");
                 sb.AppendLine("                    break;");
                 sb.AppendLine("            }");
-                sb.AppendLine("            return Task.FromResult(new DispatchResult());");
+                sb.AppendLine("            return new System.Threading.Tasks.ValueTask<DispatchResult>(new DispatchResult());");
                 sb.AppendLine("        }");
             }
 
@@ -1209,7 +1212,7 @@ namespace SharedMeta.Generator.Generators
             // inside the per-case dispatcher switch and is reached after delegation to base.
             if (allQueryMethods.Count > 0)
             {
-                sb.AppendLine("        public override async System.Threading.Tasks.Task<QueryCallResponse> HandleQueryAsync(RpcCall call)");
+                sb.AppendLine("        public override async System.Threading.Tasks.ValueTask<QueryCallResponse> HandleQueryAsync(RpcCall call)");
                 sb.AppendLine("        {");
                 sb.AppendLine("            bool isQuery = (call.ServiceName, call.MethodName) switch");
                 sb.AppendLine("            {");
@@ -1260,7 +1263,7 @@ namespace SharedMeta.Generator.Generators
             // inside the per-case SignalDispatcher switch and is reached after delegation to base.
             if (allSignalMethods.Count > 0)
             {
-                sb.AppendLine("        public override async System.Threading.Tasks.Task HandleSignalAsync(RpcCall call)");
+                sb.AppendLine("        public override async System.Threading.Tasks.ValueTask HandleSignalAsync(RpcCall call)");
                 sb.AppendLine("        {");
                 sb.AppendLine("            bool isSignal = (call.ServiceName, call.MethodName) switch");
                 sb.AppendLine("            {");

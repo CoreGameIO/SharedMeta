@@ -72,11 +72,21 @@ namespace SharedMeta.Generator.Generators
                 GenerateUnpackArgsHelper(sbServer, arity);
             }
 
+            // Async tails for genuinely-async service methods. Sync-completed methods build their
+            // DispatchResult inline in the case body; methods that suspend hand the pending Task
+            // off to a per-method tail helper. Accumulated during method emission, appended after
+            // the main switch closes.
+            var asyncTails = new StringBuilder();
+
             // Generate dispatch method signature - returns DispatchResult for trigger support.
             // 0.22.0: 'methodVersion' selects between coexisting [MetaMethod(Alias = X, Version = N)]
             // declarations sharing an alias. Callers pass 0 for legacy/unversioned dispatch, which
             // resolves to the lowest declared Version under the alias.
-            sbServer.AppendLine($"        public static async Task<DispatchResult> Dispatch({symbol} service, string method, byte[] payload, int methodVersion, IMetaSerializer serializer)");
+            // 0.23.0+ Non-async ValueTask entry. Sync-completed service methods skip the async
+            // state-machine box entirely (`<Dispatch>d__0` was ~12 MB/s of allocation at 25K RPS).
+            // Tasks that actually suspend fall through to a per-method `Await_{alias}_v{version}`
+            // helper emitted after the switch.
+            sbServer.AppendLine($"        public static ValueTask<DispatchResult> Dispatch({symbol} service, string method, byte[] payload, int methodVersion, IMetaSerializer serializer)");
             sbServer.AppendLine("        {");
 
             // Always get context for auto-discovery support
@@ -107,7 +117,7 @@ namespace SharedMeta.Generator.Generators
                     // Single declaration under this alias — no inner switch needed. methodVersion
                     // is accepted regardless of value (forward-compatibility: a client with a
                     // newer Version stamp still routes to the only declared body).
-                    EmitMethodBody(sbServer, versions[0].Method, versions[0].Info, symbol, triggersByMethod, serializer);
+                    EmitMethodBody(sbServer, asyncTails, versions[0].Method, versions[0].Info, symbol, triggersByMethod, serializer);
                 }
                 else
                 {
@@ -122,7 +132,7 @@ namespace SharedMeta.Generator.Generators
                         if (entry.Info.Version == minVersion)
                             sbServer.AppendLine("                        case 0:  // legacy/unversioned caller routes to lowest Version");
                         sbServer.AppendLine("                        {");
-                        EmitMethodBody(sbServer, entry.Method, entry.Info, symbol, triggersByMethod, serializer);
+                        EmitMethodBody(sbServer, asyncTails, entry.Method, entry.Info, symbol, triggersByMethod, serializer);
                         sbServer.AppendLine("                        }");
                     }
                     sbServer.AppendLine($"                        default: throw new MissingMethodException($\"Method '{symbol}.{alias}' has no version {{methodVersion}} (available: {string.Join(", ", versions.Select(v => v.Info.Version))})\");");
@@ -134,6 +144,12 @@ namespace SharedMeta.Generator.Generators
             sbServer.AppendLine("                default: throw new MissingMethodException(method);");
             sbServer.AppendLine("            }");
             sbServer.AppendLine("        }");
+
+            // Emit per-method async tail helpers collected during the main switch. Each helper
+            // awaits the pending Task / Task<T> returned by a service method that didn't complete
+            // synchronously, then builds the same DispatchResult the sync fast-path would have.
+            sbServer.Append(asyncTails);
+
             sbServer.AppendLine("    }");
 
             // Signal dispatcher companion — only emitted when at least one [MetaMethod(Signal = true)]
@@ -450,60 +466,141 @@ namespace SharedMeta.Generator.Generators
         /// <summary>
         /// Generates method call code and returns DispatchResult with triggers to execute.
         /// </summary>
-        private static void GenerateMethodCallWithTriggers(StringBuilder sb, string methodName, string callArgs, string returnType, Dictionary<string, List<TriggerInfo>> triggersByMethod, DetectedSerializer serializer = DetectedSerializer.Generic, bool forcePersist = false)
+        private static void GenerateMethodCallWithTriggers(StringBuilder sb, StringBuilder asyncTails, string symbol, MetaMethodInfo info, string methodName, string callArgs, string returnType, Dictionary<string, List<TriggerInfo>> triggersByMethod, DetectedSerializer serializer = DetectedSerializer.Generic, bool forcePersist = false)
         {
             const string indent = "                    ";
 
-            // Determine how to pack results based on serializer
-            string GetResultPacking(string resultVar)
-            {
-                if (serializer == DetectedSerializer.MemoryPack)
-                    return $"MemoryPackSerializer.Serialize({resultVar})";
-                else
-                    return $"serializer.Pack({resultVar})";
-            }
+            // Result-packing expression based on serializer.
+            string GetResultPacking(string resultVar) =>
+                serializer == DetectedSerializer.MemoryPack
+                    ? $"MemoryPackSerializer.Serialize({resultVar})"
+                    : $"serializer.Pack({resultVar})";
 
-            if (returnType == "System.Threading.Tasks.Task" || returnType == "Task")
+            string forcePersistPart = forcePersist ? ", ForcePersist = true" : "";
+            bool isTask = returnType == "System.Threading.Tasks.Task" || returnType == "Task";
+            bool isTaskOfT = returnType.StartsWith("System.Threading.Tasks.Task<") || returnType.StartsWith("Task<");
+            bool isVoid = returnType == "void";
+
+            if (isVoid)
             {
-                sb.AppendLine($"{indent}await service.{methodName}({callArgs});");
-                var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent);
-                GenerateDispatchResultReturn(sb, indent, "null", triggersVar, forcePersist);
-            }
-            else if (returnType.StartsWith("System.Threading.Tasks.Task<") || returnType.StartsWith("Task<"))
-            {
-                sb.AppendLine($"{indent}var result = await service.{methodName}({callArgs});");
-                var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent);
-                GenerateDispatchResultReturn(sb, indent, GetResultPacking("result"), triggersVar, forcePersist);
-            }
-            else if (returnType == "void")
-            {
+                // Pure sync void return. No Task involvement at all.
                 sb.AppendLine($"{indent}service.{methodName}({callArgs});");
                 var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent);
-                GenerateDispatchResultReturn(sb, indent, "null", triggersVar, forcePersist);
+                EmitSyncDispatchReturn(sb, indent, "null", triggersVar, forcePersistPart);
+            }
+            else if (isTask)
+            {
+                // async Task — sync-completion check, async tail fallback.
+                sb.AppendLine($"{indent}{{");
+                sb.AppendLine($"{indent}    var __t = service.{methodName}({callArgs});");
+                sb.AppendLine($"{indent}    if (__t.IsCompletedSuccessfully)");
+                sb.AppendLine($"{indent}    {{");
+                var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent + "        ");
+                EmitSyncDispatchReturn(sb, indent + "        ", "null", triggersVar, forcePersistPart);
+                sb.AppendLine($"{indent}    }}");
+                var tailName = AsyncTailName(info);
+                sb.AppendLine($"{indent}    return {tailName}(service, __t, serializer);");
+                sb.AppendLine($"{indent}}}");
+                EmitAsyncTail(asyncTails, symbol, info, methodName, triggersByMethod, taskGenericType: null, resultBytesExpr: "null", forcePersistPart);
+            }
+            else if (isTaskOfT)
+            {
+                // async Task<T> — sync-completion check, async tail fallback.
+                sb.AppendLine($"{indent}{{");
+                sb.AppendLine($"{indent}    var __t = service.{methodName}({callArgs});");
+                sb.AppendLine($"{indent}    if (__t.IsCompletedSuccessfully)");
+                sb.AppendLine($"{indent}    {{");
+                sb.AppendLine($"{indent}        var result = __t.Result;");
+                var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent + "        ");
+                EmitSyncDispatchReturn(sb, indent + "        ", GetResultPacking("result"), triggersVar, forcePersistPart);
+                sb.AppendLine($"{indent}    }}");
+                var tailName = AsyncTailName(info);
+                sb.AppendLine($"{indent}    return {tailName}(service, __t, serializer);");
+                sb.AppendLine($"{indent}}}");
+                var taskGenericType = ExtractTaskGenericType(returnType);
+                EmitAsyncTail(asyncTails, symbol, info, methodName, triggersByMethod, taskGenericType, GetResultPacking("__result"), forcePersistPart);
             }
             else
             {
+                // Synchronous T return (e.g. int, MyDto). No Task wrapping.
                 sb.AppendLine($"{indent}var result = service.{methodName}({callArgs});");
                 var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent);
-                GenerateDispatchResultReturn(sb, indent, GetResultPacking("result"), triggersVar, forcePersist);
+                EmitSyncDispatchReturn(sb, indent, GetResultPacking("result"), triggersVar, forcePersistPart);
             }
         }
 
         /// <summary>
-        /// Generates the return statement for DispatchResult.
+        /// Emits the synchronous return statement for the sync fast-path, wrapping the
+        /// DispatchResult in a sync-completed <see cref="ValueTask{T}"/> so the non-async outer
+        /// <c>Dispatch</c> method skips any state-machine allocation.
         /// </summary>
-        private static void GenerateDispatchResultReturn(StringBuilder sb, string indent, string resultBytesExpr, string? triggersVar, bool forcePersist = false)
+        private static void EmitSyncDispatchReturn(StringBuilder sb, string indent, string resultBytesExpr, string? triggersVar, string forcePersistPart)
         {
-            var forcePersistPart = forcePersist ? ", ForcePersist = true" : "";
-
             if (triggersVar != null)
             {
-                sb.AppendLine($"{indent}return new DispatchResult {{ ResultBytes = {resultBytesExpr}, TriggersToExecute = {triggersVar}.Count > 0 ? {triggersVar} : null{forcePersistPart} }};");
+                sb.AppendLine($"{indent}return new ValueTask<DispatchResult>(new DispatchResult {{ ResultBytes = {resultBytesExpr}, TriggersToExecute = {triggersVar}.Count > 0 ? {triggersVar} : null{forcePersistPart} }});");
             }
             else
             {
-                sb.AppendLine($"{indent}return new DispatchResult {{ ResultBytes = {resultBytesExpr}{forcePersistPart} }};");
+                sb.AppendLine($"{indent}return new ValueTask<DispatchResult>(new DispatchResult {{ ResultBytes = {resultBytesExpr}{forcePersistPart} }});");
             }
+        }
+
+        /// <summary>
+        /// Name of the per-method async tail helper. Suffixed with the alias version so multi-version
+        /// declarations sharing an alias each get a unique helper.
+        /// </summary>
+        private static string AsyncTailName(MetaMethodInfo info) => $"Await_{info.Alias}_v{info.Version}";
+
+        /// <summary>
+        /// Emits a private static async tail helper that awaits the pending Task / Task&lt;T&gt;
+        /// returned by a service method that didn't complete synchronously, then constructs the
+        /// same DispatchResult shape the sync fast-path would have. The trigger-collection block
+        /// is duplicated here because trigger conditions are checked AFTER the user method
+        /// returns — semantics must match the sync path.
+        /// </summary>
+        /// <param name="taskGenericType">Type T for Task&lt;T&gt;; <c>null</c> for plain Task.</param>
+        /// <param name="resultBytesExpr">Expression producing serialized result bytes (uses <c>__result</c>
+        ///   as the awaited value for Task&lt;T&gt;, or <c>"null"</c> for plain Task).</param>
+        private static void EmitAsyncTail(StringBuilder asyncTails, string symbol, MetaMethodInfo info, string methodName,
+            Dictionary<string, List<TriggerInfo>> triggersByMethod, string? taskGenericType, string resultBytesExpr, string forcePersistPart)
+        {
+            var tailName = AsyncTailName(info);
+            asyncTails.AppendLine();
+            if (taskGenericType == null)
+            {
+                asyncTails.AppendLine($"        private static async System.Threading.Tasks.ValueTask<DispatchResult> {tailName}({symbol} service, System.Threading.Tasks.Task __t, IMetaSerializer serializer)");
+                asyncTails.AppendLine("        {");
+                asyncTails.AppendLine("            await __t;");
+            }
+            else
+            {
+                asyncTails.AppendLine($"        private static async System.Threading.Tasks.ValueTask<DispatchResult> {tailName}({symbol} service, System.Threading.Tasks.Task<{taskGenericType}> __t, IMetaSerializer serializer)");
+                asyncTails.AppendLine("        {");
+                asyncTails.AppendLine("            var __result = await __t;");
+            }
+            var triggersVar = GenerateTriggerCollection(asyncTails, methodName, triggersByMethod, "            ");
+            if (triggersVar != null)
+            {
+                asyncTails.AppendLine($"            return new DispatchResult {{ ResultBytes = {resultBytesExpr}, TriggersToExecute = {triggersVar}.Count > 0 ? {triggersVar} : null{forcePersistPart} }};");
+            }
+            else
+            {
+                asyncTails.AppendLine($"            return new DispatchResult {{ ResultBytes = {resultBytesExpr}{forcePersistPart} }};");
+            }
+            asyncTails.AppendLine("        }");
+        }
+
+        /// <summary>
+        /// Strips the type argument out of <c>"Task&lt;T&gt;"</c> / <c>"System.Threading.Tasks.Task&lt;T&gt;"</c>.
+        /// Returns <c>"object"</c> as a defensive fallback when the type cannot be parsed.
+        /// </summary>
+        private static string ExtractTaskGenericType(string returnType)
+        {
+            var lt = returnType.IndexOf('<');
+            var gt = returnType.LastIndexOf('>');
+            if (lt < 0 || gt <= lt) return "object";
+            return returnType.Substring(lt + 1, gt - lt - 1).Trim();
         }
 
         /// <summary>
@@ -565,7 +662,7 @@ namespace SharedMeta.Generator.Generators
         /// wraps additional <c>case N:</c> + braces around this block, but the inner indentation
         /// remains the same — C# tolerates extra leading whitespace.
         /// </summary>
-        private static void EmitMethodBody(StringBuilder sb, MethodDeclarationSyntax method, MetaMethodInfo info,
+        private static void EmitMethodBody(StringBuilder sb, StringBuilder asyncTails, MethodDeclarationSyntax method, MetaMethodInfo info,
             string symbol, Dictionary<string, List<TriggerInfo>> triggersByMethod, DetectedSerializer serializer)
         {
             var methodName = method.Identifier.Text;
@@ -591,7 +688,7 @@ namespace SharedMeta.Generator.Generators
                 {
                     GenerateMemoryPackArgumentUnpacking(sb, method, out var argNames);
                     var callArgs = string.Join(", ", argNames);
-                    GenerateMethodCallWithTriggers(sb, methodName, callArgs, returnType, triggersByMethod, serializer, info.ForcePersist);
+                    GenerateMethodCallWithTriggers(sb, asyncTails, symbol, info, methodName, callArgs, returnType, triggersByMethod, serializer, info.ForcePersist);
                 }
                 else
                 {
@@ -634,12 +731,12 @@ namespace SharedMeta.Generator.Generators
                         argNames.Add(paramName);
                     }
                     var callArgs = string.Join(", ", argNames);
-                    GenerateMethodCallWithTriggers(sb, methodName, callArgs, returnType, triggersByMethod, serializer, info.ForcePersist);
+                    GenerateMethodCallWithTriggers(sb, asyncTails, symbol, info, methodName, callArgs, returnType, triggersByMethod, serializer, info.ForcePersist);
                 }
             }
             else
             {
-                GenerateMethodCallWithTriggers(sb, methodName, "", returnType, triggersByMethod, serializer, info.ForcePersist);
+                GenerateMethodCallWithTriggers(sb, asyncTails, symbol, info, methodName, "", returnType, triggersByMethod, serializer, info.ForcePersist);
             }
         }
     }

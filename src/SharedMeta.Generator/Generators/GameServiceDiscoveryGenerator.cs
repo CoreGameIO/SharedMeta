@@ -377,7 +377,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("    /// <summary>Delegate for dispatching RPC calls to services.</summary>");
             sb.AppendLine("    /// <remarks>0.22.0+: <c>methodVersion</c> selects between coexisting <c>[MetaMethod(Version = N)]</c>");
             sb.AppendLine("    /// declarations sharing an alias. Pass 0 for legacy/unversioned dispatch.</remarks>");
-            sb.AppendLine("    public delegate System.Threading.Tasks.Task<DispatchResult> ServerDispatcher(");
+            sb.AppendLine("    public delegate System.Threading.Tasks.ValueTask<DispatchResult> ServerDispatcher(");
             sb.AppendLine("        object service, string methodName, byte[] payload, int methodVersion, IMetaSerializer serializer);");
             sb.AppendLine();
             sb.AppendLine("    /// <summary>Delegate for dispatching subscriber events to services.</summary>");

@@ -35,14 +35,14 @@ namespace SharedMeta.Server.Core.Grains
         /// Handle an RPC call from a player.
         /// Broadcasts to ALL EXCEPT caller (caller receives direct response).
         /// </summary>
-        Task<EntityCallResult> HandleCallAsync(RpcCall call);
+        ValueTask<EntityCallResult> HandleCallAsync(RpcCall call);
 
         /// <summary>
         /// Handle a call from another entity (cross-entity call).
         /// Broadcasts to ALL (including caller entity's subscribers).
         /// Used when one entity needs to call another entity's service.
         /// </summary>
-        Task<EntityCallResult> HandleCallFromEntityAsync(RpcCall call);
+        ValueTask<EntityCallResult> HandleCallFromEntityAsync(RpcCall call);
 
         /// <summary>
         /// 0.22.0+: Fire-and-forget cross-entity call entry point. Marked <c>[OneWay]</c> so the
@@ -59,7 +59,7 @@ namespace SharedMeta.Server.Core.Grains
         /// Handle an external event (from framework services like Lobby).
         /// Broadcasts to ALL subscribers.
         /// </summary>
-        Task<EntityCallResult> HandleExternalEventAsync(
+        ValueTask<EntityCallResult> HandleExternalEventAsync(
             string subscriberInterface,
             string methodName,
             byte[] eventData,
@@ -69,7 +69,7 @@ namespace SharedMeta.Server.Core.Grains
         /// Execute a query call (no subscription required).
         /// Read-only: no state sync, no broadcasts, no replay, no sequence number changes.
         /// </summary>
-        Task<QueryCallResponse> HandleQueryAsync(RpcCall call);
+        ValueTask<QueryCallResponse> HandleQueryAsync(RpcCall call);
 
         /// <summary>
         /// Execute a signal call (fire-and-forget, void return).

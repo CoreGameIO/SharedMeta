@@ -693,7 +693,7 @@ namespace SharedMeta.Server.Core.Grains
             ResetPersistenceTracking();
         }
 
-        public async Task<EntityCallResult> HandleCallAsync(RpcCall call)
+        public async ValueTask<EntityCallResult> HandleCallAsync(RpcCall call)
         {
             if (_provider == null)
             {
@@ -812,7 +812,7 @@ namespace SharedMeta.Server.Core.Grains
         // polling, etc.) must route client packets only to HandleCallAsync / HandleQueryAsync /
         // HandleSignalAsync. Adding any client-reachable wiring to HandleCallFromEntityAsync
         // would silently bypass the [MetaMethod(GenerateClientApi = false)] protection.
-        public async Task<EntityCallResult> HandleCallFromEntityAsync(RpcCall call)
+        public async ValueTask<EntityCallResult> HandleCallFromEntityAsync(RpcCall call)
         {
             if (_provider == null)
             {
@@ -927,7 +927,7 @@ namespace SharedMeta.Server.Core.Grains
             }
         }
 
-        public async Task<QueryCallResponse> HandleQueryAsync(RpcCall call)
+        public async ValueTask<QueryCallResponse> HandleQueryAsync(RpcCall call)
         {
             if (_provider == null)
                 return new QueryCallResponse { Error = "Provider not initialized" };
@@ -983,7 +983,7 @@ namespace SharedMeta.Server.Core.Grains
             return true;
         }
 
-        public async Task<EntityCallResult> HandleExternalEventAsync(
+        public async ValueTask<EntityCallResult> HandleExternalEventAsync(
             string subscriberInterface,
             string methodName,
             byte[] eventData,
@@ -1055,41 +1055,51 @@ namespace SharedMeta.Server.Core.Grains
 
         /// <summary>
         /// Persist state if the policy allows it. Always updates tracking counters.
+        /// Non-async outer: when persistence is debounced (the dominant case under load —
+        /// e.g. PersistencePolicy.EveryNMinutes(10) means most RPCs skip the write), we
+        /// return `default` ValueTask without constructing a state-machine struct.
         /// </summary>
-        private async Task PersistIfNeeded(bool forcePersist)
+        private ValueTask PersistIfNeeded(bool forcePersist)
         {
             _requestsSinceLastSave++;
             _isDirty = true;
 
-            if (ShouldPersist(forcePersist))
+            if (!ShouldPersist(forcePersist))
             {
-                // 0.23.0+ Telemetry: per-write duration. Payload-size bucket is left to the
-                // underlying storage provider to surface (the grain doesn't see the serialized
-                // bytes — that's deep inside IPersistentState's pipeline).
-                var __pStart = System.Diagnostics.Stopwatch.GetTimestamp();
-                using var __pActivity = SharedMeta.Server.Core.Telemetry.SharedMetaActivities.Source.StartActivity(
-                    SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanPersistenceWrite);
-                __pActivity?.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagStateType, typeof(TState).Name);
-                try
+                if (_options.PersistencePolicy.Mode != PersistenceMode.EveryCall)
                 {
-                    await _persistentState.WriteStateAsync();
+                    _logger.PersistenceDeferred(_entityId,
+                        _requestsSinceLastSave, _options.PersistencePolicy.Mode.ToString());
                 }
-                finally
-                {
-                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.PersistenceWriteDuration.Record(
-                        System.Diagnostics.Stopwatch.GetElapsedTime(__pStart).TotalMilliseconds,
-                        new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
-                }
-                var entityId = _entityId;
-                if (forcePersist || _options.PersistencePolicy.Mode != PersistenceMode.EveryCall)
-                    _logger.PersistenceForced(entityId, _requestsSinceLastSave);
-                ResetPersistenceTracking();
+                return default;
             }
-            else if (_options.PersistencePolicy.Mode != PersistenceMode.EveryCall)
+
+            return new ValueTask(PersistIfNeededImpl(forcePersist));
+        }
+
+        private async Task PersistIfNeededImpl(bool forcePersist)
+        {
+            // 0.23.0+ Telemetry: per-write duration. Payload-size bucket is left to the
+            // underlying storage provider to surface (the grain doesn't see the serialized
+            // bytes — that's deep inside IPersistentState's pipeline).
+            var __pStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            using var __pActivity = SharedMeta.Server.Core.Telemetry.SharedMetaActivities.Source.StartActivity(
+                SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanPersistenceWrite);
+            __pActivity?.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagStateType, typeof(TState).Name);
+            try
             {
-                _logger.PersistenceDeferred(_entityId,
-                    _requestsSinceLastSave, _options.PersistencePolicy.Mode.ToString());
+                await _persistentState.WriteStateAsync();
             }
+            finally
+            {
+                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.PersistenceWriteDuration.Record(
+                    System.Diagnostics.Stopwatch.GetElapsedTime(__pStart).TotalMilliseconds,
+                    new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
+            }
+            var entityId = _entityId;
+            if (forcePersist || _options.PersistencePolicy.Mode != PersistenceMode.EveryCall)
+                _logger.PersistenceForced(entityId, _requestsSinceLastSave);
+            ResetPersistenceTracking();
         }
 
         private void ResetPersistenceTracking()
@@ -1101,7 +1111,8 @@ namespace SharedMeta.Server.Core.Grains
 
         private void PersistRandomBytes()
         {
-            if (_provider == null) return;
+            if (_provider == null)
+                return;
             var state = _persistentState.State;
             state.ServerRandomBytes = _provider.GetServerRandomBytes();
             state.OptimisticRandomBytes = _provider.GetOptimisticRandomBytes();
@@ -1109,7 +1120,20 @@ namespace SharedMeta.Server.Core.Grains
             state.NamedRandomsBytes = namedBytes.Length > 0 ? namedBytes : null;
         }
 
-        private async Task DistributeBroadcasts(List<EntityBroadcast> broadcasts, long operationSequence, string? excludePlayerId)
+        // Non-async outer: when there's nothing to distribute (no subscribers, or the only
+        // subscriber is the excluded caller), return `default` ValueTask without constructing
+        // a state-machine struct. The dominant case in our workload (personal profile entity
+        // with a single owner-subscriber who is also the caller of the RPC) hits this branch.
+        private ValueTask DistributeBroadcasts(List<EntityBroadcast> broadcasts, long operationSequence, string? excludePlayerId)
+        {
+            if (_subscriberRefs.Count == 0)
+                return default;
+            if (excludePlayerId != null && _subscriberRefs.Count == 1 && _subscriberRefs.ContainsKey(excludePlayerId))
+                return default;
+            return new ValueTask(DistributeBroadcastsImpl(broadcasts, operationSequence, excludePlayerId));
+        }
+
+        private async Task DistributeBroadcastsImpl(List<EntityBroadcast> broadcasts, long operationSequence, string? excludePlayerId)
         {
             var entityId = _entityId;
             var subscriberCount = _subscriberRefs.Count;
