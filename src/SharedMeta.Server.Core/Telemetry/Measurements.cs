@@ -5,10 +5,8 @@ using System.Diagnostics;
 namespace SharedMeta.Server.Core.Telemetry
 {
     /// <summary>
-    /// 0.23.0+ Disposable measurement helpers that bundle Activity span + duration histogram +
-    /// outcome counter recording into a single <c>using</c>-friendly value type. Replaces the
-    /// scattered try/catch/finally + locals (`__subActivity`, `__subStart`, `__subResult`) that
-    /// previously interleaved with business logic in the grain methods.
+    /// Disposable measurement helpers that bundle Activity span + duration histogram +
+    /// outcome counter recording into a single <c>using</c>-friendly value type.
     /// <para>
     /// Pattern:
     /// <code>
@@ -17,14 +15,13 @@ namespace SharedMeta.Server.Core.Telemetry
     /// catch { __m.MarkError(); throw; }
     /// </code>
     /// On <see cref="IDisposable.Dispose"/>: records duration into the matching histogram,
-    /// increments the count/active-gauge counters with the resolved outcome tag, and stamps the
-    /// activity's result tag before disposing the activity.
+    /// increments the count/active-gauge counters with the resolved outcome tag, and stamps
+    /// the activity's result tag before disposing the activity.
     /// </para>
     /// <para>
-    /// Each measurement type is a <c>ref struct</c>-friendly mutable struct used only on the
-    /// stack inside one method scope. Do NOT capture across async boundaries — the wrapping
-    /// method body is always synchronous-prologue → single await chain → return, so scope is
-    /// stable.
+    /// Mutable struct used only on the stack inside one method scope. Do NOT capture across
+    /// async boundaries — the wrapping method body is always synchronous-prologue → single
+    /// await chain → return, so scope is stable.
     /// </para>
     /// </summary>
     public struct SubscribeMeasurement : IDisposable
@@ -75,11 +72,8 @@ namespace SharedMeta.Server.Core.Telemetry
     }
 
     /// <summary>
-    /// 0.23.0+ Measurement wrapper for <c>EntityGrain.HandleCallAsync</c>. Encapsulates the
-    /// entity-rpc span (with service/method/entity/player tags), the RPC duration histogram
-    /// keyed by (service, method, result), and the request-bytes histogram keyed by
-    /// (service, method). The caller marks success/error explicitly so the result tag flows
-    /// to all three sinks consistently.
+    /// Measurement wrapper for <c>EntityGrain.HandleCallAsync</c> — entity-rpc span, RPC
+    /// duration histogram (service/method/result), and request-bytes histogram (service/method).
     /// </summary>
     public struct RpcMeasurement : IDisposable
     {
@@ -135,10 +129,8 @@ namespace SharedMeta.Server.Core.Telemetry
     }
 
     /// <summary>
-    /// 0.23.0+ Measurement wrapper for <c>EntityGrain.HandleCallFromEntityAsync</c> and the
-    /// fire-and-forget <c>HandleCallFromEntityOneWayAsync</c> path. Differs from
-    /// <see cref="RpcMeasurement"/> in the histogram/counter pair: cross-entity calls land in
-    /// <c>CrossEntityCallDuration</c> / <c>CrossEntityCallCount</c> with a "kind" tag
+    /// Measurement wrapper for cross-entity dispatch (both awaited and OneWay paths). Lands
+    /// in <c>CrossEntityCallDuration</c> / <c>CrossEntityCallCount</c> with a "kind" tag
     /// ("normal" vs "notification") for the dual-mode breakdown.
     /// </summary>
     public struct CrossEntityCallMeasurement : IDisposable
@@ -189,9 +181,9 @@ namespace SharedMeta.Server.Core.Telemetry
     }
 
     /// <summary>
-    /// 0.23.0+ Measurement wrapper for <c>EntityGrain.PersistIfNeededImpl</c>. Records the
-    /// persistence-write duration histogram keyed by state-type and wraps the span. No
-    /// success/error split — write failures already escalate via the IPersistentState
+    /// Measurement wrapper for <c>EntityGrain.PersistIfNeededImpl</c> — duration histogram
+    /// keyed by state-type plus the span. No success/error split since write failures
+    /// already escalate via the IPersistentState
     /// pipeline. Single-tag, single-sink, but bundled into a disposable for consistency
     /// with the other grain measurements.
     /// </summary>

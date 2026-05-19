@@ -4,7 +4,7 @@ using SharedMeta.Core.Packets;
 namespace SharedMeta.Server.Core.Grains
 {
     /// <summary>
-    /// 0.22.0+ Pure compute helpers for per-subscriber broadcast tailoring. Stateless,
+    /// Pure compute helpers for per-subscriber broadcast tailoring. Stateless,
     /// side-effect-free — runs in <c>EntityGrain.DistributeBroadcasts</c> for each
     /// subscriber to decide whether the broadcast going out should carry the replay
     /// payload (modern) or the patch payload (legacy / boundary-affected).

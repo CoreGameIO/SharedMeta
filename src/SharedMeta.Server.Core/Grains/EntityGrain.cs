@@ -52,20 +52,14 @@ namespace SharedMeta.Server.Core.Grains
         private readonly IEntityGrainResolver _entityGrainResolver;
         private readonly IExecutionModeProvider? _executionModeProvider;
         private readonly IConfigVersionResolver? _configVersionResolver;
-        // 0.23.0+ Read-through registry that resolves a client's compatibility capabilities from
-        // their negotiated signature hash. SubscribeAsync looks up the player's caps locally on
-        // the grain instead of receiving the pre-filtered force-patch list as a parameter from
-        // SessionManager — single source of truth, no wire dup, and the bug of stale lists
-        // disappears automatically. Null when the host hasn't registered the registry in DI
-        // (negotiation disabled) — grain stays in pass-through mode.
+        // Resolves capabilities from the caller's signature hash at Subscribe time.
+        // Null = host hasn't wired negotiation; grain stays in pass-through mode.
         private readonly IClientSignatureRegistry? _signatureRegistry;
 
         private IMetaProvider<TState>? _provider;
 
-        // 0.23.0+ Cache for `_entityId` — Orleans allocates a fresh string
-        // on every call. EntityGrain hot paths (HandleCallAsync, DistributeBroadcasts, logger
-        // args, telemetry tags) hit this 5-10× per RPC, and at 60K RPS that's noticeable in
-        // the allocation profile. Set once in OnActivateAsync.
+        // Cached once in OnActivateAsync — GetPrimaryKeyString allocates a fresh
+        // string on every call and hot paths read this 5-10× per RPC.
         private string _entityId = string.Empty;
 
         // Persistence policy tracking
@@ -79,26 +73,20 @@ namespace SharedMeta.Server.Core.Grains
         /// </summary>
         private readonly Dictionary<string, ISessionManagerReference> _subscriberRefs = new();
 
-        // 0.22.0+ Aggregated force-ServerPatch refcount across all active subscribers,
-        // keyed by (ServiceName, Alias, MethodVersion). HandleCallAsync consults this to
-        // decide whether to activate patch tracking for the current dispatch even when the
-        // method's declared mode isn't ServerPatch — so the broadcast can carry both replay
-        // and patch payloads, and per-subscriber tailoring in SessionManagerGrain ships only
-        // what each player needs. Refcounted to handle subscribe/unsubscribe churn in O(1).
+        // Force-ServerPatch refcounts aggregated across active subscribers. HandleCallAsync
+        // consults these to activate patch tracking on dispatches whose declared mode isn't
+        // ServerPatch, so the broadcast carries both replay and patch and per-subscriber
+        // tailoring can ship only what each player needs.
+        //
+        // Two granularities, OR'd at dispatch time:
+        //   Method-level — driven by per-subscriber capabilities (MinCompatibleVersion).
+        //   Service-level — driven by per-entity ConfigStructureBoundary effects.
+        //
+        // Per-subscriber contribution snapshots so Unsubscribe decrements deterministically
+        // without re-asking the session.
         private readonly Dictionary<(string Service, string Alias, int Version), int> _forcePatchMethodRefs = new();
-
-        // Per-subscriber snapshot of contributed methods so Unsubscribe can decrement the
-        // refcounts deterministically without re-asking the session for capabilities.
         private readonly Dictionary<string, List<(string Service, string Alias, int Version)>> _subscriberForcePatchContributions = new();
-
-        // 0.22.0+ Aggregated service-level force-ServerPatch refcount. Populated from
-        // per-entity capabilities (config-boundary effects) that EntityGrain computes locally
-        // at subscribe time + from session-level ForceServerPatchServices forwarded by
-        // SessionManager. HandleCallAsync ORs this with _forcePatchMethodRefs to decide patch
-        // tracking activation. Keyed by ServiceName so any method on that service triggers.
         private readonly Dictionary<string, int> _forcePatchServiceRefs = new();
-
-        // Per-subscriber service-level contribution snapshot for symmetric Unsubscribe.
         private readonly Dictionary<string, List<string>> _subscriberForcePatchServiceContributions = new();
 
         public EntityGrain(
@@ -125,11 +113,8 @@ namespace SharedMeta.Server.Core.Grains
             _signatureRegistry = signatureRegistry;
         }
 
-        /// <summary>
-        /// 0.22.0+ Injected server signature carrying <c>ConfigBoundaries</c> + service-to-config
-        /// bindings. Null when the host hasn't registered <c>MetaServerSignature</c> in DI —
-        /// in that mode <see cref="SubscribeAsync"/> emits no per-entity capability overlay.
-        /// </summary>
+        // ConfigBoundaries + service-to-config bindings. Null = host hasn't wired
+        // MetaServerSignature in DI; Subscribe emits no per-entity capability overlay.
         private readonly SharedMeta.Server.Core.Session.MetaServerSignature? _serverSignature;
 
         public override async Task OnActivateAsync(CancellationToken cancellationToken)
@@ -141,7 +126,6 @@ namespace SharedMeta.Server.Core.Grains
             _logger.EntityGrainActivated(typeof(TState).Name, entityId);
             _logger.EntityStateLoaded(typeof(TState).Name, entityId, state.Subscribers.Count, state.EntitySequenceNumber);
 
-            // 0.23.0+ Telemetry: grain lifecycle counters.
             SharedMeta.Server.Core.Telemetry.SharedMetaMeters.GrainActivation.Add(1,
                 new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
             SharedMeta.Server.Core.Telemetry.SharedMetaMeters.GrainsActive.Add(1,
@@ -176,22 +160,14 @@ namespace SharedMeta.Server.Core.Grains
                 providerBase.ExecutionModeProvider = _executionModeProvider;
                 providerBase.EntityCallHandler = async (targetEntityId, serviceName, methodName, argsBytes, serverTimeTicks) =>
                 {
-                    // 0.20.0: Gift-to-self short-circuit. When the target entity id matches
-                    // this grain's id and the requested service is hosted on this grain's
-                    // TState, the cross-entity call is a self-call. Routing it through an
-                    // Orleans grain RPC would deadlock because EntityGrain is non-reentrant
-                    // (the outer call holds the grain's task scheduler while awaiting the
-                    // self-call, which can never start). Instead, dispatch the call locally
-                    // on this provider as a nested operation — same MetaContext, same state,
-                    // same randoms, fresh inner replay buffer.
+                    // Self-targeting cross-entity call (gift-to-self, sibling service on the
+                    // same state): dispatch locally as a nested op instead of routing through
+                    // Orleans. EntityGrain is non-reentrant — a self-call through the grain
+                    // reference would deadlock against the outer call's held scheduler turn.
                     if (targetEntityId == _entityId)
                     {
                         var resolved = _entityGrainResolver.GetEntityGrainByService(
                             GrainFactory, serviceName, targetEntityId);
-                        // Same TState if the resolver returns a grain reference whose primary
-                        // key matches us AND its grain interface is IEntityGrain<TState>.
-                        // Cheap structural check: the resolver returns IEntityGrain<TState>
-                        // for any service hosted on this state — if so, we are it.
                         if (resolved is IEntityGrain<TState>)
                         {
                             return await providerBase.HandleNestedCallAsync(
@@ -205,20 +181,15 @@ namespace SharedMeta.Server.Core.Grains
                         throw new InvalidOperationException(
                             $"Cannot resolve entity grain for service {serviceName}, entity {targetEntityId}");
 
-                    // Propagate the originating client's app version so the target entity's
-                    // ComputeSchemaCapForClient sees the same version as the session-level call.
-                    // 0.21.0 strict: when there is no current MetaContext (server-internal
-                    // cross-entity call from a timer / background job / server-only service),
-                    // fall back to IConfigVersionResolver.CurrentClientVersion so the target
-                    // resolves under a defined version instead of throwing downstream.
+                    // Propagate the originating client's app version so the target resolves
+                    // schema cap against the same version as the session-level call. Fall back
+                    // to the resolver when no MetaContext is present (server-internal call from
+                    // a timer / background job / server-only service).
                     var callerClientVersion = SharedMeta.Core.MetaContextAccessor.Current?.CallerClientVersion
                         ?? _configVersionResolver?.CurrentClientVersion;
-                    // Propagate originating CallerId + the outer call's CrossOptimistic flag.
-                    // The target's HandleCallFromEntityAsync uses both: when the outer call is
-                    // CrossOptimistic, the target excludes the caller from broadcast distribution
-                    // (its effect is already inlined in the outer call's replay payload — a
-                    // duplicate broadcast would double-apply on the caller). For non-CrossOptimistic
-                    // modes the caller needs the broadcast to learn the target's state change.
+                    // Propagate CrossOptimistic flag so the target excludes the originating
+                    // caller from its broadcast — the effect is already inlined in the outer's
+                    // replay payload; a duplicate would double-apply.
                     var callerCtx = SharedMeta.Core.MetaContextAccessor.Current;
                     var callerId = callerCtx?.CallerId;
                     var isCrossOptimistic = callerCtx?.IsCrossOptimistic ?? false;
@@ -247,10 +218,9 @@ namespace SharedMeta.Server.Core.Grains
                     };
                 };
 
-                // 0.22.0+: Fire-and-forget cross-entity dispatch for [MetaMethod(OneWay = true)]
-                // methods. Mirrors EntityCallHandler's lookup logic but routes through the
-                // [OneWay]-marked grain entry point so the source grain doesn't wait. No result
-                // recording, no return — the handler is void.
+                // Fire-and-forget cross-entity dispatch for [MetaMethod(OneWay = true)] —
+                // routes through the [OneWay]-marked grain entry so the source doesn't wait
+                // for the reply envelope.
                 providerBase.EntityCallOneWayHandler = (targetEntityId, serviceName, methodName, argsBytes, serverTimeTicks) =>
                 {
                     var targetGrain = _entityGrainResolver.GetEntityGrainByService(
@@ -265,9 +235,9 @@ namespace SharedMeta.Server.Core.Grains
 
                     var callerClientVersion = SharedMeta.Core.MetaContextAccessor.Current?.CallerClientVersion
                         ?? _configVersionResolver?.CurrentClientVersion;
-                    // Propagate originating CallerId + the outer call's CrossOptimistic flag.
-                    // Same reasoning as the awaited cross-call path above. OneWay delegates to
-                    // HandleCallFromEntityAsync, so the conditional broadcast-exclusion applies.
+                    // Propagate the outer's CrossOptimistic flag so the target excludes the
+                    // originating caller from its broadcast (effect is already inlined in the
+                    // outer call's replay payload, would double-apply on duplicate).
                     var callerCtx = SharedMeta.Core.MetaContextAccessor.Current;
                     var callerId = callerCtx?.CallerId;
                     var isCrossOptimistic = callerCtx?.IsCrossOptimistic ?? false;
@@ -282,10 +252,8 @@ namespace SharedMeta.Server.Core.Grains
                         IsCrossOptimistic = isCrossOptimistic
                     };
 
-                    // [OneWay] on IEntityGrainBase.HandleCallFromEntityOneWayAsync makes this a
-                    // genuine fire-and-forget on the Orleans wire — the discard `_ =` makes the
-                    // C# compiler happy about the unobserved Task and ensures no SynchronizationContext
-                    // hop happens here.
+                    // Discard is intentional — [OneWay] on the target's entry suppresses the
+                    // reply envelope; the Task returned here is for the local dispatch only.
                     _ = targetGrain.HandleCallFromEntityOneWayAsync(rpcCall);
                 };
 
@@ -320,26 +288,17 @@ namespace SharedMeta.Server.Core.Grains
             if (_options.DeepDesyncEnabled.HasValue && _provider is MetaProviderBase<TState> ddProvider)
                 ddProvider.DeepDesyncEnabled = _options.DeepDesyncEnabled.Value;
 
-            // 0.20.0 fix: seed the provider's schema version from persisted state.Version.
-            // Lazy migration is still deferred until subscribe/HandleCall (we don't yet know
-            // the client's version), but the provider must know which schema the state is
-            // already at — otherwise the fresh-entity-floor rule re-runs [MetaInit] on every
-            // activation, even when the state was initialized in a previous session.
+            // Seed the provider's schema version from persisted state.Version so the
+            // fresh-entity-floor rule doesn't re-run [MetaInit] on every activation.
+            // Migration itself is deferred to Subscribe/HandleCall (client version unknown here).
             if (_provider is MetaProviderBase<TState> seedProvider)
                 seedProvider.SeedSchemaVersion(state.Version);
 
-            // Activation is intentionally NOT running [MetaInit] migration here. We don't yet
-            // know which client triggered activation, so we cannot decide which config branch
-            // to migrate to. Eagerly migrating to the provider's CurrentVersion would lock
-            // older clients out of fresh entities (their resolved config branch can't satisfy
-            // the new schema's IsClientConfigCompatible gate).
-            //
-            // Init/migration is deferred to:
-            //   • SubscribeAsync — runs migration capped to the subscribing client's branch.
-            //   • HandleCallAsync — lazy migration capped to call.CallerClientVersion.
-            // First-time base init for a fresh entity (state.Version == 0) is handled by the
-            // same path: ComputeRequiredStateSchema + the generated "fresh entity floor" rule
-            // ensure schema 1 always runs once a client interacts with the entity.
+            // [MetaInit] migration is intentionally NOT run here. The client triggering
+            // activation isn't known yet, so we can't pick a config branch to migrate to.
+            // Migration is deferred to SubscribeAsync (capped to subscriber's branch) and
+            // HandleCallAsync (lazy, capped to call.CallerClientVersion). Fresh entities
+            // run base init through the same path via the "fresh entity floor" rule.
 
             ResetPersistenceTracking();
 
@@ -360,7 +319,6 @@ namespace SharedMeta.Server.Core.Grains
                 _logger.EntityStatePersisted(entityId);
             }
 
-            // 0.23.0+ Telemetry: grain lifecycle counters.
             SharedMeta.Server.Core.Telemetry.SharedMetaMeters.GrainDeactivation.Add(1,
                 new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
                 new KeyValuePair<string, object?>("reason", reason.ReasonCode.ToString()));
@@ -372,9 +330,6 @@ namespace SharedMeta.Server.Core.Grains
 
         public async Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null, ulong clientSignatureHash = 0)
         {
-            // 0.23.0+ Telemetry bundled into a single disposable — span + duration histogram +
-            // count counter + subscribers-active gauge all flush on scope exit via Dispose().
-            // Mark error explicitly in catch so the result tag flows to all three sinks.
             using var __m = SharedMeta.Server.Core.Telemetry.SubscribeMeasurement.Start(typeof(TState).Name, _entityId, playerId);
             try
             {
@@ -401,26 +356,18 @@ namespace SharedMeta.Server.Core.Grains
 
             var state = _persistentState.State;
 
-            // Drive client-aware init/migration BEFORE the compatibility gate. For fresh
-            // entities (state.Version == 0) this runs the base [MetaInit] capped to the
-            // subscriber's resolved config branch, so a 1.x client never causes a 2.0 jump.
-            // For entities already at a higher schema than the client supports, this is a
-            // no-op and the gate below rejects the subscribe.
-            //
-            // 0.21.0 Global: migration is driven by IConfigVersionResolver.CurrentClientVersion
-            // (server-set) — NOT the joiner's own version. Schema progression on Global entities
-            // tracks the server's CurrentClientVersion regardless of who's joining. Private/Shared
-            // keep the joiner-driven model (pin establishes / validates per first subscriber).
+            // Drive init/migration capped to the subscriber's branch BEFORE the compatibility
+            // gate, so a 1.x client joining a fresh entity never causes a 2.0 schema jump.
+            // For Global scope migration tracks the server's CurrentClientVersion instead of
+            // the joiner's version — Global entities progress with server policy, not joiners.
             if (_provider is MetaProviderBase<TState> mpbInit)
             {
                 var migrationDriverVersion = mpbInit.Scope == EntityScope.Global
                     ? (_configVersionResolver?.CurrentClientVersion ?? clientVersion)
                     : clientVersion;
                 var clientCfg = mpbInit.ResolveClientConfigVersion(migrationDriverVersion);
-                // 0.21.0: async variant avoids sync-over-async when the provider needs to
-                // fetch bytes across a grain boundary (e.g. BroadcastingConfigProvider on
-                // cold-cache version). Default impl forwards to sync InitializeConfig for
-                // providers that don't need async materialization.
+                // Async variant: providers may need to fetch bytes across a grain boundary
+                // (e.g. BroadcastingConfigProvider on cold-cache version).
                 await mpbInit.InitializeConfigAsync(clientCfg);
                 var cap = mpbInit.ComputeSchemaCapForClient(migrationDriverVersion);
                 if (await mpbInit.RunInitOrMigrateAsync(migrationDriverVersion, cap))
@@ -434,12 +381,10 @@ namespace SharedMeta.Server.Core.Grains
                 }
             }
 
-            // Per-entity config compatibility gate: reject clients whose resolved config version
-            // is below the minimum required for the entity's current state schema — but only
-            // when the schema bump was marked Breaking = true on [MetaStateVersion]. 0.22.0:
-            // generator emits IsClientConfigCompatible that returns false ONLY for breaking
-            // bumps; non-breaking schema advances allow old clients to subscribe and rely on
-            // VersionTolerant deserialization to skip new fields.
+            // Reject clients whose resolved config version is below the minimum required for
+            // the entity's current state schema — but only when the schema bump was marked
+            // Breaking=true on [MetaStateVersion]. Non-breaking bumps let old clients subscribe
+            // and rely on VersionTolerant deserialization to skip new fields.
             if (_provider != null)
             {
                 var resolvedConfigVersion = _provider.ResolveClientConfigVersion(clientVersion);
@@ -461,19 +406,11 @@ namespace SharedMeta.Server.Core.Grains
                 }
             }
 
-            // 0.21.0 Phases 5+6: establish runtime config-version pin (first subscriber) or
-            // validate against existing pin (subsequent Shared subscribers).
-            //
-            //   • EntityScope.Private — pin set once on owner connect; survives subscriber
-            //     churn until grain deactivation. Owner is the sole subscriber so the
-            //     ActiveConfigPins.Count check resolves "first-time" trivially.
-            //
-            //   • EntityScope.Shared — first subscriber establishes pin; every subsequent
-            //     joiner is validated against it. Patch differences tolerated (joiner gets
-            //     pinned patch via GetCachedConfigForClient); Major.Minor mismatch rejects.
-            //
-            //   • EntityScope.Global — pin is NEVER set. Every call resolves freshly from
-            //     IConfigVersionResolver.CurrentClientVersion.
+            // Establish runtime config-version pin (first subscriber) or validate against
+            // an existing pin (subsequent Shared joiners). Global scope never pins — it
+            // resolves freshly from IConfigVersionResolver.CurrentClientVersion every call.
+            // Patch differences tolerated on Shared (joiner downgrades to pinned patch);
+            // Major.Minor mismatch rejects so mixed-branch clients can't share a session.
             if (_provider is MetaProviderBase<TState> mpbPin && mpbPin.Scope != EntityScope.Global)
             {
                 if (mpbPin.ActiveConfigPins.Count == 0)
@@ -498,16 +435,9 @@ namespace SharedMeta.Server.Core.Grains
             };
             _subscriberRefs[playerId] = sessionManager;
 
-            // 0.22.0 Aggregate this player's force-patch declarations. Only methods on services
-            // hosted on THIS entity matter; other-service entries from the player's global
-            // capabilities are ignored. We accept everything from the registry; HandleCallAsync's
-            // dispatch-time check is keyed by (ServiceName, MethodName, MethodVersion) so foreign
-            // entries can't false-trigger.
-            //
-            // 0.23.0+ Resolve the caller's compatibility capabilities locally from the negotiated
-            // signature hash via the per-silo registry. Previously SessionManager filtered + pushed
-            // the list as a parameter; now the registry is the single source of truth and stale
-            // pushed-state cannot exist. Null caps / zero hash / no registry → no contributions.
+            // Resolve this subscriber's force-patch declarations from the signature registry.
+            // Accept everything — HandleCallAsync's dispatch-time check is keyed by
+            // (Service, Method, Version) so foreign entries can't false-trigger.
             IReadOnlyList<MethodIdentity>? forceServerPatchMethods = null;
             if (clientSignatureHash != 0 && _signatureRegistry != null)
             {
@@ -515,10 +445,9 @@ namespace SharedMeta.Server.Core.Grains
                 forceServerPatchMethods = caps?.ForceServerPatchMethods;
             }
 
-            // 0.23.0+ Always drop prior contributions unconditionally on resubscribe — even
-            // when the new list is null/empty — otherwise refcounts drift permanently upward
-            // when a player resubscribes with a smaller (or empty) force-patch set than before
-            // (e.g. client upgraded and no longer needs legacy patch path).
+            // Always drop prior contributions unconditionally — even when the new list is
+            // null/empty — otherwise refcounts drift permanently upward when a resubscribe
+            // brings a smaller force-patch set (e.g. client upgraded out of legacy path).
             if (_subscriberForcePatchContributions.Remove(playerId, out var prior))
             {
                 foreach (var key in prior)
@@ -536,13 +465,11 @@ namespace SharedMeta.Server.Core.Grains
                 _subscriberForcePatchContributions[playerId] = contributions;
             }
 
-            // 0.22.0 Compute per-entity capability overlay from [MetaConfigStructureBoundary]
-            // declarations. Resolved config version for this player + this entity's bound
-            // config(s) → which services need force-patch. Stored in BOTH the local refcount
-            // (so HandleCallAsync activates patch tracking) AND the returned snapshot (so
-            // SessionManagerGrain can cache for broadcast fan-out tailoring + forward to client).
-            //
-            // 0.23.0+ Same unconditional-drop pattern as method-level above.
+            // Compute per-entity capability overlay from [MetaConfigStructureBoundary]:
+            // which services on this entity need force-patch for this specific subscriber.
+            // Stored in the local refcount (HandleCallAsync activates patch tracking) AND
+            // shipped on the snapshot (client gates the call locally without round trip).
+            // Same unconditional-drop pattern as method-level above.
             var augmentedCaps = ComputePerEntityCapabilities(clientVersion);
             if (_subscriberForcePatchServiceContributions.Remove(playerId, out var priorSvc))
             {
@@ -574,11 +501,9 @@ namespace SharedMeta.Server.Core.Grains
                 CurrentSequenceNumber = state.EntitySequenceNumber,
                 OptimisticRandomBytes = _provider?.GetOptimisticRandomBytes(),
                 NamedRandomsBytes = namedBytes is { Length: > 0 } ? namedBytes : null,
-                // 0.21.0 Phase 5+7: scope-aware effective version. For Private/Shared this is
-                // the pinned version (so the client materializes the same config the server
-                // will dispatch under). For Global it's the IConfigVersionResolver.CurrentClientVersion
-                // resolution, NOT the joiner's own resolved version — Global entities run under
-                // server-driven config regardless of who's calling.
+                // Scope-aware effective version: pinned for Private/Shared, resolver-driven
+                // for Global — so the client materializes the same config the server will
+                // dispatch under, not its own natural branch.
                 ConfigVersion = (_provider as MetaProviderBase<TState>)?.ResolveEffectiveConfigVersion(clientVersion)
                                ?? _provider?.ResolveClientConfigVersion(clientVersion)
                                ?? default,
@@ -590,15 +515,10 @@ namespace SharedMeta.Server.Core.Grains
                 __m.MarkError();
                 throw;
             }
-            // SubscribeMeasurement.Dispose (via `using` above) flushes duration histogram,
-            // subscribe count, and active-subscribers gauge with the resolved result tag.
         }
 
-        /// <summary>
-        /// 0.22.0+ Compute per-entity capability overlay for a specific subscriber. Delegates
-        /// the pure boundary check to <see cref="SharedMeta.Server.Core.Session.ConfigBoundaryEvaluator.ComputeAffectedServices"/>
-        /// (unit-tested independently). Returns <c>null</c> when no boundaries apply.
-        /// </summary>
+        // Delegates the boundary check to ConfigBoundaryEvaluator (pure, unit-tested).
+        // Returns null when no boundaries apply.
         private SharedMeta.Core.Transport.EntityAugmentedCapabilities? ComputePerEntityCapabilities(string? clientVersion)
         {
             if (_serverSignature == null
@@ -641,10 +561,8 @@ namespace SharedMeta.Server.Core.Grains
             _persistentState.State.Subscribers.Remove(playerId);
             _subscriberRefs.Remove(playerId);
 
-            // 0.22.0 Decrement force-patch refcounts for what this player contributed at
-            // subscribe time. Removing zero-count entries keeps the dispatch-time lookup tight.
-            // 0.23.0+ Uses shared Increment/Decrement helpers — single-lookup via
-            // CollectionsMarshal, identical semantics to the Subscribe path.
+            // Decrement force-patch refcounts for this player's prior contributions.
+            // Helpers remove zero-count entries to keep dispatch-time lookup tight.
             if (_subscriberForcePatchContributions.Remove(playerId, out var contributions))
             {
                 foreach (var key in contributions)
@@ -658,12 +576,9 @@ namespace SharedMeta.Server.Core.Grains
 
             _logger.PlayerUnsubscribed(_entityId, playerId);
 
-            // 0.21.0: pin lives only while there are active subscribers. When the last
-            // subscriber leaves, drop pins so the next first-subscriber re-establishes
-            // fresh — picks up any patch published while the entity was effectively idle.
-            // For Private (single owner): disconnect + reconnect → fresh pin, hot-patches apply.
-            // For Shared: all-leave → next "first joiner" of a fresh session re-pins.
-            // Global never holds pins, no-op there.
+            // Pin lives only while there are active subscribers. When the last leaves,
+            // drop pins so the next first-subscriber re-establishes fresh — picks up any
+            // patch published while the entity was effectively idle.
             if (_persistentState.State.Subscribers.Count == 0
                 && _provider is MetaProviderBase<TState> mpbClear
                 && mpbClear.ActiveConfigPins.Count > 0)
@@ -685,9 +600,6 @@ namespace SharedMeta.Server.Core.Grains
                 return new EntityCallResult { Error = "Provider not initialized" };
             }
 
-            // 0.23.0+ Telemetry bundled into one disposable — entity-rpc span + duration histogram +
-            // request-bytes histogram all flush on scope exit via Dispose(). Mark error explicitly
-            // in catch so the result tag flows to all sinks consistently.
             using var __m = SharedMeta.Server.Core.Telemetry.RpcMeasurement.Start(
                 SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanEntityRpc,
                 call.ServiceName, call.MethodName, _entityId, call.CallerId, call.Payload?.Length ?? 0);
@@ -702,15 +614,10 @@ namespace SharedMeta.Server.Core.Grains
 
             try
             {
-                // 0.22.0 Decide if this dispatch needs patch tracking to satisfy any legacy
-                // subscriber's force-patch capability. O(1) lookup — refcount Dictionary
-                // populated at subscribe time. When true, the provider activates the
-                // PatchWrapper alongside normal replay recording, so the resulting broadcast
-                // carries both PatchBytes and ReplayPayload. SessionManagerGrain then strips
-                // per-subscriber on fan-out.
-                // ORs two refcounts:
-                //   * _forcePatchMethodRefs   — session-level MinCompatibleVersion mismatches.
-                //   * _forcePatchServiceRefs  — per-entity ConfigStructureBoundary triggers.
+                // Activate patch tracking when any subscriber needs the patch fallback
+                // (method-level MinCompatibleVersion mismatch OR service-level
+                // ConfigStructureBoundary trigger). The resulting broadcast carries BOTH
+                // ReplayPayload and PatchBytes; per-subscriber tailoring strips one on fan-out.
                 bool requirePatchForFanOut =
                        _forcePatchMethodRefs.ContainsKey((call.ServiceName, call.MethodName, call.MethodVersion))
                     || _forcePatchServiceRefs.ContainsKey(call.ServiceName);
@@ -787,8 +694,8 @@ namespace SharedMeta.Server.Core.Grains
                 return new EntityCallResult { Error = "Provider not initialized" };
             }
 
-            // 0.23.0+ Cross-entity telemetry bundled via CrossEntityCallMeasurement.
-            // Kind = "normal" (awaited path); the [OneWay] notification path uses kind="notification".
+            // kind="normal" splits the awaited cross-entity path from the [OneWay] notification
+            // path (kind="notification") in the same histogram.
             using var __m = SharedMeta.Server.Core.Telemetry.CrossEntityCallMeasurement.Start(
                 call.ServiceName, call.MethodName, _entityId, "normal");
 
@@ -851,31 +758,23 @@ namespace SharedMeta.Server.Core.Grains
             }
         }
 
-        // 0.22.0+: Fire-and-forget cross-entity entry. Same body as HandleCallFromEntityAsync
-        // but no result is sent back — caller side dispatched via Orleans [OneWay], so even
-        // unhandled exceptions die here in the catch and are only logged. Broadcasts still
-        // reach THIS entity's own subscribers normally (clan-power change is visible to clan
-        // subscribers even though the source grain isn't waiting).
+        // Fire-and-forget cross-entity entry: same body as HandleCallFromEntityAsync, result
+        // discarded, exceptions logged-only since the caller dispatched via Orleans [OneWay].
+        // Broadcasts still reach THIS entity's subscribers normally.
         public async Task HandleCallFromEntityOneWayAsync(RpcCall call)
         {
-            // OneWay (Notification mode) telemetry: separate count from the awaited cross-entity
-            // path so dashboards can see how much of the cross-entity traffic is fire-and-forget.
-            // The inner HandleCallFromEntityAsync also records its own normal-kind cross-entity
-            // metric for the same call — that's intentional (we want both "outer dispatch" and
-            // "inner execution" perspectives). For Activity tracing the inner span nests under
-            // this one via Activity.Current.
+            // Notification-kind count is recorded both here and as "normal" inside
+            // HandleCallFromEntityAsync — intentional, gives "outer dispatch" and "inner
+            // execution" perspectives in the same histogram.
             SharedMeta.Server.Core.Telemetry.SharedMetaMeters.CrossEntityCallCount.Add(1,
                 new KeyValuePair<string, object?>("to_service", call.ServiceName),
                 new KeyValuePair<string, object?>("kind", "notification"));
             try
             {
-                // Reuse the standard cross-entity path. The result is computed (state mutates,
-                // broadcasts produced) and we just discard the returned EntityCallResult.
                 await HandleCallFromEntityAsync(call);
             }
             catch (Exception ex)
             {
-                // Source grain isn't waiting; surface only in the log.
                 _logger.ErrorHandlingCrossEntityCall(ex);
             }
         }
@@ -1032,10 +931,6 @@ namespace SharedMeta.Server.Core.Grains
 
         private async Task PersistIfNeededImpl(bool forcePersist)
         {
-            // 0.23.0+ Telemetry bundled via PersistenceWriteMeasurement — duration histogram
-            // + span flush on scope exit. The grain doesn't see the serialized bytes (that's
-            // deep inside IPersistentState's pipeline), so payload-size buckets are left to
-            // the underlying storage provider to surface.
             using (SharedMeta.Server.Core.Telemetry.PersistenceWriteMeasurement.Start(typeof(TState).Name))
             {
                 await _persistentState.WriteStateAsync();
@@ -1053,15 +948,9 @@ namespace SharedMeta.Server.Core.Grains
             _isDirty = false;
         }
 
-        // ─── Force-patch refcount helpers (0.23.0+) ────────────────────────────
-        // Subscribe/Unsubscribe paths aggregate per-subscriber force-patch contributions
-        // into _forcePatchMethodRefs / _forcePatchServiceRefs. Helpers below collapse the
-        // two-lookup `TryGetValue` + indexer assignment into a single dictionary probe via
-        // `CollectionsMarshal.GetValueRefOrAddDefault` / `GetValueRefOrNullRef`, and keep
-        // the increment/decrement semantics consistent across all call sites.
-        //
-        // Decrement removes the entry when count drops to <= 1, so dispatch-time lookup
-        // (`ContainsKey` in HandleCallAsync's requirePatchForFanOut decision) stays tight.
+        // Force-patch refcount helpers — single-lookup increment/decrement via
+        // CollectionsMarshal. Decrement removes the entry at zero so the dispatch-time
+        // ContainsKey lookup stays tight.
 
         private void IncrementMethodRef((string Service, string Alias, int Version) key)
         {
@@ -1107,9 +996,8 @@ namespace SharedMeta.Server.Core.Grains
         }
 
         // Non-async outer: when there's nothing to distribute (no subscribers, or the only
-        // subscriber is the excluded caller), return `default` ValueTask without constructing
-        // a state-machine struct. The dominant case in our workload (personal profile entity
-        // with a single owner-subscriber who is also the caller of the RPC) hits this branch.
+        // subscriber is the excluded caller), return default ValueTask — avoids constructing
+        // a state machine for the common case (personal-profile entity, sole subscriber == caller).
         private ValueTask DistributeBroadcasts(List<EntityBroadcast> broadcasts, long operationSequence, string? excludePlayerId)
         {
             if (_subscriberRefs.Count == 0)
@@ -1141,17 +1029,13 @@ namespace SharedMeta.Server.Core.Grains
 
                     try
                     {
-                        // 0.22.0 Per-subscriber tailoring at fan-out. Decide once whether THIS
-                        // subscriber needs the patch variant (legacy: their session-level or
-                        // per-entity caps mark this method/service as force-patch) or the replay
-                        // variant (modern: native execution). Then send the appropriately-stripped
-                        // broadcast — no extra bytes on the wire and no work for SessionManagerGrain.
+                        // Per-subscriber tailoring: strip ReplayPayload or PatchBytes so each
+                        // subscriber receives only their flavour. Tailor produces a broadcast
+                        // with exactly one of the two — replay (modern) or patch (legacy).
                         var tailored = TailorBroadcastForSubscriber(broadcast, playerId);
                         _logger.SendingBroadcast(playerId, entityId, operationSequence, tailored.Op.ServiceName, tailored.Op.MethodName);
                         await sessionManager.ReceiveBroadcastAsync(entityId, tailored, operationSequence);
                         sentCount++;
-                        // Telemetry: which path did this subscriber receive? Tailor produces a
-                        // broadcast with only ReplayPayload (modern) OR only PatchBytes (legacy).
                         if (tailored.Op.PatchBytes is { Length: > 0 }) patchCount++;
                         else replayCount++;
                     }
@@ -1163,7 +1047,6 @@ namespace SharedMeta.Server.Core.Grains
 
                 _logger.BroadcastSent(sentCount, subscriberCount, broadcast.Op.ServiceName, broadcast.Op.MethodName);
 
-                // 0.23.0+ Telemetry: fan-out size + per-payload-kind size distribution.
                 SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastFanOutSize.Record(sentCount,
                     new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
                 if (broadcast.Op.ReplayPayload is { Length: > 0 } replay)
@@ -1195,10 +1078,7 @@ namespace SharedMeta.Server.Core.Grains
             }
         }
 
-        /// <summary>
-        /// 0.22.0+ Per-subscriber tailoring at fan-out. Delegates to the pure static helper
-        /// <see cref="BroadcastTailor.TailorForSubscriber"/> for the actual strip logic.
-        /// </summary>
+        // Delegates the strip logic to the pure BroadcastTailor helper.
         private EntityBroadcast TailorBroadcastForSubscriber(EntityBroadcast original, string playerId)
         {
             _subscriberForcePatchContributions.TryGetValue(playerId, out var methodContribs);

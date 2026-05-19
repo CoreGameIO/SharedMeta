@@ -79,11 +79,10 @@ namespace SharedMeta.Server.Core.Session
         // Saved subscriptions for reconnect after transport disconnect
         private List<SavedSubscription>? _savedSubscriptions;
 
-        // 0.22.0+ / 0.23.0+ Per-player compatibility verdict used to be cached here as
-        // ClientCapabilities pushed in via SetClientCapabilitiesAsync. Replaced by the
-        // signature-hash flow: MetaConnectionHandler passes the hash on SubscribeToEntityAsync,
-        // and EntityGrain resolves caps locally via IClientSignatureRegistry (single source of
-        // truth, no rolled-out-of-date cache problem).
+        // Per-player ClientCapabilities used to live here as a pushed cache. Replaced by
+        // the signature-hash flow: MetaConnectionHandler passes the hash on Subscribe and
+        // EntityGrain resolves caps locally via IClientSignatureRegistry — single source
+        // of truth, no stale push-cache.
 
         // ── RPC ordering / stash ─────────────────────────────────────────
         // When SessionManagerOptions.EnforceRpcOrder is true, RPC calls that arrive with
@@ -438,17 +437,10 @@ namespace SharedMeta.Server.Core.Session
                     };
                 }
 
-                // 0.23.0+ Pass the negotiated signature hash; EntityGrain resolves the caller's
-                // ClientCapabilities locally via IClientSignatureRegistry (single source of truth,
-                // single per-silo cache). Replaces the 0.22.x push-the-filtered-list model.
-                // 0 = no negotiation / pre-0.22 client — EntityGrain treats this as no
-                // force-patch contributions, same as null caps would have.
-                //
-                // 0.22.0 The per-entity capability overlay returned by EntityGrain
-                // (snapshot.AugmentedCapabilities) is forwarded to the client unchanged through
-                // EntitySubscriptionResult.AugmentedCapabilities → SubscribeResponse. No copy is
-                // cached here — broadcast tailoring lives entirely on EntityGrain side
-                // (BroadcastTailor.TailorForSubscriber).
+                // Pass the negotiated signature hash; EntityGrain resolves caps locally via
+                // IClientSignatureRegistry. Zero hash = no negotiation, no caps.
+                // The per-entity capability overlay (snapshot.AugmentedCapabilities) is
+                // forwarded to the client unchanged. Broadcast tailoring lives on EntityGrain.
                 var snapshot = await entityGrain.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>(), clientVersion, clientSignatureHash);
 
                 _subscribedEntities[entityId] = new EntitySubscriptionInfo(
@@ -478,8 +470,8 @@ namespace SharedMeta.Server.Core.Session
             }
             catch (SharedMeta.Core.IncompatibleFeatureException incompat)
             {
-                // 0.22.0+: surface structured rejection so the client can throw a typed
-                // IncompatibleFeatureException rather than a generic Exception(string).
+                // Structured rejection so the client throws a typed exception rather than
+                // a generic Exception(string).
                 _logger.ErrorSubscribing(incompat, entityId);
                 return new EntitySubscriptionResult
                 {

@@ -3,7 +3,7 @@ using System.Diagnostics;
 namespace SharedMeta.Server.Core.Telemetry
 {
     /// <summary>
-    /// 0.23.0+: Static <see cref="ActivitySource"/> for distributed tracing of server-side
+    /// Static <see cref="ActivitySource"/> for distributed tracing of server-side
     /// SharedMeta operations. Hosts subscribe via OpenTelemetry:
     /// <code>
     /// builder.Services.AddOpenTelemetry()

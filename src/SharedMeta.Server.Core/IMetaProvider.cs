@@ -101,11 +101,10 @@ namespace SharedMeta.Server.Core
         /// dispatches in-process and never reaches this method.
         /// </param>
         /// <param name="requirePatchForFanOut">
-        /// 0.22.0+ When <c>true</c>, the provider activates patch tracking even for non-ServerPatch
-        /// execution modes — the resulting broadcast carries both <c>ReplayPayload</c> and
-        /// <c>PatchBytes</c>, and <c>SessionManagerGrain</c> tailors per-subscriber on fan-out
-        /// (modern keeps replay, legacy keeps patch). EntityGrain sets this when its aggregated
-        /// force-patch refcount contains the call's <c>(Service, Alias, MethodVersion)</c> tuple.
+        /// When true, activates patch tracking even for non-ServerPatch execution modes —
+        /// the resulting broadcast carries both <c>ReplayPayload</c> and <c>PatchBytes</c>,
+        /// and the per-subscriber tailor strips one on fan-out (modern keeps replay, legacy
+        /// keeps patch). Set by EntityGrain when its force-patch refcount contains the call.
         /// </param>
         /// <returns>Response and broadcasts to distribute.</returns>
         ValueTask<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true, bool requirePatchForFanOut = false);

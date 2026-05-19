@@ -11,7 +11,7 @@ namespace SharedMeta.Server.Core.Session
     /// <summary>
     /// Default <see cref="IClientSignatureRegistry"/> implementation. Singleton per silo.
     /// <para>
-    /// 0.22.0+ capability compute: <see cref="RegisterAsync"/> consults the injected
+    /// Capability compute: <see cref="RegisterAsync"/> consults the injected
     /// <see cref="MetaServerSignature"/> (generated as <c>GameServiceDiscovery.ServerSignature</c>
     /// in the consumer project, supplied via DI) and produces <see cref="ClientCapabilities"/>
     /// that flag:
@@ -82,7 +82,7 @@ namespace SharedMeta.Server.Core.Session
         }
 
         /// <summary>
-        /// 0.22.0+ capability compute. Walks the client's <see cref="MetaClientSignature.KnownMethods"/>
+        /// Capability compute. Walks the client's <see cref="MetaClientSignature.KnownMethods"/>
         /// and produces a verdict per entry by consulting the injected <see cref="MetaServerSignature"/>.
         /// Pure / side-effect free / deterministic — calling this twice with the same args
         /// returns equivalent results (different list instances, identical contents).

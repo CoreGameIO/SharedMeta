@@ -3,8 +3,8 @@ using System.Diagnostics.Metrics;
 namespace SharedMeta.Server.Core.Telemetry
 {
     /// <summary>
-    /// 0.23.0+: Static <see cref="Meter"/> exposing every server-side instrument SharedMeta
-    /// records. Hosts subscribe via OpenTelemetry (or any <see cref="MeterListener"/>):
+    /// Static <see cref="Meter"/> exposing every server-side instrument SharedMeta records.
+    /// Hosts subscribe via OpenTelemetry (or any <see cref="MeterListener"/>):
     /// <code>
     /// builder.Services.AddOpenTelemetry()
     ///     .WithMetrics(b =&gt; b
@@ -160,7 +160,7 @@ namespace SharedMeta.Server.Core.Telemetry
             Meter.CreateHistogram<long>("sharedmeta.persistence.write.payload_bytes", "By",
                 "Persisted state size in bytes");
 
-        // ── Compatibility negotiation (0.22.0+) ─────────────────────────────────────
+        // ── Compatibility negotiation ───────────────────────────────────────────────
 
         /// <summary>Client-signature cache hit / miss. Tag: <c>result</c> (<c>hit|miss</c>).</summary>
         public static readonly Counter<long> SignatureCacheLookup =

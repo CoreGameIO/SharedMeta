@@ -30,20 +30,19 @@ namespace SharedMeta.Server.Core.Transport
         private readonly IMetaSerializer? _serializer;
         private readonly SharedMeta.Core.Patch.IPatchSchemaRegistry? _schemaRegistry;
         /// <summary>
-        /// 0.22.0+: silo-local cache fronting the cluster's client-signature directory.
-        /// Null when the host hasn't called <c>AddSharedMetaClientSignatureRegistry()</c> —
-        /// in that mode the handler treats every connection as "negotiation disabled" and
-        /// returns empty capabilities on every SessionConnect / RegisterClientSignature.
+        /// Silo-local cache fronting the cluster's client-signature directory. Null when
+        /// the host hasn't called <c>AddSharedMetaClientSignatureRegistry()</c> — in that
+        /// mode every connection is treated as "negotiation disabled."
         /// </summary>
         private readonly Session.IClientSignatureRegistry? _signatureRegistry;
         private ISessionObserver? _observerRef;
         private Timer? _observerRenewalTimer;
         private static readonly TimeSpan ObserverRenewalInterval = TimeSpan.FromSeconds(60);
 
-        // 0.23.0+ Cached session-manager grain reference. PlayerId is fixed for the lifetime
-        // of a connection, so resolving the grain reference once at SessionConnect-time and
-        // reusing it on every RPC avoids the string-heavy `GrainFactory.GetGrain<T>(playerId)`
-        // path (RuntimeTypeNameParser + TypeRewriter run on every call, allocating ~6 MB/s of
+        // Cached session-manager grain reference. PlayerId is fixed for the connection
+        // lifetime, so resolving once at SessionConnect avoids the per-RPC
+        // GrainFactory.GetGrain<T>(playerId) path — RuntimeTypeNameParser + TypeRewriter
+        // run on every call, allocating ~6 MB/s of
         // String + Char[] under 25K RPS in profiling).
         private ISessionManager? _sessionManagerGrain;
         private ISessionManager SessionManagerGrainOrThrow =>
@@ -72,7 +71,7 @@ namespace SharedMeta.Server.Core.Transport
         private string? _clientVersion;
 
         /// <summary>
-        /// 0.22.0+ session-scoped capabilities. Populated from
+        /// Session-scoped capabilities. Populated from
         /// <see cref="Session.IClientSignatureRegistry"/> at SessionConnect (phase-1) or
         /// RegisterClientSignature (phase-2). Consulted on every RpcCall as a back-stop:
         /// even forged clients that bypassed their local <c>CapabilitiesGate</c> get
@@ -81,7 +80,7 @@ namespace SharedMeta.Server.Core.Transport
         private SharedMeta.Core.Transport.ClientCapabilities? _clientCapabilities;
 
         /// <summary>
-        /// 0.23.0+ Negotiated signature hash for this connection. Captured from
+        /// Negotiated signature hash for this connection. Captured from
         /// <c>SessionConnectRequest.ClientSignatureHash</c> on phase-1 (or zero if absent),
         /// and overwritten by <c>RegisterClientSignatureRequest.Signature.Hash</c> after
         /// phase-2 registration. Forwarded into every <c>SubscribeToEntityAsync</c> call so
@@ -121,8 +120,8 @@ namespace SharedMeta.Server.Core.Transport
 
         public async Task<SessionConnectResponse> SessionConnectAsync(SessionConnectRequest request)
         {
-            // 0.23.0+ Telemetry: bracket the whole handshake (version-gate, sig lookup, session
-            // create/resume). The result tag is derived from the response right before return.
+            // Bracket the whole handshake (version-gate, sig lookup, session create/resume).
+            // Result tag is set on the activity from the response right before return.
             using var __scActivity = SharedMeta.Server.Core.Telemetry.SharedMetaActivities.Source.StartActivity(
                 SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanSessionConnect);
             __scActivity?.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagPlayerId, request.PlayerId);
@@ -236,10 +235,9 @@ namespace SharedMeta.Server.Core.Transport
                     }
                 }
 
-                // 0.22.0+ compatibility negotiation. Non-zero ClientSignatureHash means the
-                // client opted in. Registry lookup is per-silo cache-first; on miss we ask
-                // the cluster directory before declaring the signature unknown. An unknown
-                // signature ships NeedsSignatureRegistration = true so the client follows up
+                // Compatibility negotiation: non-zero ClientSignatureHash means the client
+                // opted in. Registry lookup is silo-cache-first → cluster directory on miss.
+                // Unknown signature ships NeedsSignatureRegistration so the client follows up
                 // with phase-2 (RegisterClientSignature). Hash == 0 = legacy / opted-out =
                 // no capabilities attached (server treats client as fully compatible).
                 bool needsSignatureRegistration = false;
@@ -253,9 +251,9 @@ namespace SharedMeta.Server.Core.Transport
                 // pending phase-2) means the back-stop runs in pass-through mode.
                 _clientCapabilities = capabilities;
 
-                // 0.23.0+ Stash the hash for forwarding through SubscribeToEntityAsync. EntityGrain
-                // resolves its own ClientCapabilities locally via IClientSignatureRegistry, so we
-                // no longer push the caps blob into SessionManagerGrain.
+                // Stash the hash for forwarding through SubscribeToEntityAsync. EntityGrain
+                // resolves its own capabilities from IClientSignatureRegistry — no caps blob
+                // pushed into SessionManagerGrain.
                 _clientSignatureHash = request.ClientSignatureHash;
 
                 __scResponse = new SessionConnectResponse
@@ -333,9 +331,8 @@ namespace SharedMeta.Server.Core.Transport
             {
                 var capabilities = await _signatureRegistry.RegisterAsync(request.Signature);
                 _clientCapabilities = capabilities;
-                // 0.23.0+ Update the cached signature hash so subsequent SubscribeToEntityAsync
-                // calls forward the freshly-registered hash to EntityGrain (which then re-reads
-                // from IClientSignatureRegistry — now populated by the RegisterAsync above).
+                // Update the cached signature hash so subsequent SubscribeToEntityAsync calls
+                // forward the freshly-registered hash to EntityGrain.
                 _clientSignatureHash = request.Signature.SignatureHash;
                 return new RegisterClientSignatureResponse
                 {
@@ -389,7 +386,7 @@ namespace SharedMeta.Server.Core.Transport
                     ConfigMajorVersion = result.ConfigVersion.Major,
                     ConfigMinorVersion = result.ConfigVersion.Minor,
                     ConfigPatchVersion = result.ConfigVersion.Patch,
-                    FeatureRequirement = result.FeatureRequirement,   // 0.22.0+ structured rejection
+                    FeatureRequirement = result.FeatureRequirement,
                 };
             }
             catch (Exception ex)
@@ -424,10 +421,9 @@ namespace SharedMeta.Server.Core.Transport
 
         public async Task<SessionResponse> RpcCallAsync(RpcCallRequest request)
         {
-            // 0.23.0+ End-to-end server-side timing. Started at the very top of the transport
-            // entry point so the histogram includes SessionManagerGrain queue, grain-hop to
-            // EntityGrain, the actual method body (covered separately by RpcDuration), and
-            // response build. The diff with RpcDuration surfaces queue/hop overhead — large
+            // End-to-end server-side timing — started at the transport entry point so the
+            // histogram includes SessionManagerGrain queue, grain-hop, method body, and
+            // response build. Diff against RpcDuration surfaces queue/hop overhead — large
             // gaps point at SignalR MaximumParallelInvocationsPerClient (default 1!) and at
             // hot SessionManagerGrain queues under burst load.
             var __totalStart = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -442,10 +438,9 @@ namespace SharedMeta.Server.Core.Transport
                     return SessionResponse.ForError("EntityId is required");
                 }
 
-                // 0.22.0 server-side back-stop: even if the client bypassed the local
-                // CapabilitiesGate, the server enforces rejection here based on the cached
-                // capabilities for this session's signature. Force-ServerPatch is intentionally
-                // NOT enforced server-side — the server still executes whatever the client
+                // Server-side back-stop: even if the client bypassed its local CapabilitiesGate,
+                // we enforce rejection here from the cached capabilities. Force-ServerPatch is
+                // intentionally NOT enforced server-side — the server executes whatever the client
                 // declared, since downgrading the mode mid-flight would change semantics for
                 // a well-behaved client that already complied at the gate.
                 if (_clientCapabilities != null
@@ -830,8 +825,7 @@ namespace SharedMeta.Server.Core.Transport
             // it empty and there's nothing to clean up at the grain level.
             if (!IsSessionConnected) return;
 
-            // 0.23.0+ Telemetry: session was active (we passed IsSessionConnected gate) and is
-            // closing now. Symmetric to the +1 in SessionConnectAsync success branch.
+            // Session was active and is closing — symmetric to the +1 in SessionConnect success.
             SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SessionsActive.Add(-1);
             SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SessionTerminated.Add(1,
                 new KeyValuePair<string, object?>("reason", "transport_drop"));

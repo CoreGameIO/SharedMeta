@@ -64,11 +64,10 @@ namespace SharedMeta.Server.Core.Transport
         Task<SessionConnectResponse> SessionConnectAsync(SessionConnectRequest request);
 
         /// <summary>
-        /// 0.22.0+: Phase-2 of the compatibility-negotiation handshake — accept the client's
-        /// full <see cref="MetaClientSignature"/> and return computed
-        /// <see cref="ClientCapabilities"/>. Default impl returns a success response with empty
-        /// capabilities so transport adapters that haven't been updated to the new handshake
-        /// remain compilable; the real compute lands in Stage 6.
+        /// Phase-2 of compatibility negotiation: accept the client's full
+        /// <see cref="MetaClientSignature"/> and return computed <see cref="ClientCapabilities"/>.
+        /// Default impl returns success with empty caps so transport adapters that haven't
+        /// adopted the new handshake remain compilable.
         /// </summary>
         Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(RegisterClientSignatureRequest request)
             => Task.FromResult(new RegisterClientSignatureResponse { Success = true, Capabilities = new ClientCapabilities() });

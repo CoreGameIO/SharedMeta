@@ -21,11 +21,9 @@ namespace SharedMeta.Server.Core.Session
         public IReadOnlyList<ServerMethodEntry> Methods { get; init; } = new List<ServerMethodEntry>();
 
         /// <summary>
-        /// 0.22.0+ <c>[MetaConfigStructureBoundary]</c> declarations harvested from every
-        /// <c>[MetaConfig]</c> class in the server's protocol surface. Used by the live
-        /// per-session compute (see <c>EntityGrain.SubscribeAsync</c> in a follow-up step)
-        /// to decide which services need to be force-downgraded to ServerPatch for the
-        /// client's resolved config version. Empty when no config has structural breakpoints.
+        /// <c>[MetaConfigStructureBoundary]</c> declarations harvested from every
+        /// <c>[MetaConfig]</c> class. Drives per-subscriber boundary compute in
+        /// <c>EntityGrain.SubscribeAsync</c>. Empty when no config declares breakpoints.
         /// </summary>
         public IReadOnlyList<ConfigBoundaryEntry> ConfigBoundaries { get; init; } = new List<ConfigBoundaryEntry>();
     }
@@ -79,10 +77,9 @@ namespace SharedMeta.Server.Core.Session
         public bool GenerateClientApi { get; init; } = true;
 
         /// <summary>
-        /// 0.22.0+ Fully-qualified name of the config class this service is bound to
-        /// (<c>[MetaService(ConfigType = X)]</c> or the assembly's default config). Empty
-        /// when no config is bound. Used by <c>EntityGrain</c>'s subscribe-time boundary
-        /// compute to map config-structural breaks back to affected services.
+        /// FQN of the config class this service is bound to (<c>[MetaService(ConfigType = X)]</c>
+        /// or the assembly default). Empty when no config is bound. Used to map
+        /// config-structural breaks back to affected services.
         /// </summary>
         public string ConfigTypeFullName { get; init; } = "";
     }

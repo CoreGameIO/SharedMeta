@@ -54,9 +54,9 @@ namespace SharedMeta.Server.Core.Session
         /// <param name="entityId">The entity to subscribe to.</param>
         /// <param name="stateTypeName">The state type name for auto-creation.</param>
         /// <param name="clientVersion">Caller's app version for per-client config resolution.</param>
-        /// <param name="clientSignatureHash">0.23.0+ Negotiated signature hash. <c>EntityGrain</c>
-        ///     resolves <see cref="ClientCapabilities"/> locally via <c>IClientSignatureRegistry</c>.
-        ///     0 = no negotiation / pre-0.22 client (no force-patch contributions).</param>
+        /// <param name="clientSignatureHash">Negotiated signature hash. EntityGrain resolves
+        ///     <see cref="ClientCapabilities"/> locally via <c>IClientSignatureRegistry</c>.
+        ///     0 = no negotiation (no force-patch contributions).</param>
         /// <returns>Subscription result with current state.</returns>
         Task<EntitySubscriptionResult> SubscribeToEntityAsync(string entityId, string stateTypeName, string? clientVersion = null, ulong clientSignatureHash = 0);
 
