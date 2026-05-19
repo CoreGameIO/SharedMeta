@@ -79,15 +79,11 @@ namespace SharedMeta.Server.Core.Session
         // Saved subscriptions for reconnect after transport disconnect
         private List<SavedSubscription>? _savedSubscriptions;
 
-        // 0.22.0+ Per-player compatibility verdict. Set by MetaConnectionHandler after
-        // SessionConnect (phase-1) or RegisterClientSignature (phase-2). Drives the decision
-        // of which methods to flag as force-patch when this player subscribes to an entity —
-        // EntityGrain.SubscribeAsync receives the per-entity subset and stores it as the
-        // per-subscriber force-patch contribution. From there on, all per-broadcast tailoring
-        // is owned by EntityGrain (see BroadcastTailor.TailorForSubscriber) — SessionManager
-        // doesn't re-decide payload variants per recipient.
-        // Null = negotiation disabled / pending — grain stays in pass-through mode.
-        private ClientCapabilities? _clientCapabilities;
+        // 0.22.0+ / 0.23.0+ Per-player compatibility verdict used to be cached here as
+        // ClientCapabilities pushed in via SetClientCapabilitiesAsync. Replaced by the
+        // signature-hash flow: MetaConnectionHandler passes the hash on SubscribeToEntityAsync,
+        // and EntityGrain resolves caps locally via IClientSignatureRegistry (single source of
+        // truth, no rolled-out-of-date cache problem).
 
         // ── RPC ordering / stash ─────────────────────────────────────────
         // When SessionManagerOptions.EnforceRpcOrder is true, RPC calls that arrive with
@@ -337,15 +333,6 @@ namespace SharedMeta.Server.Core.Session
             return Task.CompletedTask;
         }
 
-        /// <inheritdoc />
-        public Task SetClientCapabilitiesAsync(ClientCapabilities? capabilities)
-        {
-            _clientCapabilities = capabilities;
-            // No-op when null — broadcast fan-out stays in pass-through mode and per-call
-            // patch-tracking activation falls through to "no force-patch subscribers."
-            return Task.CompletedTask;
-        }
-
         public async Task GracefulDisconnectAsync()
         {
             _observerManager.Clear();
@@ -414,12 +401,12 @@ namespace SharedMeta.Server.Core.Session
 
         #region Entity Subscriptions
 
-        public async Task<EntitySubscriptionResult> SubscribeToEntityAsync(string entityId, string stateTypeName, string? clientVersion = null)
+        public async Task<EntitySubscriptionResult> SubscribeToEntityAsync(string entityId, string stateTypeName, string? clientVersion = null, ulong clientSignatureHash = 0)
         {
             if (_subscribedEntities.TryGetValue(entityId, out var existing))
             {
                 // Already subscribed - return current state (pass clientVersion for per-client config resolution)
-                var snapshot = await existing.GrainRef.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>(), clientVersion);
+                var snapshot = await existing.GrainRef.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>(), clientVersion, clientSignatureHash);
 
                 // Update entity ordering state
                 _entityStates[entityId] = new EntityOrderingState
@@ -451,20 +438,18 @@ namespace SharedMeta.Server.Core.Session
                     };
                 }
 
-                // 0.22.0 Forward this player's force-patch capability subset so the entity
-                // grain can refcount-aggregate "does any subscriber need patch tracking for
-                // method (S, A, V)?" — O(1) lookup at dispatch time. Empty / null lists
-                // contribute nothing; modern subscribers add no refcount.
-                var forcePatchMethods = _clientCapabilities?.ForceServerPatchMethods;
-
-                // Subscribe to entity (pass clientVersion for per-client config resolution).
+                // 0.23.0+ Pass the negotiated signature hash; EntityGrain resolves the caller's
+                // ClientCapabilities locally via IClientSignatureRegistry (single source of truth,
+                // single per-silo cache). Replaces the 0.22.x push-the-filtered-list model.
+                // 0 = no negotiation / pre-0.22 client — EntityGrain treats this as no
+                // force-patch contributions, same as null caps would have.
+                //
                 // 0.22.0 The per-entity capability overlay returned by EntityGrain
                 // (snapshot.AugmentedCapabilities) is forwarded to the client unchanged through
                 // EntitySubscriptionResult.AugmentedCapabilities → SubscribeResponse. No copy is
                 // cached here — broadcast tailoring lives entirely on EntityGrain side
-                // (BroadcastTailor.TailorForSubscriber), and SubscribeAsync already received the
-                // per-subscriber force-patch contributions to drive that.
-                var snapshot = await entityGrain.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>(), clientVersion, forcePatchMethods);
+                // (BroadcastTailor.TailorForSubscriber).
+                var snapshot = await entityGrain.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>(), clientVersion, clientSignatureHash);
 
                 _subscribedEntities[entityId] = new EntitySubscriptionInfo(
                     entityId: entityId,

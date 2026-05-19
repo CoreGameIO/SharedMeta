@@ -80,6 +80,17 @@ namespace SharedMeta.Server.Core.Transport
         /// </summary>
         private SharedMeta.Core.Transport.ClientCapabilities? _clientCapabilities;
 
+        /// <summary>
+        /// 0.23.0+ Negotiated signature hash for this connection. Captured from
+        /// <c>SessionConnectRequest.ClientSignatureHash</c> on phase-1 (or zero if absent),
+        /// and overwritten by <c>RegisterClientSignatureRequest.Signature.Hash</c> after
+        /// phase-2 registration. Forwarded into every <c>SubscribeToEntityAsync</c> call so
+        /// the target <c>EntityGrain</c> can resolve the caller's compatibility capabilities
+        /// via <c>IClientSignatureRegistry</c> locally — replaces the 0.22.x push-the-list
+        /// flow into <c>SessionManagerGrain._clientCapabilities</c>.
+        /// </summary>
+        private ulong _clientSignatureHash;
+
         public MetaConnectionHandler(
             string connectionId,
             IGrainFactory grainFactory,
@@ -242,14 +253,10 @@ namespace SharedMeta.Server.Core.Transport
                 // pending phase-2) means the back-stop runs in pass-through mode.
                 _clientCapabilities = capabilities;
 
-                // 0.22.0 push capabilities into the player's SessionManagerGrain so subscribe-time
-                // aggregation and broadcast-time tailoring can consult them. Safe to push null
-                // (resets to pass-through). Only push when SessionManager was successfully set up.
-                if (result.Success)
-                {
-                    var capsGrain = SessionManagerGrainOrThrow;
-                    await capsGrain.SetClientCapabilitiesAsync(capabilities);
-                }
+                // 0.23.0+ Stash the hash for forwarding through SubscribeToEntityAsync. EntityGrain
+                // resolves its own ClientCapabilities locally via IClientSignatureRegistry, so we
+                // no longer push the caps blob into SessionManagerGrain.
+                _clientSignatureHash = request.ClientSignatureHash;
 
                 __scResponse = new SessionConnectResponse
                 {
@@ -326,13 +333,10 @@ namespace SharedMeta.Server.Core.Transport
             {
                 var capabilities = await _signatureRegistry.RegisterAsync(request.Signature);
                 _clientCapabilities = capabilities;
-                // Push to SessionManager so subscribe-time aggregation + broadcast tailoring
-                // pick up the freshly-resolved capabilities.
-                if (!string.IsNullOrEmpty(PlayerId))
-                {
-                    var capsGrain = SessionManagerGrainOrThrow;
-                    await capsGrain.SetClientCapabilitiesAsync(capabilities);
-                }
+                // 0.23.0+ Update the cached signature hash so subsequent SubscribeToEntityAsync
+                // calls forward the freshly-registered hash to EntityGrain (which then re-reads
+                // from IClientSignatureRegistry — now populated by the RegisterAsync above).
+                _clientSignatureHash = request.Signature.SignatureHash;
                 return new RegisterClientSignatureResponse
                 {
                     Success = true,
@@ -370,7 +374,7 @@ namespace SharedMeta.Server.Core.Transport
                 }
 
                 var grain = SessionManagerGrainOrThrow;
-                var result = await grain.SubscribeToEntityAsync(request.EntityId, request.StateTypeName, _clientVersion);
+                var result = await grain.SubscribeToEntityAsync(request.EntityId, request.StateTypeName, _clientVersion, _clientSignatureHash);
 
                 _logger.HandlerSubscribe(PlayerId!, request.EntityId, result.Success);
 

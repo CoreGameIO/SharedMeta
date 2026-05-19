@@ -16,15 +16,19 @@ namespace SharedMeta.Server.Core.Grains
         /// <summary>
         /// Subscribe to this entity. Returns current state.
         /// <para>
-        /// 0.22.0+ <paramref name="forceServerPatchMethods"/> — caller passes the subset of
-        /// <see cref="ClientCapabilities.ForceServerPatchMethods"/> applicable to this entity.
-        /// The grain refcounts these into <c>_forcePatchMethodRefs</c>; subsequent
+        /// 0.23.0+ <paramref name="clientSignatureHash"/> — caller's negotiated signature hash
+        /// (0 = no negotiation / pre-0.22 client). The grain resolves
+        /// <see cref="ClientCapabilities"/> locally via
+        /// <see cref="IClientSignatureRegistry.TryGetCapabilitiesAsync"/> and refcounts the
+        /// force-patch contributions into <c>_forcePatchMethodRefs</c>; subsequent
         /// <c>HandleCallAsync</c> calls activate patch tracking when the dispatched method is
         /// present in the set so the broadcast carries both replay payload and patch bytes.
-        /// Null = pass-through (no force-patch tracking added).
+        /// Replaces the 0.22.x <c>forceServerPatchMethods</c> parameter: the hash is 8 bytes
+        /// on the wire and keeps a single source of truth (registry) instead of duplicating
+        /// the filtered list across SessionManager + EntityGrain.
         /// </para>
         /// </summary>
-        Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null, IReadOnlyList<MethodIdentity>? forceServerPatchMethods = null);
+        Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null, ulong clientSignatureHash = 0);
 
         /// <summary>
         /// Unsubscribe from this entity.

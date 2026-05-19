@@ -52,6 +52,13 @@ namespace SharedMeta.Server.Core.Grains
         private readonly IEntityGrainResolver _entityGrainResolver;
         private readonly IExecutionModeProvider? _executionModeProvider;
         private readonly IConfigVersionResolver? _configVersionResolver;
+        // 0.23.0+ Read-through registry that resolves a client's compatibility capabilities from
+        // their negotiated signature hash. SubscribeAsync looks up the player's caps locally on
+        // the grain instead of receiving the pre-filtered force-patch list as a parameter from
+        // SessionManager — single source of truth, no wire dup, and the bug of stale lists
+        // disappears automatically. Null when the host hasn't registered the registry in DI
+        // (negotiation disabled) — grain stays in pass-through mode.
+        private readonly IClientSignatureRegistry? _signatureRegistry;
 
         private IMetaProvider<TState>? _provider;
 
@@ -103,7 +110,8 @@ namespace SharedMeta.Server.Core.Grains
             IEntityGrainResolver entityGrainResolver,
             IExecutionModeProvider? executionModeProvider = null,
             IConfigVersionResolver? configVersionResolver = null,
-            SharedMeta.Server.Core.Session.MetaServerSignature? serverSignature = null)
+            SharedMeta.Server.Core.Session.MetaServerSignature? serverSignature = null,
+            IClientSignatureRegistry? signatureRegistry = null)
         {
             _persistentState = persistentState ?? throw new ArgumentNullException(nameof(persistentState));
             _providerFactory = providerFactory ?? throw new ArgumentNullException(nameof(providerFactory));
@@ -114,6 +122,7 @@ namespace SharedMeta.Server.Core.Grains
             _executionModeProvider = executionModeProvider;
             _configVersionResolver = configVersionResolver;
             _serverSignature = serverSignature;
+            _signatureRegistry = signatureRegistry;
         }
 
         /// <summary>
@@ -361,7 +370,7 @@ namespace SharedMeta.Server.Core.Grains
             await base.OnDeactivateAsync(reason, cancellationToken);
         }
 
-        public async Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null, IReadOnlyList<MethodIdentity>? forceServerPatchMethods = null)
+        public async Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null, ulong clientSignatureHash = 0)
         {
             // 0.23.0+ Telemetry bundled into a single disposable — span + duration histogram +
             // count counter + subscribers-active gauge all flush on scope exit via Dispose().
@@ -491,10 +500,21 @@ namespace SharedMeta.Server.Core.Grains
 
             // 0.22.0 Aggregate this player's force-patch declarations. Only methods on services
             // hosted on THIS entity matter; other-service entries from the player's global
-            // capabilities are ignored. The provider knows which services it hosts via
-            // _provider.AccessPolicy / generated infrastructure; for now we accept everything
-            // the caller passed since they pre-filtered to this entity's bound services.
+            // capabilities are ignored. We accept everything from the registry; HandleCallAsync's
+            // dispatch-time check is keyed by (ServiceName, MethodName, MethodVersion) so foreign
+            // entries can't false-trigger.
             //
+            // 0.23.0+ Resolve the caller's compatibility capabilities locally from the negotiated
+            // signature hash via the per-silo registry. Previously SessionManager filtered + pushed
+            // the list as a parameter; now the registry is the single source of truth and stale
+            // pushed-state cannot exist. Null caps / zero hash / no registry → no contributions.
+            IReadOnlyList<MethodIdentity>? forceServerPatchMethods = null;
+            if (clientSignatureHash != 0 && _signatureRegistry != null)
+            {
+                var caps = await _signatureRegistry.TryGetCapabilitiesAsync(clientSignatureHash);
+                forceServerPatchMethods = caps?.ForceServerPatchMethods;
+            }
+
             // 0.23.0+ Always drop prior contributions unconditionally on resubscribe — even
             // when the new list is null/empty — otherwise refcounts drift permanently upward
             // when a player resubscribes with a smaller (or empty) force-patch set than before
