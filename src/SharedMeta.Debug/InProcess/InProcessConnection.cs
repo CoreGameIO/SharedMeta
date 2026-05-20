@@ -135,6 +135,16 @@ namespace SharedMeta.Debug.InProcess
             return await _server.RpcCallAsync(_connectionId, request).ConfigureAwait(false);
         }
 
+        public async Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(Guid sessionId, MetaClientSignature signature)
+        {
+            EnsureConnected();
+            return await _server.RegisterClientSignatureAsync(_connectionId, new RegisterClientSignatureRequest
+            {
+                SessionId = sessionId,
+                Signature = signature,
+            }).ConfigureAwait(false);
+        }
+
         public async Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request)
         {
             EnsureConnected();

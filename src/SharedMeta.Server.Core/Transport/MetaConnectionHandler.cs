@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Orleans;
 using SharedMeta.Core;
+using SharedMeta.Core.Packets;
 using SharedMeta.Core.Transport;
 using SharedMeta.Server.Core.Grains;
 using SharedMeta.Server.Core.Session;
@@ -90,6 +91,12 @@ namespace SharedMeta.Server.Core.Transport
         /// </summary>
         private ulong _clientSignatureHash;
 
+        // 0.24.0+ Reverse lookup MethodId → ServerMethodEntry for resolving (service, method,
+        // version) from the wire's ushort identifier. Required since RpcCallRequest /
+        // SignalCallRequest / QueryCallRequest no longer carry the strings. Null only when
+        // host hasn't wired the signature in DI (legacy / pure-test setup).
+        private readonly SharedMeta.Core.Transport.MetaServerSignature? _serverSignature;
+
         public MetaConnectionHandler(
             string connectionId,
             IGrainFactory grainFactory,
@@ -101,7 +108,8 @@ namespace SharedMeta.Server.Core.Transport
             IMetaSerializer? serializer = null,
             SharedMeta.Core.Patch.IPatchSchemaRegistry? schemaRegistry = null,
             ClientVersionPolicy? versionPolicy = null,
-            Session.IClientSignatureRegistry? signatureRegistry = null)
+            Session.IClientSignatureRegistry? signatureRegistry = null,
+            SharedMeta.Core.Transport.MetaServerSignature? serverSignature = null)
         {
             _connectionId = connectionId ?? throw new ArgumentNullException(nameof(connectionId));
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
@@ -114,6 +122,20 @@ namespace SharedMeta.Server.Core.Transport
             _schemaRegistry = schemaRegistry;
             _versionPolicy = versionPolicy;
             _signatureRegistry = signatureRegistry;
+            _serverSignature = serverSignature;
+        }
+
+        /// <summary>
+        /// Resolve a server-side <see cref="ushort"/> MethodId to its <c>(ServiceName, Alias, Version)</c>
+        /// triple via the registered <see cref="MetaServerSignature"/>. Returns <c>(null, null, 0)</c>
+        /// when no signature is wired or the id is unknown — callers fall back to a methodId-only
+        /// diagnostic string.
+        /// </summary>
+        private (string? Service, string? Method, int Version) ResolveServerMethodEntry(ushort serverMethodId)
+        {
+            var entry = _serverSignature?.GetMethodEntry(serverMethodId);
+            if (entry == null) return (null, null, 0);
+            return (entry.ServiceName, entry.Alias, entry.Version);
         }
 
         #region IMetaConnectionHandler
@@ -132,6 +154,20 @@ namespace SharedMeta.Server.Core.Transport
                 if (string.IsNullOrEmpty(request.PlayerId))
                 {
                     return new SessionConnectResponse { Success = false, Error = "PlayerId is required" };
+                }
+
+                // 0.24.0+ Optionally reject Hash=0 (legacy / opt-out clients). Hosts that have
+                // moved every supported client to a generated ClientSignature flip this on so
+                // the wire packets carry MethodId without needing string-fallback resolution
+                // on every cross-grain hop.
+                if (_transportOptions?.RequireClientSignature == true && request.ClientSignatureHash == 0)
+                {
+                    return new SessionConnectResponse
+                    {
+                        Success = false,
+                        Error = "ClientSignature is required (server rejects Hash=0). Wire the generated " +
+                                "MetaClientSignature on MetaClientOptions.ClientSignature."
+                    };
                 }
 
                 // Version gate — policy encapsulates TTL caching, grain refresh, and parsing.
@@ -438,25 +474,61 @@ namespace SharedMeta.Server.Core.Transport
                     return SessionResponse.ForError("EntityId is required");
                 }
 
+                // 0.24.0+ Translate client's MethodId → server's via per-signature mapping.
+                // MethodId=0 is a real client id (alphabetical-first slot in the per-assembly
+                // GameMethodIds table) so we must always run translation — no special-case
+                // bypass for 0. Sentinel ushort.MaxValue in the map means the signature
+                // flagged this method as not callable by this client (e.g. GenerateClientApi
+                // = false, ArgHash mismatch, unknown to server). When the client never
+                // negotiated a signature (_clientSignatureHash=0) calls are rejected — the
+                // wire no longer carries enough info to dispatch without the per-signature map.
+                ushort serverMethodId;
+                if (_clientSignatureHash == 0 || _signatureRegistry == null)
+                {
+                    __totalResult = "rejected";
+                    return SessionResponse.ForError(
+                        "Cannot dispatch RPC: client signature not negotiated. Call RegisterClientSignatureAsync first.");
+                }
+                {
+                    var c2s = await _signatureRegistry.TryGetClientToServerMapAsync(_clientSignatureHash);
+                    if (c2s == null || request.MethodId >= c2s.Length)
+                    {
+                        __totalResult = "rejected";
+                        return SessionResponse.ForError(
+                            $"Method id {request.MethodId} is out of range for client signature.");
+                    }
+                    var mapped = c2s[request.MethodId];
+                    if (mapped == ushort.MaxValue)
+                    {
+                        __totalResult = "rejected";
+                        return SessionResponse.ForError(
+                            $"Method id {request.MethodId} is not callable by this client.");
+                    }
+                    serverMethodId = mapped;
+                }
+
+                // Resolve once for the rest of this call's reads (capabilities back-stop +
+                // telemetry tags + patch cache key). Returns (null, null, 0) when signature
+                // isn't wired — log/telemetry fall through to methodId-only diagnostics.
+                var (resolvedService, resolvedMethod, resolvedVersion) = ResolveServerMethodEntry(serverMethodId);
+
                 // Server-side back-stop: even if the client bypassed its local CapabilitiesGate,
                 // we enforce rejection here from the cached capabilities. Force-ServerPatch is
                 // intentionally NOT enforced server-side — the server executes whatever the client
                 // declared, since downgrading the mode mid-flight would change semantics for
                 // a well-behaved client that already complied at the gate.
-                if (_clientCapabilities != null
+                if (_clientCapabilities != null && resolvedService != null && resolvedMethod != null
                     && SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(
-                        _clientCapabilities, request.ServiceName, request.MethodName, request.MethodVersion))
+                        _clientCapabilities, resolvedService, resolvedMethod, resolvedVersion))
                 {
                     __totalResult = "rejected";
                     return SessionResponse.ForError(
-                        $"Method '{request.ServiceName}.{request.MethodName}' (v{request.MethodVersion}) is rejected for this client signature.");
+                        $"Method '{resolvedService}.{resolvedMethod}' (v{resolvedVersion}) is rejected for this client signature.");
                 }
 
                 var call = new RpcCall
                 {
-                    ServiceName = request.ServiceName,
-                    MethodName = request.MethodName,
-                    MethodVersion = request.MethodVersion,
+                    MethodId = serverMethodId,
                     CallerId = PlayerId,
                     CallerClientVersion = _clientVersion,
                     Payload = request.Payload,
@@ -474,16 +546,21 @@ namespace SharedMeta.Server.Core.Transport
                     request.LastAcknowledgedSequence,
                     SessionId).ConfigureAwait(false);
 
-                // Cache server patch for desync reporting (if enabled)
-                if (_transportOptions?.DesyncReportingEnabled == true && response.Operations != null)
+                // Cache server patch for desync reporting (if enabled). OpBytes is the
+                // pre-serialized MetaOperation; we deserialize lazily only for this
+                // diagnostic path — production has DesyncReporting off.
+                if (_transportOptions?.DesyncReportingEnabled == true && response.Operations != null && _serializer != null
+                    && resolvedService != null && resolvedMethod != null)
                 {
                     foreach (var op in response.Operations)
                     {
-                        if (op.RequestId == request.RequestId
-                            && op.Op?.PatchBytes != null)
+                        if (op.RequestId == request.RequestId && op.OpBytes is { Length: > 0 })
                         {
-                            CachePatch(request.EntityId, request.ServiceName, request.MethodName,
-                                op.Op.PatchBytes);
+                            var meta = _serializer.Unpack<MetaOperation>(op.OpBytes);
+                            if (meta?.PatchBytes != null)
+                            {
+                                CachePatch(request.EntityId, resolvedService, resolvedMethod, meta.PatchBytes);
+                            }
                             break;
                         }
                     }
@@ -500,9 +577,10 @@ namespace SharedMeta.Server.Core.Transport
             finally
             {
                 var __totalElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(__totalStart).TotalMilliseconds;
+                var (telemetryService, telemetryMethod, _) = ResolveServerMethodEntry(request.MethodId);
                 SharedMeta.Server.Core.Telemetry.SharedMetaMeters.ServerRpcTotalDuration.Record(__totalElapsed,
-                    new KeyValuePair<string, object?>("service", request.ServiceName),
-                    new KeyValuePair<string, object?>("method", request.MethodName),
+                    new KeyValuePair<string, object?>("service", telemetryService ?? "?"),
+                    new KeyValuePair<string, object?>("method", telemetryMethod ?? request.MethodId.ToString()),
                     new KeyValuePair<string, object?>("result", __totalResult));
             }
         }
@@ -516,14 +594,29 @@ namespace SharedMeta.Server.Core.Transport
                 if (string.IsNullOrEmpty(request.EntityId))
                     return new QueryCallResponse { Error = "EntityId is required" };
 
-                if (string.IsNullOrEmpty(request.ServiceName))
-                    return new QueryCallResponse { Error = "ServiceName is required" };
+                // 0.24.0+ Translate client's MethodId → server's via per-signature mapping.
+                // MethodId=0 is a real id, not a sentinel — translate unconditionally.
+                if (_clientSignatureHash == 0 || _signatureRegistry == null)
+                    return new QueryCallResponse { Error = "Cannot dispatch query: client signature not negotiated." };
+                ushort serverMethodId;
+                {
+                    var c2s = await _signatureRegistry.TryGetClientToServerMapAsync(_clientSignatureHash);
+                    if (c2s == null || request.MethodId >= c2s.Length)
+                        return new QueryCallResponse { Error = $"Query method id {request.MethodId} is out of range for client signature." };
+                    var mapped = c2s[request.MethodId];
+                    if (mapped == ushort.MaxValue)
+                        return new QueryCallResponse { Error = $"Query method id {request.MethodId} is not callable by this client." };
+                    serverMethodId = mapped;
+                }
+
+                // Resolve service name for grain routing (`QueryEntityAsync` keys by it).
+                var (resolvedService, _, _) = ResolveServerMethodEntry(serverMethodId);
+                if (resolvedService == null)
+                    return new QueryCallResponse { Error = $"Query method id {request.MethodId} is unknown on this server." };
 
                 var call = new RpcCall
                 {
-                    ServiceName = request.ServiceName,
-                    MethodName = request.MethodName,
-                    MethodVersion = request.MethodVersion,
+                    MethodId = serverMethodId,
                     CallerId = PlayerId,
                     CallerClientVersion = _clientVersion,
                     Payload = request.Payload,
@@ -531,7 +624,7 @@ namespace SharedMeta.Server.Core.Transport
                 };
 
                 var grain = SessionManagerGrainOrThrow;
-                return await grain.QueryEntityAsync(request.EntityId, request.ServiceName, call);
+                return await grain.QueryEntityAsync(request.EntityId, resolvedService, call);
             }
             catch (Exception ex)
             {
@@ -547,17 +640,47 @@ namespace SharedMeta.Server.Core.Transport
             {
                 EnsureSessionConnected();
 
-                if (string.IsNullOrEmpty(request.EntityId) || string.IsNullOrEmpty(request.ServiceName))
+                if (string.IsNullOrEmpty(request.EntityId))
                 {
-                    _logger.LogWarning("[Handler] Signal rejected — missing EntityId or ServiceName");
+                    _logger.LogWarning("[Handler] Signal rejected — missing EntityId");
+                    return;
+                }
+
+                // 0.24.0+ Translate client's MethodId → server's via per-signature mapping.
+                // MethodId=0 is a real id, not a sentinel — translate unconditionally.
+                if (_clientSignatureHash == 0 || _signatureRegistry == null)
+                {
+                    _logger.LogWarning("[Handler] Signal rejected — client signature not negotiated");
+                    return;
+                }
+                ushort serverMethodId;
+                {
+                    var c2s = await _signatureRegistry.TryGetClientToServerMapAsync(_clientSignatureHash);
+                    if (c2s == null || request.MethodId >= c2s.Length)
+                    {
+                        _logger.LogWarning("[Handler] Signal rejected — method id {MethodId} out of range for client signature", request.MethodId);
+                        return;
+                    }
+                    var mapped = c2s[request.MethodId];
+                    if (mapped == ushort.MaxValue)
+                    {
+                        _logger.LogWarning("[Handler] Signal rejected — method id {MethodId} not callable by this client", request.MethodId);
+                        return;
+                    }
+                    serverMethodId = mapped;
+                }
+
+                // Resolve service name for grain routing (`SignalEntityAsync` keys by it).
+                var (resolvedService, _, _) = ResolveServerMethodEntry(serverMethodId);
+                if (resolvedService == null)
+                {
+                    _logger.LogWarning("[Handler] Signal rejected — method id {MethodId} unknown on this server", request.MethodId);
                     return;
                 }
 
                 var call = new RpcCall
                 {
-                    ServiceName = request.ServiceName,
-                    MethodName = request.MethodName,
-                    MethodVersion = request.MethodVersion,
+                    MethodId = serverMethodId,
                     CallerId = PlayerId,
                     CallerClientVersion = _clientVersion,
                     Payload = request.Payload,
@@ -565,7 +688,7 @@ namespace SharedMeta.Server.Core.Transport
                 };
 
                 var grain = SessionManagerGrainOrThrow;
-                await grain.SignalEntityAsync(request.EntityId, request.ServiceName, call);
+                await grain.SignalEntityAsync(request.EntityId, resolvedService, call);
             }
             catch (Exception ex)
             {
@@ -908,6 +1031,7 @@ namespace SharedMeta.Server.Core.Transport
         private readonly IEntityGrainResolver _entityGrainResolver;
         private readonly ILoggerFactory _loggerFactory;
         private readonly SignatureValidator? _signatureValidator;
+        private readonly SharedMeta.Core.Transport.MetaServerSignature? _serverSignature;
         private readonly MetaTransportOptions? _transportOptions;
         private readonly IMetaSerializer? _serializer;
         private readonly SharedMeta.Core.Patch.IPatchSchemaRegistry? _schemaRegistry;
@@ -923,7 +1047,8 @@ namespace SharedMeta.Server.Core.Transport
             IMetaSerializer? serializer = null,
             SharedMeta.Core.Patch.IPatchSchemaRegistry? schemaRegistry = null,
             ClientVersionPolicy? versionPolicy = null,
-            Session.IClientSignatureRegistry? signatureRegistry = null)
+            Session.IClientSignatureRegistry? signatureRegistry = null,
+            SharedMeta.Core.Transport.MetaServerSignature? serverSignature = null)
         {
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
@@ -934,13 +1059,14 @@ namespace SharedMeta.Server.Core.Transport
             _schemaRegistry = schemaRegistry;
             _versionPolicy = versionPolicy;
             _signatureRegistry = signatureRegistry;
+            _serverSignature = serverSignature;
         }
 
         public IMetaConnectionHandler Create(string connectionId, IBroadcastSender broadcastSender)
         {
             var logger = _loggerFactory.CreateLogger<MetaConnectionHandler>();
             return new MetaConnectionHandler(connectionId, _grainFactory, _entityGrainResolver, broadcastSender, logger,
-                _signatureValidator, _transportOptions, _serializer, _schemaRegistry, _versionPolicy, _signatureRegistry);
+                _signatureValidator, _transportOptions, _serializer, _schemaRegistry, _versionPolicy, _signatureRegistry, _serverSignature);
         }
     }
 }

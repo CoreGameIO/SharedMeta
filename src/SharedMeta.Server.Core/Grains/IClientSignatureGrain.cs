@@ -43,5 +43,12 @@ namespace SharedMeta.Server.Core.Grains
         /// capabilities computed from the same server build will match anyway.
         /// </summary>
         Task SetAsync(MetaClientSignature signature, ClientCapabilities capabilities);
+
+        /// <summary>
+        /// Read the persisted client signature. Used by silos that didn't see the original
+        /// phase-2 registration but need to rebuild the per-signature clientToServer method-id
+        /// map locally. Returns <c>null</c> when the grain has never been populated.
+        /// </summary>
+        Task<MetaClientSignature?> GetSignatureAsync();
     }
 }

@@ -605,11 +605,12 @@ namespace SharedMeta.Core
         /// Used by generated EntityCaller interfaces for cross-entity communication.
         /// </summary>
         /// <param name="targetEntityId">The ID of the target entity.</param>
-        /// <param name="serviceName">The service interface name (e.g., "IProfileService").</param>
-        /// <param name="methodName">The method alias/name.</param>
+        /// <param name="methodId">0.24.0+ Server-side global method index from <c>GameMethodIds</c>.
         /// <param name="argsBytes">Serialized method arguments.</param>
+        /// Generated recorders stamp it directly so the target grain doesn't have to resolve
+        /// from the string fields. <c>0</c> means legacy path / not provided.</param>
         /// <returns>Serialized result bytes (empty for void methods).</returns>
-        Task<byte[]> CallEntityAsync(string targetEntityId, string serviceName, string methodName, byte[] argsBytes);
+        Task<byte[]> CallEntityAsync(string targetEntityId, ushort methodId, byte[] argsBytes);
 
         /// <summary>
         /// 0.22.0+: Fire-and-forget cross-entity call. Used by generated EntityCaller wrappers
@@ -622,7 +623,7 @@ namespace SharedMeta.Core
         /// <see cref="NullServerRecordContext"/>) can remain on the default.
         /// </para>
         /// </summary>
-        void CallEntityOneWay(string targetEntityId, string serviceName, string methodName, byte[] argsBytes)
+        void CallEntityOneWay(string targetEntityId, ushort methodId, byte[] argsBytes)
             => throw new NotSupportedException(
                 "This IServerRecordContext does not support OneWay cross-entity calls.");
     }

@@ -15,8 +15,10 @@ namespace SharedMeta.Core.Diagnostics
 
         /// <summary>
         /// Called with cross-entity call result from server (for logging/comparison).
+        /// 0.24.0+ identifies the method by <c>ushort methodId</c>; consumers that want a
+        /// friendly name resolve it via their own <see cref="SharedMeta.Core.Transport.MetaClientSignature"/>.
         /// </summary>
-        void OnCrossEntityResult(string entityId, string serviceName, string methodName, byte[]? resultBytes);
+        void OnCrossEntityResult(string entityId, ushort methodId, byte[]? resultBytes);
 
         /// <summary>
         /// Called when the optimistic random scroll delta doesn't match between server and client.

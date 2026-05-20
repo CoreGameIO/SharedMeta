@@ -112,14 +112,11 @@ builder.Services.AddSignalR(hubOptions =>
 }).AddMetaMessagePackProtocol();
 #endif
 
-// MetaConnectionHandler factory
-builder.Services.AddSingleton<IMetaConnectionHandlerFactory>(sp =>
-{
-    var grainFactory = sp.GetRequiredService<IGrainFactory>();
-    var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-    var entityGrainResolver = sp.GetRequiredService<IEntityGrainResolver>();
-    return new MetaConnectionHandlerFactory(grainFactory, entityGrainResolver, loggerFactory);
-});
+// MetaConnectionHandlerFactory is registered by the generated ConfigureMeta() above —
+// it wires MetaServerSignature + IClientSignatureRegistry + ClientVersionPolicy etc.
+// Do NOT re-register here with the bare 3-arg ctor: that drops signatureRegistry to
+// null, which makes MetaConnectionHandler reject every RPC with "client signature not
+// negotiated" once a client sends a non-zero ClientSignatureHash.
 
 // Authentication (optional — server works without it too)
 builder.Services.AddMetaAuth(options =>

@@ -8,13 +8,13 @@ namespace SharedMeta.Orleans.Serialization
     /// <summary>
     /// Orleans-serializable surrogate for RpcCall.
     /// Used for streaming broadcasts through Orleans.
+    /// 0.24.0+ ServiceName/MethodName/MethodVersion were removed from <see cref="RpcCall"/>;
+    /// MethodId is the only dispatch identifier on the wire.
     /// </summary>
     [GenerateSerializer]
     public struct RpcCallSurrogate
     {
-        [Id(0)] public string ServiceName;
-        [Id(1)] public string MethodName;
-        [Id(2)] public int MethodVersion;
+        [Id(0)] public ushort MethodId;
         [Id(3)] public byte[] PayloadBytes;
         [Id(4)] public string? CallerId;
         [Id(5)] public List<string>? DebugInfo;
@@ -30,9 +30,7 @@ namespace SharedMeta.Orleans.Serialization
         {
             return new RpcCall
             {
-                ServiceName = surrogate.ServiceName ?? "",
-                MethodName = surrogate.MethodName ?? "",
-                MethodVersion = surrogate.MethodVersion,
+                MethodId = surrogate.MethodId,
                 Payload = surrogate.PayloadBytes ?? [],
                 CallerId = surrogate.CallerId,
                 Debug = surrogate.DebugInfo != null ? new PayloadDebug { PayloadItemInfo = surrogate.DebugInfo } : null
@@ -43,9 +41,7 @@ namespace SharedMeta.Orleans.Serialization
         {
             return new RpcCallSurrogate
             {
-                ServiceName = value.ServiceName,
-                MethodName = value.MethodName,
-                MethodVersion = value.MethodVersion,
+                MethodId = value.MethodId,
                 PayloadBytes = value.Payload ?? [],
                 CallerId = value.CallerId,
                 DebugInfo = value.Debug?.PayloadItemInfo

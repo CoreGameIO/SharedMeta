@@ -39,9 +39,11 @@ namespace SharedMeta.Server.Core.Grains
         /// <summary>
         /// Handle a call from another entity (cross-entity call).
         /// Broadcasts to ALL (including caller entity's subscribers).
-        /// Used when one entity needs to call another entity's service.
+        /// Returns a slim <see cref="CrossEntityCallReturn"/> — source grain only needs
+        /// ResultBytes / EntitySequenceNumber / Error, not the full pre-serialized
+        /// MetaOperation that <c>HandleCallAsync</c> sends to SessionManager.
         /// </summary>
-        ValueTask<EntityCallResult> HandleCallFromEntityAsync(RpcCall call);
+        ValueTask<CrossEntityCallReturn> HandleCallFromEntityAsync(RpcCall call);
 
         /// <summary>
         /// Fire-and-forget cross-entity call entry. <c>[OneWay]</c> suppresses the reply
@@ -54,11 +56,11 @@ namespace SharedMeta.Server.Core.Grains
 
         /// <summary>
         /// Handle an external event (from framework services like Lobby).
-        /// Broadcasts to ALL subscribers.
+        /// Broadcasts to ALL subscribers. 0.24.0+ identifies the subscriber method by
+        /// <c>ushort</c> id from <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/>.
         /// </summary>
         ValueTask<EntityCallResult> HandleExternalEventAsync(
-            string subscriberInterface,
-            string methodName,
+            ushort methodId,
             byte[] eventData,
             string? callerId = null);
 

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using SharedMeta.Core;
+using SharedMeta.Core.Packets;
 
 namespace SharedMeta.Server
 {
@@ -90,8 +91,8 @@ namespace SharedMeta.Server
         {
             internal readonly IPayloadWriter? OuterWriter;
             internal readonly PayloadDebug? OuterDebug;
-            internal readonly List<CrossEntityCallInfo>? OuterCrossEntityCalls;
-            internal NestedOperationFrame(IPayloadWriter? w, PayloadDebug? d, List<CrossEntityCallInfo>? c)
+            internal readonly List<CrossEntityOperationInfo>? OuterCrossEntityCalls;
+            internal NestedOperationFrame(IPayloadWriter? w, PayloadDebug? d, List<CrossEntityOperationInfo>? c)
             {
                 OuterWriter = w; OuterDebug = d; OuterCrossEntityCalls = c;
             }
@@ -119,7 +120,7 @@ namespace SharedMeta.Server
         /// <paramref name="nestedCrossEntityCalls"/> so the caller can attach them to the
         /// inner result without merging them into the outer's list.
         /// </summary>
-        public byte[] PopNestedOperation(NestedOperationFrame frame, out List<CrossEntityCallInfo>? nestedCrossEntityCalls)
+        public byte[] PopNestedOperation(NestedOperationFrame frame, out List<CrossEntityOperationInfo>? nestedCrossEntityCalls)
         {
             if (_writer == null) throw new InvalidOperationException("No nested operation in progress.");
             var innerBytes = _writer.Complete();
@@ -181,13 +182,13 @@ namespace SharedMeta.Server
         /// Set by the MetaProvider to enable calling other entities.
         /// Returns CrossEntityCallInfo with EntitySequenceNumber and ResultBytes.
         /// </summary>
-        public Func<string, string, string, byte[], long, Task<CrossEntityCallInfo>>? EntityCallHandler { get; set; }
+        public Func<string, ushort, byte[], long, Task<CrossEntityOperationInfo>>? EntityCallHandler { get; set; }
 
         /// <summary>
         /// 0.22.0+: Handler for fire-and-forget cross-entity calls. Source grain dispatches
         /// without waiting; <see cref="CallEntityOneWay"/> returns immediately.
         /// </summary>
-        public Action<string, string, string, byte[], long>? EntityCallOneWayHandler { get; set; }
+        public Action<string, ushort, byte[], long>? EntityCallOneWayHandler { get; set; }
 
         /// <summary>
         /// Handler for read-only cross-entity state access.
@@ -215,29 +216,29 @@ namespace SharedMeta.Server
             return SaveStateHandler();
         }
 
-        private List<CrossEntityCallInfo>? _crossEntityCalls;
+        private List<CrossEntityOperationInfo>? _crossEntityCalls;
 
         /// <summary>
         /// Cross-entity calls made during current operation.
         /// Cleared on BeginOperation(), populated by CallEntityAsync().
         /// </summary>
-        public List<CrossEntityCallInfo>? CrossEntityCalls => _crossEntityCalls;
+        public List<CrossEntityOperationInfo>? CrossEntityCalls => _crossEntityCalls;
 
         /// <summary>
         /// Call a method on another entity asynchronously.
         /// Implementation of IServerRecordContext.CallEntityAsync.
         /// Collects CrossEntityCallInfo as a side effect.
         /// </summary>
-        public async Task<byte[]> CallEntityAsync(string targetEntityId, string serviceName, string methodName, byte[] argsBytes)
+        public async Task<byte[]> CallEntityAsync(string targetEntityId, ushort methodId, byte[] argsBytes)
         {
             if (EntityCallHandler == null)
             {
                 throw new InvalidOperationException(
-                    $"EntityCallHandler not set. Cannot call {serviceName}.{methodName} on entity {targetEntityId}. " +
+                    $"EntityCallHandler not set. Cannot call {methodId} on entity {targetEntityId}. " +
                     "The MetaProvider must set EntityCallHandler to enable cross-entity calls.");
             }
 
-            var info = await EntityCallHandler(targetEntityId, serviceName, methodName, argsBytes, ServerTimeTicks);
+            var info = await EntityCallHandler(targetEntityId, methodId, argsBytes, ServerTimeTicks);
 
             _crossEntityCalls ??= new();
             _crossEntityCalls.Add(info);
@@ -247,19 +248,19 @@ namespace SharedMeta.Server
 
         /// <summary>
         /// 0.22.0+: Fire-and-forget variant. Returns immediately; the target grain is invoked
-        /// via an Orleans <c>[OneWay]</c> entry point. No <see cref="CrossEntityCallInfo"/> is
+        /// via an Orleans <c>[OneWay]</c> entry point. No <see cref="CrossEntityOperationInfo"/> is
         /// recorded (nothing to replay client-side), and no result is observed by the caller.
         /// </summary>
-        public void CallEntityOneWay(string targetEntityId, string serviceName, string methodName, byte[] argsBytes)
+        public void CallEntityOneWay(string targetEntityId, ushort methodId, byte[] argsBytes)
         {
             if (EntityCallOneWayHandler == null)
             {
                 throw new InvalidOperationException(
-                    $"EntityCallOneWayHandler not set. Cannot OneWay-call {serviceName}.{methodName} on entity {targetEntityId}. " +
+                    $"EntityCallOneWayHandler not set. Cannot OneWay-call {methodId} on entity {targetEntityId}. " +
                     "The MetaProvider must set EntityCallOneWayHandler to enable fire-and-forget cross-entity calls.");
             }
 
-            EntityCallOneWayHandler(targetEntityId, serviceName, methodName, argsBytes, ServerTimeTicks);
+            EntityCallOneWayHandler(targetEntityId, methodId, argsBytes, ServerTimeTicks);
         }
 
         // EntityId is inherited from MetaContext base class

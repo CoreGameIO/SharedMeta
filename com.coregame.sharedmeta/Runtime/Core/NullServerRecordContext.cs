@@ -57,7 +57,7 @@ namespace SharedMeta.Core
 
         public string? EntityId => null;
 
-        public Task<byte[]> CallEntityAsync(string targetEntityId, string serviceName, string methodName, byte[] argsBytes)
+        public Task<byte[]> CallEntityAsync(string targetEntityId, ushort methodId, byte[] argsBytes)
             => throw new NotSupportedException(
                 "Cross-entity calls are not supported from signal methods. Use a regular MetaMethod for cross-entity routing.");
     }

@@ -1,20 +1,14 @@
+using System.Collections.Immutable;
 using Orleans;
 using SharedMeta.Core.Packets;
 
 namespace SharedMeta.Server.Core.Grains
 {
     /// <summary>
-    /// A broadcast to be sent to subscribers.
-    /// Carries one canonical <see cref="MetaOperation"/> payload (what was called + what came
-    /// out + nested triggers) plus the only routing field that has to live on the outer wrapper:
-    /// <see cref="ExcludePlayerId"/>.
-    /// <para>
-    /// Pre-0.24 this type duplicated <see cref="MetaOperation"/>'s flat fields (ServiceName,
-    /// MethodName, ReplayPayload, PatchBytes, ...) and used a parallel
-    /// <c>TriggerBroadcasts: List&lt;EntityBroadcast&gt;</c> for nested triggers. The unification
-    /// folds both into <see cref="Op"/> with <see cref="MetaOperation.Triggers"/>, so a single
-    /// payload object travels through every server-side hop.
-    /// </para>
+    /// A broadcast to be sent to a specific subscriber session. EntityGrain selects the
+    /// appropriate per-subscriber variant (replay or patch) BEFORE wrapping into
+    /// <see cref="EntityBroadcast"/> — SessionManagerGrain is per-player and only orders &amp;
+    /// forwards, so the bytes carried here are already the final shape for THIS subscriber.
     /// </summary>
     [GenerateSerializer, Immutable]
     public class EntityBroadcast
@@ -23,12 +17,11 @@ namespace SharedMeta.Server.Core.Grains
         /// caller — they already received the result via the RPC response).</summary>
         [Id(0)] public string? ExcludePlayerId { get; set; }
 
-        /// <summary>
-        /// The canonical operation payload. Carries ServiceName / MethodName / MethodVersion /
-        /// Payload (the original arguments), ReplayPayload, PatchBytes, StateBytes,
-        /// RandomScrollDelta, NamedRandomScrollDeltas, ServerTimeTicks, ExecutedConfigVersion,
-        /// and — for trigger fan-out — nested <see cref="MetaOperation.Triggers"/>.
-        /// </summary>
-        [Id(1)] public MetaOperation Op { get; set; } = new();
+        /// <summary>Pre-serialized MetaOperation for this subscriber (already tailored to
+        /// either replay or patch variant based on the caller's force-patch capabilities).</summary>
+        [Id(1)] public ImmutableArray<byte> OpBytes { get; set; }
+
+        /// <summary>Executed method identifier</summary>
+        [Id(2)] public ushort MethodId { get; set; }
     }
 }

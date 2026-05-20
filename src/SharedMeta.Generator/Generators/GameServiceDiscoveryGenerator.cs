@@ -257,7 +257,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("    /// Base class for game service discovery.");
             sb.AppendLine("    /// Provides service name to state type mapping and other metadata.");
             sb.AppendLine("    /// </summary>");
-            sb.AppendLine("    public abstract class GameServiceDiscoveryBase");
+            sb.AppendLine("    public abstract partial class GameServiceDiscoveryBase");
             sb.AppendLine("    {");
 
             // State type dictionary
@@ -271,11 +271,12 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        };");
             sb.AppendLine();
 
-            // State type name to type dictionary
+            // State type name to type dictionary — deduplicate by state full name so multiple
+            // services on the same state don't emit duplicate dictionary entries (cctor throw).
             sb.AppendLine("        /// <summary>Maps state type name (simple or full) to Type.</summary>");
             sb.AppendLine("        protected static readonly Dictionary<string, Type> _stateTypeByName = new()");
             sb.AppendLine("        {");
-            foreach (var service in serviceList)
+            foreach (var service in serviceList.GroupBy(s => s.StateTypeFullName).Select(g => g.First()))
             {
                 sb.AppendLine($"            {{ \"{service.StateTypeName}\", typeof({service.StateTypeFullName}) }},");
                 if (service.StateTypeName != service.StateTypeFullName)
@@ -347,7 +348,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
 
             // Generate method signatures dictionary
-            GenerateMethodSignatures(sb, serviceList);
+            GenerateMethodSignatures(sb, serviceList, rootNamespace);
             sb.AppendLine();
 
             // Abstract method for getting dispatcher (to be implemented in server project)
@@ -375,14 +376,18 @@ namespace SharedMeta.Generator.Generators
 
             // Generate delegate types
             sb.AppendLine("    /// <summary>Delegate for dispatching RPC calls to services.</summary>");
-            sb.AppendLine("    /// <remarks>0.22.0+: <c>methodVersion</c> selects between coexisting <c>[MetaMethod(Version = N)]</c>");
-            sb.AppendLine("    /// declarations sharing an alias. Pass 0 for legacy/unversioned dispatch.</remarks>");
+            sb.AppendLine("    /// <remarks>0.24.0+: <c>methodId</c> is the server-side global index from");
+            sb.AppendLine("    /// <see cref=\"global::SharedMeta.Generated.GameMethodIds\"/>. Encoding (alias, version)");
+            sb.AppendLine("    /// into a single ushort eliminates the per-call string switch and the legacy");
+            sb.AppendLine("    /// nested methodVersion subroute.</remarks>");
             sb.AppendLine("    public delegate System.Threading.Tasks.ValueTask<DispatchResult> ServerDispatcher(");
-            sb.AppendLine("        object service, string methodName, byte[] payload, int methodVersion, IMetaSerializer serializer);");
+            sb.AppendLine("        object service, ushort methodId, byte[] payload, IMetaSerializer serializer);");
             sb.AppendLine();
             sb.AppendLine("    /// <summary>Delegate for dispatching subscriber events to services.</summary>");
+            sb.AppendLine("    /// <remarks>0.24.0+: <c>methodId</c> is the framework subscriber method id from");
+            sb.AppendLine("    /// <see cref=\"global::SharedMeta.Core.Framework.FrameworkMethodIds\"/>.</remarks>");
             sb.AppendLine("    public delegate System.Collections.Generic.List<(string serviceName, string methodName, byte[]? resultBytes)>? SubscriberDispatcher(");
-            sb.AppendLine("        object service, string subscriberInterface, string methodName, byte[] eventData, IMetaSerializer serializer);");
+            sb.AppendLine("        object service, ushort methodId, byte[] eventData, IMetaSerializer serializer);");
 
             sb.AppendLine("}");
 
@@ -392,7 +397,7 @@ namespace SharedMeta.Generator.Generators
         /// <summary>
         /// Generate method signatures dictionary for client-server validation.
         /// </summary>
-        private static void GenerateMethodSignatures(StringBuilder sb, List<DiscoveredServiceInfo> services)
+        private static void GenerateMethodSignatures(StringBuilder sb, List<DiscoveredServiceInfo> services, string rootNamespace)
         {
             // Collect all method signatures
             var allSignatures = services
@@ -424,7 +429,7 @@ namespace SharedMeta.Generator.Generators
             // 0.22.0: emit MetaClientSignature static instance. Sorted canonical form so the
             // hash is stable across builds with the same protocol surface; mutating the sort
             // (e.g. by reordering interface members) does NOT change the hash.
-            EmitClientSignature(sb, allSignatures, services);
+            EmitClientSignature(sb, allSignatures, services, rootNamespace);
         }
 
         /// <summary>
@@ -434,7 +439,7 @@ namespace SharedMeta.Generator.Generators
         /// <c>RegisterClientSignatureRequest.Signature</c> (phase-2). Identical bits across
         /// every client build that ships the same set of <c>[MetaMethod]</c> declarations.
         /// </summary>
-        private static void EmitClientSignature(StringBuilder sb, List<MethodSignatureInfo> allSignatures, List<DiscoveredServiceInfo> services)
+        private static void EmitClientSignature(StringBuilder sb, List<MethodSignatureInfo> allSignatures, List<DiscoveredServiceInfo> services, string rootNamespace)
         {
             // Sort by (ServiceName, Alias, Version) for canonical form. Signal/query methods are
             // included — they're still part of the client's protocol surface and the server may
@@ -470,6 +475,10 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                SignatureHash = {SignatureHashGenerator.FormatHashLiteral(signatureHash)},");
             sb.AppendLine("                KnownMethods = new System.Collections.Generic.List<global::SharedMeta.Core.Transport.KnownMethodEntry>");
             sb.AppendLine("                {");
+            // Client-side global index — stable per client build, canonical sort order.
+            // Used as wire identifier in RpcCall.MethodId; server translates to its own
+            // server-side index via the per-signature clientToServer map.
+            ushort cIdx = 0;
             foreach (var s in sorted)
             {
                 sb.AppendLine("                    new global::SharedMeta.Core.Transport.KnownMethodEntry");
@@ -478,30 +487,72 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                        Alias = \"{s.MethodAlias}\",");
                 sb.AppendLine($"                        Version = {s.Version},");
                 sb.AppendLine($"                        ArgHash = {SignatureHashGenerator.FormatHashLiteral(s.ArgHash)},");
+                sb.AppendLine($"                        GlobalIndex = {cIdx},");
                 sb.AppendLine("                    },");
+                cIdx++;
             }
             sb.AppendLine("                },");
             sb.AppendLine("            };");
             sb.AppendLine();
 
+            // 0.24.0+ Emit flat constants in {rootNamespace}.Generated.GameMethodIds. The
+            // per-assembly namespace is required because each assembly that runs this generator
+            // produces its own table (ids assigned in canonical sort order over THAT assembly's
+            // [MetaMethod] declarations) — a shared SharedMeta.Generated namespace would clash
+            // whenever a project references two such assemblies. Cross-assembly consumers
+            // qualify the reference by the owning assembly's root namespace; same-assembly
+            // generated code (signature emit + per-service dispatcher / apiclient / recorder)
+            // computes the same namespace from the service interface's containing namespace.
+            sb.AppendLine("    }   // close GameServiceDiscoveryBase");
+            sb.AppendLine("}   // close rootNamespace");
+            sb.AppendLine();
+            sb.AppendLine($"namespace {rootNamespace}.Generated");
+            sb.AppendLine("{");
+            sb.AppendLine("    /// <summary>");
+            sb.AppendLine("    /// Compile-time table of client-side method ids. Each constant equals the");
+            sb.AppendLine("    /// method's <c>GlobalIndex</c> in the client signature's KnownMethods.");
+            sb.AppendLine("    /// Generated client code passes these into <c>RpcCall.MethodId</c> on the wire.");
+            sb.AppendLine("    /// </summary>");
+            sb.AppendLine("    public static class GameMethodIds");
+            sb.AppendLine("    {");
+            ushort kIdx = 0;
+            foreach (var s in sorted)
+            {
+                var safeName = SignatureHashGenerator.MakeMethodIdConstName(s.ServiceName, s.MethodAlias, s.Version);
+                sb.AppendLine($"        public const ushort {safeName} = {kIdx};");
+                kIdx++;
+            }
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
+            sb.AppendLine();
+            // Re-open rootNamespace + GameServiceDiscoveryBase so the server signature emit
+            // below continues to live inside GameServiceDiscoveryBase as before.
+            sb.AppendLine($"namespace {rootNamespace}");
+            sb.AppendLine("{");
+            sb.AppendLine("    public abstract partial class GameServiceDiscoveryBase");
+            sb.AppendLine("    {");
+
             // Server-side mirror — same data plus MinCompatibleVersion + GenerateClientApi.
-            // Wrapped in #if SHAREDMETA_SERVER so client builds don't reference the
-            // server-only MetaServerSignature type.
-            sb.AppendLine("#if SHAREDMETA_SERVER");
+            // Lives in SharedMeta.Core.Transport (shared namespace) so the same generated
+            // code compiles on client, server, and Unity — no preprocessor gating needed.
             sb.AppendLine("        /// <summary>");
             sb.AppendLine("        /// 0.22.0+: Server-side mirror of the same protocol surface, enriched with");
             sb.AppendLine("        /// <c>MinCompatibleVersion</c> and <c>GenerateClientApi</c> per method, plus");
             sb.AppendLine("        /// <c>[MetaConfigStructureBoundary]</c> declarations harvested from every bound");
             sb.AppendLine("        /// config class. Consumed by the Stage 6 capabilities compute pipeline.");
             sb.AppendLine("        /// </summary>");
-            sb.AppendLine("        public static readonly global::SharedMeta.Server.Core.Session.MetaServerSignature ServerSignature =");
-            sb.AppendLine("            new global::SharedMeta.Server.Core.Session.MetaServerSignature");
+            sb.AppendLine("        public static readonly global::SharedMeta.Core.Transport.MetaServerSignature ServerSignature =");
+            sb.AppendLine("            new global::SharedMeta.Core.Transport.MetaServerSignature");
             sb.AppendLine("            {");
-            sb.AppendLine("                Methods = new System.Collections.Generic.List<global::SharedMeta.Server.Core.Session.ServerMethodEntry>");
+            sb.AppendLine("                Methods = new System.Collections.Generic.List<global::SharedMeta.Core.Transport.ServerMethodEntry>");
             sb.AppendLine("                {");
+            // Global index assigned in canonical sort order — stable per server build.
+            // Used as the server-side dispatch key (jump table on ushort) and as the
+            // wire identifier after capability negotiation translates client local ids.
+            ushort gIdx = 0;
             foreach (var s in sorted)
             {
-                sb.AppendLine("                    new global::SharedMeta.Server.Core.Session.ServerMethodEntry");
+                sb.AppendLine("                    new global::SharedMeta.Core.Transport.ServerMethodEntry");
                 sb.AppendLine("                    {");
                 sb.AppendLine($"                        ServiceName = \"{s.ServiceName}\",");
                 sb.AppendLine($"                        Alias = \"{s.MethodAlias}\",");
@@ -510,7 +561,9 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                        ArgHash = {SignatureHashGenerator.FormatHashLiteral(s.ArgHash)},");
                 sb.AppendLine($"                        GenerateClientApi = {(s.GenerateClientApi ? "true" : "false")},");
                 sb.AppendLine($"                        ConfigTypeFullName = \"{s.ConfigTypeFullName}\",");
+                sb.AppendLine($"                        GlobalIndex = {gIdx},");
                 sb.AppendLine("                    },");
+                gIdx++;
             }
             sb.AppendLine("                },");
 
@@ -523,11 +576,11 @@ namespace SharedMeta.Generator.Generators
                 .OrderBy(b => b.ConfigTypeFullName, System.StringComparer.Ordinal)
                 .ThenBy(b => b.MinConfigVersion, System.StringComparer.Ordinal)
                 .ToList();
-            sb.AppendLine("                ConfigBoundaries = new System.Collections.Generic.List<global::SharedMeta.Server.Core.Session.ConfigBoundaryEntry>");
+            sb.AppendLine("                ConfigBoundaries = new System.Collections.Generic.List<global::SharedMeta.Core.Transport.ConfigBoundaryEntry>");
             sb.AppendLine("                {");
             foreach (var b in uniqueBoundaries)
             {
-                sb.AppendLine("                    new global::SharedMeta.Server.Core.Session.ConfigBoundaryEntry");
+                sb.AppendLine("                    new global::SharedMeta.Core.Transport.ConfigBoundaryEntry");
                 sb.AppendLine("                    {");
                 sb.AppendLine($"                        ConfigTypeFullName = \"{b.ConfigTypeFullName}\",");
                 sb.AppendLine($"                        MinConfigVersion = \"{b.MinConfigVersion}\",");
@@ -536,7 +589,6 @@ namespace SharedMeta.Generator.Generators
             }
             sb.AppendLine("                },");
             sb.AppendLine("            };");
-            sb.AppendLine("#endif");
         }
 
         /// <summary>Escape a string for safe embedding as a C# string literal.</summary>
@@ -546,5 +598,10 @@ namespace SharedMeta.Generator.Generators
             var escaped = s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
             return "\"" + escaped + "\"";
         }
+
+        // Const-name builder lives on SignatureHashGenerator so other generators can produce
+        // matching identifiers against GameMethodIds. See SignatureHashGenerator.MakeMethodIdConstName.
+        private static string MakeSafeConstName(string serviceName, string methodAlias, int version)
+            => SignatureHashGenerator.MakeMethodIdConstName(serviceName, methodAlias, version);
     }
 }

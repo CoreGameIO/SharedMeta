@@ -77,20 +77,22 @@ namespace SharedMeta.Core
         object? ResolveClientSibling(string entityId, Type interfaceType, object metaContext);
 
         /// <summary>
-        /// Subscribe to a method being replayed from server broadcast.
-        /// Use this to react to service events (e.g., OnMatchFound from LobbySubscriber).
+        /// Subscribe to a method being replayed from server broadcast. 0.24.0+ keyed by
+        /// client-local <c>MethodId</c> from <c>GameMethodIds</c> /
+        /// <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/> — the wire no longer
+        /// carries service/method names. Use to react to service events (e.g.
+        /// <c>FrameworkMethodIds.ILobbySubscriber_OnMatchFound</c>).
         /// </summary>
         /// <param name="entityId">Entity ID to subscribe on</param>
-        /// <param name="serviceName">Service interface name (e.g., "ILobbySubscriber")</param>
-        /// <param name="methodName">Method name (e.g., "OnMatchFound")</param>
+        /// <param name="methodId">Client-local method id from GameMethodIds / FrameworkMethodIds</param>
         /// <param name="handler">Handler to invoke when the method is replayed</param>
         /// <returns>Subscription handle - dispose to unsubscribe</returns>
-        IMethodSubscription OnMethodReplayed(string entityId, string serviceName, string methodName, Action<MethodReplayedContext> handler);
+        IMethodSubscription OnMethodReplayed(string entityId, ushort methodId, Action<MethodReplayedContext> handler);
 
         /// <summary>
         /// Subscribe to a method being replayed with strongly-typed arguments.
         /// </summary>
-        IMethodSubscription OnMethodReplayed<TArgs>(string entityId, string serviceName, string methodName, Action<TArgs> handler);
+        IMethodSubscription OnMethodReplayed<TArgs>(string entityId, ushort methodId, Action<TArgs> handler);
     }
 
     /// <summary>
@@ -108,6 +110,16 @@ namespace SharedMeta.Core
         /// Used for routing local invocations.
         /// </summary>
         public string ServiceName { get; init; } = null!;
+
+        /// <summary>
+        /// 0.24.0+ Method ids (client-local indices from <c>GameMethodIds</c>) that this service
+        /// handles. The resolver consults this when routing inbound broadcasts: a broadcast whose
+        /// <c>MethodId</c> is in this set is dispatched by the per-service <c>ApiClient</c>; a
+        /// broadcast that doesn't match any local service's set falls through to
+        /// <see cref="EntityReplayDispatcher"/>. Replaces the legacy <c>ServiceName</c> string
+        /// match — the wire no longer carries service/method names.
+        /// </summary>
+        public IReadOnlyList<ushort> MethodIds { get; init; } = System.Array.Empty<ushort>();
 
         /// <summary>
         /// The API client type (e.g., typeof(ProfileServiceApiClient))
@@ -208,11 +220,13 @@ namespace SharedMeta.Core
         /// the mutation entirely.
         /// </para>
         /// <para>
-        /// Parameters: (state, methodName, argsBytes, replayContext, callerId, serverTimeTicks,
+        /// Parameters: (state, methodId, argsBytes, replayContext, callerId, serverTimeTicks,
         /// serializer, optimisticRandom, namedRandoms, config, crossEntityResolver).
+        /// 0.24.0+ <c>methodId</c> is the client-local index from <c>GameMethodIds</c>; the
+        /// generator emits a <c>switch (methodId)</c> with one case per method's const.
         /// </para>
         /// </summary>
-        public Action<object, string, byte[], byte[], string?, long, IMetaSerializer, SharedMeta.Core.Random.MetaRandom?, IReadOnlyList<SharedMeta.Core.Random.MetaRandom>?, object?, ICrossEntityResolver?>? EntityReplayDispatcher { get; init; }
+        public Action<object, ushort, byte[], byte[], string?, long, IMetaSerializer, SharedMeta.Core.Random.MetaRandom?, IReadOnlyList<SharedMeta.Core.Random.MetaRandom>?, object?, ICrossEntityResolver?>? EntityReplayDispatcher { get; init; }
 
         /// <summary>
         /// 0.20.0: Factory that creates a transient impl of this service bound to the calling

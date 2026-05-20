@@ -140,6 +140,16 @@ namespace SharedMeta.Transport.SignalR
             };
         }
 
+        public async Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(Guid sessionId, MetaClientSignature signature)
+        {
+            EnsureConnected();
+            return await _hub!.RegisterClientSignature(new RegisterClientSignatureRequest
+            {
+                SessionId = sessionId,
+                Signature = signature,
+            });
+        }
+
         public async Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, string stateTypeName)
         {
             EnsureConnected();

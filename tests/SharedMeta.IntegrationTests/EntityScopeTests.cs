@@ -77,8 +77,7 @@ public class EntityScopeTests
 
         var queryCall = new RpcCall
         {
-            ServiceName = "IMigrationTestService",
-            MethodName = "GetValue",
+            MethodId = global::SharedMeta.Test.Meta1.Generated.GameMethodIds.IMigrationTestService_GetValue_v0,
             Payload = Array.Empty<byte>(),
             CallerId = "cross-3.0",
             CallerClientVersion = "3.0.0",

@@ -22,6 +22,11 @@ GeneratedMetaMessagePackConfiguration.Configure();
 MetaLog.SetLogger(new ConsoleMetaLogger(MetaLogLevel.Info));
 
 var useServerPatch = args.Contains("--server-patch");
+// Client app version drives [MetaConfigVersion] branch resolution on the server.
+// Default 2.0.0 matches the server's primary supported branch in Expedition.Server.
+// Pass --client-version=1.2.0 to exercise the legacy branch (lean economy + schema gate).
+var clientVersionArg = args.FirstOrDefault(a => a.StartsWith("--client-version="));
+var clientAppVersion = clientVersionArg?.Split('=', 2)[1] ?? "2.0.0";
 var positionalArgs = args.Where(a => !a.StartsWith("--")).ToArray();
 var serverUrl = positionalArgs.Length > 0 ? positionalArgs[0] : "http://localhost:5100";
 var deviceId = positionalArgs.Length > 1 ? positionalArgs[1] : Guid.NewGuid().ToString("N")[..8];
@@ -58,10 +63,16 @@ var client = new MetaClient(
     new MetaClientOptions
     {
         PlayerId = login.PlayerId,
+        // Required by ExpeditionConfig's [MetaConfigVersion(Client = "1.x.*"/"2.x.*")] rules:
+        // server resolves the config branch per-subscribe from this string. Subscribe throws
+        // server-side with "clientAppVersion is required" when null.
+        ClientAppVersion = clientAppVersion,
         Diagnostics = new ConsoleDesyncDiagnostics(),
-        ModeProvider = modeProvider
+        ModeProvider = modeProvider,
+        ClientSignature = Expedition.Shared.GameServiceDiscoveryBase.ClientSignature,
     }
 );
+Console.WriteLine($"Client app version: {clientAppVersion}");
 var resolver = (MetaServiceResolver)client.Resolver;
 
 // Wire a downloading provider for ExpeditionConfig before registering services so the
@@ -466,7 +477,7 @@ class ConsoleDesyncDiagnostics : IDesyncDiagnostics
         Console.Error.WriteLine($"[DESYNC] {serviceName}.{methodName}: server={serverResult}, local={localResult}");
     }
 
-    public void OnCrossEntityResult(string entityId, string serviceName, string methodName, byte[]? resultBytes)
+    public void OnCrossEntityResult(string entityId, ushort methodId, byte[]? resultBytes)
     {
         // Expected for CrossOptimistic calls
     }

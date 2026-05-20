@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Immutable;
 using System.Threading.Tasks;
 using SharedMeta.Core;
 using SharedMeta.Core.Network;
@@ -74,14 +75,38 @@ namespace SharedMeta.Client.Network
             _dispatcher.Connection.OnDisconnected += HandleDisconnected;
         }
 
+        // SessionOp.OpBytes carries the pre-serialized MetaOperation produced by the server.
+        // We deserialize once and project into the in-memory NetworkBroadcast / CallResponse
+        // shapes the API client expects.
+        private MetaOperation UnpackOp(SessionOp sessionOp)
+            => sessionOp.OpBytes is { Length: > 0 } b ? _serializer.Unpack<MetaOperation>(b) : new MetaOperation();
+
+        // 0.24.0+ Translate server's global method index → client's local index using the
+        // per-signature map shipped in ClientCapabilities.ServerToClientMethodIds. When the
+        // map isn't available (signature negotiation disabled / not yet completed) we fall
+        // back to identity — client and server built from the same protocol surface produce
+        // identical sort orders, so server's id equals client's id in that case. Returns
+        // ushort.MaxValue (sentinel) only when the explicit map says "client doesn't know".
+        private ushort TranslateIncomingMethodId(ushort serverMethodId)
+        {
+            var caps = Capabilities;
+            if (caps == null) return serverMethodId;
+            var map = caps.ServerToClientMethodIds;
+            if (map == null || serverMethodId >= map.Length) return serverMethodId;
+            return map[serverMethodId];
+        }
+
         private void HandleBroadcast(SessionOp sessionOp)
         {
-            var op = sessionOp.Op;
+            var op = UnpackOp(sessionOp);
+            // Translate server's global method index → client's local index via the
+            // per-signature ServerToClientMethodIds map sent in ClientCapabilities. When the
+            // server emits a method the client doesn't know (e.g. server-only), the sentinel
+            // ushort.MaxValue propagates and generated dispatch ignores it.
+            ushort clientMethodId = TranslateIncomingMethodId(op.MethodId);
             OnBroadcast?.Invoke(new NetworkBroadcast
             {
-                ServiceName = op.ServiceName,
-                MethodName = op.MethodName,
-                MethodVersion = op.MethodVersion,
+                MethodId = clientMethodId,
                 CallerId = op.CallerId,
                 ArgsBytes = op.Payload ?? Array.Empty<byte>(),
                 ReplayContext = op.ReplayPayload ?? Array.Empty<byte>(),
@@ -100,13 +125,16 @@ namespace SharedMeta.Client.Network
             OnDisconnected?.Invoke(reason.ToString());
         }
 
-        public async Task<CallResponse<T>> CallAsync<T>(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0, int methodVersion = 0)
+        public async Task<CallResponse<T>> CallAsync<T>(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
         {
+            // 0.24.0+ RpcCall no longer carries ServiceName/MethodName/MethodVersion — only
+            // MethodId addresses the dispatch. ServiceName/methodName/methodVersion are still
+            // accepted here for signature symmetry with older generated callers and used by
+            // ClientDispatcher to keep RpcCallRequest's diagnostic fields populated; they
+            // do not travel inside RpcCall anymore.
             var call = new RpcCall
             {
-                ServiceName = serviceName,
-                MethodName = methodName,
-                MethodVersion = methodVersion,
+                MethodId = methodId,
                 Payload = args,
                 CallerId = PlayerId,
                 IsCrossOptimistic = isCrossOptimistic,
@@ -120,7 +148,7 @@ namespace SharedMeta.Client.Network
                 throw new InvalidOperationException($"RPC call failed: {sessionOp.ErrorMessage}");
             }
 
-            var op = sessionOp.Op;
+            var op = UnpackOp(sessionOp);
             T result = default!;
             var resultBytes = op.ResultBytes;
             if (resultBytes != null && resultBytes.Length > 0)
@@ -144,13 +172,11 @@ namespace SharedMeta.Client.Network
             };
         }
 
-        public async Task<VoidCallResponse> CallVoidAsync(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0, int methodVersion = 0)
+        public async Task<VoidCallResponse> CallVoidAsync(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
         {
             var call = new RpcCall
             {
-                ServiceName = serviceName,
-                MethodName = methodName,
-                MethodVersion = methodVersion,
+                MethodId = methodId,
                 Payload = args,
                 CallerId = PlayerId,
                 IsCrossOptimistic = isCrossOptimistic,
@@ -164,7 +190,7 @@ namespace SharedMeta.Client.Network
                 throw new InvalidOperationException($"RPC call failed: {sessionOp.ErrorMessage}");
             }
 
-            var op = sessionOp.Op;
+            var op = UnpackOp(sessionOp);
             return new VoidCallResponse
             {
                 ReplayContext = op.ReplayPayload ?? Array.Empty<byte>(),
@@ -180,13 +206,11 @@ namespace SharedMeta.Client.Network
             };
         }
 
-        public async Task<ByteCallResponse> CallBytesAsync(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0, int methodVersion = 0)
+        public async Task<ByteCallResponse> CallBytesAsync(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
         {
             var call = new RpcCall
             {
-                ServiceName = serviceName,
-                MethodName = methodName,
-                MethodVersion = methodVersion,
+                MethodId = methodId,
                 Payload = args,
                 CallerId = PlayerId,
                 IsCrossOptimistic = isCrossOptimistic,
@@ -200,7 +224,7 @@ namespace SharedMeta.Client.Network
                 throw new InvalidOperationException($"RPC call failed: {sessionOp.ErrorMessage}");
             }
 
-            var op = sessionOp.Op;
+            var op = UnpackOp(sessionOp);
             return new ByteCallResponse
             {
                 ResultBytes = op.ResultBytes ?? Array.Empty<byte>(),
@@ -222,14 +246,12 @@ namespace SharedMeta.Client.Network
         /// no auto-retry. Completes as soon as the connection hands the message off.
         /// Server-side errors are never reported back.
         /// </summary>
-        public ValueTask SendSignalAsync(string serviceName, string methodName, byte[] args, int methodVersion = 0)
+        public ValueTask SendSignalAsync(ushort methodId, byte[] args)
         {
             var request = new SignalCallRequest
             {
                 EntityId = _entityId,
-                ServiceName = serviceName,
-                MethodName = methodName,
-                MethodVersion = methodVersion,
+                MethodId = methodId,
                 Payload = args ?? Array.Empty<byte>()
             };
 

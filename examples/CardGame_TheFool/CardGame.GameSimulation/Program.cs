@@ -511,7 +511,8 @@ class SimulationClient : IAsyncDisposable
             new MetaClientOptions
             {
                 PlayerId = playerName.ToLowerInvariant(),
-                Diagnostics = diagnostics
+                Diagnostics = diagnostics,
+                ClientSignature = CardGame.Shared.GameServiceDiscoveryBase.ClientSignature,
             }
         );
 
@@ -549,7 +550,7 @@ class SimulationClient : IAsyncDisposable
             Console.Error.WriteLine(msg);
         }
 
-        public void OnCrossEntityResult(string entityId, string serviceName, string methodName, byte[]? resultBytes)
+        public void OnCrossEntityResult(string entityId, ushort methodId, byte[]? resultBytes)
         {
             // Log cross-entity results for debugging
         }

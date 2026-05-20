@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Orleans;
@@ -34,39 +35,52 @@ namespace SharedMeta.Server.Core
     }
 
     /// <summary>
-    /// Result of handling an RPC call.
+    /// Result of handling an RPC call. MetaOperation lives inside the provider; what crosses
+    /// out is the serialized payload as <see cref="ImmutableArray{T}"/> of bytes. The provider
+    /// pools its MetaOperation instances internally so per-call allocation is bounded to the
+    /// serialized byte arrays.
     /// </summary>
-    public class HandleCallResult
+    public readonly struct HandleCallResult
     {
-        /// <summary>
-        /// The canonical operation payload (return bytes, replay payload, patch / state,
-        /// random deltas, executed config version, method-level error, nested triggers).
-        /// </summary>
-        public MetaOperation Response { get; set; } = new();
+        /// <summary>Pre-serialized MetaOperation for the originating caller's RPC response.</summary>
+        public ImmutableArray<byte> ResponseBytes { get; init; }
 
-        /// <summary>Broadcasts to distribute to subscribers.</summary>
-        public List<EntityBroadcast> Broadcasts { get; set; } = new();
+        /// <summary>Method return value (shortcut so cross-entity callers can read it without
+        /// deserializing <see cref="ResponseBytes"/>). Same bytes appear inside ResponseBytes.</summary>
+        public ImmutableArray<byte> ResultBytes { get; init; }
+
+        /// <summary>Pre-serialized broadcast for modern (replay-eligible) subscribers. Default
+        /// (uninitialized) when no broadcast is produced.</summary>
+        public ImmutableArray<byte> BroadcastReplayBytes { get; init; }
+
+        /// <summary>Pre-serialized broadcast for legacy (force-patch) subscribers. Default when
+        /// no force-patch tailoring was required for this call.</summary>
+        public ImmutableArray<byte> BroadcastPatchBytes { get; init; }
 
         /// <summary>
-        /// Cross-entity calls made during this operation.
-        /// Used by EntityGrain/SessionManager for broadcast suppression and desync validation.
+        /// Cross-entity calls made during this operation. Used by EntityGrain and replay clients
+        /// for broadcast suppression / desync validation.
         /// </summary>
-        public List<CrossEntityCallInfo>? CrossEntityCalls { get; set; }
+        public List<CrossEntityOperationInfo>? CrossEntityCalls { get; init; }
 
         /// <summary>
         /// If true, EntityGrain must persist state immediately regardless of PersistencePolicy.
-        /// Propagated from DispatchResult.ForcePersist (set by [MetaMethod(ForcePersist = true)]).
+        /// Propagated from <c>DispatchResult.ForcePersist</c> (set by <c>[MetaMethod(ForcePersist = true)]</c>).
         /// </summary>
-        public bool ForcePersist { get; set; }
+        public bool ForcePersist { get; init; }
+
+        /// <summary>Top-level error (provider could not dispatch). Method-body errors are
+        /// embedded in the serialized ResponseBytes via <c>MetaOperation.Error</c>.</summary>
+        public string? Error { get; init; }
     }
 
     /// <summary>
-    /// Result of handling an external event.
+    /// Result of handling an external event. Single pre-serialized broadcast — external events
+    /// don't go through force-patch tailoring so one variant suffices.
     /// </summary>
-    public class HandleEventResult
+    public readonly struct HandleEventResult
     {
-        /// <summary>Broadcasts to distribute to subscribers.</summary>
-        public List<EntityBroadcast> Broadcasts { get; set; } = new();
+        public ImmutableArray<byte> BroadcastBytes { get; init; }
     }
 
     /// <summary>
@@ -111,15 +125,16 @@ namespace SharedMeta.Server.Core
 
         /// <summary>
         /// Handle an external event from a framework service asynchronously.
+        /// 0.24.0+ ushort identifier (from <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/>
+        /// for framework subscribers) replaces the legacy <c>(subscriberInterface, methodName)</c>
+        /// string pair on the wire and at the dispatch site.
         /// </summary>
-        /// <param name="subscriberInterface">The subscriber interface (e.g., "ILobbySubscriber").</param>
-        /// <param name="methodName">The method name (e.g., "OnMatchFound").</param>
+        /// <param name="methodId">Framework subscriber method id (see <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/>).</param>
         /// <param name="eventData">The serialized event data.</param>
         /// <param name="callerId">Optional caller ID.</param>
         /// <returns>Broadcasts to distribute.</returns>
         ValueTask<HandleEventResult> HandleExternalEventAsync(
-            string subscriberInterface,
-            string methodName,
+            ushort methodId,
             byte[] eventData,
             string? callerId = null);
 

@@ -404,9 +404,9 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
             sb.AppendLine();
 
-            sb.AppendLine("        private void SetError(Exception ex, string methodName)");
+            sb.AppendLine("        private void SetError(Exception ex, ushort methodId)");
             sb.AppendLine("        {");
-            sb.AppendLine("            MetaLog.Error($\"[{ServiceName}.{methodName}] Service error\", ex);");
+            sb.AppendLine("            MetaLog.Error($\"[{ServiceName} methodId={methodId}] Service error\", ex);");
             sb.AppendLine("            _errorException = ex;");
             sb.AppendLine("            OnServiceError?.Invoke(ServiceName, ex);");
             sb.AppendLine("        }");
@@ -437,7 +437,7 @@ namespace SharedMeta.Generator.Generators
             GenerateHandleBroadcast(sb, methods, interfaceName, namespaceName, implClassName, stateTypeName, subscriberInterfaces, serializer);
 
             // Trigger replay
-            GenerateTriggerReplayMethods(sb, methods, stateTypeName);
+            GenerateTriggerReplayMethods(sb, methods, stateTypeName, interfaceName, namespaceName);
 
             // RefreshState — called by MetaServiceResolver on reconnect
             sb.AppendLine($"        /// <summary>");
@@ -704,17 +704,17 @@ namespace SharedMeta.Generator.Generators
             // can actually reach them — skipped when Sync = OnlySync since no async public dispatcher exists.
             if (!onlySync)
             {
-                GenerateServerMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync, resultComparer);
-                GenerateOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer);
-                GenerateCrossOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync, resultComparer);
-                GenerateServerPatchMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName);
-                GenerateServerReplaceMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName);
+                GenerateServerMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, resultComparer);
+                GenerateOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer);
+                GenerateCrossOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, resultComparer);
+                GenerateServerPatchMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName);
+                GenerateServerReplaceMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, interfaceName, namespaceName);
             }
 
             // Private sync-optimistic body — only emitted when the public sync method was emitted above.
             if (wantsSync && !isAsync && (defaultMode == "Optimistic" || defaultMode == "Local"))
             {
-                GenerateOptimisticMethodSync(sb, method, methodAlias, innerReturnType, isVoidReturn, paramCount, callArgs, serializer, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer);
+                GenerateOptimisticMethodSync(sb, method, methodAlias, innerReturnType, isVoidReturn, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer);
             }
         }
 
@@ -785,7 +785,7 @@ namespace SharedMeta.Generator.Generators
 
         private static void GenerateServerMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
-            DetectedSerializer serializer, string? stateTypeName = null, bool hasDeepDesync = false, ResultComparerInfo? resultComparer = null)
+            DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName = null, bool hasDeepDesync = false, ResultComparerInfo? resultComparer = null)
         {
             var methodName = method.Identifier.Text;
             var methodVersion = GetMethodVersion(method);
@@ -815,11 +815,11 @@ namespace SharedMeta.Generator.Generators
             // Call server
             if (isVoidReturn)
             {
-                sb.AppendLine($"                var response = await _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion});");
+                sb.AppendLine($"                var response = await _network.CallVoidAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks);");
             }
             else
             {
-                sb.AppendLine($"                var response = await _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion});");
+                sb.AppendLine($"                var response = await _network.CallBytesAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks);");
                 sb.AppendLine();
                 // Deserialize result based on serializer
                 GenerateResultDeserializationIndented(sb, returnType, serializer);
@@ -914,7 +914,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                _stateContainer.NotifyMutated();");
             }
             sb.AppendLine("                }");
-            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
+            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
 
             sb.AppendLine("            }");
             sb.AppendLine("            finally");
@@ -1008,7 +1008,7 @@ namespace SharedMeta.Generator.Generators
 
         private static void GenerateOptimisticMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
-            DetectedSerializer serializer, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null)
+            DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null)
         {
             var methodName = method.Identifier.Text;
             var methodVersion = GetMethodVersion(method);
@@ -1071,7 +1071,7 @@ namespace SharedMeta.Generator.Generators
             }
 
             sb.AppendLine("            }");
-            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
+            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            _stateContainer.NotifyMutated();");
@@ -1104,7 +1104,7 @@ namespace SharedMeta.Generator.Generators
             // Fire-and-forget to server with background validation
             if (isVoidReturn)
             {
-                sb.AppendLine($"            _ = _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion})");
+                sb.AppendLine($"            _ = _network.CallVoidAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks)");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1136,7 +1136,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"            if (!System.Collections.Generic.EqualityComparer<{returnType}>.Default.Equals(localResult, default!))");
                     sb.AppendLine("            {");
                 }
-                sb.AppendLine($"            _ = _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion})");
+                sb.AppendLine($"            _ = _network.CallBytesAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks)");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1175,7 +1175,7 @@ namespace SharedMeta.Generator.Generators
         // continuation. Only differences: no `async`/`Task<>` wrapper, no `await` on impl call.
         private static void GenerateOptimisticMethodSync(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, int paramCount, string callArgs,
-            DetectedSerializer serializer, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null)
+            DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null)
         {
             var methodName = method.Identifier.Text;
             var methodVersion = GetMethodVersion(method);
@@ -1231,7 +1231,7 @@ namespace SharedMeta.Generator.Generators
             }
 
             sb.AppendLine("            }");
-            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
+            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            _stateContainer.NotifyMutated();");
@@ -1265,7 +1265,7 @@ namespace SharedMeta.Generator.Generators
             // sync method returns immediately.
             if (isVoidReturn)
             {
-                sb.AppendLine($"            _ = _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion})");
+                sb.AppendLine($"            _ = _network.CallVoidAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks)");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1294,7 +1294,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"            if (!System.Collections.Generic.EqualityComparer<{returnType}>.Default.Equals(localResult, default!))");
                     sb.AppendLine("            {");
                 }
-                sb.AppendLine($"            _ = _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion})");
+                sb.AppendLine($"            _ = _network.CallBytesAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks)");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1328,7 +1328,7 @@ namespace SharedMeta.Generator.Generators
 
         private static void GenerateCrossOptimisticMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
-            DetectedSerializer serializer, string? stateTypeName, bool hasDeepDesync = false, ResultComparerInfo? resultComparer = null)
+            DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, ResultComparerInfo? resultComparer = null)
         {
             var methodName = method.Identifier.Text;
             var methodVersion = GetMethodVersion(method);
@@ -1388,7 +1388,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                localResult = {awaitPrefix}{coServiceRef}.{methodName}({callArgs});");
             }
             sb.AppendLine("            }");
-            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
+            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            _stateContainer.NotifyMutated();");
@@ -1422,7 +1422,7 @@ namespace SharedMeta.Generator.Generators
             // Fire-and-forget to server with IsCrossOptimistic flag + validation
             if (isVoidReturn)
             {
-                sb.AppendLine($"            _ = _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, isCrossOptimistic: true, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion})");
+                sb.AppendLine($"            _ = _network.CallVoidAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, isCrossOptimistic: true, serverTimeTicks: serverTimeTicks)");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1450,7 +1450,7 @@ namespace SharedMeta.Generator.Generators
             }
             else
             {
-                sb.AppendLine($"            _ = _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, isCrossOptimistic: true, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion})");
+                sb.AppendLine($"            _ = _network.CallBytesAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, isCrossOptimistic: true, serverTimeTicks: serverTimeTicks)");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1466,7 +1466,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                            for (int i = 0; i < serverCrossOps.Count && i < localCrossResults.Count; i++)");
                 sb.AppendLine("                            {");
                 sb.AppendLine("                                // Object-level comparison; typed comparison requires generated per-method code");
-                sb.AppendLine("                                _diagnostics?.OnCrossEntityResult(serverCrossOps[i].EntityId, serverCrossOps[i].ServiceName, serverCrossOps[i].MethodName, serverCrossOps[i].ResultBytes);");
+                sb.AppendLine("                                _diagnostics?.OnCrossEntityResult(serverCrossOps[i].EntityId, serverCrossOps[i].MethodId, serverCrossOps[i].ResultBytes);");
                 sb.AppendLine("                            }");
                 sb.AppendLine("                        }");
                 sb.AppendLine();
@@ -1491,7 +1491,7 @@ namespace SharedMeta.Generator.Generators
 
         private static void GenerateServerPatchMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
-            DetectedSerializer serializer, string? stateTypeName)
+            DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName)
         {
             var methodName = method.Identifier.Text;
             var methodVersion = GetMethodVersion(method);
@@ -1520,11 +1520,11 @@ namespace SharedMeta.Generator.Generators
             // Call server — always use CallBytesAsync (we need ResultBytes + PatchBytes)
             if (isVoidReturn)
             {
-                sb.AppendLine($"                var response = await _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion});");
+                sb.AppendLine($"                var response = await _network.CallVoidAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks);");
             }
             else
             {
-                sb.AppendLine($"                var response = await _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion});");
+                sb.AppendLine($"                var response = await _network.CallBytesAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks);");
             }
             sb.AppendLine();
 
@@ -1561,7 +1561,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                _tracker.FlushAndNotify();");
             sb.AppendLine("                _stateContainer.NotifyMutated();");
             sb.AppendLine("                }");
-            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
+            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
 
             // Return server result
             if (!isVoidReturn)
@@ -1582,7 +1582,7 @@ namespace SharedMeta.Generator.Generators
 
         private static void GenerateServerReplaceMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
-            DetectedSerializer serializer, string? stateTypeName)
+            DetectedSerializer serializer, string? stateTypeName, string interfaceName, string namespaceName)
         {
             var methodName = method.Identifier.Text;
             var methodVersion = GetMethodVersion(method);
@@ -1608,11 +1608,11 @@ namespace SharedMeta.Generator.Generators
             // Call server
             if (isVoidReturn)
             {
-                sb.AppendLine($"                var response = await _network.CallVoidAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion});");
+                sb.AppendLine($"                var response = await _network.CallVoidAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks);");
             }
             else
             {
-                sb.AppendLine($"                var response = await _network.CallBytesAsync(ServiceName, \"{methodAlias}\", argsBytes, serverTimeTicks: serverTimeTicks, methodVersion: {methodVersion});");
+                sb.AppendLine($"                var response = await _network.CallBytesAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks);");
             }
             sb.AppendLine();
 
@@ -1641,7 +1641,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                _tracker.FlushAndNotify();");
             sb.AppendLine($"                OnStateRefreshed?.Invoke(_state);");
             sb.AppendLine("                }");
-            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, \"{methodAlias}\"); throw; }}");
+            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
 
             // Return server result
             if (!isVoidReturn)
@@ -1806,19 +1806,45 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            if (broadcast.CallerId == _network.PlayerId)");
             sb.AppendLine("                return;");
             sb.AppendLine();
-            sb.AppendLine($"            if (broadcast.ServiceName == ServiceName)");
-            sb.AppendLine("            {");
-            sb.AppendLine("                DispatchServiceBroadcast(broadcast);");
-            sb.AppendLine("            }");
-
-            foreach (var subscriber in subscriberInterfaces)
+            // 0.24.0+ Route by client-local MethodId — the wire no longer carries
+            // ServiceName. DispatchServiceBroadcast's switch has the per-service ids; the
+            // subscriber dispatchers' switches own framework ids. A jump table on
+            // ushort is cheap, and the inner switch is the existing failure boundary
+            // (default branch logs unknown id).
+            // Service may consist entirely of Query/Signal methods (no broadcasts) with no
+            // subscriber interfaces — in that case emit no switch at all rather than an
+            // empty body whose dispatch branches would be unreachable / malformed.
+            var broadcastingMethods = methods.Where(m => !IsQueryMethod(m) && !IsSignalMethod(m)).ToList();
+            if (broadcastingMethods.Count > 0 || subscriberInterfaces.Count > 0)
             {
-                sb.AppendLine($"            else if (broadcast.ServiceName == \"{subscriber.Name}\")");
+                sb.AppendLine("            switch (broadcast.MethodId)");
                 sb.AppendLine("            {");
-                sb.AppendLine($"                Dispatch{subscriber.Name}Broadcast(broadcast);");
+                if (broadcastingMethods.Count > 0)
+                {
+                    foreach (var method in broadcastingMethods)
+                    {
+                        var alias = GetMethodAlias(method, method.Identifier.Text);
+                        var version = GetMethodVersion(method);
+                        var idConst = "global::" + namespaceName + ".Generated.GameMethodIds." +
+                            SignatureHashGenerator.MakeMethodIdConstName(interfaceName, alias, version);
+                        sb.AppendLine($"                case {idConst}:");
+                    }
+                    sb.AppendLine("                    DispatchServiceBroadcast(broadcast);");
+                    sb.AppendLine("                    return;");
+                }
+
+                foreach (var subscriber in subscriberInterfaces)
+                {
+                    foreach (var method in subscriber.Methods)
+                    {
+                        sb.AppendLine($"                case global::SharedMeta.Core.Framework.FrameworkMethodIds.{subscriber.Name}_{method.MethodName}:");
+                    }
+                    sb.AppendLine($"                    Dispatch{subscriber.Name}Broadcast(broadcast);");
+                    sb.AppendLine("                    return;");
+                }
+
                 sb.AppendLine("            }");
             }
-
             sb.AppendLine("        }");
             sb.AppendLine();
 
@@ -1827,83 +1853,47 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
             sb.AppendLine("            try");
             sb.AppendLine("            {");
-            sb.AppendLine("            switch (broadcast.MethodName)");
+            // 0.24.0+ Switch on client's local method id (translated from server's id by
+            // DispatcherNetworkAdapter via ServerToClientMethodIds). Each (alias, version)
+            // tuple is a distinct case from GameMethodIds — no nested version switch needed.
+            sb.AppendLine("            switch (broadcast.MethodId)");
             sb.AppendLine("            {");
 
             // Compute PatchApplier full name
             var applierName = stateTypeName + "PatchApplier";
 
-            // 0.22.0+: per-version broadcast routing. Methods grouped by alias; single-version
-            // aliases emit a flat case body (zero overhead, unchanged from 0.21). Multi-version
-            // aliases emit one case "alias": then switch (broadcast.MethodVersion) routing to
-            // the matching method body. Each per-version body has its own arg deserialization
-            // (parameter shape may differ between versions), service-method call, and event fire.
-            // Default branch handles broadcasts for a version this client doesn't know — those
-            // MUST arrive with PatchBytes or StateBytes (server-side fan-out compensates), so the
-            // default takes the state-data/patch path with no body replay.
-            var methodsByAlias = methods
-                .Where(m => !IsQueryMethod(m))
-                .GroupBy(m => GetMethodAlias(m, m.Identifier.Text))
-                .Select(g => g.OrderBy(m => GetMethodVersion(m)).ToList())
-                .ToList();
-
-            foreach (var group in methodsByAlias)
+            foreach (var method in methods.Where(m => !IsQueryMethod(m)))
             {
-                var alias = GetMethodAlias(group[0], group[0].Identifier.Text);
-                sb.AppendLine($"                case \"{alias}\":");
+                var alias = GetMethodAlias(method, method.Identifier.Text);
+                var version = GetMethodVersion(method);
+                var idConst = "global::" + namespaceName + ".Generated.GameMethodIds." + SignatureHashGenerator.MakeMethodIdConstName(interfaceName, alias, version);
+                sb.AppendLine($"                case {idConst}:");
                 sb.AppendLine("                {");
-
-                if (group.Count == 1)
-                {
-                    EmitBroadcastReplayBody(sb, group[0], alias, serializer, indent: "                    ");
-                }
-                else
-                {
-                    // Multi-version: nested switch on broadcast.MethodVersion. Lowest version
-                    // also handles methodVersion=0 (legacy/unversioned caller) so an older
-                    // client interpreting a v1 broadcast from a 0.22 server doesn't fall through.
-                    var minVersion = GetMethodVersion(group[0]);
-                    sb.AppendLine("                    switch (broadcast.MethodVersion)");
-                    sb.AppendLine("                    {");
-                    foreach (var versioned in group)
-                    {
-                        var v = GetMethodVersion(versioned);
-                        sb.AppendLine($"                        case {v}:");
-                        if (v == minVersion)
-                            sb.AppendLine("                        case 0:  // legacy/unversioned broadcast routes to lowest declared Version");
-                        sb.AppendLine("                        {");
-                        EmitBroadcastReplayBody(sb, versioned, alias, serializer, indent: "                            ");
-                        sb.AppendLine("                            break;");
-                        sb.AppendLine("                        }");
-                    }
-                    // Unknown future version. Per the per-broadcast format selection contract,
-                    // the server must include PatchBytes/StateBytes when fan-out hits a subscriber
-                    // that doesn't know the version. Apply if present; otherwise log + skip so a
-                    // forged broadcast doesn't crash the client.
-                    sb.AppendLine("                        default:");
-                    sb.AppendLine("                        {");
-                    sb.AppendLine("                            if (broadcast.StateBytes is { Length: > 0 } || broadcast.PatchBytes is { Length: > 0 })");
-                    sb.AppendLine("                            {");
-                    sb.AppendLine("                                _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
-                    sb.AppendLine("                                ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
-                    sb.AppendLine("                            }");
-                    sb.AppendLine($"                            else SharedMeta.Core.Logging.MetaLog.Warning(\"[{alias}] broadcast for unknown MethodVersion=\" + broadcast.MethodVersion + \" arrived without patch/state bytes; ignoring.\");");
-                    sb.AppendLine("                            ReplayTriggerOperations(broadcast.TriggerOperations, broadcast.CallerId, broadcast.ServerTimeTicks);");
-                    sb.AppendLine("                            break;");
-                    sb.AppendLine("                        }");
-                    sb.AppendLine("                    }");
-                }
-
+                EmitBroadcastReplayBody(sb, method, alias, serializer, indent: "                    ");
                 sb.AppendLine("                    break;");
                 sb.AppendLine("                }");
             }
 
+            // Sentinel / unknown: server emitted a method this client doesn't know (server-only,
+            // newer-version, removed-in-this-build). Server-side tailoring already includes
+            // PatchBytes/StateBytes for these legacy subscribers; apply them and consume the
+            // random scroll skips so the optimistic stream stays aligned. No body replay possible.
+            sb.AppendLine("                default:");
+            sb.AppendLine("                {");
+            sb.AppendLine("                    if (broadcast.StateBytes is { Length: > 0 } || broadcast.PatchBytes is { Length: > 0 })");
+            sb.AppendLine("                    {");
+            sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
+            sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
+            sb.AppendLine("                    }");
+            sb.AppendLine("                    else SharedMeta.Core.Logging.MetaLog.Warning($\"[{ServiceName}] broadcast for unknown MethodId=\" + broadcast.MethodId + \" arrived without patch/state bytes; ignoring.\");");
+            sb.AppendLine("                    ReplayTriggerOperations(broadcast.TriggerOperations, broadcast.CallerId, broadcast.ServerTimeTicks);");
+            sb.AppendLine("                    break;");
+            sb.AppendLine("                }");
+
             sb.AppendLine("            }");
             sb.AppendLine("            _tracker.FlushAndNotify();");
-            sb.AppendLine("            // MutationCount / OnStateMutated already fired by entity-level handler (state-data");
-            sb.AppendLine("            // path) or by the explicit NotifyMutated above (pure replay path).");
             sb.AppendLine("            }");
-            sb.AppendLine("            catch (Exception ex) { _tracker.Discard(); SetError(ex, broadcast.MethodName); throw; }");
+            sb.AppendLine("            catch (Exception ex) { _tracker.Discard(); SetError(ex, broadcast.MethodId); throw; }");
             sb.AppendLine("        }");
             sb.AppendLine();
 
@@ -1916,13 +1906,15 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("            var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
                 sb.AppendLine("            try");
                 sb.AppendLine("            {");
-                sb.AppendLine("            switch (broadcast.MethodName)");
+                // 0.24.0+ Switch on MethodId — framework subscriber ids live in FrameworkMethodIds
+                // (high range, hand-defined) so each interface's methods carry a fixed wire id.
+                sb.AppendLine("            switch (broadcast.MethodId)");
                 sb.AppendLine("            {");
 
                 foreach (var method in subscriber.Methods)
                 {
                     var eventName = GetEventName(method.MethodName);
-                    sb.AppendLine($"                case \"{method.MethodName}\":");
+                    sb.AppendLine($"                case global::SharedMeta.Core.Framework.FrameworkMethodIds.{subscriber.Name}_{method.MethodName}:");
                     sb.AppendLine("                {");
                     if (serializer == DetectedSerializer.MemoryPack)
                     {
@@ -1973,13 +1965,14 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("            // MutationCount / OnStateMutated already fired by entity-level handler (state-data");
                 sb.AppendLine("            // path) or by the explicit NotifyMutated above (pure replay path).");
                 sb.AppendLine("            }");
-                sb.AppendLine("            catch (Exception ex) { _tracker.Discard(); SetError(ex, broadcast.MethodName); throw; }");
+                sb.AppendLine("            catch (Exception ex) { _tracker.Discard(); SetError(ex, broadcast.MethodId); throw; }");
                 sb.AppendLine("        }");
                 sb.AppendLine();
             }
         }
 
-        private static void GenerateTriggerReplayMethods(StringBuilder sb, List<MethodDeclarationSyntax> methods, string? stateTypeName)
+        private static void GenerateTriggerReplayMethods(StringBuilder sb, List<MethodDeclarationSyntax> methods, string? stateTypeName,
+            string interfaceName, string namespaceName)
         {
             var applierName = stateTypeName + "PatchApplier";
 
@@ -2009,7 +2002,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                else");
             sb.AppendLine("                {");
             sb.AppendLine("                    SetContext(triggerOp.ReplayPayload ?? Array.Empty<byte>(), callerId, serverTimeTicks);");
-            sb.AppendLine("                    DispatchTrigger(triggerOp.MethodName);");
+            sb.AppendLine("                    DispatchTrigger(triggerOp.MethodId);");
             sb.AppendLine("                    ClearContext();");
             sb.AppendLine($"                    _stateContainer.NotifyMutated();");
             sb.AppendLine("                }");
@@ -2017,16 +2010,19 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
             sb.AppendLine();
 
-            // DispatchTrigger switch
-            sb.AppendLine("        private void DispatchTrigger(string methodName)");
+            // DispatchTrigger switch — 0.24.0+ keyed by MethodId (server's global index
+            // translated to client's local index on the wire). String name is no longer
+            // available on MetaOperation.
+            sb.AppendLine("        private void DispatchTrigger(ushort methodId)");
             sb.AppendLine("        {");
-            sb.AppendLine("            switch (methodName)");
+            sb.AppendLine("            switch (methodId)");
             sb.AppendLine("            {");
 
             foreach (var method in methods)
             {
                 var methodName = method.Identifier.Text;
                 var methodAlias = GetMethodAlias(method, methodName);
+                var methodVersion = GetMethodVersion(method);
                 var paramCount = method.ParameterList.Parameters.Count;
                 var returnTypeStr = method.ReturnType.ToString();
                 bool isAsyncMethod = returnTypeStr.StartsWith("Task") || returnTypeStr.StartsWith("System.Threading.Tasks.Task");
@@ -2034,7 +2030,9 @@ namespace SharedMeta.Generator.Generators
                 // Triggers are always parameterless (void or Task)
                 if (paramCount == 0)
                 {
-                    sb.AppendLine($"                case \"{methodAlias}\":");
+                    var idConst = "global::" + namespaceName + ".Generated.GameMethodIds." +
+                        SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion);
+                    sb.AppendLine($"                case {idConst}:");
                     if (isAsyncMethod)
                     {
                         sb.AppendLine($"                    BroadcastValidator.EnsureSyncCompletion(_service.{methodName}(), ServiceName, \"{methodAlias}\");");
@@ -2325,7 +2323,7 @@ namespace SharedMeta.Generator.Generators
             // Note: _ = (ValueTask) is allowed in C# 7.3+. GetAwaiter().GetResult() not used
             // because we never want to block or observe completion.
             var methodVersion = GetMethodVersion(method);
-            sb.AppendLine($"            _ = _network.SendSignalAsync(ServiceName, \"{methodAlias}\", argsBytes, methodVersion: {methodVersion});");
+            sb.AppendLine($"            _ = _network.SendSignalAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes);");
             sb.AppendLine("        }");
         }
 
@@ -2350,6 +2348,27 @@ namespace SharedMeta.Generator.Generators
                         && modeAccess.Name.Identifier.Text == "Query")
                         return true;
                 }
+            }
+            return false;
+        }
+
+        private static bool IsSignalMethod(MethodDeclarationSyntax method)
+        {
+            var attributes = method.AttributeLists.SelectMany(a => a.Attributes);
+            var metaMethod = attributes.FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
+            if (metaMethod == null) return false;
+            foreach (var arg in metaMethod.ArgumentList?.Arguments ?? Enumerable.Empty<AttributeArgumentSyntax>())
+            {
+                if (arg.NameEquals == null) continue;
+                var name = arg.NameEquals.Name.Identifier.Text;
+                if (name == "Signal"
+                    && arg.Expression is LiteralExpressionSyntax lit
+                    && lit.Token.Text == "true")
+                    return true;
+                if (name == "Mode"
+                    && arg.Expression is MemberAccessExpressionSyntax modeAccess
+                    && modeAccess.Name.Identifier.Text == "Signal")
+                    return true;
             }
             return false;
         }

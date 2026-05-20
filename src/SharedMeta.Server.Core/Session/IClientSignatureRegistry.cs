@@ -58,5 +58,16 @@ namespace SharedMeta.Server.Core.Session
         /// <see cref="RegisterClientSignatureResponse"/>.
         /// </summary>
         Task<ClientCapabilities> RegisterAsync(MetaClientSignature signature);
+
+        /// <summary>
+        /// Server-internal lookup of the per-signature <c>clientToServer</c> method-id map —
+        /// used by the connection handler to translate the <c>RpcCall.MethodId</c> a client
+        /// sends (its local global index) into the server-side global index for dispatch.
+        /// Sentinel value <c>ushort.MaxValue</c> at index <c>i</c> means the client claims
+        /// to know method-id <c>i</c> but the server doesn't accept that call from this
+        /// client (rejected method / forbidden / unknown). Returns <c>null</c> when the
+        /// signature has never been registered with the cluster.
+        /// </summary>
+        Task<ushort[]?> TryGetClientToServerMapAsync(ulong signatureHash);
     }
 }

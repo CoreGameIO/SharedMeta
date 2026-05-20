@@ -59,6 +59,15 @@ namespace SharedMeta.Client
         /// transport constructor / options) is used instead.
         /// </summary>
         public string? ClientAppVersion { get; set; }
+
+        /// <summary>
+        /// 0.24.0+ Generated <c>MetaClientSignature</c> for compatibility negotiation. Pass
+        /// <c>GameServiceDiscoveryBase.ClientSignature</c> from the generated assembly to enable
+        /// signature-based handshake (phase-1 hash check + phase-2 registration). Default:
+        /// <c>null</c> — the client opts out of negotiation and the server treats it as legacy
+        /// (Hash=0). Required when the host configures the registry to reject Hash=0.
+        /// </summary>
+        public SharedMeta.Core.Transport.MetaClientSignature? ClientSignature { get; set; }
     }
 
     /// <summary>
@@ -127,7 +136,8 @@ namespace SharedMeta.Client
             _dispatcher = new ClientDispatcher(connection)
             {
                 SessionHealthListener = options.SessionHealth,
-                ConnectionHealthListener = options.ConnectionHealth
+                ConnectionHealthListener = options.ConnectionHealth,
+                ClientSignature = options.ClientSignature,
             };
             if (options.ConnectionHealthOptions != null)
                 _dispatcher.ConnectionHealthOptions = options.ConnectionHealthOptions;

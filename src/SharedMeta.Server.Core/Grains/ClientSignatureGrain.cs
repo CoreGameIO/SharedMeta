@@ -50,5 +50,8 @@ namespace SharedMeta.Server.Core.Grains
             _state.State.Capabilities = capabilities;
             await _state.WriteStateAsync();
         }
+
+        public Task<MetaClientSignature?> GetSignatureAsync()
+            => Task.FromResult(_state.State.Populated ? _state.State.Signature : null);
     }
 }

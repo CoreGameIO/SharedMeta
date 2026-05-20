@@ -108,15 +108,11 @@ builder.Services.AddSignalR(hubOptions => {
 }).AddMetaMessagePackProtocol();
 #endif
 
-// MetaConnectionHandler factory for MetaHub
-// This factory creates per-connection handlers that manage Orleans grain interactions
-builder.Services.AddSingleton<IMetaConnectionHandlerFactory>(sp =>
-{
-    var grainFactory = sp.GetRequiredService<IGrainFactory>();
-    var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-    var entityGrainResolver = sp.GetRequiredService<IEntityGrainResolver>();
-    return new MetaConnectionHandlerFactory(grainFactory, entityGrainResolver, loggerFactory);
-});
+// MetaConnectionHandlerFactory is registered by the generated ConfigureMeta() inside the
+// silo block — it wires MetaServerSignature + IClientSignatureRegistry + ClientVersionPolicy.
+// Do NOT re-register with the bare 3-arg ctor here: that drops signatureRegistry to null,
+// and MetaConnectionHandler then rejects every RPC with "client signature not negotiated"
+// once the client passes MetaClientOptions.ClientSignature.
 
 // CORS for development
 builder.Services.AddCors(options =>

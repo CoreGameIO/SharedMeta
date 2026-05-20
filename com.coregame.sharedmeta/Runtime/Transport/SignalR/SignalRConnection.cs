@@ -140,6 +140,22 @@ namespace SharedMeta.Client.Network
             };
         }
 
+        // 0.22.0+ phase-2 of the compatibility-negotiation handshake. Sends the full
+        // MetaClientSignature when the server's SessionConnect reply set
+        // NeedsSignatureRegistration = true. Without this override IConnection's DIM throws
+        // NotSupportedException, ClientDispatcher's catch swallows it, and the session
+        // continues with no signature registered — every subsequent RPC then fails
+        // server-side with "out of range for client signature."
+        public async Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(Guid sessionId, MetaClientSignature signature)
+        {
+            EnsureConnected();
+            return await _hub!.RegisterClientSignature(new RegisterClientSignatureRequest
+            {
+                SessionId = sessionId,
+                Signature = signature,
+            });
+        }
+
         public async Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, string stateTypeName)
         {
             EnsureConnected();

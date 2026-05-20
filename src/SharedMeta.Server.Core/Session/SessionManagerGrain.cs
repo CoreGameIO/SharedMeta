@@ -621,7 +621,7 @@ namespace SharedMeta.Server.Core.Session
             if (!_subscribedEntities.TryGetValue(entityId, out var sub) || sub.GrainRef == null)
                 return SessionResponse.ForError($"Not subscribed to entity {entityId}");
 
-            _logger.SendToEntity(_playerId, entityId, requestId, call.ServiceName, call.MethodName);
+            _logger.SendToEntity(_playerId, entityId, requestId, "", "");
 
             // Accumulator across the in-order call AND any consecutive stashed calls
             // we drain after it.
@@ -650,18 +650,14 @@ namespace SharedMeta.Server.Core.Session
                         if (!_subscribedEntities.TryGetValue(stashed.EntityId, out var stashedSub) || stashedSub.GrainRef == null)
                         {
                             // Stashed call's entity is gone — surface as an error op.
+                            // Error-only SessionOp: OpBytes empty, Error set. Client sees error,
+                            // doesn't try to deserialize OpBytes.
                             allOps.Add(new SessionOp
                             {
                                 EntityId = stashed.EntityId,
                                 RequestId = stashed.RequestId,
                                 Error = $"Not subscribed to entity {stashed.EntityId}",
-                                Op = new MetaOperation
-                                {
-                                    ServiceName = stashed.Call.ServiceName,
-                                    MethodName = stashed.Call.MethodName,
-                                    MethodVersion = stashed.Call.MethodVersion,
-                                    Payload = stashed.Call.Payload,
-                                }
+                                OpBytes = System.Array.Empty<byte>(),
                             });
                             continue;
                         }
@@ -955,8 +951,6 @@ namespace SharedMeta.Server.Core.Session
         {
             var state = GetOrCreateEntityState(entityId);
 
-            _logger.BroadcastReceived(_playerId, entityId, entitySequenceNumber, state.KnownEntitySequence, _inActiveRpc, _observerManager.Count, broadcast.Op.ServiceName, broadcast.Op.MethodName);
-
             if (_inActiveRpc)
             {
                 // During active RPC: queue for bundling (no session seq yet)
@@ -1169,7 +1163,8 @@ namespace SharedMeta.Server.Core.Session
             {
                 EntityId = entityId,
                 RequestId = 0,
-                Op = broadcast.Op,
+                // Pure passthrough: bytes selected per-subscriber by EntityGrain already.
+                OpBytes = broadcast.OpBytes.IsDefault ? System.Array.Empty<byte>() : broadcast.OpBytes.AsSpan().ToArray(),
             };
         }
 
@@ -1182,13 +1177,13 @@ namespace SharedMeta.Server.Core.Session
             {
                 EntityId = entityId,
                 RequestId = requestId,
-                Op = result.Op,
+                // Pure passthrough: response bytes pre-serialized in EntityGrain.
+                OpBytes = result.OpBytes.IsDefault ? System.Array.Empty<byte>() : result.OpBytes.AsSpan().ToArray(),
                 Error = result.Error,
-                CrossEntityOperations = result.CrossEntityCalls?.Select(c => new CrossEntityOperationInfo
+                CrossEntityOperations = result.CrossEntityCalls?.Select(c => new SharedMeta.Core.Packets.CrossEntityOperationInfo
                 {
                     EntityId = c.EntityId,
-                    ServiceName = c.ServiceName,
-                    MethodName = c.MethodName,
+                    MethodId = c.MethodId,
                     ResultBytes = c.ResultBytes
                 }).ToList()
             };

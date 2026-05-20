@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using SharedMeta.Core;
@@ -33,6 +35,52 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     private MetaRandom[] _namedRandoms = System.Array.Empty<MetaRandom>();
     private IMetaRandom[]? _namedRandomsView;
 
+    // ── Pooled MetaOperation instances ─────────────────────────────────────────
+    // Reused across HandleCallAsync invocations so MetaOperation does not allocate
+    // per RPC. The instances live for the grain's lifetime; serialized bytes are
+    // the only thing that leaves the grain. Triggers use a growing list of pooled
+    // MetaOperation instances — high-water-mark across a session's worst-case
+    // trigger fan-out.
+    private readonly MetaOperation _pooledResponseOp = new();
+    private readonly MetaOperation _pooledBroadcastOp = new();
+    private readonly List<MetaOperation> _triggerOpPool = new();
+    private readonly List<MetaOperation> _pooledTriggerSlice = new();   // reused holder
+
+    private static void ResetMetaOperation(MetaOperation op)
+    {
+        op.MethodId = 0;
+        op.Payload = null;
+        op.CallerId = null;
+        op.ResultBytes = null;
+        op.ReplayPayload = null;
+        op.PatchBytes = null;
+        op.StateBytes = null;
+        op.RandomScrollDelta = 0;
+        op.NamedRandomScrollDeltas = null;
+        op.ServerTimeTicks = 0;
+        op.ExecutedConfigVersion = default;
+        op.DeepDesyncCrc = null;
+        op.Error = null;
+        op.Debug = null;
+        op.Triggers = null;
+    }
+
+    private MetaOperation RentTriggerOp(int index)
+    {
+        while (_triggerOpPool.Count <= index)
+            _triggerOpPool.Add(new MetaOperation());
+        var op = _triggerOpPool[index];
+        ResetMetaOperation(op);
+        return op;
+    }
+
+    private static ImmutableArray<byte> PackToImmutable(IMetaSerializer serializer, MetaOperation op)
+    {
+        var bytes = serializer.Pack(op);
+        // Zero-copy wrap: the array we just produced has no other owner.
+        return ImmutableCollectionsMarshal.AsImmutableArray(bytes);
+    }
+
     /// <summary>
     /// Service resolver for dependency injection (e.g., IRandomService).
     /// Set via constructor or before Initialize is called.
@@ -42,13 +90,16 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// <summary>
     /// Handler for cross-entity calls (when a service calls another entity).
     /// Returns CrossEntityCallInfo with EntitySequenceNumber and ResultBytes.
+    /// The last <c>ushort</c> argument is the server-side global <c>MethodId</c> stamped
+    /// by the recorder (<c>0</c> = legacy / unknown, the target grain resolves from strings).
     /// Set via constructor or before Initialize is called.
     /// </summary>
-    public Func<string, string, string, byte[], long, Task<CrossEntityCallInfo>>? EntityCallHandler { get; set; }
+    public Func<string, ushort, byte[], long, Task<CrossEntityOperationInfo>>? EntityCallHandler { get; set; }
 
     // Fire-and-forget cross-entity dispatch for [MetaMethod(OneWay = true)] — routes through
-    // Orleans [OneWay] so the source doesn't wait for a reply envelope.
-    public Action<string, string, string, byte[], long>? EntityCallOneWayHandler { get; set; }
+    // Orleans [OneWay] so the source doesn't wait for a reply envelope. Same MethodId
+    // semantics as EntityCallHandler.
+    public Action<string, ushort, byte[], long>? EntityCallOneWayHandler { get; set; }
 
     /// <summary>
     /// Handler for read-only cross-entity state access.
@@ -56,6 +107,39 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// Set via constructor or before Initialize is called.
     /// </summary>
     public Func<string, string, Task<byte[]?>>? EntityStateHandler { get; set; }
+
+    /// <summary>
+    /// 0.24.0+ Resolves <c>(ServiceName, TriggerMethodAlias)</c> → server's global method
+    /// index for trigger ops emitted from the provider. Wired by <c>EntityGrain</c> from
+    /// the injected <c>MetaServerSignature</c>. Triggers always run at version 0
+    /// (legacy/unversioned), so the lookup omits the version axis. Returns <c>null</c>
+    /// when no signature is wired (legacy build path) — provider leaves <c>MethodId = 0</c>
+    /// in that case and the client falls back on ServiceName/MethodName strings.
+    /// </summary>
+    public Func<string, string, ushort?>? TriggerMethodIdLookup { get; set; }
+
+    /// <summary>
+    /// 0.24.0+ Server-side signature for reverse <c>MethodId → ServerMethodEntry</c> lookup.
+    /// Wired by <c>EntityGrain</c> from DI. Provider uses this to populate
+    /// <c>MetaOperation.ServiceName/MethodName/MethodVersion</c> on the outgoing response/broadcast
+    /// (those strings are still on the wire for clients that haven't migrated) and to surface
+    /// service/method names in logs and migration policy lookups now that <c>RpcCall</c> only
+    /// carries the ushort id.
+    /// </summary>
+    public SharedMeta.Core.Transport.MetaServerSignature? ServerSignature { get; set; }
+
+    /// <summary>
+    /// Resolve a server-side MethodId to <c>(ServiceName, Alias, Version)</c>. Returns
+    /// empty strings when no signature is wired — callers must tolerate that, since
+    /// pre-0.24 paths still pass MethodId=0 / no-signature builds.
+    /// </summary>
+    protected (string ServiceName, string MethodName, int MethodVersion) ResolveMethodNames(ushort methodId)
+    {
+        var entry = ServerSignature?.GetMethodEntry(methodId);
+        return entry == null
+            ? ("", "", 0)
+            : (entry.ServiceName, entry.Alias, entry.Version);
+    }
 
     /// <summary>
     /// Handler for mid-method state persistence.
@@ -247,12 +331,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     protected virtual void OnInitialize() { }
 
     /// <summary>
-    /// Dispatches a service method call. Implemented by generated code.
-    /// <para><c>methodVersion</c> selects between coexisting <c>[MetaMethod(Version = N)]</c>
-    /// declarations on the same alias. Pass 0 for the legacy / unversioned route — the
-    /// dispatcher resolves it to the lowest-versioned impl so older clients still dispatch.</para>
+    /// Dispatches a service method call by global method id. Implemented by generated code
+    /// as a jump table on <see cref="ServerMethodEntry.GlobalIndex"/> (via
+    /// <c>SharedMeta.Generated.GameMethodIds</c> constants). The version is encoded in
+    /// the id, so no separate version parameter is needed.
     /// </summary>
-    protected abstract ValueTask<DispatchResult> DispatchCall(string serviceName, string methodName, byte[] payload, int methodVersion);
+    protected abstract ValueTask<DispatchResult> DispatchCall(ushort methodId, byte[] payload);
 
     /// <summary>
     /// Resolves a sibling-service impl by interface type. Default returns null; generated
@@ -271,8 +355,10 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
 
     /// <summary>
     /// Dispatch an external event. Override in derived class if needed.
+    /// 0.24.0+ dispatches by <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/> ushort
+    /// constants rather than <c>(subscriberInterface, methodName)</c> string pair.
     /// </summary>
-    protected virtual ValueTask<DispatchResult> DispatchEvent(string subscriberInterface, string methodName, byte[] eventData)
+    protected virtual ValueTask<DispatchResult> DispatchEvent(ushort methodId, byte[] eventData)
     {
         return new ValueTask<DispatchResult>(new DispatchResult { ResultBytes = null, TriggersToExecute = null });
     }
@@ -508,7 +594,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     {
         if (MetaContext == null || Context == null)
         {
-            return new HandleCallResult { Response = new MetaOperation { Error = "Provider not initialized" } };
+            return new HandleCallResult { Error = "Provider not initialized" };
         }
 
         // Per-call migration policy. Two caps stack:
@@ -519,7 +605,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         //                                 a fresh entity it just activated).
         // Effective cap = min of the two non-null caps. Per-caller config pin then runs
         // through GetCachedConfigForClient.
-        bool skipMigration = ShouldSkipMigration(call.ServiceName, call.MethodName);
+        // 0.24.0+ Resolve names once at the top of the method body. RpcCall no longer carries
+        // strings — they're surfaced from the signature for migration policy lookups and the
+        // outgoing MetaOperation. Falls back to empty strings when no signature is wired.
+        var (callServiceName, callMethodName, callMethodVersion) = ResolveMethodNames(call.MethodId);
+
+        bool skipMigration = ShouldSkipMigration(callServiceName, callMethodName);
         int? schemaCap = null;
         // Private/Shared with an active pin lock schema to subscribe-time driver: a
         // cross-entity call from a higher-version client can't advance schema. Global
@@ -527,7 +618,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         bool pinLocksMigration = ActiveConfigPins.Count > 0 && Scope != EntityScope.Global;
         if (!skipMigration && !pinLocksMigration)
         {
-            var methodCap = GetMethodMinStateVersion(call.ServiceName, call.MethodName);
+            var methodCap = GetMethodMinStateVersion(callServiceName, callMethodName);
             var migrationDriver = Scope == EntityScope.Global ? ResolveMigrationDriverForGlobal(call.CallerClientVersion) : call.CallerClientVersion;
             var clientCap = ComputeSchemaCapForClient(migrationDriver);
             schemaCap = methodCap.HasValue && clientCap.HasValue
@@ -581,7 +672,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
 
             // Determine server-side execution mode
             var executionMode = ExecutionModeProvider?.GetMode(
-                call.ServiceName, call.MethodName, ExecutionMode.Optimistic) ?? ExecutionMode.Optimistic;
+                callServiceName, callMethodName, ExecutionMode.Optimistic) ?? ExecutionMode.Optimistic;
 
             // Activate patch tracking when ServerPatch mode is in effect, deep-desync needs
             // a CRC, OR EntityGrain signals that at least one subscriber needs the patch
@@ -600,7 +691,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContext.BeginOperation();
 
             // Dispatch the call
-            var result = await DispatchCall(call.ServiceName, call.MethodName, call.Payload, call.MethodVersion);
+            var result = await DispatchCall(call.MethodId, call.Payload);
 
             // End recording and get replay payload
             var replayPayload = MetaContext.EndOperation();
@@ -638,72 +729,51 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // Capture cross-entity calls made during this operation
             var crossEntityCalls = MetaContext.CrossEntityCalls;
 
-            // Build response (canonical MetaOperation payload — same shape used on both
-            // the RPC response side and the EntityBroadcast side after the 0.24 unification).
-            var response = new HandleCallResult
-            {
-                Response = new MetaOperation
-                {
-                    ServiceName = call.ServiceName,
-                    MethodName = call.MethodName,
-                    MethodVersion = call.MethodVersion,
-                    Payload = call.Payload,
-                    ResultBytes = result.ResultBytes,
-                    ReplayPayload = replayPayload,
-                    Error = null,
-                    RandomScrollDelta = randomScrollDelta,
-                    NamedRandomScrollDeltas = namedRandomScrollDeltas,
-                    PatchBytes = patchBytes,
-                    DeepDesyncCrc = deepDesyncCrc,
-                    ServerTimeTicks = call.ServerTimeTicks,
-                    // The caller's optimistic replay materializes the same config branch the
-                    // server used here, decoupling replay from session-resolved versions —
-                    // required for Global scope and mid-rollout cases.
-                    ExecutedConfigVersion = MetaContext.ConfigVersion
-                },
-                Broadcasts = new List<EntityBroadcast>(),
-                CrossEntityCalls = crossEntityCalls,
-                ForcePersist = result.ForcePersist
-            };
+            // Populate pooled response — the originator's RPC reply shape. Carries both
+            // ReplayPayload and PatchBytes when both are available; the client picks the
+            // applicable form based on its own execution mode for this method.
+            ResetMetaOperation(_pooledResponseOp);
+            _pooledResponseOp.MethodId = call.MethodId;
+            _pooledResponseOp.Payload = call.Payload;
+            _pooledResponseOp.ResultBytes = result.ResultBytes;
+            _pooledResponseOp.ReplayPayload = replayPayload;
+            _pooledResponseOp.PatchBytes = patchBytes;
+            _pooledResponseOp.RandomScrollDelta = randomScrollDelta;
+            _pooledResponseOp.NamedRandomScrollDeltas = namedRandomScrollDeltas;
+            _pooledResponseOp.DeepDesyncCrc = deepDesyncCrc;
+            _pooledResponseOp.ServerTimeTicks = call.ServerTimeTicks;
+            // Caller's optimistic replay materializes the same config branch the server used —
+            // decoupling replay from session-resolved versions (Global scope, mid-rollout).
+            _pooledResponseOp.ExecutedConfigVersion = MetaContext.ConfigVersion;
 
-            // Create broadcast for this call (to other subscribers). The broadcast carries
-            // the same MetaOperation shape as the response — only the routing/exclusion
-            // fields live on the outer wrapper. CallerId is set so subscribers' broadcast
-            // replay path can attribute the operation to the right originator (Context.CallerId
-            // flows from this field on the wire).
-            var mainBroadcastOp = new MetaOperation
-            {
-                ServiceName = call.ServiceName,
-                MethodName = call.MethodName,
-                MethodVersion = call.MethodVersion,
-                Payload = call.Payload,
-                CallerId = call.CallerId,
-                ReplayPayload = replayPayload,
-                ServerTimeTicks = call.ServerTimeTicks,
-                RandomScrollDelta = randomScrollDelta,
-                NamedRandomScrollDeltas = namedRandomScrollDeltas,
-                PatchBytes = patchBytes,
-                // Observers replay this broadcast under the same config the server used —
-                // not their own session-resolved version. Critical for Global scope and for
-                // mid-session config rollouts that haven't reached all observers yet.
-                ExecutedConfigVersion = MetaContext.ConfigVersion
-            };
-            var mainBroadcast = new EntityBroadcast
-            {
-                ExcludePlayerId = call.CallerId, // Don't broadcast back to caller
-                Op = mainBroadcastOp,
-            };
+            // Populate pooled broadcast — the form sent to OTHER subscribers. CallerId is
+            // set so subscribers can attribute the op to the originator on their side.
+            // Cross-entity broadcasts (isClientOriginated=false) NULL the CallerId so the
+            // outer caller's client doesn't filter them as own-RPC echoes — the outer caller
+            // didn't directly RPC THIS entity, just transitively touched it through another
+            // entity's method. Direct subscribers of THIS entity still get the broadcast;
+            // they just lose cross-entity attribution (the broadcast wasn't directly theirs).
+            ResetMetaOperation(_pooledBroadcastOp);
+            _pooledBroadcastOp.MethodId = call.MethodId;
+            _pooledBroadcastOp.Payload = call.Payload;
+            _pooledBroadcastOp.CallerId = isClientOriginated ? call.CallerId : null;
+            _pooledBroadcastOp.ReplayPayload = replayPayload;
+            _pooledBroadcastOp.PatchBytes = patchBytes;
+            _pooledBroadcastOp.RandomScrollDelta = randomScrollDelta;
+            _pooledBroadcastOp.NamedRandomScrollDeltas = namedRandomScrollDeltas;
+            _pooledBroadcastOp.ServerTimeTicks = call.ServerTimeTicks;
+            _pooledBroadcastOp.ExecutedConfigVersion = MetaContext.ConfigVersion;
 
-            // Handle triggers if any — nest inside main broadcast's MetaOperation.Triggers list.
+            // Handle triggers — populate pooled trigger ops, attach to broadcast's Triggers list.
             if (result.TriggersToExecute is { Count: > 0 } triggers)
             {
-                mainBroadcastOp.Triggers = new List<MetaOperation>();
+                _pooledTriggerSlice.Clear();
+                int triggerIndex = 0;
                 foreach (var triggerMethod in triggers)
                 {
                     var triggerScrollBefore = _optimisticRandom.ScrollId;
                     var triggerNamedScrollsBefore = CaptureNamedScrolls();
 
-                    // Set up patch tracking for trigger (if ServerPatch mode)
                     PatchNode? triggerPatchRoot = null;
                     if (executionMode == ExecutionMode.ServerPatch)
                     {
@@ -712,14 +782,15 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                     }
 
                     MetaContext.BeginOperation();
-                    // Triggers always dispatch via the legacy/unversioned route (methodVersion=0).
-                    // They're internal hop-overs, not external calls — there is no client-side
-                    // [MetaMethod(Version)] choice in play, so the dispatcher resolves them to
-                    // the lowest-versioned trigger implementation under the alias.
-                    var triggerResult = await DispatchCall(call.ServiceName, triggerMethod, [], 0);
+                    // Triggers run at the legacy/unversioned alias (version 0) — look up the
+                    // server-side global id from the host-wired TriggerMethodIdLookup. When
+                    // unwired (legacy path) the id stays 0 and the generated dispatcher's
+                    // default branch throws — caller code shouldn't fire triggers without a
+                    // registered signature.
+                    var triggerMethodId = TriggerMethodIdLookup?.Invoke(callServiceName, triggerMethod) ?? 0;
+                    var triggerResult = await DispatchCall(triggerMethodId, []);
                     var triggerReplay = MetaContext.EndOperation();
 
-                    // Collect trigger patch bytes
                     byte[]? triggerPatchBytes = null;
                     if (triggerPatchRoot != null)
                     {
@@ -732,43 +803,101 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                     var triggerScrollDelta = _optimisticRandom.ScrollId - triggerScrollBefore;
                     var triggerNamedDeltas = ComputeNamedScrollDeltas(triggerNamedScrollsBefore);
 
-                    mainBroadcastOp.Triggers.Add(new MetaOperation
-                    {
-                        ServiceName = call.ServiceName,
-                        MethodName = triggerMethod,
-                        MethodVersion = 0, // triggers always run under the legacy alias
-                        Payload = [], // Triggers have no arguments
-                        CallerId = call.CallerId, // triggers attribute to the outer call's originator
-                        ReplayPayload = triggerReplay,
-                        ServerTimeTicks = call.ServerTimeTicks,
-                        RandomScrollDelta = triggerScrollDelta,
-                        NamedRandomScrollDeltas = triggerNamedDeltas,
-                        PatchBytes = triggerPatchBytes,
-                        // Triggers run under the same MetaContext as the outer call — same config.
-                        ExecutedConfigVersion = MetaContext.ConfigVersion
-                    });
+                    var triggerOp = RentTriggerOp(triggerIndex++);
+                    // Triggers resolve their own MethodId (different alias from the outer call,
+                    // version 0 — legacy/unversioned). If the lookup map isn't available
+                    // (provider initialized without server signature) the id stays at 0 and
+                    // generated dispatch's default branch will throw — provider must have a
+                    // signature wired before any trigger fires.
+                    triggerOp.MethodId = TriggerMethodIdLookup?.Invoke(callServiceName, triggerMethod) ?? 0;
+                    triggerOp.Payload = System.Array.Empty<byte>();
+                    triggerOp.CallerId = call.CallerId;
+                    triggerOp.ReplayPayload = triggerReplay;
+                    triggerOp.PatchBytes = triggerPatchBytes;
+                    triggerOp.RandomScrollDelta = triggerScrollDelta;
+                    triggerOp.NamedRandomScrollDeltas = triggerNamedDeltas;
+                    triggerOp.ServerTimeTicks = call.ServerTimeTicks;
+                    triggerOp.ExecutedConfigVersion = MetaContext.ConfigVersion;
+                    _pooledTriggerSlice.Add(triggerOp);
                 }
+                // Both response and broadcast carry the SAME trigger list (same object reference
+                // is OK pre-serialization — neither is mutated independently). Will be cleared
+                // before next call via the broadcast op's reset.
+                _pooledResponseOp.Triggers = _pooledTriggerSlice;
+                _pooledBroadcastOp.Triggers = _pooledTriggerSlice;
             }
 
-            // ServerReplace: serialize full state AFTER all triggers, capturing final state
+            // ServerReplace: serialize full state AFTER all triggers, capturing final state.
+            // Strips ReplayPayload from both response and broadcast (state replaces it on the client).
             byte[]? stateBytes = null;
             if (isServerReplace)
             {
                 stateBytes = GetStateBytes();
-                response.Response.StateBytes = stateBytes;
-                response.Response.ReplayPayload = null; // no replay needed
-                mainBroadcastOp.StateBytes = stateBytes;
-                mainBroadcastOp.ReplayPayload = null;
+                _pooledResponseOp.StateBytes = stateBytes;
+                _pooledResponseOp.ReplayPayload = null;
+                _pooledBroadcastOp.StateBytes = stateBytes;
+                _pooledBroadcastOp.ReplayPayload = null;
             }
 
-            response.Broadcasts.Add(mainBroadcast);
+            // Serialize response once — only when needed for the originating client's RPC reply.
+            // Cross-entity callers (isClientOriginated=false) read just ResultBytes from the
+            // slim CrossEntityCallReturn; the full ResponseBytes would be ignored, so skip it.
+            ImmutableArray<byte> responseBytes = default;
+            if (isClientOriginated)
+                responseBytes = PackToImmutable(Context.Serializer, _pooledResponseOp);
 
-            return response;
+            // Serialize broadcast variants. Common case: one variant (replay-only — patch is
+            // either absent or canonical depending on mode). When requirePatchForFanOut is on
+            // we also need a patch-only variant for the legacy subscriber population.
+            ImmutableArray<byte> broadcastReplayBytes = default;
+            ImmutableArray<byte> broadcastPatchBytes = default;
+
+            // Variant 1: replay-eligible audience. Strip PatchBytes so the variant carries
+            // only the replay payload (and state, for ServerReplace which already null'd replay).
+            var origPatch = _pooledBroadcastOp.PatchBytes;
+            _pooledBroadcastOp.PatchBytes = null;
+            broadcastReplayBytes = PackToImmutable(Context.Serializer, _pooledBroadcastOp);
+            _pooledBroadcastOp.PatchBytes = origPatch;
+
+            // Variant 2: patch-eligible audience. Only emit when force-patch tailoring is
+            // requested OR the call executed under ServerPatch (then ALL subscribers get patch
+            // and the replay variant is what we don't ship). For ServerPatch we still emit
+            // both variants but the broadcast distributor will use the patch variant.
+            if (requirePatchForFanOut && origPatch is { Length: > 0 })
+            {
+                var origReplay = _pooledBroadcastOp.ReplayPayload;
+                _pooledBroadcastOp.ReplayPayload = null;
+                broadcastPatchBytes = PackToImmutable(Context.Serializer, _pooledBroadcastOp);
+                _pooledBroadcastOp.ReplayPayload = origReplay;
+            }
+
+            return new HandleCallResult
+            {
+                ResponseBytes = responseBytes,
+                ResultBytes = result.ResultBytes is { Length: > 0 } rb
+                    ? ImmutableCollectionsMarshal.AsImmutableArray(rb)
+                    : default,
+                BroadcastReplayBytes = broadcastReplayBytes,
+                BroadcastPatchBytes = broadcastPatchBytes,
+                CrossEntityCalls = crossEntityCalls,
+                ForcePersist = result.ForcePersist,
+                Error = null,
+            };
         }
         catch (Exception ex)
         {
-            Logger.ProviderCallError(ex, call.ServiceName, call.MethodName);
-            return new HandleCallResult { Response = new MetaOperation { Error = ex.Message } };
+            Logger.ProviderCallError(ex, callServiceName, callMethodName);
+            // Build an error-only response op so the wire payload is well-formed (client
+            // dispatchers always Unpack OpBytes).
+            ResetMetaOperation(_pooledResponseOp);
+            _pooledResponseOp.MethodId = call.MethodId;
+            _pooledResponseOp.Error = ex.Message;
+            var errBytes = PackToImmutable(Context.Serializer, _pooledResponseOp);
+            return new HandleCallResult
+            {
+                ResponseBytes = errBytes,
+                Error = ex.Message,
+            };
         }
         finally
         {
@@ -781,10 +910,10 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// here instead of through Orleans (which would deadlock — EntityGrain is non-reentrant).
     /// The nested op gets its own replay buffer and <c>CrossEntityCalls</c> list but shares
     /// state, randoms, and the outer's <c>PatchWrapper</c> so the patch tree stays one-per-RPC
-    /// from the client's perspective. Returns a <see cref="CrossEntityCallInfo"/> shaped
+    /// from the client's perspective. Returns a <see cref="CrossEntityOperationInfo"/> shaped
     /// identically to the real cross-entity path so replay sees no difference.
     /// </summary>
-    public async Task<CrossEntityCallInfo> HandleNestedCallAsync(string targetEntityId, string serviceName, string methodName, byte[] argsBytes)
+    public async Task<CrossEntityOperationInfo> HandleNestedCallAsync(string targetEntityId, ushort methodId, byte[] argsBytes)
     {
         if (MetaContext == null)
             throw new InvalidOperationException("Provider not initialized.");
@@ -798,9 +927,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         DispatchResult result;
         try
         {
-            // Sibling/cross-entity nested call. Routes via the legacy/unversioned method-version
-            // bucket — internal hop, not a client call carrying a specific [MetaMethod(Version)].
-            result = await DispatchCall(serviceName, methodName, argsBytes, 0);
+            // Sibling nested call.
+            result = await DispatchCall(methodId, argsBytes);
         }
         finally
         {
@@ -808,19 +936,16 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContext.PopNestedOperation(frame, out _);
         }
 
-        return new CrossEntityCallInfo
-        {
+        return new CrossEntityOperationInfo {
             EntityId = targetEntityId,
-            ServiceName = serviceName,
-            MethodName = methodName,
+            MethodId = methodId,
             ResultBytes = result.ResultBytes,
             EntitySequenceNumber = 0  // self-call shares outer's sequence; no separate seq increment
         };
     }
 
     public async ValueTask<HandleEventResult> HandleExternalEventAsync(
-        string subscriberInterface,
-        string methodName,
+        ushort methodId,
         byte[] eventData,
         string? callerId = null)
     {
@@ -836,31 +961,28 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContextAccessor.Current = MetaContext;
 
             MetaContext.BeginOperation();
-            var result = await DispatchEvent(subscriberInterface, methodName, eventData);
+            var result = await DispatchEvent(methodId, eventData);
             var replayPayload = MetaContext.EndOperation();
 
-            var broadcasts = new List<EntityBroadcast>();
+            // Populate pooled broadcast for this event and serialize. Wire identifier is the
+            // framework subscriber method id (high-range ushort from FrameworkMethodIds);
+            // client-side dispatch keys on this. ServiceName/MethodName left empty — they're
+            // diagnostic only and not used by per-method routing anymore.
+            ResetMetaOperation(_pooledBroadcastOp);
+            _pooledBroadcastOp.MethodId = methodId;
+            _pooledBroadcastOp.Payload = eventData;
+            _pooledBroadcastOp.ReplayPayload = replayPayload;
+            _pooledBroadcastOp.ServerTimeTicks = MetaContext.ServerTimeTicks;
+            _pooledBroadcastOp.ExecutedConfigVersion = MetaContext.ConfigVersion;
 
-            // Create broadcast for this event
-            broadcasts.Add(new EntityBroadcast
+            return new HandleEventResult
             {
-                ExcludePlayerId = null, // Broadcast to everyone
-                Op = new MetaOperation
-                {
-                    ServiceName = subscriberInterface,
-                    MethodName = methodName,
-                    Payload = eventData,
-                    ReplayPayload = replayPayload,
-                    ServerTimeTicks = MetaContext.ServerTimeTicks,
-                    ExecutedConfigVersion = MetaContext.ConfigVersion
-                }
-            });
-
-            return new HandleEventResult { Broadcasts = broadcasts };
+                BroadcastBytes = PackToImmutable(Context.Serializer, _pooledBroadcastOp),
+            };
         }
         catch (Exception ex)
         {
-            Logger.ProviderEventError(ex, subscriberInterface, methodName);
+            Logger.ProviderEventError(ex, "(framework)", "id=" + methodId);
             return new HandleEventResult();
         }
         finally
@@ -879,14 +1001,16 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         if (MetaContext == null || Context == null)
             return new QueryCallResponse { Error = "Provider not initialized" };
 
-        bool skipMigration = ShouldSkipMigration(call.ServiceName, call.MethodName);
+        var (callServiceName, callMethodName, _) = ResolveMethodNames(call.MethodId);
+
+        bool skipMigration = ShouldSkipMigration(callServiceName, callMethodName);
         int? schemaCap = null;
         // Pin locks schema for Private/Shared with an active pin; Global substitutes
         // CurrentClientVersion as the migration driver instead of the caller's own version.
         bool pinLocksMigration = ActiveConfigPins.Count > 0 && Scope != EntityScope.Global;
         if (!skipMigration && !pinLocksMigration)
         {
-            var methodCap = GetMethodMinStateVersion(call.ServiceName, call.MethodName);
+            var methodCap = GetMethodMinStateVersion(callServiceName, callMethodName);
             var migrationDriver = Scope == EntityScope.Global ? ResolveMigrationDriverForGlobal(call.CallerClientVersion) : call.CallerClientVersion;
             var clientCap = ComputeSchemaCapForClient(migrationDriver);
             schemaCap = methodCap.HasValue && clientCap.HasValue
@@ -935,7 +1059,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContextAccessor.Current = MetaContext;
 
             // Dispatch the call — same dispatcher, but no replay/random/broadcast machinery
-            var result = await DispatchCall(call.ServiceName, call.MethodName, call.Payload, call.MethodVersion);
+            var result = await DispatchCall(call.MethodId, call.Payload);
 
             return new QueryCallResponse
             {
@@ -945,7 +1069,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         }
         catch (Exception ex)
         {
-            Logger.ProviderCallError(ex, call.ServiceName, call.MethodName);
+            Logger.ProviderCallError(ex, callServiceName, callMethodName);
             return new QueryCallResponse { Error = ex.Message };
         }
         finally
@@ -972,9 +1096,11 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     // Generated only when the project has at least one signal method.
     public virtual async ValueTask HandleSignalAsync(RpcCall call)
     {
+        var (callServiceName, callMethodName, callMethodVersion) = ResolveMethodNames(call.MethodId);
+
         if (MetaContext == null || Context == null)
         {
-            Logger.ProviderCallError(new InvalidOperationException("Provider not initialized"), call.ServiceName, call.MethodName);
+            Logger.ProviderCallError(new InvalidOperationException("Provider not initialized"), callServiceName, callMethodName);
             return;
         }
 
@@ -988,13 +1114,13 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContext.SignalMode = true;
             MetaContextAccessor.Current = MetaContext;
 
-            await DispatchSignal(call.ServiceName, call.MethodName, call.Payload, call.MethodVersion);
+            await DispatchSignal(callServiceName, callMethodName, call.Payload, callMethodVersion);
         }
         catch (Exception ex)
         {
             // Signal is fire-and-forget by contract — log and swallow so the entity grain
             // does not see an exception that would become a transport-level error on the session.
-            Logger.ProviderCallError(ex, call.ServiceName, call.MethodName);
+            Logger.ProviderCallError(ex, callServiceName, callMethodName);
         }
         finally
         {

@@ -63,9 +63,6 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Trace, Message = "DEFERRED PATH: player={PlayerId}, requestId={RequestId}, entitySeq={EntitySeq}, knownSeq={KnownSeq}, precedingCount={PrecedingCount}")]
     public static partial void DeferredPath(this ILogger logger, string playerId, long requestId, long entitySeq, long knownSeq, int precedingCount);
 
-    [LoggerMessage(Level = LogLevel.Trace, Message = "ReceiveBroadcast: player={PlayerId}, entityId={EntityId}, entitySeq={EntitySeq}, knownSeq={KnownSeq}, inActiveRpc={InActiveRpc}, observers={Observers}, method={ServiceName}.{MethodName}")]
-    public static partial void BroadcastReceived(this ILogger logger, string playerId, string entityId, long entitySeq, long knownSeq, bool inActiveRpc, int observers, string serviceName, string methodName);
-
     [LoggerMessage(Level = LogLevel.Trace, Message = "Queued broadcast for RPC bundling: player={PlayerId}, entitySeq={EntitySeq}")]
     public static partial void BroadcastQueuedForRpc(this ILogger logger, string playerId, long entitySeq);
 

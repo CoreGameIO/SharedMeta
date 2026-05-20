@@ -25,9 +25,13 @@ namespace SharedMeta.Core.Packets
     public partial class MetaOperation
     {
         // ── Call identification (what was invoked) ────────────────────────
-        [Id(0), Key(0)] public string ServiceName { get; set; } = "";
-        [Id(1), Key(1)] public string MethodName { get; set; } = "";
-        [Id(2), Key(2)] public int MethodVersion { get; set; }
+        // 0.24.0+ Wire identification is purely the server-side global method index
+        // (stable per server build). The client translates to its own local id via
+        // ClientCapabilities.ServerToClientMethodIds at session-connect time. The
+        // legacy ServiceName/MethodName/MethodVersion strings were removed from the
+        // wire — id slots 0/1/2 are intentionally vacated (never reuse them for new
+        // fields; old recorded broadcasts may still carry data there).
+        [Id(17), Key(17)] public ushort MethodId { get; set; }
         [Id(3), Key(3)] public byte[]? Payload { get; set; }
         /// <summary>
         /// Originator id. On broadcast ops this is the player whose RPC produced this
@@ -80,9 +84,7 @@ namespace SharedMeta.Core.Packets
         /// </summary>
         public void Reset()
         {
-            ServiceName = "";
-            MethodName = "";
-            MethodVersion = 0;
+            MethodId = 0;
             Payload = null;
             ResultBytes = null;
             ReplayPayload = null;

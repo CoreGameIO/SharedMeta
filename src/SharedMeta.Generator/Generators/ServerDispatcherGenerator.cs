@@ -86,62 +86,31 @@ namespace SharedMeta.Generator.Generators
             // state-machine box entirely (`<Dispatch>d__0` was ~12 MB/s of allocation at 25K RPS).
             // Tasks that actually suspend fall through to a per-method `Await_{alias}_v{version}`
             // helper emitted after the switch.
-            sbServer.AppendLine($"        public static ValueTask<DispatchResult> Dispatch({symbol} service, string method, byte[] payload, int methodVersion, IMetaSerializer serializer)");
+            sbServer.AppendLine($"        public static ValueTask<DispatchResult> Dispatch({symbol} service, ushort methodId, byte[] payload, IMetaSerializer serializer)");
             sbServer.AppendLine("        {");
-
-            // Always get context for auto-discovery support
             sbServer.AppendLine("            var context = MetaContextAccessor.Current ?? throw new InvalidOperationException(\"MetaContext not set. Ensure MetaContextAccessor.Current is set before calling Dispatch.\");");
 
-            // Group methods by alias to emit (Alias, Version) routing. Each alias gets one outer
-            // case; if a single declaration exists, the body runs unconditionally. Multiple
-            // versioned declarations under the same alias produce an inner switch over methodVersion.
-            var groupedMethods = methods
+            // 0.24.0+ Switch on global ushort method id from GameMethodIds. Each (alias, version)
+            // tuple is its own case label — version is encoded into the index, no nested switch.
+            // Jump table on ushort lowers to a computed branch (much faster than string-pair match).
+            var flatMethods = methods
                 .Select(m => new { Method = m, Info = ReadMetaMethodInfo(m) })
-                .GroupBy(x => x.Info.Alias)
                 .ToList();
 
-            sbServer.AppendLine("            switch (method)");
+            sbServer.AppendLine("            switch (methodId)");
             sbServer.AppendLine("            {");
 
-            foreach (var group in groupedMethods)
+            foreach (var entry in flatMethods)
             {
-                var alias = group.Key;
-                var versions = group.OrderBy(x => x.Info.Version).ToList();
-                var minVersion = versions[0].Info.Version;
-
-                sbServer.AppendLine($"                case \"{alias}\":");
+                var alias = entry.Info.Alias;
+                var version = entry.Info.Version;
+                var idConst = "global::" + namespaceName + ".Generated.GameMethodIds." + SignatureHashGenerator.MakeMethodIdConstName(symbol, alias, version);
+                sbServer.AppendLine($"                case {idConst}:");
                 sbServer.AppendLine("                {");
-
-                if (versions.Count == 1)
-                {
-                    // Single declaration under this alias — no inner switch needed. methodVersion
-                    // is accepted regardless of value (forward-compatibility: a client with a
-                    // newer Version stamp still routes to the only declared body).
-                    EmitMethodBody(sbServer, asyncTails, versions[0].Method, versions[0].Info, symbol, triggersByMethod, serializer);
-                }
-                else
-                {
-                    // Multi-version alias — switch on methodVersion. Legacy callers (methodVersion = 0)
-                    // route to the lowest-declared Version so existing v0 clients continue to dispatch
-                    // when v2 is added alongside v1.
-                    sbServer.AppendLine("                    switch (methodVersion)");
-                    sbServer.AppendLine("                    {");
-                    foreach (var entry in versions)
-                    {
-                        sbServer.AppendLine($"                        case {entry.Info.Version}:");
-                        if (entry.Info.Version == minVersion)
-                            sbServer.AppendLine("                        case 0:  // legacy/unversioned caller routes to lowest Version");
-                        sbServer.AppendLine("                        {");
-                        EmitMethodBody(sbServer, asyncTails, entry.Method, entry.Info, symbol, triggersByMethod, serializer);
-                        sbServer.AppendLine("                        }");
-                    }
-                    sbServer.AppendLine($"                        default: throw new MissingMethodException($\"Method '{symbol}.{alias}' has no version {{methodVersion}} (available: {string.Join(", ", versions.Select(v => v.Info.Version))})\");");
-                    sbServer.AppendLine("                    }");
-                }
-
+                EmitMethodBody(sbServer, asyncTails, entry.Method, entry.Info, symbol, triggersByMethod, serializer);
                 sbServer.AppendLine("                }");
             }
-            sbServer.AppendLine("                default: throw new MissingMethodException(method);");
+            sbServer.AppendLine($"                default: throw new MissingMethodException($\"Method id {{methodId}} not registered on {symbol}\");");
             sbServer.AppendLine("            }");
             sbServer.AppendLine("        }");
 

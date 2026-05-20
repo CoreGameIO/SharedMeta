@@ -84,8 +84,13 @@ namespace SharedMeta.Server.Core.Grains
         //
         // Per-subscriber contribution snapshots so Unsubscribe decrements deterministically
         // without re-asking the session.
-        private readonly Dictionary<(string Service, string Alias, int Version), int> _forcePatchMethodRefs = new();
-        private readonly Dictionary<string, List<(string Service, string Alias, int Version)>> _subscriberForcePatchContributions = new();
+        //
+        // 0.24.0+ Method-level refcounts are indexed by server-side global MethodId rather
+        // than a (Service, Alias, Version) string tuple — ~200 bytes for 100 methods vs
+        // ~6 KB of dictionary overhead, and ContainsKey on the RPC hot path becomes a single
+        // bounds check + int read. Lazily allocated on first subscribe (depends on signature).
+        private int[]? _forcePatchMethodRefs;
+        private readonly Dictionary<string, List<ushort>> _subscriberForcePatchContributions = new();
         private readonly Dictionary<string, int> _forcePatchServiceRefs = new();
         private readonly Dictionary<string, List<string>> _subscriberForcePatchServiceContributions = new();
 
@@ -96,9 +101,9 @@ namespace SharedMeta.Server.Core.Grains
             ILogger<EntityGrain<TState>> logger,
             IOptions<EntityGrainOptions> options,
             IEntityGrainResolver entityGrainResolver,
+            MetaServerSignature serverSignature,
             IExecutionModeProvider? executionModeProvider = null,
             IConfigVersionResolver? configVersionResolver = null,
-            SharedMeta.Server.Core.Session.MetaServerSignature? serverSignature = null,
             IClientSignatureRegistry? signatureRegistry = null)
         {
             _persistentState = persistentState ?? throw new ArgumentNullException(nameof(persistentState));
@@ -115,7 +120,7 @@ namespace SharedMeta.Server.Core.Grains
 
         // ConfigBoundaries + service-to-config bindings. Null = host hasn't wired
         // MetaServerSignature in DI; Subscribe emits no per-entity capability overlay.
-        private readonly SharedMeta.Server.Core.Session.MetaServerSignature? _serverSignature;
+        private readonly MetaServerSignature _serverSignature;
 
         public override async Task OnActivateAsync(CancellationToken cancellationToken)
         {
@@ -158,8 +163,12 @@ namespace SharedMeta.Server.Core.Grains
             if (_provider is MetaProviderBase<TState> providerBase)
             {
                 providerBase.ExecutionModeProvider = _executionModeProvider;
-                providerBase.EntityCallHandler = async (targetEntityId, serviceName, methodName, argsBytes, serverTimeTicks) =>
+                providerBase.EntityCallHandler = async (targetEntityId, methodId, argsBytes, serverTimeTicks) =>
                 {
+                    var serviceName = _serverSignature.GetMethodEntry(methodId)?.ServiceName;
+                    if (serviceName == null) {
+                        throw new InvalidOperationException($"Cannot resolve entity grain service name for method {methodId}, entity {targetEntityId}");
+                    }
                     // Self-targeting cross-entity call (gift-to-self, sibling service on the
                     // same state): dispatch locally as a nested op instead of routing through
                     // Orleans. EntityGrain is non-reentrant — a self-call through the grain
@@ -170,8 +179,7 @@ namespace SharedMeta.Server.Core.Grains
                             GrainFactory, serviceName, targetEntityId);
                         if (resolved is IEntityGrain<TState>)
                         {
-                            return await providerBase.HandleNestedCallAsync(
-                                targetEntityId, serviceName, methodName, argsBytes);
+                            return await providerBase.HandleNestedCallAsync(targetEntityId, methodId, argsBytes);
                         }
                     }
 
@@ -195,8 +203,7 @@ namespace SharedMeta.Server.Core.Grains
                     var isCrossOptimistic = callerCtx?.IsCrossOptimistic ?? false;
                     var result = await targetGrain.HandleCallFromEntityAsync(new RpcCall
                     {
-                        ServiceName = serviceName,
-                        MethodName = methodName,
+                        MethodId = methodId,
                         Payload = argsBytes,
                         ServerTimeTicks = serverTimeTicks,
                         CallerClientVersion = callerClientVersion,
@@ -206,30 +213,33 @@ namespace SharedMeta.Server.Core.Grains
 
                     if (result.HasError)
                         throw new InvalidOperationException(
-                            $"Cross-entity call failed: {result.ErrorMessage}");
+                            $"Cross-entity call failed: {result.Error}");
 
-                    return new CrossEntityCallInfo
+                    return new CrossEntityOperationInfo
                     {
                         EntityId = targetEntityId,
                         EntitySequenceNumber = result.EntitySequenceNumber,
-                        ResultBytes = result.Op?.ResultBytes,
-                        ServiceName = serviceName,
-                        MethodName = methodName
+                        MethodId = methodId,
+                        ResultBytes = result.ResultBytes.IsDefault ? null : result.ResultBytes.AsSpan().ToArray()
                     };
                 };
 
                 // Fire-and-forget cross-entity dispatch for [MetaMethod(OneWay = true)] —
                 // routes through the [OneWay]-marked grain entry so the source doesn't wait
                 // for the reply envelope.
-                providerBase.EntityCallOneWayHandler = (targetEntityId, serviceName, methodName, argsBytes, serverTimeTicks) =>
+                providerBase.EntityCallOneWayHandler = (targetEntityId, methodId, argsBytes, serverTimeTicks) =>
                 {
-                    var targetGrain = _entityGrainResolver.GetEntityGrainByService(
-                        GrainFactory, serviceName, targetEntityId);
+                    var serviceName = _serverSignature.GetMethodEntry(methodId)?.ServiceName;
+                    if (serviceName == null) {
+                        _logger.LogWarning("[EntityGrain] OneWay for {MethodId} dropped: cannot resolve service Name for entity {EntityId}",
+                            methodId, targetEntityId);
+                        return;
+                    }
+                    var targetGrain = _entityGrainResolver.GetEntityGrainByService(GrainFactory, serviceName, targetEntityId);
                     if (targetGrain == null)
                     {
-                        _logger.LogWarning(
-                            "[EntityGrain] OneWay {Service}.{Method} dropped: cannot resolve grain for entity {EntityId}",
-                            serviceName, methodName, targetEntityId);
+                        _logger.LogWarning("[EntityGrain] OneWay {Service}.{MethodId} dropped: cannot resolve grain for entity {EntityId}",
+                            serviceName, methodId, targetEntityId);
                         return;
                     }
 
@@ -238,13 +248,12 @@ namespace SharedMeta.Server.Core.Grains
                     // Propagate the outer's CrossOptimistic flag so the target excludes the
                     // originating caller from its broadcast (effect is already inlined in the
                     // outer call's replay payload, would double-apply on duplicate).
-                    var callerCtx = SharedMeta.Core.MetaContextAccessor.Current;
+                    var callerCtx = MetaContextAccessor.Current;
                     var callerId = callerCtx?.CallerId;
                     var isCrossOptimistic = callerCtx?.IsCrossOptimistic ?? false;
                     var rpcCall = new RpcCall
                     {
-                        ServiceName = serviceName,
-                        MethodName = methodName,
+                        MethodId = methodId,
                         Payload = argsBytes,
                         ServerTimeTicks = serverTimeTicks,
                         CallerClientVersion = callerClientVersion,
@@ -274,6 +283,16 @@ namespace SharedMeta.Server.Core.Grains
                     ResetPersistenceTracking();
                     _logger.PersistenceForced(entityId, _requestsSinceLastSave);
                 };
+
+                // Resolves server-side MethodId for trigger ops emitted from inside
+                // dispatch. Closes over the per-silo MetaServerSignature so the provider
+                // doesn't need its own DI handle.
+                if (_serverSignature != null)
+                {
+                    var sig = _serverSignature;
+                    providerBase.TriggerMethodIdLookup = (svc, alias) => sig.ResolveMethodId(svc, alias, 0);
+                    providerBase.ServerSignature = sig;
+                }
 
                 // Forward optional global seed factory so MetaProviderBase.CreateFreshRandomSeed
                 // can mix in non-deterministic entropy when host opts in. Must be set BEFORE
@@ -450,19 +469,22 @@ namespace SharedMeta.Server.Core.Grains
             // brings a smaller force-patch set (e.g. client upgraded out of legacy path).
             if (_subscriberForcePatchContributions.Remove(playerId, out var prior))
             {
-                foreach (var key in prior)
-                    DecrementMethodRef(key);
+                foreach (var id in prior)
+                    DecrementMethodRef(id);
             }
-            if (forceServerPatchMethods is { Count: > 0 })
+            if (forceServerPatchMethods is { Count: > 0 } && _serverSignature != null)
             {
-                var contributions = new List<(string, string, int)>(forceServerPatchMethods.Count);
+                EnsureForcePatchRefs();
+                var contributions = new List<ushort>(forceServerPatchMethods.Count);
                 foreach (var m in forceServerPatchMethods)
                 {
-                    var key = (m.ServiceName, m.Alias, m.Version);
-                    contributions.Add(key);
-                    IncrementMethodRef(key);
+                    var id = _serverSignature.ResolveMethodId(m.ServiceName, m.Alias, m.Version);
+                    if (!id.HasValue) continue;  // signature drift — server doesn't know this method
+                    contributions.Add(id.Value);
+                    IncrementMethodRef(id.Value);
                 }
-                _subscriberForcePatchContributions[playerId] = contributions;
+                if (contributions.Count > 0)
+                    _subscriberForcePatchContributions[playerId] = contributions;
             }
 
             // Compute per-entity capability overlay from [MetaConfigStructureBoundary]:
@@ -562,11 +584,10 @@ namespace SharedMeta.Server.Core.Grains
             _subscriberRefs.Remove(playerId);
 
             // Decrement force-patch refcounts for this player's prior contributions.
-            // Helpers remove zero-count entries to keep dispatch-time lookup tight.
             if (_subscriberForcePatchContributions.Remove(playerId, out var contributions))
             {
-                foreach (var key in contributions)
-                    DecrementMethodRef(key);
+                foreach (var id in contributions)
+                    DecrementMethodRef(id);
             }
             if (_subscriberForcePatchServiceContributions.Remove(playerId, out var svcContributions))
             {
@@ -600,9 +621,16 @@ namespace SharedMeta.Server.Core.Grains
                 return new EntityCallResult { Error = "Provider not initialized" };
             }
 
+            // 0.24.0+ Resolve names once via the server signature — RpcCall no longer carries
+            // the strings. Empty strings when the id is unknown; downstream sites must tolerate
+            // that (logs / telemetry / refcount lookup all degrade gracefully).
+            var sigEntry = _serverSignature?.GetMethodEntry(call.MethodId);
+            var callServiceName = sigEntry?.ServiceName ?? string.Empty;
+            var callMethodName = sigEntry?.Alias ?? string.Empty;
+
             using var __m = SharedMeta.Server.Core.Telemetry.RpcMeasurement.Start(
                 SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanEntityRpc,
-                call.ServiceName, call.MethodName, _entityId, call.CallerId, call.Payload?.Length ?? 0);
+                callServiceName, callMethodName, _entityId, call.CallerId, call.Payload?.Length ?? 0);
 
             var state = _persistentState.State;
             var operationSequence = ++state.EntitySequenceNumber;
@@ -619,14 +647,14 @@ namespace SharedMeta.Server.Core.Grains
                 // ConfigStructureBoundary trigger). The resulting broadcast carries BOTH
                 // ReplayPayload and PatchBytes; per-subscriber tailoring strips one on fan-out.
                 bool requirePatchForFanOut =
-                       _forcePatchMethodRefs.ContainsKey((call.ServiceName, call.MethodName, call.MethodVersion))
-                    || _forcePatchServiceRefs.ContainsKey(call.ServiceName);
+                       (_forcePatchMethodRefs != null && call.MethodId < _forcePatchMethodRefs.Length && _forcePatchMethodRefs[call.MethodId] > 0)
+                    || _forcePatchServiceRefs.ContainsKey(callServiceName);
                 if (requirePatchForFanOut)
                 {
                     SharedMeta.Server.Core.Telemetry.SharedMetaMeters.ForcePatchApplied.Add(1,
-                        new KeyValuePair<string, object?>("service", call.ServiceName),
-                        new KeyValuePair<string, object?>("method", call.MethodName),
-                        new KeyValuePair<string, object?>("kind", _forcePatchServiceRefs.ContainsKey(call.ServiceName) ? "service" : "method"));
+                        new KeyValuePair<string, object?>("service", callServiceName),
+                        new KeyValuePair<string, object?>("method", callMethodName),
+                        new KeyValuePair<string, object?>("kind", _forcePatchServiceRefs.ContainsKey(callServiceName) ? "service" : "method"));
                 }
 
                 // isClientOriginated: true → provider rejects [MetaMethod(GenerateClientApi=false)]
@@ -645,22 +673,18 @@ namespace SharedMeta.Server.Core.Grains
 
                 PersistRandomBytes();
 
-                // Distribute broadcasts to ALL EXCEPT caller
-                await DistributeBroadcasts(providerResult.Broadcasts, operationSequence, excludePlayerId: call.CallerId);
-
-                // The provider returns the call-side data on Broadcasts[0].Op.Triggers (nested
-                // trigger ops). The HandleCallResult.Response (which carries the response-side
-                // bytes for the originating caller) does NOT include triggers — that's a broadcast
-                // concern. Lift them onto the caller's Op so the EntityCallResult is fully populated.
-                var mainBroadcast = providerResult.Broadcasts.FirstOrDefault();
-                providerResult.Response.Triggers = mainBroadcast?.Op?.Triggers;
+                await DistributeBroadcasts(
+                    providerResult.BroadcastReplayBytes,
+                    providerResult.BroadcastPatchBytes,
+                    callServiceName, callMethodName, call.MethodId,
+                    operationSequence, excludePlayerId: call.CallerId);
 
                 return new EntityCallResult
                 {
                     EntitySequenceNumber = operationSequence,
-                    Op = providerResult.Response,
+                    OpBytes = providerResult.ResponseBytes,
                     CrossEntityCalls = providerResult.CrossEntityCalls,
-                    Error = providerResult.Response.Error
+                    Error = providerResult.Error
                 };
             }
             catch (Exception ex)
@@ -687,17 +711,23 @@ namespace SharedMeta.Server.Core.Grains
         // polling, etc.) must route client packets only to HandleCallAsync / HandleQueryAsync /
         // HandleSignalAsync. Adding any client-reachable wiring to HandleCallFromEntityAsync
         // would silently bypass the [MetaMethod(GenerateClientApi = false)] protection.
-        public async ValueTask<EntityCallResult> HandleCallFromEntityAsync(RpcCall call)
+        public async ValueTask<CrossEntityCallReturn> HandleCallFromEntityAsync(RpcCall call)
         {
             if (_provider == null)
             {
-                return new EntityCallResult { Error = "Provider not initialized" };
+                return new CrossEntityCallReturn { Error = "Provider not initialized" };
             }
+
+            // 0.24.0+ Resolve names from the server signature — cross-entity peers already
+            // populated call.MethodId on the recorder side, so no string fallback is needed.
+            var sigEntry = _serverSignature?.GetMethodEntry(call.MethodId);
+            var callServiceName = sigEntry?.ServiceName ?? string.Empty;
+            var callMethodName = sigEntry?.Alias ?? string.Empty;
 
             // kind="normal" splits the awaited cross-entity path from the [OneWay] notification
             // path (kind="notification") in the same histogram.
             using var __m = SharedMeta.Server.Core.Telemetry.CrossEntityCallMeasurement.Start(
-                call.ServiceName, call.MethodName, _entityId, "normal");
+                callServiceName, callMethodName, _entityId, "normal");
 
             var state = _persistentState.State;
             var operationSequence = ++state.EntitySequenceNumber;
@@ -718,37 +748,32 @@ namespace SharedMeta.Server.Core.Grains
                 //   * CrossOptimistic outer call — exclude the originating client. The cross-call's
                 //     effect on this target is already inlined in the outer call's replay payload
                 //     (CrossEntityCallInfo.ResultBytes + inner replay tape), so a duplicate
-                //     broadcast would double-apply on the caller's client. SessionManagerGrain
-                //     still reserves the target's seq slot via a CrossCallSlotMarker so concurrent
-                //     third-party writes to the target don't leave a permanent gap.
-                //   * Non-CrossOptimistic outer call (Server/ServerPatch/ServerReplace/...) — the
-                //     caller did NOT execute the cross-call locally, so it relies on this very
-                //     broadcast to learn the target's state change. Don't exclude.
-                //   * Server-internal cross-entity invocation (no outer client) — call.CallerId
-                //     is null anyway, so this is a no-op exclusion either way.
+                //     broadcast would double-apply on the caller's client.
+                //   * Non-CrossOptimistic outer call — caller did NOT execute the cross-call
+                //     locally, relies on this broadcast to learn the target's state change.
                 var excludeCaller = call.IsCrossOptimistic ? call.CallerId : null;
-                await DistributeBroadcasts(providerResult.Broadcasts, operationSequence, excludePlayerId: excludeCaller);
+                await DistributeBroadcasts(
+                    providerResult.BroadcastReplayBytes,
+                    providerResult.BroadcastPatchBytes,
+                    callServiceName, callMethodName, call.MethodId,
+                    operationSequence, excludePlayerId: excludeCaller);
 
-                // Lift triggers from the broadcast onto the response Op (see HandleCallAsync above).
-                var mainBroadcast = providerResult.Broadcasts.FirstOrDefault();
-                providerResult.Response.Triggers = mainBroadcast?.Op?.Triggers;
-
-                return new EntityCallResult
+                // Slim return — source grain only reads ResultBytes / EntitySequenceNumber.
+                return new CrossEntityCallReturn
                 {
                     EntitySequenceNumber = operationSequence,
-                    Op = providerResult.Response,
-                    CrossEntityCalls = providerResult.CrossEntityCalls,
-                    Error = providerResult.Response.Error
+                    ResultBytes = providerResult.ResultBytes,
+                    Error = providerResult.Error,
                 };
             }
             catch (Exception ex)
             {
                 __m.MarkError();
                 _logger.ErrorHandlingCrossEntityCall(ex);
-                return new EntityCallResult
+                return new CrossEntityCallReturn
                 {
                     EntitySequenceNumber = operationSequence,
-                    Error = ex.Message
+                    Error = ex.Message,
                 };
             }
             finally
@@ -767,7 +792,7 @@ namespace SharedMeta.Server.Core.Grains
             // HandleCallFromEntityAsync — intentional, gives "outer dispatch" and "inner
             // execution" perspectives in the same histogram.
             SharedMeta.Server.Core.Telemetry.SharedMetaMeters.CrossEntityCallCount.Add(1,
-                new KeyValuePair<string, object?>("to_service", call.ServiceName),
+                new KeyValuePair<string, object?>("to_service", _serverSignature?.GetMethodEntry(call.MethodId)?.ServiceName ?? "?"),
                 new KeyValuePair<string, object?>("kind", "notification"));
             try
             {
@@ -786,7 +811,9 @@ namespace SharedMeta.Server.Core.Grains
 
             // Method-level (IsQueryMethod / IsClientCallable / IsOpenAccessQuery) and
             // entity-level (AccessPolicy / CheckAccessAsync) validation lives inside
-            // MetaProviderBase.HandleQueryAsync. EntityGrain just routes.
+            // MetaProviderBase.HandleQueryAsync. EntityGrain just routes. 0.24.0+ RpcCall
+            // carries only MethodId; the MetaConnectionHandler already translated client→server
+            // and rejected unknown ids before reaching the grain.
             try
             {
                 return await _provider.HandleQueryAsync(call);
@@ -809,6 +836,7 @@ namespace SharedMeta.Server.Core.Grains
             // Method-level (IsSignalMethod / IsClientCallable) and entity-level (AccessPolicy /
             // CheckAccessAsync) validation lives inside MetaProviderBase.HandleSignalAsync.
             // Fire-and-forget by contract: provider errors are logged and swallowed there.
+            // 0.24.0+ RpcCall carries only MethodId; MetaConnectionHandler resolved the wire id.
             await _provider.HandleSignalAsync(call);
         }
 
@@ -836,8 +864,7 @@ namespace SharedMeta.Server.Core.Grains
         }
 
         public async ValueTask<EntityCallResult> HandleExternalEventAsync(
-            string subscriberInterface,
-            string methodName,
+            ushort methodId,
             byte[] eventData,
             string? callerId = null)
         {
@@ -851,20 +878,22 @@ namespace SharedMeta.Server.Core.Grains
 
             try
             {
-                var providerResult = await _provider.HandleExternalEventAsync(subscriberInterface, methodName, eventData, callerId);
+                var providerResult = await _provider.HandleExternalEventAsync(methodId, eventData, callerId);
 
-                // Distribute broadcasts to ALL subscribers (no exclusion for external events)
-                await DistributeBroadcasts(providerResult.Broadcasts, operationSequence, excludePlayerId: null);
+                // External events have no force-patch tailoring: single variant for all subscribers.
+                // ServiceName/MethodName left empty on the broadcast distributor — the wire packet
+                // is identified by the framework subscriber methodId only; per-subscriber tailoring
+                // never applies to framework events.
+                await DistributeBroadcasts(
+                    providerResult.BroadcastBytes,
+                    default,
+                    string.Empty, string.Empty, methodId,
+                    operationSequence, excludePlayerId: null);
 
                 return new EntityCallResult
                 {
                     EntitySequenceNumber = operationSequence,
-                    Op = new MetaOperation
-                    {
-                        ServiceName = subscriberInterface,
-                        MethodName = methodName,
-                        Payload = eventData,
-                    }
+                    OpBytes = providerResult.BroadcastBytes,  // identical shape for the originator
                 };
             }
             catch (Exception ex)
@@ -948,24 +977,25 @@ namespace SharedMeta.Server.Core.Grains
             _isDirty = false;
         }
 
-        // Force-patch refcount helpers — single-lookup increment/decrement via
-        // CollectionsMarshal. Decrement removes the entry at zero so the dispatch-time
-        // ContainsKey lookup stays tight.
+        // Force-patch refcount helpers — indexed by server-side global MethodId.
+        // The array is sized to <c>_serverSignature.Methods.Count</c> on first subscribe.
 
-        private void IncrementMethodRef((string Service, string Alias, int Version) key)
+        private void EnsureForcePatchRefs()
         {
-            ref var count = ref System.Runtime.InteropServices.CollectionsMarshal
-                .GetValueRefOrAddDefault(_forcePatchMethodRefs, key, out _);
-            count++;
+            if (_forcePatchMethodRefs == null && _serverSignature != null)
+                _forcePatchMethodRefs = new int[_serverSignature.Methods.Count];
         }
 
-        private void DecrementMethodRef((string Service, string Alias, int Version) key)
+        private void IncrementMethodRef(ushort methodId)
         {
-            ref var count = ref System.Runtime.InteropServices.CollectionsMarshal
-                .GetValueRefOrNullRef(_forcePatchMethodRefs, key);
-            if (System.Runtime.CompilerServices.Unsafe.IsNullRef(ref count)) return;
-            if (count <= 1) _forcePatchMethodRefs.Remove(key);
-            else count--;
+            if (_forcePatchMethodRefs == null || methodId >= _forcePatchMethodRefs.Length) return;
+            _forcePatchMethodRefs[methodId]++;
+        }
+
+        private void DecrementMethodRef(ushort methodId)
+        {
+            if (_forcePatchMethodRefs == null || methodId >= _forcePatchMethodRefs.Length) return;
+            if (_forcePatchMethodRefs[methodId] > 0) _forcePatchMethodRefs[methodId]--;
         }
 
         private void IncrementServiceRef(string serviceName)
@@ -998,92 +1028,106 @@ namespace SharedMeta.Server.Core.Grains
         // Non-async outer: when there's nothing to distribute (no subscribers, or the only
         // subscriber is the excluded caller), return default ValueTask — avoids constructing
         // a state machine for the common case (personal-profile entity, sole subscriber == caller).
-        private ValueTask DistributeBroadcasts(List<EntityBroadcast> broadcasts, long operationSequence, string? excludePlayerId)
+        private ValueTask DistributeBroadcasts(
+            System.Collections.Immutable.ImmutableArray<byte> replayBytes,
+            System.Collections.Immutable.ImmutableArray<byte> patchBytes,
+            string serviceName, string methodName, ushort methodId,
+            long operationSequence, string? excludePlayerId)
         {
             if (_subscriberRefs.Count == 0)
                 return default;
             if (excludePlayerId != null && _subscriberRefs.Count == 1 && _subscriberRefs.ContainsKey(excludePlayerId))
                 return default;
-            return new ValueTask(DistributeBroadcastsImpl(broadcasts, operationSequence, excludePlayerId));
+            if (replayBytes.IsDefault && patchBytes.IsDefault)
+                return default;
+            return new ValueTask(DistributeBroadcastsImpl(replayBytes, patchBytes, serviceName, methodName, methodId, operationSequence, excludePlayerId));
         }
 
-        private async Task DistributeBroadcastsImpl(List<EntityBroadcast> broadcasts, long operationSequence, string? excludePlayerId)
+        private async Task DistributeBroadcastsImpl(
+            System.Collections.Immutable.ImmutableArray<byte> replayBytes,
+            System.Collections.Immutable.ImmutableArray<byte> patchBytes,
+            string serviceName, string methodName, ushort methodId,
+            long operationSequence, string? excludePlayerId)
         {
             var entityId = _entityId;
             var subscriberCount = _subscriberRefs.Count;
 
-            _logger.DistributingBroadcasts(entityId, operationSequence, broadcasts.Count, subscriberCount, excludePlayerId ?? "none");
+            _logger.DistributingBroadcasts(entityId, operationSequence, 1, subscriberCount, excludePlayerId ?? "none");
 
-            foreach (var broadcast in broadcasts)
+            var sentCount = 0;
+            int patchSent = 0;
+            int replaySent = 0;
+            foreach (var (playerId, sessionManager) in _subscriberRefs)
             {
-                var sentCount = 0;
-                int patchCount = 0;
-                int replayCount = 0;
-                foreach (var (playerId, sessionManager) in _subscriberRefs)
+                if (excludePlayerId != null && playerId == excludePlayerId)
                 {
-                    if (excludePlayerId != null && playerId == excludePlayerId)
-                    {
-                        _logger.SkippingExcludedSubscriber(playerId);
-                        continue;
-                    }
-
-                    try
-                    {
-                        // Per-subscriber tailoring: strip ReplayPayload or PatchBytes so each
-                        // subscriber receives only their flavour. Tailor produces a broadcast
-                        // with exactly one of the two — replay (modern) or patch (legacy).
-                        var tailored = TailorBroadcastForSubscriber(broadcast, playerId);
-                        _logger.SendingBroadcast(playerId, entityId, operationSequence, tailored.Op.ServiceName, tailored.Op.MethodName);
-                        await sessionManager.ReceiveBroadcastAsync(entityId, tailored, operationSequence);
-                        sentCount++;
-                        if (tailored.Op.PatchBytes is { Length: > 0 }) patchCount++;
-                        else replayCount++;
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.ErrorBroadcasting(ex, playerId);
-                    }
+                    _logger.SkippingExcludedSubscriber(playerId);
+                    continue;
                 }
 
-                _logger.BroadcastSent(sentCount, subscriberCount, broadcast.Op.ServiceName, broadcast.Op.MethodName);
+                try
+                {
+                    // Pick variant: subscriber's force-patch contributions (method-level OR
+                    // service-level) dictate the patch variant; everyone else gets replay.
+                    bool subscriberNeedsPatch = !patchBytes.IsDefault && SubscriberNeedsPatch(playerId, serviceName, methodId);
+                    var opBytes = subscriberNeedsPatch ? patchBytes : replayBytes;
+                    if (opBytes.IsDefault) continue;
 
-                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastFanOutSize.Record(sentCount,
-                    new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
-                if (broadcast.Op.ReplayPayload is { Length: > 0 } replay)
-                {
-                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastPayloadBytes.Record(replay.Length,
-                        new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
-                        new KeyValuePair<string, object?>("kind", "replay"));
+                    var broadcast = new EntityBroadcast
+                    {
+                        ExcludePlayerId = excludePlayerId,
+                        OpBytes = opBytes,
+                        MethodId = methodId
+                    };
+                    _logger.SendingBroadcast(playerId, entityId, operationSequence, serviceName, methodName);
+                    await sessionManager.ReceiveBroadcastAsync(entityId, broadcast, operationSequence);
+                    sentCount++;
+                    if (subscriberNeedsPatch) patchSent++;
+                    else replaySent++;
                 }
-                if (broadcast.Op.PatchBytes is { Length: > 0 } patch)
+                catch (Exception ex)
                 {
-                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastPayloadBytes.Record(patch.Length,
-                        new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
-                        new KeyValuePair<string, object?>("kind", "patch"));
+                    _logger.ErrorBroadcasting(ex, playerId);
                 }
-                if (broadcast.Op.StateBytes is { Length: > 0 } stateBytes)
-                {
-                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastPayloadBytes.Record(stateBytes.Length,
-                        new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
-                        new KeyValuePair<string, object?>("kind", "state"));
-                }
-                if (patchCount > 0)
-                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastTailored.Add(patchCount,
-                        new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
-                        new KeyValuePair<string, object?>("path", "patch"));
-                if (replayCount > 0)
-                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastTailored.Add(replayCount,
-                        new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
-                        new KeyValuePair<string, object?>("path", "replay"));
+            }
+
+            _logger.BroadcastSent(sentCount, subscriberCount, serviceName, methodName);
+
+            SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastFanOutSize.Record(sentCount,
+                new KeyValuePair<string, object?>("state_type", typeof(TState).Name));
+            if (!replayBytes.IsDefault && replaySent > 0)
+            {
+                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastPayloadBytes.Record(replayBytes.Length,
+                    new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
+                    new KeyValuePair<string, object?>("kind", "replay"));
+                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastTailored.Add(replaySent,
+                    new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
+                    new KeyValuePair<string, object?>("path", "replay"));
+            }
+            if (!patchBytes.IsDefault && patchSent > 0)
+            {
+                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastPayloadBytes.Record(patchBytes.Length,
+                    new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
+                    new KeyValuePair<string, object?>("kind", "patch"));
+                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.BroadcastTailored.Add(patchSent,
+                    new KeyValuePair<string, object?>("state_type", typeof(TState).Name),
+                    new KeyValuePair<string, object?>("path", "patch"));
             }
         }
 
-        // Delegates the strip logic to the pure BroadcastTailor helper.
-        private EntityBroadcast TailorBroadcastForSubscriber(EntityBroadcast original, string playerId)
+        private bool SubscriberNeedsPatch(string playerId, string serviceName, ushort methodId)
         {
-            _subscriberForcePatchContributions.TryGetValue(playerId, out var methodContribs);
-            _subscriberForcePatchServiceContributions.TryGetValue(playerId, out var serviceContribs);
-            return BroadcastTailor.TailorForSubscriber(original, methodContribs, serviceContribs);
+            if (_subscriberForcePatchServiceContributions.TryGetValue(playerId, out var svc))
+            {
+                for (int i = 0; i < svc.Count; i++)
+                    if (svc[i] == serviceName) return true;
+            }
+            if (methodId != 0 && _subscriberForcePatchContributions.TryGetValue(playerId, out var meth))
+            {
+                for (int i = 0; i < meth.Count; i++)
+                    if (meth[i] == methodId) return true;
+            }
+            return false;
         }
     }
 }

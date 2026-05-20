@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,9 +18,7 @@ namespace SharedMeta.Client
     {
         public long RequestId { get; init; }
         public string EntityId { get; init; } = "";
-        public string ServiceName { get; init; } = "";
-        public string MethodName { get; init; } = "";
-        public int MethodVersion { get; init; }  // 0.22.0+: stamped from RpcCall.MethodVersion
+        public ushort MethodId { get; init; }  // 0.24.0+: stamped from RpcCall.MethodId
         public byte[] Payload { get; init; } = Array.Empty<byte>();
         public bool IsCrossOptimistic { get; init; }
         public long ServerTimeTicks { get; init; }
@@ -245,9 +244,7 @@ namespace SharedMeta.Client
                 {
                     RequestId = requestId,
                     EntityId = entityId,
-                    ServiceName = call.ServiceName,
-                    MethodName = call.MethodName,
-                    MethodVersion = call.MethodVersion,
+                    MethodId = call.MethodId,
                     Payload = payloadBytes,
                     IsCrossOptimistic = call.IsCrossOptimistic,
                     ServerTimeTicks = call.ServerTimeTicks
@@ -258,7 +255,7 @@ namespace SharedMeta.Client
             // Start RPC call without blocking - completion handled separately.
             _ = SendAndCompleteAsync(pending);
 
-            LogDiag($"SEND reqId={pending.RequestId} {pending.ServiceName}.{pending.MethodName} entity={pending.EntityId}");
+            LogDiag($"SEND reqId={pending.RequestId} methodId={pending.MethodId} entity={pending.EntityId}");
 
             return pending.Tcs.Task;
         }
@@ -387,22 +384,40 @@ namespace SharedMeta.Client
             Capabilities = result.Capabilities;
             if (result.NeedsSignatureRegistration && ClientSignature != null)
             {
+                // Fail-loud: if phase-2 errors out, the server has NO signature for this
+                // client, and every subsequent RPC/Query fails with the misleading
+                // "out of range for client signature." Surface the real cause at
+                // ConnectAsync instead of letting the user hunt it on the first RPC.
+                // Common cause: a Unity transport implementation that hasn't overridden
+                // RegisterClientSignatureAsync, so IConnection's DIM throws
+                // NotSupportedException.
+                RegisterClientSignatureResponse phase2;
                 try
                 {
-                    var phase2 = await _connection.RegisterClientSignatureAsync(result.SessionId, ClientSignature);
-                    if (phase2.Success)
-                    {
-                        Capabilities = phase2.Capabilities;
-                    }
-                    else
-                    {
-                        MetaLog.Warning($"[ClientDispatcher] Phase-2 signature registration failed: {phase2.Error}");
-                    }
+                    phase2 = await _connection.RegisterClientSignatureAsync(result.SessionId, ClientSignature);
+                }
+                catch (NotSupportedException ex)
+                {
+                    throw new InvalidOperationException(
+                        $"Phase-2 signature registration failed: the connection of type " +
+                        $"'{_connection.GetType().FullName}' does not implement " +
+                        $"IConnection.RegisterClientSignatureAsync. Either override that method " +
+                        $"on the transport, or clear MetaClientOptions.ClientSignature to opt out " +
+                        $"of compatibility negotiation. Original message: {ex.Message}", ex);
                 }
                 catch (Exception ex)
                 {
-                    MetaLog.Warning($"[ClientDispatcher] Phase-2 signature registration threw: {ex.Message}");
+                    throw new InvalidOperationException(
+                        $"Phase-2 signature registration threw on transport " +
+                        $"'{_connection.GetType().Name}': {ex.Message}", ex);
                 }
+                if (!phase2.Success)
+                {
+                    throw new InvalidOperationException(
+                        $"Phase-2 signature registration was rejected by the server: " +
+                        $"{phase2.Error ?? "<no error message>"}");
+                }
+                Capabilities = phase2.Capabilities;
             }
 
             lock (_lock)
@@ -482,7 +497,7 @@ namespace SharedMeta.Client
         {
             try
             {
-                LogDiag($"RESEND_START reqId={pending.RequestId} {pending.ServiceName}.{pending.MethodName}");
+                LogDiag($"RESEND_START reqId={pending.RequestId} methodId={pending.MethodId}");
                 var response = await _connection.RpcCallAsync(BuildRequest(pending));
 
                 // Top-level transport error
@@ -750,7 +765,7 @@ namespace SharedMeta.Client
 
             if (pending == null) return; // duplicate / stale / RequestId with no matching pending
 
-            LogDiag($"CONFIRMED reqId={pending.RequestId} {pending.ServiceName}.{pending.MethodName}");
+            LogDiag($"CONFIRMED reqId={pending.RequestId} methodId={pending.MethodId}");
             if (pending.RequestId > _lastCompletedRequestId)
                 _lastCompletedRequestId = pending.RequestId;
             pending.Tcs.TrySetResult(op);
@@ -933,9 +948,7 @@ namespace SharedMeta.Client
         {
             EntityId = pending.EntityId,
             RequestId = pending.RequestId,
-            ServiceName = pending.ServiceName,
-            MethodName = pending.MethodName,
-            MethodVersion = pending.MethodVersion,
+            MethodId = pending.MethodId,
             Payload = pending.Payload,
             LastAcknowledgedSequence = _lastAcknowledgedSequence,
             IsCrossOptimistic = pending.IsCrossOptimistic,

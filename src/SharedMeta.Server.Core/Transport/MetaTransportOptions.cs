@@ -67,6 +67,15 @@ namespace SharedMeta.Server.Core.Transport
         /// Null = no upper bound.
         /// </summary>
         public string? MaxClientVersion { get; set; }
+
+        /// <summary>
+        /// 0.24.0+ When <c>true</c>, <c>SessionConnect</c> rejects clients that send
+        /// <c>ClientSignatureHash = 0</c> (legacy / no-negotiation opt-out). Required when
+        /// the wire packet shape relies on <c>MethodId</c> translation (no string-fallback
+        /// resolution on the server). Default <c>false</c> for backward compatibility — flip
+        /// on when every supported client ships a generated <c>ClientSignature</c>.
+        /// </summary>
+        public bool RequireClientSignature { get; set; }
     }
 
     /// <summary>

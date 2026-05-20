@@ -22,12 +22,6 @@ namespace SharedMeta.Core.Transport
         /// </summary>
         [Id(1), Key(1)] public long RequestId { get; set; }
 
-        /// <summary>Service containing the method to call.</summary>
-        [Id(2), Key(2)] public string ServiceName { get; set; } = "";
-
-        /// <summary>Method name to execute.</summary>
-        [Id(3), Key(3)] public string MethodName { get; set; } = "";
-
         /// <summary>Serialized method arguments.</summary>
         [Id(4), Key(4)] public byte[] Payload { get; set; } = Array.Empty<byte>();
 
@@ -52,12 +46,13 @@ namespace SharedMeta.Core.Transport
         [Id(7), Key(7)] public long ServerTimeTicks { get; set; }
 
         /// <summary>
-        /// 0.22.0+: Method version (mirrors <c>RpcCall.MethodVersion</c>). Stamped by the
-        /// generated client from <c>[MetaMethod(Version = N)]</c>. The server validates
-        /// <c>(ServiceName, MethodName, MethodVersion)</c> against the caller's
-        /// <see cref="ClientCapabilities"/> before dispatching — a forged client that bypasses
-        /// the local <c>CapabilitiesGate</c> still gets rejected at this back-stop.
+        /// 0.24.0+ Client's global method index from <c>GameMethodIds</c>. The server's
+        /// <c>MetaConnectionHandler</c> translates to its own server-side index via the
+        /// per-signature clientToServer map; sentinel <c>ushort.MaxValue</c> from the map
+        /// rejects the call. The previous <c>ServiceName</c> / <c>MethodName</c> /
+        /// <c>MethodVersion</c> string triple was removed in 0.24.0 — version is encoded
+        /// in the index, and (service, method) is resolved server-side via the signature.
         /// </summary>
-        [Id(8), Key(8)] public int MethodVersion { get; set; }
+        [Id(9), Key(9)] public ushort MethodId { get; set; }
     }
 }

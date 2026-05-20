@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Added — `ushort MethodId` dispatch (0.24.0 wire migration)
+
+End-to-end method addressing by a stable `ushort` global index instead of `(ServiceName, MethodName, MethodVersion)` string triples. Roughly half the per-call bytes on the wire (more in JSON), and the dispatch path becomes a jump table on `ushort` instead of a `switch` on string + nested switch on int. The migration is **additive** in this release — string fields are still present and serialized so a 0.22.x client can talk to a 0.24.0 server and vice versa; the next major can drop them.
+
+- `GameMethodIds` const table emitted by `GameServiceDiscoveryGenerator` in the `SharedMeta.Generated` namespace — `public const ushort I{Service}_{Alias}_v{Version}` for every `[MetaMethod]` declaration across the assembly. Stable across builds with the same protocol surface (FNV-1a-sorted), so server's id == client's id when both build from the same shared assembly. Negotiation translates between asymmetric assignments.
+- `MetaServerSignature` and `MetaClientSignature` both gained `GlobalIndex` on every method entry plus reverse lookup helpers (`ResolveMethodId` forward, `GetMethodEntry` reverse) for server-side telemetry/log resolution from `MethodId`.
+- `MetaServerSignature` moved from `SharedMeta.Server.Core.Session` to `SharedMeta.Core.Transport` so the codegen emit compiles on client, server, and shared assemblies without `#if SHAREDMETA_SERVER`.
+- `ConfigureMeta()` auto-registers `MetaServerSignature` + `IClientSignatureRegistry` in DI.
+- Wire packets carry `MethodId` (additive `[Id(N), Key(N)]` slot): `RpcCall`, `MetaOperation`, `RpcCallRequest`, `SignalCallRequest`, `QueryCallRequest`. Client codegen (`SimplifiedApiClientGenerator`, `QueryClientGenerator`) emits the const at every `CallVoidAsync` / `CallBytesAsync` / `SendSignalAsync` / `QueryCallAsync` / `CrossOptimistic` call site.
+- `MetaConnectionHandler` translates the client's id → server's id on `RpcCallAsync` / `QueryCallAsync` / `SignalCallAsync` using the per-signature `clientToServer` map shipped during phase-2 of the handshake. Translation returns `ushort.MaxValue` (sentinel) for methods the signature flagged as not callable; the request is rejected before reaching the grain. Hash=0 / no-negotiation clients fall back to server-side `_serverSignature.ResolveMethodId(...)` on the EntityGrain side.
+- `MetaProviderBase.DispatchCall` abstract signature changed from `(string svc, string method, byte[] payload, int methodVersion)` to `(ushort methodId, byte[] payload)`. Generated `{Service}Dispatcher.Dispatch` is now a flat `switch (methodId)` with one `case` per `(Service, Alias, Version)` tuple — version is encoded in the index, no nested switch.
+- `DispatcherNetworkAdapter` translates incoming server's id → client's local id via `ClientCapabilities.ServerToClientMethodIds`; falls back to identity when negotiation is off.
+- Generated `{Service}ApiClient.DispatchServiceBroadcast` switches on `ushort MethodId` (jump table over `GameMethodIds` constants) instead of pair-matching `ServiceName` + `MethodName`.
+- Cross-entity hop carries `MethodId` directly: generated `{Service}EntityRecorder` passes `methodId: GameMethodIds.X` into `IServerRecordContext.CallEntityAsync` / `CallEntityOneWay`, which threads through `EntityCallHandler` → cross-entity `RpcCall.MethodId`. Target grain dispatches without resolving from strings.
+
+### Added — `MetaClientOptions.ClientSignature` + `MetaTransportOptions.RequireClientSignature`
+
+- `MetaClient` now reads `options.ClientSignature` and forwards it to `ClientDispatcher.ClientSignature`. Pass `GameServiceDiscoveryBase.ClientSignature` (generated) so the session handshake exercises phase-1 hash check + phase-2 registration. `TestClientSetup` wires the test assembly's signature; all `examples/` projects updated likewise.
+- `MetaTransportOptions.RequireClientSignature` (default `false`) — when `true`, `SessionConnect` rejects clients with `ClientSignatureHash == 0`. Flip on once every supported client ships a generated signature.
+
+### Changed — Force-patch refcounts indexed by `MethodId`
+
+`EntityGrain._forcePatchMethodRefs` was `Dictionary<(string Service, string Alias, int Version), int>` plus a per-subscriber `Dictionary<string, List<tuple>>` contributions snapshot. Replaced with `int[]` indexed by `MethodId` (sized to `MetaServerSignature.Methods.Count` on first subscribe) + `Dictionary<string, List<ushort>>`. Dispatch-time check on the RPC hot path is a single bounds check + array read (~200 bytes for 100 methods vs ~6 KB of dictionary overhead).
+
+### Fixed — Cross-entity broadcast filter drops on outer caller's client
+
+The cross-entity inner call's broadcast carried `CallerId = call.CallerId` (the outer caller, e.g. `alice`). `alice`'s client filtered her own `PlayerId` as "echoed broadcast for our own RPC — server-side replay already happened locally" and dropped the update. But for `Server` / `ServerReplace` / `ServerPatch` outer modes (no local replay of the inner call), this filter was wrong: `alice` did not directly RPC the target entity, just transitively touched it. `MetaProviderBase.HandleCallAsync` now nulls `_pooledBroadcastOp.CallerId` when `isClientOriginated == false` (cross-entity path), so the outer caller's client applies the broadcast normally. Direct subscribers still get the broadcast; they just lose cross-entity attribution (the broadcast wasn't directly theirs). Fixes `SiblingThenCrossEntity_TargetEntityMutatesIndependently` regression.
+
 ### Fixed — CrossOptimistic broadcast race against the originating caller
 
 `SessionManagerGrain.ExecuteOneCallAsync` previously bumped the cross-call target's `KnownEntitySequence` to `Math.Max(known, crossCall.EntitySequenceNumber)`. When a third-party server-side mutator (timer / background job / admin action) had incremented the target between our last-known sequence and the cross-call's sequence, that intermediate broadcast was silently dropped as "old/duplicate" because the bump overshot it. The fix is two changes that work together:

@@ -80,6 +80,15 @@ namespace SharedMeta.Debug.InProcess
         }
 
         /// <summary>
+        /// Internal: Phase-2 signature registration (0.22.0+).
+        /// </summary>
+        internal Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(string connectionId, RegisterClientSignatureRequest request)
+        {
+            var handler = GetHandler(connectionId);
+            return handler.RegisterClientSignatureAsync(request);
+        }
+
+        /// <summary>
         /// Internal: Handle subscribe request.
         /// </summary>
         internal Task<SubscribeResponse> SubscribeAsync(string connectionId, SubscribeRequest request)

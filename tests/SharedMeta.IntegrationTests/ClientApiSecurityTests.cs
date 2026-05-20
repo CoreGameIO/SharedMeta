@@ -60,8 +60,7 @@ public class ClientApiSecurityTests
         {
             EntityId = entityId,
             RequestId = forgedRequestId,
-            ServiceName = "ICounterService",
-            MethodName = "AddClamped",
+            MethodId = global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_AddClamped_v0,
             Payload = client.Serializer.Pack(42),
             ServerTimeTicks = DateTime.UtcNow.Ticks
         };
@@ -73,7 +72,11 @@ public class ClientApiSecurityTests
         var error = response.Error
             ?? response.Operations.FirstOrDefault(op => op.RequestId == forgedRequestId)?.ErrorMessage;
         Assert.NotNull(error);
-        Assert.Contains("not callable from clients", error);
+        // 0.24.0+: the rejection moved from the dispatcher's inline gate ("not callable
+        // from clients") to the MethodId-translation back-stop in MetaConnectionHandler,
+        // which short-circuits before the call even reaches the grain. Either wording is
+        // acceptable — both indicate the forged RPC was denied.
+        Assert.Contains("not callable", error);
 
         // State must be unchanged — the forged call never reached the impl.
         Assert.Equal(7, counter.State.Sum);

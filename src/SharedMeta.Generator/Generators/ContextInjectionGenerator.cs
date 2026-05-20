@@ -758,24 +758,26 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
 
             // Generate methods
+            var interfaceNamespace = interfaceSymbol.ContainingNamespace.ToDisplayString();
             foreach (var member in interfaceSymbol.GetMembers().OfType<IMethodSymbol>())
             {
                 if (member.MethodKind == MethodKind.Ordinary)
                 {
-                    GenerateEntityRecorderMethod(sb, member, interfaceName, interfaceFqn, serializer);
+                    GenerateEntityRecorderMethod(sb, member, interfaceName, interfaceFqn, interfaceNamespace, serializer);
                 }
             }
 
             sb.AppendLine("    }");
         }
 
-        private static void GenerateEntityRecorderMethod(StringBuilder sb, IMethodSymbol method, string interfaceName, string interfaceFqn, DetectedSerializer serializer)
+        private static void GenerateEntityRecorderMethod(StringBuilder sb, IMethodSymbol method, string interfaceName, string interfaceFqn, string interfaceNamespace, DetectedSerializer serializer)
         {
             var methodName = method.Name;
             var returnType = method.ReturnType.ToDisplayString();
 
-            // Get method alias from MetaMethod attribute if available
+            // Get method alias + version from MetaMethod attribute if available
             var methodAlias = methodName;
+            int methodVersion = 0;
             var metaMethodAttr = method.GetAttributes().FirstOrDefault(a =>
                 a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaMethodAttribute");
             if (metaMethodAttr != null)
@@ -785,7 +787,17 @@ namespace SharedMeta.Generator.Generators
                 {
                     methodAlias = alias;
                 }
+                var versionArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Version");
+                if (!versionArg.Value.IsNull && versionArg.Value.Value is int v)
+                {
+                    methodVersion = v;
+                }
             }
+            // 0.24.0+ Stamp the server-side global MethodId on the cross-entity hop so the
+            // target grain dispatches directly by id, no string-fallback resolution. The
+            // GameMethodIds class lives in the interface's containing assembly's
+            // <c>{rootNamespace}.Generated</c> namespace.
+            var methodIdConst = "global::" + interfaceNamespace + ".Generated.GameMethodIds." + SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion);
 
             // Build parameter list
             var parameters = string.Join(", ", method.Parameters.Select(p => $"{p.Type.ToDisplayString()} {p.Name}"));
@@ -803,7 +815,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("        {");
                 GenerateArgumentPacking(sb, method.Parameters, paramNames, serializer);
                 sb.AppendLine();
-                sb.AppendLine($"            _context.CallEntityOneWay(_entityId, \"{interfaceName}\", \"{methodAlias}\", argsBytes);");
+                sb.AppendLine($"            _context.CallEntityOneWay(_entityId, {methodIdConst}, argsBytes);");
                 sb.AppendLine("        }");
                 return;
             }
@@ -838,10 +850,12 @@ namespace SharedMeta.Generator.Generators
             GenerateArgumentPacking(sb, method.Parameters, paramNames, serializer);
 
             // Call remote entity via context's CallEntityAsync
-            // Errors are thrown as exceptions by the handler
+            // Errors are thrown as exceptions by the handler.
+            // 0.24.0+ signature is (entityId, methodId, argsBytes) — service/method strings
+            // are gone from the call site; the target grain resolves names via signature.
             sb.AppendLine();
             sb.AppendLine($"            var resultBytes = await _context.CallEntityAsync(");
-            sb.AppendLine($"                _entityId, \"{interfaceName}\", \"{methodAlias}\", argsBytes);");
+            sb.AppendLine($"                _entityId, {methodIdConst}, argsBytes);");
 
             if (innerType != null)
             {

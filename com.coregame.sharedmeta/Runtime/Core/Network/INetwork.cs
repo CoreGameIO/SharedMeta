@@ -57,23 +57,23 @@ namespace SharedMeta.Core.Network
 
         /// <summary>
         /// Call a method that returns a value.
-        /// <para><c>methodVersion</c> (0.22.0+) is the value of <c>[MetaMethod(Version=N)]</c>
-        /// on the declared interface method; stamped onto <see cref="RpcCall.MethodVersion"/>
-        /// so the server dispatcher routes to the correct <c>(Alias, Version)</c> implementation.
-        /// Default <c>0</c> selects the lowest-versioned (legacy) implementation under the alias.</para>
+        /// <para><c>methodVersion</c> = <c>[MetaMethod(Version=N)]</c>, stamped on
+        /// <c>RpcCall.MethodVersion</c>. <c>methodId</c> (0.24.0+) = client's global method
+        /// index from <c>GameMethodIds</c>, stamped on <c>RpcCall.MethodId</c> — the server
+        /// translates it to its own server-side index via the signature mapping.</para>
         /// </summary>
-        Task<CallResponse<T>> CallAsync<T>(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0, int methodVersion = 0);
+        Task<CallResponse<T>> CallAsync<T>(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
 
         /// <summary>
-        /// Call a void method. See <see cref="CallAsync{T}"/> for the <c>methodVersion</c> contract.
+        /// Call a void method. See <see cref="CallAsync{T}"/> for the parameter contract.
         /// </summary>
-        Task<VoidCallResponse> CallVoidAsync(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0, int methodVersion = 0);
+        Task<VoidCallResponse> CallVoidAsync(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
 
         /// <summary>
         /// Call a method and get raw bytes result (for serializer-specific deserialization).
-        /// See <see cref="CallAsync{T}"/> for the <c>methodVersion</c> contract.
+        /// See <see cref="CallAsync{T}"/> for the parameter contract.
         /// </summary>
-        Task<ByteCallResponse> CallBytesAsync(string serviceName, string methodName, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0, int methodVersion = 0);
+        Task<ByteCallResponse> CallBytesAsync(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
 
         /// <summary>
         /// Send a desync follow-up report (deep desync detection).
@@ -92,7 +92,7 @@ namespace SharedMeta.Core.Network
         /// the message is handed off to the wire; it does NOT represent server execution.
         /// Default implementation throws — transports that do not support signals must opt in.
         /// </summary>
-        ValueTask SendSignalAsync(string serviceName, string methodName, byte[] args, int methodVersion = 0)
+        ValueTask SendSignalAsync(ushort methodId, byte[] args)
             => throw new System.NotSupportedException(
                 "This transport does not support fire-and-forget signals. Use a MetaMethod without [Signal] or switch to a transport that supports signals (InProcess, SignalR, HttpPolling).");
 
@@ -125,16 +125,14 @@ namespace SharedMeta.Core.Network
     /// </summary>
     public class NetworkBroadcast
     {
-        /// <summary>Service name (e.g., "IProfileService").</summary>
-        public string ServiceName { get; set; } = "";
-
-        /// <summary>Method name (e.g., "SetName").</summary>
-        public string MethodName { get; set; } = "";
-
-        /// <summary>0.22.0+: Method version the server dispatched under. Used by generated
-        /// broadcast handlers to route to the matching <c>[MetaMethod(Version = N)]</c> body
-        /// when multiple coexisting versions share an alias.</summary>
-        public int MethodVersion { get; set; }
+        /// <summary>
+        /// 0.24.0+ Client's local global method index (already translated from server's id
+        /// via <c>ClientCapabilities.ServerToClientMethodIds</c>). Generated broadcast handlers
+        /// dispatch on this against <c>GameMethodIds</c> / <c>FrameworkMethodIds</c> constants
+        /// — a jump table on <c>ushort</c> instead of string-pair matching. <c>ushort.MaxValue</c>
+        /// when the server emitted a method the client doesn't know — handler ignores.
+        /// </summary>
+        public ushort MethodId { get; set; }
 
         /// <summary>Caller who initiated this action.</summary>
         public string? CallerId { get; set; }
