@@ -33,7 +33,7 @@ public class ServerPatchIntegrationTests
     public async Task ServerPatch_SingleAdd_StateUpdatedViaPatch()
     {
         // Override AddValue to ServerPatch mode
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "Add", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_Add_v0, ExecutionMode.ServerPatch);
         try
         {
             var server = new InProcessServer(_fixture.CreateHandlerFactory());
@@ -67,7 +67,7 @@ public class ServerPatchIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ServerPatch_MultipleAdds_StateAccumulates()
     {
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "Add", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_Add_v0, ExecutionMode.ServerPatch);
         try
         {
             var server = new InProcessServer(_fixture.CreateHandlerFactory());
@@ -103,8 +103,8 @@ public class ServerPatchIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ServerPatch_Reset_ClearsState()
     {
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "Add", ExecutionMode.ServerPatch);
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "Reset", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_Add_v0, ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_Reset_v0, ExecutionMode.ServerPatch);
         try
         {
             var server = new InProcessServer(_fixture.CreateHandlerFactory());
@@ -141,7 +141,7 @@ public class ServerPatchIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ServerPatch_TwoClients_BroadcastAppliesPatch()
     {
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "Add", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_Add_v0, ExecutionMode.ServerPatch);
         try
         {
             var server = new InProcessServer(_fixture.CreateHandlerFactory());
@@ -194,7 +194,7 @@ public class ServerPatchIntegrationTests
     public async Task ServerPatch_MixedModes_SomeServerPatchSomeServer()
     {
         // Only Add is ServerPatch; Reset stays as Server mode
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "Add", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_Add_v0, ExecutionMode.ServerPatch);
         try
         {
             var server = new InProcessServer(_fixture.CreateHandlerFactory());
@@ -236,7 +236,7 @@ public class ServerPatchIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ServerPatch_LateJoiner_GetsCurrentState()
     {
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "Add", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_Add_v0, ExecutionMode.ServerPatch);
         try
         {
             var server = new InProcessServer(_fixture.CreateHandlerFactory());

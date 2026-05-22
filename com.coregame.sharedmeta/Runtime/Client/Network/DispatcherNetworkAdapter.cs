@@ -77,9 +77,11 @@ namespace SharedMeta.Client.Network
 
         // SessionOp.OpBytes carries the pre-serialized MetaOperation produced by the server.
         // We deserialize once and project into the in-memory NetworkBroadcast / CallResponse
-        // shapes the API client expects.
+        // shapes the API client expects. OpBytes is a PooledPayload; on the client side the
+        // Memory is byte[]-backed (transport copied bytes before delivery — see InProcess /
+        // network transport contracts).
         private MetaOperation UnpackOp(SessionOp sessionOp)
-            => sessionOp.OpBytes is { Length: > 0 } b ? _serializer.Unpack<MetaOperation>(b) : new MetaOperation();
+            => sessionOp.OpBytes.Length > 0 ? _serializer.Unpack<MetaOperation>(sessionOp.OpBytes.Memory) : new MetaOperation();
 
         // 0.24.0+ Translate server's global method index → client's local index using the
         // per-signature map shipped in ClientCapabilities.ServerToClientMethodIds. When the
@@ -108,14 +110,14 @@ namespace SharedMeta.Client.Network
             {
                 MethodId = clientMethodId,
                 CallerId = op.CallerId,
-                ArgsBytes = op.Payload ?? Array.Empty<byte>(),
-                ReplayContext = op.ReplayPayload ?? Array.Empty<byte>(),
+                ArgsBytes = op.Payload.ToArray(),
+                ReplayContext = op.ReplayPayload.ToArray(),
                 TriggerOperations = op.Triggers,
                 ServerTimeTicks = op.ServerTimeTicks,
                 RandomScrollDelta = op.RandomScrollDelta,
                 NamedRandomScrollDeltas = op.NamedRandomScrollDeltas,
-                PatchBytes = op.PatchBytes,
-                StateBytes = op.StateBytes,
+                PatchBytes = op.PatchBytes.IsEmpty ? null : op.PatchBytes.ToArray(),
+                StateBytes = op.StateBytes.IsEmpty ? null : op.StateBytes.ToArray(),
                 ExecutedConfigVersion = op.ExecutedConfigVersion
             });
         }
@@ -151,7 +153,7 @@ namespace SharedMeta.Client.Network
             var op = UnpackOp(sessionOp);
             T result = default!;
             var resultBytes = op.ResultBytes;
-            if (resultBytes != null && resultBytes.Length > 0)
+            if (!resultBytes.IsEmpty)
             {
                 result = _serializer.Unpack<T>(resultBytes);
             }
@@ -159,14 +161,14 @@ namespace SharedMeta.Client.Network
             return new CallResponse<T>
             {
                 Result = result,
-                ReplayContext = op.ReplayPayload ?? Array.Empty<byte>(),
+                ReplayContext = op.ReplayPayload.ToArray(),
                 TriggerOperations = op.Triggers,
                 CrossEntityOperations = sessionOp.CrossEntityOperations,
                 ServerTimeTicks = op.ServerTimeTicks,
                 RandomScrollDelta = op.RandomScrollDelta,
                 NamedRandomScrollDeltas = op.NamedRandomScrollDeltas,
-                PatchBytes = op.PatchBytes,
-                StateBytes = op.StateBytes,
+                PatchBytes = op.PatchBytes.IsEmpty ? null : op.PatchBytes.ToArray(),
+                StateBytes = op.StateBytes.IsEmpty ? null : op.StateBytes.ToArray(),
                 DeepDesyncCrc = op.DeepDesyncCrc,
                 ExecutedConfigVersion = op.ExecutedConfigVersion
             };
@@ -193,14 +195,14 @@ namespace SharedMeta.Client.Network
             var op = UnpackOp(sessionOp);
             return new VoidCallResponse
             {
-                ReplayContext = op.ReplayPayload ?? Array.Empty<byte>(),
+                ReplayContext = op.ReplayPayload.ToArray(),
                 TriggerOperations = op.Triggers,
                 CrossEntityOperations = sessionOp.CrossEntityOperations,
                 ServerTimeTicks = op.ServerTimeTicks,
                 RandomScrollDelta = op.RandomScrollDelta,
                 NamedRandomScrollDeltas = op.NamedRandomScrollDeltas,
-                PatchBytes = op.PatchBytes,
-                StateBytes = op.StateBytes,
+                PatchBytes = op.PatchBytes.IsEmpty ? null : op.PatchBytes.ToArray(),
+                StateBytes = op.StateBytes.IsEmpty ? null : op.StateBytes.ToArray(),
                 DeepDesyncCrc = op.DeepDesyncCrc,
                 ExecutedConfigVersion = op.ExecutedConfigVersion
             };
@@ -227,15 +229,15 @@ namespace SharedMeta.Client.Network
             var op = UnpackOp(sessionOp);
             return new ByteCallResponse
             {
-                ResultBytes = op.ResultBytes ?? Array.Empty<byte>(),
-                ReplayContext = op.ReplayPayload ?? Array.Empty<byte>(),
+                ResultBytes = op.ResultBytes.ToArray(),
+                ReplayContext = op.ReplayPayload.ToArray(),
                 TriggerOperations = op.Triggers,
                 CrossEntityOperations = sessionOp.CrossEntityOperations,
                 ServerTimeTicks = op.ServerTimeTicks,
                 RandomScrollDelta = op.RandomScrollDelta,
                 NamedRandomScrollDeltas = op.NamedRandomScrollDeltas,
-                PatchBytes = op.PatchBytes,
-                StateBytes = op.StateBytes,
+                PatchBytes = op.PatchBytes.IsEmpty ? null : op.PatchBytes.ToArray(),
+                StateBytes = op.StateBytes.IsEmpty ? null : op.StateBytes.ToArray(),
                 DeepDesyncCrc = op.DeepDesyncCrc,
                 ExecutedConfigVersion = op.ExecutedConfigVersion
             };

@@ -132,7 +132,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        public static List<(string serviceName, string methodName, byte[]? resultBytes)>? Dispatch(");
             sb.AppendLine($"            object serviceObj,");
             sb.AppendLine($"            ushort methodId,");
-            sb.AppendLine($"            byte[] eventData,");
+            sb.AppendLine($"            System.ReadOnlyMemory<byte> eventData,");
             sb.AppendLine($"            IMetaSerializer serializer)");
             sb.AppendLine("        {");
             sb.AppendLine($"            var service = ({className})serviceObj;");
@@ -151,7 +151,10 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"                    service.{method.MethodName}(@event);");
                     sb.AppendLine();
                     sb.AppendLine($"                    // Broadcast subscriber method to clients for state sync");
-                    sb.AppendLine($"                    triggeredMethods.Add((\"{subscriber.InterfaceName}\", \"{method.MethodName}\", eventData));");
+                    // triggeredMethods stores byte[]? for backward compat with broadcast emitters
+                    // that don't yet consume ROM. eventData is ROM (0.25.x wire change) — copy at
+                    // this boundary; subscriber-event dispatch is comparatively cold.
+                    sb.AppendLine($"                    triggeredMethods.Add((\"{subscriber.InterfaceName}\", \"{method.MethodName}\", eventData.IsEmpty ? null : eventData.ToArray()));");
 
                     // Check for ServiceTriggers
                     var triggers = serviceTriggers.Where(t =>

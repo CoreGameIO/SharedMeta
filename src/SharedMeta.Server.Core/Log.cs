@@ -212,8 +212,8 @@ internal static partial class Log
 
     // ── MetaProviderBase ─────────────────────────────────────────────
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Error in {ServiceName}.{MethodName}")]
-    public static partial void ProviderCallError(this ILogger logger, Exception ex, string serviceName, string methodName);
+    [LoggerMessage(Level = LogLevel.Error, Message = "Error in methodId={MethodId}")]
+    public static partial void ProviderCallError(this ILogger logger, Exception ex, ushort methodId);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Event error in {SubscriberInterface}.{MethodName}")]
     public static partial void ProviderEventError(this ILogger logger, Exception ex, string subscriberInterface, string methodName);

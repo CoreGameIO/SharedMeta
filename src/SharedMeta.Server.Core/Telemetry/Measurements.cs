@@ -181,6 +181,92 @@ namespace SharedMeta.Server.Core.Telemetry
     }
 
     /// <summary>
+    /// Measurement wrapper for <c>MetaConnectionHandler.RpcCallAsync</c> — end-to-end
+    /// server-side RPC duration histogram (transport entry → SessionManager → grain →
+    /// response). Diff against <c>RpcDuration</c> surfaces queue / hop overhead.
+    /// <para>
+    /// 0.24.0+ Keyed by client-local <c>ushort MethodId</c> only — no service/method name
+    /// resolution on the hot path. Result tag is set via <see cref="MarkRejected"/> /
+    /// <see cref="MarkError"/>; defaults to "success".
+    /// </para>
+    /// </summary>
+    public struct ServerRpcTotalMeasurement : IDisposable
+    {
+        private readonly long _startTimestamp;
+        private readonly ushort _methodId;
+        private string _result;
+
+        private ServerRpcTotalMeasurement(long startTimestamp, ushort methodId)
+        {
+            _startTimestamp = startTimestamp;
+            _methodId = methodId;
+            _result = "success";
+        }
+
+        public static ServerRpcTotalMeasurement Start(ushort methodId)
+            => new ServerRpcTotalMeasurement(Stopwatch.GetTimestamp(), methodId);
+
+        public void MarkError() => _result = "error";
+        public void MarkRejected() => _result = "rejected";
+        public void MarkBadRequest() => _result = "bad_request";
+
+        public void Dispose()
+        {
+            var elapsed = Stopwatch.GetElapsedTime(_startTimestamp).TotalMilliseconds;
+            SharedMetaMeters.ServerRpcTotalDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("method_id", _methodId),
+                new KeyValuePair<string, object?>("result", _result));
+        }
+    }
+
+    /// <summary>
+    /// Measurement wrapper for <c>MetaConnectionHandler.SessionConnectAsync</c>: starts the
+    /// <c>SpanSessionConnect</c> activity, records the connect-handshake duration histogram,
+    /// and bumps the active-session gauge when the outcome is success.
+    /// <para>
+    /// Outcome tag is set via <see cref="MarkResult"/> with one of
+    /// <c>success | needs_signature_registration | rejected | error</c>; defaults to
+    /// <c>rejected</c> so an early-return without an explicit mark surfaces as a rejected
+    /// session (which is what the original inline tracking inferred from a null/Success=false
+    /// response).
+    /// </para>
+    /// </summary>
+    public struct SessionConnectMeasurement : IDisposable
+    {
+        private readonly Activity? _activity;
+        private readonly long _startTimestamp;
+        private string _result;
+
+        private SessionConnectMeasurement(Activity? activity, long startTimestamp)
+        {
+            _activity = activity;
+            _startTimestamp = startTimestamp;
+            _result = "rejected";
+        }
+
+        public static SessionConnectMeasurement Start(string playerId)
+        {
+            var activity = SharedMetaActivities.Source.StartActivity(SharedMetaActivities.SpanSessionConnect);
+            activity?.SetTag(SharedMetaActivities.TagPlayerId, playerId);
+            return new SessionConnectMeasurement(activity, Stopwatch.GetTimestamp());
+        }
+
+        /// <summary>Set the outcome tag — one of <c>success | needs_signature_registration | rejected | error</c>.</summary>
+        public void MarkResult(string result) => _result = result;
+
+        public void Dispose()
+        {
+            var elapsed = Stopwatch.GetElapsedTime(_startTimestamp).TotalMilliseconds;
+            SharedMetaMeters.SessionConnectDuration.Record(elapsed,
+                new KeyValuePair<string, object?>("result", _result));
+            if (_result == "success")
+                MetricEvents.Session.Started();
+            _activity?.SetTag(SharedMetaActivities.TagResult, _result);
+            _activity?.Dispose();
+        }
+    }
+
+    /// <summary>
     /// Measurement wrapper for <c>EntityGrain.PersistIfNeededImpl</c> — duration histogram
     /// keyed by state-type plus the span. No success/error split since write failures
     /// already escalate via the IPersistentState

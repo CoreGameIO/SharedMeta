@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### Added — Pool-backed broadcast payloads (`PooledPayload` + `PooledPayloadRegistry`)
+
+Silo-scoped pool for the byte buffers underlying broadcast `MetaOperation` serialization. Replaces the per-call `byte[]` allocation (one for each of the two broadcast variants — replay + patch) with a ref-counted slice into a pool-rented buffer.
+
+- `PooledPayload` (`SharedMeta.Server.Core.Memory`): `readonly struct` carrying `ReadOnlyMemory<byte>? Data` + `uint Ref`. `Ref` packs `(siloId : 5 bits, slotIndex : 27 bits)` — 32 silos × ~134M slots per silo.
+- `PooledPayloadRegistry`: chunked slot storage (1024 slots / chunk), lock-free Acquire/IncrementRef/Release through `Interlocked` + `ConcurrentQueue<int>`. Optional DI registration; when not wired, providers fall back to the byte[]-allocating serializer path.
+- `IMetaSerializer` gains `Pack<T>(T, IBufferWriter<byte>)` + `Unpack<T>(ReadOnlyMemory<byte>)` overloads. MemoryPack path writes directly into the pool buffer through `MemoryPackSerializer.Serialize<T, TWriter>(writer, value)` (zero alloc on the data path); MessagePack path keeps the single-byte[] copy.
+- `MetaProviderBase.HandleCallAsync` returns `HandleCallResult.OwnedBroadcastReplay` / `OwnedBroadcastPatch` tokens. `EntityGrain.HandleCallAsync` / `HandleCallFromEntityAsync` release them in `finally` after the broadcast distribution awaits — Orleans deep-copies on each SessionManager grain hop, so the source buffer is safe to recycle as soon as the await returns.
+- Cross-silo decrement (when the destination silo holds a shared reference and signals the source silo to decrement) is deferred — `Release` outside the registry's `SiloId` throws today. Path stays open via the `Ref` global identifier.
+
+### Added — Named-random scroll snapshot pool
+
+`MetaProviderBase.CaptureNamedScrolls` / `ComputeNamedScrollDeltas` allocate exactly `_namedRandoms.Length` `long[]` per call. Now backed by a per-provider `Stack<long[]>` reused across calls (snapshots are returned synchronously inside `ComputeNamedScrollDeltas`; deltas are stashed and reclaimed at the next `HandleCallAsync` entry once the wire frame has shipped). Eliminates 1–2 `long[]` allocations per RPC for entities that declare `[NamedRandom]`.
+
+### Changed — Wire DTOs flipped to `ReadOnlyMemory<byte>` (wire-breaking)
+
+Hot-path packets and transport DTOs migrated from `byte[]?` to `ReadOnlyMemory<byte>`. MemoryPack wire-bytes are identical to the previous shape (`bin` family length-prefix + bytes); MessagePack path uses an internal copy to byte[] on read.
+
+- `MetaOperation`: `Payload`, `ResultBytes`, `ReplayPayload`, `PatchBytes`, `StateBytes`.
+- `RpcCall`: `Payload`, `ReplayPayload`.
+- `CrossEntityOperationInfo`: `ResultBytes`.
+- `DispatchResult`: `ResultBytes`.
+- `SessionOp`: `OpBytes`.
+- `RpcCallRequest` / `QueryCallRequest` / `SignalCallRequest`: `Payload`.
+- `QueryCallResponse`: `ResultBytes`.
+- `EntityBroadcast` / `EntityCallResult`: `OpBytes` (was `ImmutableArray<byte>`).
+- `CrossEntityCallReturn`: `ResultBytes` (was `ImmutableArray<byte>`).
+- `IMetaProvider.HandleCallResult` / `HandleEventResult` byte fields + new `Owned*` ownership tokens.
+- `IMetaProvider.HandleExternalEventAsync` and `MetaProviderBase.DispatchCall` / `DispatchEvent` / `DispatchSignal` signatures take `ReadOnlyMemory<byte>` for the payload parameter.
+
+Persistence fields (`EntityGrainState.{Server,Optimistic,NamedRandoms}Bytes`) and desync-report DTOs (`DesyncReportRequest.{Args,ClientPatch,ServerResult,LocalResult}Bytes`) stay `byte[]` — cold paths.
+
+### Changed — `SessionManagerGrain` broadcast/result passthrough
+
+`BroadcastToSessionOp` and `CallResultToSessionOp` no longer copy via `OpBytes.AsSpan().ToArray()`. The ROM is forwarded directly — Orleans already deep-copied on the EntityGrain → SessionManager hop, so the wire `SessionOp.OpBytes` references the SessionManager-owned copy and the GC reclaims it with the cached packet.
+
 ### Added — `ushort MethodId` dispatch (0.24.0 wire migration)
 
 End-to-end method addressing by a stable `ushort` global index instead of `(ServiceName, MethodName, MethodVersion)` string triples. Roughly half the per-call bytes on the wire (more in JSON), and the dispatch path becomes a jump table on `ushort` instead of a `switch` on string + nested switch on int. The migration is **additive** in this release — string fields are still present and serialized so a 0.22.x client can talk to a 0.24.0 server and vice versa; the next major can drop them.

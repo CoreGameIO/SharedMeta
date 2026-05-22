@@ -23,7 +23,7 @@ namespace SharedMeta.Core.Transport
         [Id(1), Key(1)] public long RequestId { get; set; }
 
         /// <summary>Serialized method arguments.</summary>
-        [Id(4), Key(4)] public byte[] Payload { get; set; } = Array.Empty<byte>();
+        [Id(4), Key(4), MemoryPackAllowSerialize] public ReadOnlyMemory<byte> Payload { get; set; }
 
         /// <summary>
         /// Piggybacked acknowledgment: highest sequence number client has processed.

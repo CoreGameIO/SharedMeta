@@ -19,6 +19,14 @@ namespace SharedMeta.Core
 
         public byte[] Complete() => Array.Empty<byte>();
 
+        public bool SupportsRentedComplete => false;
+
+        public void CompleteAsRented(out byte[] buffer, out int length)
+        {
+            buffer = Array.Empty<byte>();
+            length = 0;
+        }
+
         public void Dispose() { }
     }
 

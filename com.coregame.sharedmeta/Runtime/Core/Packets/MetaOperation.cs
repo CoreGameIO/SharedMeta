@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Orleans;
 using MemoryPack;
@@ -32,7 +33,7 @@ namespace SharedMeta.Core.Packets
         // wire — id slots 0/1/2 are intentionally vacated (never reuse them for new
         // fields; old recorded broadcasts may still carry data there).
         [Id(17), Key(17)] public ushort MethodId { get; set; }
-        [Id(3), Key(3)] public byte[]? Payload { get; set; }
+        [Id(3), Key(3), MemoryPackAllowSerialize] public ReadOnlyMemory<byte> Payload { get; set; }
         /// <summary>
         /// Originator id. On broadcast ops this is the player whose RPC produced this
         /// operation — subscribers' broadcast-replay path uses it to set <c>Context.CallerId</c>
@@ -45,14 +46,14 @@ namespace SharedMeta.Core.Packets
         [Id(16), Key(16)] public string? CallerId { get; set; }
 
         // ── Response / replay artifacts ───────────────────────────────────
-        /// <summary>Serialized return value (null for void / no return).</summary>
-        [Id(4), Key(4)] public byte[]? ResultBytes { get; set; }
+        /// <summary>Serialized return value (default for void / no return — check <see cref="ReadOnlyMemory{T}.IsEmpty"/>).</summary>
+        [Id(4), Key(4), MemoryPackAllowSerialize] public ReadOnlyMemory<byte> ResultBytes { get; set; }
         /// <summary>Server-recorded replay context for deterministic client execution.</summary>
-        [Id(5), Key(5)] public byte[]? ReplayPayload { get; set; }
+        [Id(5), Key(5), MemoryPackAllowSerialize] public ReadOnlyMemory<byte> ReplayPayload { get; set; }
         /// <summary>Serialized state diff (ServerPatch mode).</summary>
-        [Id(6), Key(6)] public byte[]? PatchBytes { get; set; }
+        [Id(6), Key(6), MemoryPackAllowSerialize] public ReadOnlyMemory<byte> PatchBytes { get; set; }
         /// <summary>Full serialized state (ServerReplace mode).</summary>
-        [Id(7), Key(7)] public byte[]? StateBytes { get; set; }
+        [Id(7), Key(7), MemoryPackAllowSerialize] public ReadOnlyMemory<byte> StateBytes { get; set; }
 
         // ── Determinism deltas ─────────────────────────────────────────────
         [Id(8), Key(8)] public long RandomScrollDelta { get; set; }
@@ -85,11 +86,11 @@ namespace SharedMeta.Core.Packets
         public void Reset()
         {
             MethodId = 0;
-            Payload = null;
-            ResultBytes = null;
-            ReplayPayload = null;
-            PatchBytes = null;
-            StateBytes = null;
+            Payload = default;
+            ResultBytes = default;
+            ReplayPayload = default;
+            PatchBytes = default;
+            StateBytes = default;
             RandomScrollDelta = 0;
             NamedRandomScrollDeltas = null;
             ServerTimeTicks = 0;

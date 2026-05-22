@@ -36,7 +36,7 @@ namespace SharedMeta.Core.Patch
         private void MarkChanged()
         {
             if (_parentNode != null && _serializer != null)
-                _parentNode.MarkChildTerminal(_fieldId, _serializer.Pack(_array));
+                _parentNode.MarkChildTerminal(_fieldId, _serializer.Pack(_array).ToArray());
         }
 
         // === Indexed access (set auto-marks dirty) ===

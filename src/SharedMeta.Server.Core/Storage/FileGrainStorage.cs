@@ -168,7 +168,7 @@ namespace SharedMeta.Server.Core.Storage
         {
             return _orleansSerializer is not null
                 ? _orleansSerializer.SerializeToArray(value)
-                : _metaSerializer!.Pack(value);
+                : _metaSerializer!.Pack(value).ToArray();
         }
 
         private T Deserialize<T>(byte[] bytes)

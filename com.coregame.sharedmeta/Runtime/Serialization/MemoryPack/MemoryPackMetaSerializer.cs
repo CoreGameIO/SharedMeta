@@ -84,9 +84,25 @@ namespace SharedMeta.Serialization.MemoryPack
         public byte[] Complete()
         {
             _completed = true;
-            // Snapshot to a right-sized byte[] for downstream DTO storage (RpcResponse.ReplayPayload
-            // etc. are byte[]). Pool buffer is held until Dispose so the snapshot is safe.
+            // Snapshot to a right-sized byte[] for downstream DTO storage (legacy callers that
+            // still hold byte[] fields). The pool buffer stays owned by this writer and goes
+            // back to ArrayPool on Dispose.
             return _buffer.AsSpan(0, _index).ToArray();
+        }
+
+        public bool SupportsRentedComplete => true;
+
+        public void CompleteAsRented(out byte[] buffer, out int length)
+        {
+            if (_completed) throw new InvalidOperationException("Writer already completed.");
+            _completed = true;
+            // Hand off the ArrayPool-rented buffer to the caller. Dispose becomes a no-op
+            // since _buffer is now null — the caller (typically via
+            // PooledPayloadRegistry.AcquireExisting) is responsible for returning it to
+            // ArrayPool when the resulting PooledPayload's refcount hits zero.
+            buffer = _buffer!;
+            length = _index;
+            _buffer = null;
         }
 
         public void Dispose()
@@ -144,8 +160,12 @@ namespace SharedMeta.Serialization.MemoryPack
         public IPayloadWriter CreateWriter() => new MemoryPackPayloadWriter();
 
         public IPayloadReader CreateReader(byte[] data) => new MemoryPackPayloadReader(data);
+        public IPayloadReader CreateReader(ReadOnlyMemory<byte> data) =>
+            // Multi-value reader path is non-MemoryPack-fast-path; copy once for the underlying
+            // MemoryStream. MemoryPack zero-alloc dispatch goes through Deserialize(span) directly.
+            new MemoryPackPayloadReader(data.ToArray());
 
-        public byte[] Pack<T>(T value)
+        public ReadOnlyMemory<byte> Pack<T>(T value)
         {
             return MemoryPackSerializer.Serialize(value);
         }
@@ -155,7 +175,19 @@ namespace SharedMeta.Serialization.MemoryPack
             return MemoryPackSerializer.Deserialize<T>(data)!;
         }
 
-        public byte[] Pack(Type type, object value)
+        // Zero-alloc on the data path: MemoryPack writes directly into the caller's
+        // IBufferWriter<byte> via the generic Serialize<T, TBufferWriter> overload.
+        public void Pack<T>(T value, IBufferWriter<byte> writer)
+        {
+            MemoryPackSerializer.Serialize(in writer, value);
+        }
+
+        public T Unpack<T>(ReadOnlyMemory<byte> data)
+        {
+            return MemoryPackSerializer.Deserialize<T>(data.Span)!;
+        }
+
+        public ReadOnlyMemory<byte> Pack(Type type, object value)
         {
             return MemoryPackSerializer.Serialize(type, value);
         }

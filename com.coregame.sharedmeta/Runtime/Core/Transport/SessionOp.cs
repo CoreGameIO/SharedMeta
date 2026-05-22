@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Orleans;
 using MemoryPack;
 using MessagePack;
+using SharedMeta.Core.Memory;
 using SharedMeta.Core.Packets;
 
 namespace SharedMeta.Core.Transport
@@ -14,10 +15,10 @@ namespace SharedMeta.Core.Transport
     /// once via <c>IMetaSerializer.Unpack&lt;MetaOperation&gt;</c> to read its fields.
     /// </summary>
     [MemoryPackable, MessagePackObject, GenerateSerializer, Immutable]
-    public partial class SessionOp
+    public partial struct SessionOp
     {
         /// <summary>Target entity this operation belongs to.</summary>
-        [Id(0), Key(0)] public string EntityId { get; set; } = "";
+        [Id(0), Key(0)] public string EntityId { get; set; }
 
         /// <summary>0 = broadcast/push, greater than 0 = response to a specific client RPC.
         /// Client matches this to the pending TCS to complete the RPC call.</summary>
@@ -26,7 +27,7 @@ namespace SharedMeta.Core.Transport
         /// <summary>Pre-serialized MetaOperation. Empty when dispatch failed before producing
         /// a payload (check <see cref="Error"/>). Decode once on the client via
         /// <c>IMetaSerializer.Unpack&lt;MetaOperation&gt;</c>.</summary>
-        [Id(2), Key(2)] public byte[] OpBytes { get; set; } = Array.Empty<byte>();
+        [Id(2), Key(2), MemoryPackAllowSerialize] public PooledPayload OpBytes { get; set; }
 
         /// <summary>Top-level error if dispatch failed before the method was executed.
         /// Method-level errors are embedded inside <see cref="OpBytes"/> via

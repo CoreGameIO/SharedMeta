@@ -19,7 +19,7 @@ namespace SharedMeta.Client
         public long RequestId { get; init; }
         public string EntityId { get; init; } = "";
         public ushort MethodId { get; init; }  // 0.24.0+: stamped from RpcCall.MethodId
-        public byte[] Payload { get; init; } = Array.Empty<byte>();
+        public ReadOnlyMemory<byte> Payload { get; init; }
         public bool IsCrossOptimistic { get; init; }
         public long ServerTimeTicks { get; init; }
         public TaskCompletionSource<SessionOp> Tcs { get; } = new();
@@ -234,7 +234,7 @@ namespace SharedMeta.Client
             if (call == null)
                 throw new ArgumentNullException(nameof(call));
 
-            var payloadBytes = call.Payload ?? Array.Empty<byte>();
+            var payloadBytes = call.Payload;
 
             PendingRequest pending;
             lock (_lock)
@@ -726,6 +726,15 @@ namespace SharedMeta.Client
 
             _ordering.Push(response);
             _ordering.Drain();
+            var ackTo = _ordering.Head - 1;
+            if (ackTo > 0)
+            {
+                lock (_lock)
+                {
+                    if (ackTo > _lastAcknowledgedSequence)
+                        _lastAcknowledgedSequence = ackTo;
+                }
+            }
         }
 
         /// <summary>

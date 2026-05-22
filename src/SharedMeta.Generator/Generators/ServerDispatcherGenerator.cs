@@ -20,6 +20,8 @@ namespace SharedMeta.Generator.Generators
         private class TriggerInfo
         {
             public string TriggerMethodName { get; set; } = "";
+            public string TriggerMethodAlias { get; set; } = "";
+            public int TriggerMethodVersion { get; set; }
             public string OnMethod { get; set; } = "";
             public string? Condition { get; set; }
         }
@@ -61,6 +63,8 @@ namespace SharedMeta.Generator.Generators
                 sbServer.AppendLine("using MemoryPack;");
             }
             sbServer.AppendLine($"using {namespaceName};");
+            // Dispatcher results are packed via Context.Serializer (GrainScopedSerializer on
+            // the server path) — serializer.Pack<T>(T) returns ROM<byte> over per-grain scratch.
             sbServer.AppendLine($"namespace {namespaceName}.Server");
             sbServer.AppendLine("{");
             sbServer.AppendLine($"    public static class {symbol}Dispatcher");
@@ -86,7 +90,7 @@ namespace SharedMeta.Generator.Generators
             // state-machine box entirely (`<Dispatch>d__0` was ~12 MB/s of allocation at 25K RPS).
             // Tasks that actually suspend fall through to a per-method `Await_{alias}_v{version}`
             // helper emitted after the switch.
-            sbServer.AppendLine($"        public static ValueTask<DispatchResult> Dispatch({symbol} service, ushort methodId, byte[] payload, IMetaSerializer serializer)");
+            sbServer.AppendLine($"        public static ValueTask<DispatchResult> Dispatch({symbol} service, ushort methodId, System.ReadOnlyMemory<byte> payload, IMetaSerializer serializer)");
             sbServer.AppendLine("        {");
             sbServer.AppendLine("            var context = MetaContextAccessor.Current ?? throw new InvalidOperationException(\"MetaContext not set. Ensure MetaContextAccessor.Current is set before calling Dispatch.\");");
 
@@ -107,7 +111,7 @@ namespace SharedMeta.Generator.Generators
                 var idConst = "global::" + namespaceName + ".Generated.GameMethodIds." + SignatureHashGenerator.MakeMethodIdConstName(symbol, alias, version);
                 sbServer.AppendLine($"                case {idConst}:");
                 sbServer.AppendLine("                {");
-                EmitMethodBody(sbServer, asyncTails, entry.Method, entry.Info, symbol, triggersByMethod, serializer);
+                EmitMethodBody(sbServer, asyncTails, entry.Method, entry.Info, symbol, namespaceName, triggersByMethod, serializer);
                 sbServer.AppendLine("                }");
             }
             sbServer.AppendLine($"                default: throw new MissingMethodException($\"Method id {{methodId}} not registered on {symbol}\");");
@@ -125,7 +129,7 @@ namespace SharedMeta.Generator.Generators
             // is present. Separate static class with its own switch so the main dispatcher stays
             // focused on regular RPC routing (void return, no DispatchResult, no trigger logic,
             // no forcePersist flags — signals bypass all of that by contract).
-            GenerateSignalDispatcherClass(sbServer, symbol, methods, serializer);
+            GenerateSignalDispatcherClass(sbServer, symbol, namespaceName, methods, serializer);
 
             sbServer.AppendLine("}");
             return sbServer.ToString();
@@ -138,7 +142,7 @@ namespace SharedMeta.Generator.Generators
         /// dispatcher's serializer contract so the same bytes shipped by the generated ApiClient land
         /// as typed parameters in the impl.
         /// </summary>
-        private static void GenerateSignalDispatcherClass(StringBuilder sb, string symbol,
+        private static void GenerateSignalDispatcherClass(StringBuilder sb, string symbol, string namespaceName,
             System.Collections.Generic.List<MethodDeclarationSyntax> methods, DetectedSerializer serializer)
         {
             var signalMethods = methods.Where(IsSignalMethod).ToList();
@@ -146,60 +150,33 @@ namespace SharedMeta.Generator.Generators
 
             sb.AppendLine();
             sb.AppendLine($"    /// <summary>");
-            sb.AppendLine($"    /// Server-side dispatcher for <c>[MetaMethod(Signal = true)]</c> methods on {symbol}.");
+            sb.AppendLine($"    /// Server-side dispatcher for <c>[MetaMethod(Mode = ExecutionMode.Signal)]</c> methods on {symbol}.");
             sb.AppendLine($"    /// Called from the generated MetaProvider's DispatchSignal override.");
+            sb.AppendLine($"    /// 0.24.0+ keyed by client-local <c>ushort MethodId</c> — each (alias, version) tuple");
+            sb.AppendLine($"    /// is a distinct constant in <c>GameMethodIds</c>, so no inner version switch is needed.");
             sb.AppendLine($"    /// </summary>");
             sb.AppendLine($"    public static class {symbol}SignalDispatcher");
             sb.AppendLine("    {");
-            // 0.22.0: methodVersion routes (Alias, Version) tuples. Legacy callers (methodVersion=0)
-            // resolve to the lowest declared Version under the alias.
-            sb.AppendLine($"        public static async Task Dispatch({symbol} service, string method, byte[] payload, int methodVersion, IMetaSerializer serializer)");
+            sb.AppendLine($"        public static async Task Dispatch({symbol} service, ushort methodId, System.ReadOnlyMemory<byte> payload, IMetaSerializer serializer)");
             sb.AppendLine("        {");
             // MetaContext must be set by MetaProviderBase.HandleSignalAsync before calling here.
             sb.AppendLine("            var _ctx = MetaContextAccessor.Current ?? throw new InvalidOperationException(\"MetaContext not set for signal dispatch.\");");
 
-            var signalGroups = signalMethods
-                .Select(m => new { Method = m, Info = ReadMetaMethodInfo(m) })
-                .GroupBy(x => x.Info.Alias)
-                .ToList();
-
-            sb.AppendLine("            switch (method)");
+            sb.AppendLine("            switch (methodId)");
             sb.AppendLine("            {");
 
-            foreach (var group in signalGroups)
+            foreach (var method in signalMethods)
             {
-                var alias = group.Key;
-                var versions = group.OrderBy(x => x.Info.Version).ToList();
-                var minVersion = versions[0].Info.Version;
-
-                sb.AppendLine($"                case \"{alias}\":");
+                var info = ReadMetaMethodInfo(method);
+                var idConst = "global::" + namespaceName + ".Generated.GameMethodIds." +
+                    SignatureHashGenerator.MakeMethodIdConstName(symbol, info.Alias, info.Version);
+                sb.AppendLine($"                case {idConst}:");
                 sb.AppendLine("                {");
-
-                if (versions.Count == 1)
-                {
-                    EmitSignalBody(sb, versions[0].Method, versions[0].Info, symbol);
-                }
-                else
-                {
-                    sb.AppendLine("                    switch (methodVersion)");
-                    sb.AppendLine("                    {");
-                    foreach (var entry in versions)
-                    {
-                        sb.AppendLine($"                        case {entry.Info.Version}:");
-                        if (entry.Info.Version == minVersion)
-                            sb.AppendLine("                        case 0:  // legacy/unversioned caller routes to lowest Version");
-                        sb.AppendLine("                        {");
-                        EmitSignalBody(sb, entry.Method, entry.Info, symbol);
-                        sb.AppendLine("                        }");
-                    }
-                    sb.AppendLine($"                        default: throw new MissingMethodException($\"Signal '{symbol}.{alias}' has no version {{methodVersion}} (available: {string.Join(", ", versions.Select(v => v.Info.Version))})\");");
-                    sb.AppendLine("                    }");
-                }
-
+                EmitSignalBody(sb, method, info, symbol);
                 sb.AppendLine("                    break;");
                 sb.AppendLine("                }");
             }
-            sb.AppendLine("                default: throw new MissingMethodException(method);");
+            sb.AppendLine($"                default: throw new MissingMethodException($\"Signal methodId {{methodId}} not found on {symbol}\");");
             sb.AppendLine("            }");
             sb.AppendLine("            await Task.CompletedTask;  // keeps the method async for future async bridge calls inside signal bodies");
             sb.AppendLine("        }");
@@ -282,7 +259,7 @@ namespace SharedMeta.Generator.Generators
                 var param = parameters[0];
                 var paramType = param.Type!.ToString();
                 var paramName = param.Identifier.Text;
-                sb.AppendLine($"                    var {paramName} = MemoryPackSerializer.Deserialize<{paramType}>(payload)!;");
+                sb.AppendLine($"                    var {paramName} = MemoryPackSerializer.Deserialize<{paramType}>(payload.Span)!;");
                 argNames.Add(paramName);
             }
             else
@@ -305,10 +282,10 @@ namespace SharedMeta.Generator.Generators
             var typeParams = string.Join(", ", Enumerable.Range(1, arity).Select(i => $"T{i}"));
             var returnType = $"({typeParams})";
             sb.AppendLine();
-            sb.AppendLine($"        private static {returnType} UnpackArgs<{typeParams}>(byte[] payload)");
+            sb.AppendLine($"        private static {returnType} UnpackArgs<{typeParams}>(System.ReadOnlyMemory<byte> payload)");
             sb.AppendLine("        {");
             sb.AppendLine("            var mpState = MemoryPackReaderOptionalStatePool.Rent(null);");
-            sb.AppendLine("            var mpReader = new MemoryPackReader(payload, mpState);");
+            sb.AppendLine("            var mpReader = new MemoryPackReader(payload.Span, mpState);");
             for (int i = 1; i <= arity; i++)
             {
                 sb.AppendLine($"            var v{i} = mpReader.ReadValue<T{i}>()!;");
@@ -366,9 +343,31 @@ namespace SharedMeta.Generator.Generators
                     if (attr.AttributeClass?.Name == "TriggerAttribute" ||
                         attr.AttributeClass?.ToDisplayString() == "SharedMeta.Core.TriggerAttribute")
                     {
+                        // 0.24.0+ Capture alias + version from the trigger method's own [MetaMethod]
+                        // so the dispatcher can emit the GameMethodIds constant directly. Default
+                        // alias = C# method name, default version = 0 (matches the convention
+                        // used everywhere else for method-id resolution).
+                        var triggerAlias = member.Name;
+                        var triggerVersion = 0;
+                        var metaMethodAttr = member.GetAttributes().FirstOrDefault(a =>
+                            a.AttributeClass?.Name == "MetaMethodAttribute" ||
+                            a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaMethodAttribute");
+                        if (metaMethodAttr != null)
+                        {
+                            foreach (var na in metaMethodAttr.NamedArguments)
+                            {
+                                if (na.Key == "Alias" && na.Value.Value is string aliasOverride && !string.IsNullOrEmpty(aliasOverride))
+                                    triggerAlias = aliasOverride;
+                                else if (na.Key == "Version" && na.Value.Value is int versionOverride)
+                                    triggerVersion = versionOverride;
+                            }
+                        }
+
                         var triggerInfo = new TriggerInfo
                         {
-                            TriggerMethodName = member.Name
+                            TriggerMethodName = member.Name,
+                            TriggerMethodAlias = triggerAlias,
+                            TriggerMethodVersion = triggerVersion,
                         };
 
                         // Extract "On" and "Condition" properties
@@ -403,29 +402,35 @@ namespace SharedMeta.Generator.Generators
         /// <summary>
         /// Generates code to collect triggers that should execute (evaluates conditions, does NOT execute).
         /// Returns the variable name containing the trigger list, or null if no triggers.
+        /// 0.24.0+ Trigger entries are emitted as <c>ushort</c> ids from <c>GameMethodIds</c>
+        /// so the provider's trigger loop dispatches via the same id-keyed jump table as the
+        /// main call — no runtime alias-to-id lookup, no string allocation per trigger.
         /// </summary>
-        private static string? GenerateTriggerCollection(StringBuilder sb, string methodName, Dictionary<string, List<TriggerInfo>> triggersByMethod, string indent)
+        private static string? GenerateTriggerCollection(StringBuilder sb, string methodName, Dictionary<string, List<TriggerInfo>> triggersByMethod, string indent,
+            string interfaceName, string namespaceName)
         {
             if (!triggersByMethod.TryGetValue(methodName, out var triggers) || triggers.Count == 0)
                 return null;
 
             sb.AppendLine($"{indent}// Collect triggers for {methodName}");
-            sb.AppendLine($"{indent}var triggers = new List<string>();");
+            sb.AppendLine($"{indent}var triggers = new List<ushort>();");
 
             foreach (var trigger in triggers)
             {
+                var idConst = "global::" + namespaceName + ".Generated.GameMethodIds." +
+                    SignatureHashGenerator.MakeMethodIdConstName(interfaceName, trigger.TriggerMethodAlias, trigger.TriggerMethodVersion);
                 if (!string.IsNullOrEmpty(trigger.Condition))
                 {
                     // Has condition - check it first
                     sb.AppendLine($"{indent}if (service.{trigger.Condition}())");
                     sb.AppendLine($"{indent}{{");
-                    sb.AppendLine($"{indent}    triggers.Add(\"{trigger.TriggerMethodName}\");");
+                    sb.AppendLine($"{indent}    triggers.Add({idConst});");
                     sb.AppendLine($"{indent}}}");
                 }
                 else
                 {
                     // No condition - always execute
-                    sb.AppendLine($"{indent}triggers.Add(\"{trigger.TriggerMethodName}\");");
+                    sb.AppendLine($"{indent}triggers.Add({idConst});");
                 }
             }
 
@@ -435,15 +440,11 @@ namespace SharedMeta.Generator.Generators
         /// <summary>
         /// Generates method call code and returns DispatchResult with triggers to execute.
         /// </summary>
-        private static void GenerateMethodCallWithTriggers(StringBuilder sb, StringBuilder asyncTails, string symbol, MetaMethodInfo info, string methodName, string callArgs, string returnType, Dictionary<string, List<TriggerInfo>> triggersByMethod, DetectedSerializer serializer = DetectedSerializer.Generic, bool forcePersist = false)
+        private static void GenerateMethodCallWithTriggers(StringBuilder sb, StringBuilder asyncTails, string symbol, MetaMethodInfo info, string methodName, string callArgs, string returnType, Dictionary<string, List<TriggerInfo>> triggersByMethod,
+            string interfaceName, string namespaceName,
+            DetectedSerializer serializer = DetectedSerializer.Generic, bool forcePersist = false)
         {
             const string indent = "                    ";
-
-            // Result-packing expression based on serializer.
-            string GetResultPacking(string resultVar) =>
-                serializer == DetectedSerializer.MemoryPack
-                    ? $"MemoryPackSerializer.Serialize({resultVar})"
-                    : $"serializer.Pack({resultVar})";
 
             string forcePersistPart = forcePersist ? ", ForcePersist = true" : "";
             bool isTask = returnType == "System.Threading.Tasks.Task" || returnType == "Task";
@@ -454,8 +455,8 @@ namespace SharedMeta.Generator.Generators
             {
                 // Pure sync void return. No Task involvement at all.
                 sb.AppendLine($"{indent}service.{methodName}({callArgs});");
-                var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent);
-                EmitSyncDispatchReturn(sb, indent, "null", triggersVar, forcePersistPart);
+                var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent, interfaceName, namespaceName);
+                EmitSyncDispatchReturn(sb, indent, resultVar: null, returnType: null, triggersVar, forcePersistPart);
             }
             else if (isTask)
             {
@@ -464,37 +465,37 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"{indent}    var __t = service.{methodName}({callArgs});");
                 sb.AppendLine($"{indent}    if (__t.IsCompletedSuccessfully)");
                 sb.AppendLine($"{indent}    {{");
-                var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent + "        ");
-                EmitSyncDispatchReturn(sb, indent + "        ", "null", triggersVar, forcePersistPart);
+                var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent + "        ", interfaceName, namespaceName);
+                EmitSyncDispatchReturn(sb, indent + "        ", resultVar: null, returnType: null, triggersVar, forcePersistPart);
                 sb.AppendLine($"{indent}    }}");
                 var tailName = AsyncTailName(info);
                 sb.AppendLine($"{indent}    return {tailName}(service, __t, serializer);");
                 sb.AppendLine($"{indent}}}");
-                EmitAsyncTail(asyncTails, symbol, info, methodName, triggersByMethod, taskGenericType: null, resultBytesExpr: "null", forcePersistPart);
+                EmitAsyncTail(asyncTails, symbol, info, methodName, triggersByMethod, interfaceName, namespaceName, taskGenericType: null, resultVar: null, forcePersistPart);
             }
             else if (isTaskOfT)
             {
                 // async Task<T> — sync-completion check, async tail fallback.
+                var taskGenericType = ExtractTaskGenericType(returnType);
                 sb.AppendLine($"{indent}{{");
                 sb.AppendLine($"{indent}    var __t = service.{methodName}({callArgs});");
                 sb.AppendLine($"{indent}    if (__t.IsCompletedSuccessfully)");
                 sb.AppendLine($"{indent}    {{");
                 sb.AppendLine($"{indent}        var result = __t.Result;");
-                var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent + "        ");
-                EmitSyncDispatchReturn(sb, indent + "        ", GetResultPacking("result"), triggersVar, forcePersistPart);
+                var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent + "        ", interfaceName, namespaceName);
+                EmitSyncDispatchReturn(sb, indent + "        ", resultVar: "result", returnType: taskGenericType, triggersVar, forcePersistPart);
                 sb.AppendLine($"{indent}    }}");
                 var tailName = AsyncTailName(info);
                 sb.AppendLine($"{indent}    return {tailName}(service, __t, serializer);");
                 sb.AppendLine($"{indent}}}");
-                var taskGenericType = ExtractTaskGenericType(returnType);
-                EmitAsyncTail(asyncTails, symbol, info, methodName, triggersByMethod, taskGenericType, GetResultPacking("__result"), forcePersistPart);
+                EmitAsyncTail(asyncTails, symbol, info, methodName, triggersByMethod, interfaceName, namespaceName, taskGenericType, resultVar: "__result", forcePersistPart);
             }
             else
             {
                 // Synchronous T return (e.g. int, MyDto). No Task wrapping.
                 sb.AppendLine($"{indent}var result = service.{methodName}({callArgs});");
-                var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent);
-                EmitSyncDispatchReturn(sb, indent, GetResultPacking("result"), triggersVar, forcePersistPart);
+                var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent, interfaceName, namespaceName);
+                EmitSyncDispatchReturn(sb, indent, resultVar: "result", returnType: returnType, triggersVar, forcePersistPart);
             }
         }
 
@@ -503,16 +504,54 @@ namespace SharedMeta.Generator.Generators
         /// DispatchResult in a sync-completed <see cref="ValueTask{T}"/> so the non-async outer
         /// <c>Dispatch</c> method skips any state-machine allocation.
         /// </summary>
-        private static void EmitSyncDispatchReturn(StringBuilder sb, string indent, string resultBytesExpr, string? triggersVar, string forcePersistPart)
+        private static void EmitSyncDispatchReturn(StringBuilder sb, string indent, string? resultVar, string? returnType, string? triggersVar, string forcePersistPart)
         {
-            if (triggersVar != null)
+            // Result serialization goes through Context.Serializer (GrainScopedSerializer);
+            // BuildDispatchResultExpr fast-paths bool / int / void returns to the cached
+            // DispatchResult tables (DispatchResult.True / False / Int / Void) when there
+            // are no triggers + no ForcePersist, sidestepping the Pack call entirely.
+            var expr = BuildDispatchResultExpr(resultVar, returnType, triggersVar, forcePersistPart);
+            sb.AppendLine($"{indent}return new ValueTask<DispatchResult>({expr});");
+        }
+
+        /// <summary>
+        /// Build the <c>DispatchResult</c> expression for a dispatcher return path. When the
+        /// return type is <c>void</c>, <c>bool</c> or <c>int</c> (range [0, MaxCached)) AND
+        /// the method has no triggers / no ForcePersist, returns the cached static instance
+        /// directly. Otherwise falls back to constructing a fresh struct with
+        /// <c>serializer.Pack(value)</c> (the regular per-call scratch write).
+        /// </summary>
+        private static string BuildDispatchResultExpr(string? resultVar, string? returnType, string? triggersVar, string forcePersistPart)
+        {
+            string triggersPart = triggersVar != null ? $", TriggersToExecute = {triggersVar}.Count > 0 ? {triggersVar} : null" : "";
+            bool canCacheStruct = triggersVar == null && string.IsNullOrEmpty(forcePersistPart);
+
+            // Void / no-result
+            if (resultVar == null)
             {
-                sb.AppendLine($"{indent}return new ValueTask<DispatchResult>(new DispatchResult {{ ResultBytes = {resultBytesExpr}, TriggersToExecute = {triggersVar}.Count > 0 ? {triggersVar} : null{forcePersistPart} }});");
+                return canCacheStruct
+                    ? "DispatchResult.Void"
+                    : $"new DispatchResult {{ ResultBytes = default{triggersPart}{forcePersistPart} }}";
             }
-            else
+
+            // bool fast-path
+            if (returnType == "bool" || returnType == "System.Boolean" || returnType == "Boolean")
             {
-                sb.AppendLine($"{indent}return new ValueTask<DispatchResult>(new DispatchResult {{ ResultBytes = {resultBytesExpr}{forcePersistPart} }});");
+                if (canCacheStruct)
+                    return $"({resultVar} ? DispatchResult.True : DispatchResult.False)";
+                return $"new DispatchResult {{ ResultBytes = ({resultVar} ? DispatchResult.True.ResultBytes : DispatchResult.False.ResultBytes){triggersPart}{forcePersistPart} }}";
             }
+
+            // int fast-path with range check; out-of-range falls back to Pack.
+            if (returnType == "int" || returnType == "System.Int32" || returnType == "Int32")
+            {
+                if (canCacheStruct)
+                    return $"((uint){resultVar} < (uint)DispatchResult.Int.Length ? DispatchResult.Int[{resultVar}] : new DispatchResult {{ ResultBytes = serializer.Pack({resultVar}) }})";
+                return $"new DispatchResult {{ ResultBytes = ((uint){resultVar} < (uint)DispatchResult.Int.Length ? DispatchResult.Int[{resultVar}].ResultBytes : serializer.Pack({resultVar})){triggersPart}{forcePersistPart} }}";
+            }
+
+            // Default: regular Pack.
+            return $"new DispatchResult {{ ResultBytes = serializer.Pack({resultVar}){triggersPart}{forcePersistPart} }}";
         }
 
         /// <summary>
@@ -532,7 +571,9 @@ namespace SharedMeta.Generator.Generators
         /// <param name="resultBytesExpr">Expression producing serialized result bytes (uses <c>__result</c>
         ///   as the awaited value for Task&lt;T&gt;, or <c>"null"</c> for plain Task).</param>
         private static void EmitAsyncTail(StringBuilder asyncTails, string symbol, MetaMethodInfo info, string methodName,
-            Dictionary<string, List<TriggerInfo>> triggersByMethod, string? taskGenericType, string resultBytesExpr, string forcePersistPart)
+            Dictionary<string, List<TriggerInfo>> triggersByMethod,
+            string interfaceName, string namespaceName,
+            string? taskGenericType, string? resultVar, string forcePersistPart)
         {
             var tailName = AsyncTailName(info);
             asyncTails.AppendLine();
@@ -548,15 +589,12 @@ namespace SharedMeta.Generator.Generators
                 asyncTails.AppendLine("        {");
                 asyncTails.AppendLine("            var __result = await __t;");
             }
-            var triggersVar = GenerateTriggerCollection(asyncTails, methodName, triggersByMethod, "            ");
-            if (triggersVar != null)
-            {
-                asyncTails.AppendLine($"            return new DispatchResult {{ ResultBytes = {resultBytesExpr}, TriggersToExecute = {triggersVar}.Count > 0 ? {triggersVar} : null{forcePersistPart} }};");
-            }
-            else
-            {
-                asyncTails.AppendLine($"            return new DispatchResult {{ ResultBytes = {resultBytesExpr}{forcePersistPart} }};");
-            }
+            var triggersVar = GenerateTriggerCollection(asyncTails, methodName, triggersByMethod, "            ", interfaceName, namespaceName);
+
+            // taskGenericType is the awaited T (null for plain Task → void-equivalent). Same
+            // BuildDispatchResultExpr fast-path machinery as the sync return.
+            var expr = BuildDispatchResultExpr(resultVar, taskGenericType, triggersVar, forcePersistPart);
+            asyncTails.AppendLine($"            return {expr};");
             asyncTails.AppendLine("        }");
         }
 
@@ -632,7 +670,7 @@ namespace SharedMeta.Generator.Generators
         /// remains the same — C# tolerates extra leading whitespace.
         /// </summary>
         private static void EmitMethodBody(StringBuilder sb, StringBuilder asyncTails, MethodDeclarationSyntax method, MetaMethodInfo info,
-            string symbol, Dictionary<string, List<TriggerInfo>> triggersByMethod, DetectedSerializer serializer)
+            string symbol, string namespaceName, Dictionary<string, List<TriggerInfo>> triggersByMethod, DetectedSerializer serializer)
         {
             var methodName = method.Identifier.Text;
             var returnType = method.ReturnType.ToString();
@@ -657,7 +695,7 @@ namespace SharedMeta.Generator.Generators
                 {
                     GenerateMemoryPackArgumentUnpacking(sb, method, out var argNames);
                     var callArgs = string.Join(", ", argNames);
-                    GenerateMethodCallWithTriggers(sb, asyncTails, symbol, info, methodName, callArgs, returnType, triggersByMethod, serializer, info.ForcePersist);
+                    GenerateMethodCallWithTriggers(sb, asyncTails, symbol, info, methodName, callArgs, returnType, triggersByMethod, symbol, namespaceName, serializer, info.ForcePersist);
                 }
                 else
                 {
@@ -700,12 +738,12 @@ namespace SharedMeta.Generator.Generators
                         argNames.Add(paramName);
                     }
                     var callArgs = string.Join(", ", argNames);
-                    GenerateMethodCallWithTriggers(sb, asyncTails, symbol, info, methodName, callArgs, returnType, triggersByMethod, serializer, info.ForcePersist);
+                    GenerateMethodCallWithTriggers(sb, asyncTails, symbol, info, methodName, callArgs, returnType, triggersByMethod, symbol, namespaceName, serializer, info.ForcePersist);
                 }
             }
             else
             {
-                GenerateMethodCallWithTriggers(sb, asyncTails, symbol, info, methodName, "", returnType, triggersByMethod, serializer, info.ForcePersist);
+                GenerateMethodCallWithTriggers(sb, asyncTails, symbol, info, methodName, "", returnType, triggersByMethod, symbol, namespaceName, serializer, info.ForcePersist);
             }
         }
     }

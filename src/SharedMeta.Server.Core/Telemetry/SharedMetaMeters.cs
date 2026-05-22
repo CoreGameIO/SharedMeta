@@ -219,5 +219,34 @@ namespace SharedMeta.Server.Core.Telemetry
         public static readonly UpDownCounter<long> GrainsActive =
             Meter.CreateUpDownCounter<long>("sharedmeta.grain.active", "{grain}",
                 "Currently active EntityGrains across this silo");
+
+        // ── Pooled-payload registry ─────────────────────────────────────────────────
+
+        /// <summary>
+        /// Wired by <c>PooledPayloadRegistry</c> on construction — points the observable
+        /// gauge below at the registry's live slot count. Single-silo deployments overwrite
+        /// once; multi-silo aggregation is out of scope for this iteration.
+        /// </summary>
+        public static System.Func<long>? PoolAllocatedSlotsProvider;
+
+        /// <summary>Number of pool slots currently live (refCount &gt; 0). Read on every
+        /// metric collection tick. <c>0</c> after a quiet period indicates the pool's
+        /// refcount discipline is healthy.</summary>
+        public static readonly ObservableGauge<long> PoolAllocatedSlots =
+            Meter.CreateObservableGauge<long>("sharedmeta.pool.allocated_slots",
+                () => PoolAllocatedSlotsProvider?.Invoke() ?? 0,
+                "{slot}", "Currently live PooledPayloadRegistry slots (refCount > 0)");
+
+        /// <summary>Cumulative pool slot acquisitions (writer-rented and existing-buffer-adopted).
+        /// Diff against <see cref="PoolReleaseCount"/> over a window equals net allocated slots
+        /// in flight — useful for spotting leaks.</summary>
+        public static readonly Counter<long> PoolAcquireCount =
+            Meter.CreateCounter<long>("sharedmeta.pool.acquire.count", "{slot}",
+                "Cumulative pool slot acquisitions");
+
+        /// <summary>Cumulative pool slot final releases (the Release that takes refCount to 0).</summary>
+        public static readonly Counter<long> PoolReleaseCount =
+            Meter.CreateCounter<long>("sharedmeta.pool.release.count", "{slot}",
+                "Cumulative pool slot final releases (refCount → 0)");
     }
 }

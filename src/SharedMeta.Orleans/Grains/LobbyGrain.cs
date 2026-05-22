@@ -180,7 +180,7 @@ namespace SharedMeta.Orleans.Grains
             try
             {
                 // Serialize the event
-                var eventBytes = _serializer.Pack(@event);
+                var eventBytes = _serializer.Pack(@event).ToArray();
 
                 // Resolve entity grain via generated switch (no reflection)
                 var grain = _entityGrainResolver.GetEntityGrain(_grainFactory, stateTypeName, profileEntityId);

@@ -20,6 +20,21 @@ namespace Orleans
     }
 }
 
+namespace Orleans.Concurrency
+{
+    /// <summary>
+    /// Stub for Orleans's <c>Immutable&lt;T&gt;</c> wrapper. The real Orleans framework uses
+    /// this marker to skip defensive deep-copies on in-silo grain hops (sharing the inner value
+    /// by reference). The stub is a thin wrapper that exposes <see cref="Value"/> — Unity code
+    /// reads it the same way the runtime does, just without the copier optimization.
+    /// </summary>
+    public readonly struct Immutable<T>
+    {
+        public T Value { get; }
+        public Immutable(T value) { Value = value; }
+    }
+}
+
 // MessagePack stubs — excluded when real MessagePack package is installed (HAS_MESSAGEPACK).
 #if !HAS_MESSAGEPACK
 namespace MessagePack

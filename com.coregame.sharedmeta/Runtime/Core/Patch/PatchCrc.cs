@@ -14,8 +14,13 @@ namespace SharedMeta.Core.Patch
         /// Returns 0 for null or empty input.
         /// </summary>
         public static uint Compute(byte[]? data)
+            => data == null ? 0 : Compute(new System.ReadOnlySpan<byte>(data));
+
+        /// <summary>FNV-1a over a span — caller can feed pool-rented / scratch-backed bytes
+        /// without converting to byte[].</summary>
+        public static uint Compute(System.ReadOnlySpan<byte> data)
         {
-            if (data == null || data.Length == 0) return 0;
+            if (data.Length == 0) return 0;
 
             uint hash = FnvOffsetBasis;
             for (int i = 0; i < data.Length; i++)
@@ -25,5 +30,7 @@ namespace SharedMeta.Core.Patch
             }
             return hash;
         }
+
+        public static uint Compute(System.ReadOnlyMemory<byte> data) => Compute(data.Span);
     }
 }

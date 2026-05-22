@@ -15,6 +15,6 @@ namespace SharedMeta.Core.Packets
         [Id(0), Key(0)] public string EntityId { get; set; }
         [Id(1), Key(1)] public long EntitySequenceNumber { get; set; }
         [Id(2), Key(2)] public ushort MethodId { get; set; }
-        [Id(3), Key(3)] public byte[]? ResultBytes { get; set; }
+        [Id(3), Key(3), MemoryPackAllowSerialize] public ReadOnlyMemory<byte> ResultBytes { get; set; }
     }
 }

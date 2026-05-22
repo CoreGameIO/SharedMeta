@@ -43,6 +43,7 @@ namespace SharedMeta.Server
         /// </summary>
         public bool SignalMode { get; set; } = false;
 
+
         /// <summary>
         /// Active payload writer for current operation. In signal mode, returns the shared
         /// <see cref="NullPayloadWriter.Instance"/> so bridge Recorders discard their output.
@@ -78,6 +79,25 @@ namespace SharedMeta.Server
             _writer.Dispose();
             _writer = null;
             return payloadBytes;
+        }
+
+        /// <summary>
+        /// Complete recording and transfer the writer's underlying pool-rented buffer to the
+        /// caller. Returns <c>true</c> when the writer supports ownership transfer (e.g.
+        /// MemoryPack's ArrayPool-backed implementation) — <paramref name="buffer"/> is then
+        /// the rented array and the caller must return it to <see cref="System.Buffers.ArrayPool{T}.Shared"/>
+        /// (typically through <c>PooledPayloadRegistry.AcquireExisting</c>). When the writer
+        /// does not support transfer, falls back to <see cref="EndOperation"/> and returns
+        /// <c>false</c>; the caller treats <paramref name="buffer"/> as an ordinary GC byte[].
+        /// </summary>
+        public bool EndOperationAsRented(out byte[] buffer, out int length)
+        {
+            if (_writer == null) throw new InvalidOperationException("No operation in progress.");
+            bool supportsRented = _writer.SupportsRentedComplete;
+            _writer.CompleteAsRented(out buffer, out length);
+            _writer.Dispose();
+            _writer = null;
+            return supportsRented;
         }
 
         /// <summary>
@@ -243,7 +263,7 @@ namespace SharedMeta.Server
             _crossEntityCalls ??= new();
             _crossEntityCalls.Add(info);
 
-            return info.ResultBytes ?? Array.Empty<byte>();
+            return info.ResultBytes.IsEmpty ? Array.Empty<byte>() : info.ResultBytes.ToArray();
         }
 
         /// <summary>

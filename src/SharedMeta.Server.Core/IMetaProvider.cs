@@ -1,12 +1,15 @@
-using System.Collections.Immutable;
+using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Orleans;
 using SharedMeta.Core;
+using SharedMeta.Core.Memory;
 using SharedMeta.Core.Packets;
 using SharedMeta.Core.Transport;
 using SharedMeta.Server;
 using SharedMeta.Server.Core.Grains;
+using SharedMeta.Server.Core.Memory;
 
 namespace SharedMeta.Server.Core
 {
@@ -32,30 +35,42 @@ namespace SharedMeta.Server.Core
         /// Packed list of MetaRandom in attribute declaration order. Null = no named randoms persisted yet.
         /// </summary>
         byte[]? NamedRandomsBytes => null;
+
+        /// <summary>
+        /// Per-silo pool that backs broadcast payloads produced by this provider. Callers that
+        /// receive a <see cref="HandleCallResult"/> or <see cref="HandleEventResult"/> with a
+        /// non-default <c>Owned*</c> token are responsible for invoking <c>Release</c> here once
+        /// the corresponding bytes have crossed any grain boundary (Orleans deep-copies on the
+        /// hop). Null when the host has not wired the registry — providers fall back to the
+        /// pre-pool serializer path.
+        /// </summary>
+        PooledPayloadRegistry? Registry => null;
     }
 
     /// <summary>
-    /// Result of handling an RPC call. MetaOperation lives inside the provider; what crosses
-    /// out is the serialized payload as <see cref="ImmutableArray{T}"/> of bytes. The provider
-    /// pools its MetaOperation instances internally so per-call allocation is bounded to the
-    /// serialized byte arrays.
+    /// Result of handling an RPC call. All payload fields are <see cref="ReadOnlyMemory{T}"/>
+    /// slices into pool-rented buffers owned by the provider; the underlying pool slots stay
+    /// alive across the provider→grain boundary. EntityGrain wraps the outgoing payloads into
+    /// <see cref="PooledPayload"/>-typed wire fields by calling
+    /// <c>TakeOutgoing*</c> on <see cref="MetaProviderBase{TState}"/> — that transfer hands
+    /// ownership off to whoever ships the bytes (receiver releases when done).
     /// </summary>
     public readonly struct HandleCallResult
     {
         /// <summary>Pre-serialized MetaOperation for the originating caller's RPC response.</summary>
-        public ImmutableArray<byte> ResponseBytes { get; init; }
+        public ReadOnlyMemory<byte> ResponseBytes { get; init; }
 
         /// <summary>Method return value (shortcut so cross-entity callers can read it without
         /// deserializing <see cref="ResponseBytes"/>). Same bytes appear inside ResponseBytes.</summary>
-        public ImmutableArray<byte> ResultBytes { get; init; }
+        public ReadOnlyMemory<byte> ResultBytes { get; init; }
 
         /// <summary>Pre-serialized broadcast for modern (replay-eligible) subscribers. Default
         /// (uninitialized) when no broadcast is produced.</summary>
-        public ImmutableArray<byte> BroadcastReplayBytes { get; init; }
+        public ReadOnlyMemory<byte> BroadcastReplayBytes { get; init; }
 
         /// <summary>Pre-serialized broadcast for legacy (force-patch) subscribers. Default when
         /// no force-patch tailoring was required for this call.</summary>
-        public ImmutableArray<byte> BroadcastPatchBytes { get; init; }
+        public ReadOnlyMemory<byte> BroadcastPatchBytes { get; init; }
 
         /// <summary>
         /// Cross-entity calls made during this operation. Used by EntityGrain and replay clients
@@ -76,11 +91,12 @@ namespace SharedMeta.Server.Core
 
     /// <summary>
     /// Result of handling an external event. Single pre-serialized broadcast — external events
-    /// don't go through force-patch tailoring so one variant suffices.
+    /// don't go through force-patch tailoring so one variant suffices. Pool ownership for the
+    /// outgoing bytes is exposed via <c>MetaProviderBase.TakeOutgoingEventBroadcast</c>.
     /// </summary>
     public readonly struct HandleEventResult
     {
-        public ImmutableArray<byte> BroadcastBytes { get; init; }
+        public ReadOnlyMemory<byte> BroadcastBytes { get; init; }
     }
 
     /// <summary>
@@ -135,7 +151,7 @@ namespace SharedMeta.Server.Core
         /// <returns>Broadcasts to distribute.</returns>
         ValueTask<HandleEventResult> HandleExternalEventAsync(
             ushort methodId,
-            byte[] eventData,
+            ReadOnlyMemory<byte> eventData,
             string? callerId = null);
 
         /// <summary>

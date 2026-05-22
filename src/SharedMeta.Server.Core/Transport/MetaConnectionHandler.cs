@@ -60,7 +60,7 @@ namespace SharedMeta.Server.Core.Transport
             public string EntityId { get; set; } = "";
             public string ServiceName { get; set; } = "";
             public string MethodName { get; set; } = "";
-            public byte[] PatchBytes { get; set; } = Array.Empty<byte>();
+            public ReadOnlyMemory<byte> PatchBytes { get; set; }
         }
 
         public string PlayerId { get; private set; } = string.Empty;
@@ -143,11 +143,10 @@ namespace SharedMeta.Server.Core.Transport
         public async Task<SessionConnectResponse> SessionConnectAsync(SessionConnectRequest request)
         {
             // Bracket the whole handshake (version-gate, sig lookup, session create/resume).
-            // Result tag is set on the activity from the response right before return.
-            using var __scActivity = SharedMeta.Server.Core.Telemetry.SharedMetaActivities.Source.StartActivity(
-                SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanSessionConnect);
-            __scActivity?.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagPlayerId, request.PlayerId);
-            var __scStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            // The measurement struct records duration + result tag + active-session gauge bump
+            // on Dispose; result defaults to "rejected" so an early-return path is tagged
+            // correctly without an explicit MarkResult call.
+            using var __sc = SharedMeta.Server.Core.Telemetry.SessionConnectMeasurement.Start(request.PlayerId ?? "<null>");
             SessionConnectResponse? __scResponse = null;
             try
             {
@@ -174,7 +173,7 @@ namespace SharedMeta.Server.Core.Transport
                 if (_versionPolicy != null)
                 {
                     var versionResult = await _versionPolicy.ValidateAsync(request.ClientVersion);
-                    _logger.LogInformation(
+                    _logger.LogTrace(
                         "[Handler] SessionConnect version check player={PlayerId} client={ClientVersion} server={ServerVersion} min={MinClientVersion} allowed={Allowed} error={Error}",
                         request.PlayerId,
                         request.ClientVersion ?? "<null>",
@@ -307,7 +306,10 @@ namespace SharedMeta.Server.Core.Transport
                     ResubscribedEntities = result.ResubscribedEntities?.Select(e => new ResubscribedEntityInfo
                     {
                         EntityId = e.EntityId,
-                        StateBytes = e.StateBytes,
+                        // ROM → byte[] on the wire boundary. Cold path (session reconnect);
+                        // wire-flipping ResubscribedEntityInfo.StateBytes to ROM is a separate
+                        // change that touches Unity clients.
+                        StateBytes = e.StateBytes.IsEmpty ? System.Array.Empty<byte>() : e.StateBytes.ToArray(),
                         EntitySequenceNumber = e.EntitySequenceNumber,
                         OptimisticRandomBytes = e.OptimisticRandomBytes,
                         NamedRandomsBytes = e.NamedRandomsBytes,
@@ -326,15 +328,9 @@ namespace SharedMeta.Server.Core.Transport
             }
             finally
             {
-                var __scElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(__scStart).TotalMilliseconds;
-                var __scResult = __scResponse?.Success == true ? "success"
+                __sc.MarkResult(__scResponse?.Success == true ? "success"
                     : __scResponse?.NeedsSignatureRegistration == true ? "needs_signature_registration"
-                    : "rejected";
-                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SessionConnectDuration.Record(__scElapsed,
-                    new KeyValuePair<string, object?>("result", __scResult));
-                if (__scResponse?.Success == true)
-                    SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SessionsActive.Add(1);
-                __scActivity?.SetTag(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.TagResult, __scResult);
+                    : "rejected");
             }
         }
 
@@ -415,7 +411,11 @@ namespace SharedMeta.Server.Core.Transport
                 {
                     Success = result.Success,
                     Error = result.Error,
-                    StateBytes = result.StateBytes ?? Array.Empty<byte>(),
+                    // ROM → byte[] on the wire boundary (SubscribeResponse.StateBytes stays
+                    // byte[] for client compatibility; flipping to ROM is a separate Unity-side
+                    // change). The pool-rented buffer behind `result.StateBytes` is released
+                    // by the producing EntityGrain at its next HandleCallAsync entry.
+                    StateBytes = result.StateBytes.IsEmpty ? Array.Empty<byte>() : result.StateBytes.ToArray(),
                     EntitySequenceNumber = result.EntitySequenceNumber,
                     OptimisticRandomBytes = result.OptimisticRandomBytes,
                     NamedRandomsBytes = result.NamedRandomsBytes,
@@ -457,20 +457,18 @@ namespace SharedMeta.Server.Core.Transport
 
         public async Task<SessionResponse> RpcCallAsync(RpcCallRequest request)
         {
-            // End-to-end server-side timing — started at the transport entry point so the
-            // histogram includes SessionManagerGrain queue, grain-hop, method body, and
-            // response build. Diff against RpcDuration surfaces queue/hop overhead — large
-            // gaps point at SignalR MaximumParallelInvocationsPerClient (default 1!) and at
-            // hot SessionManagerGrain queues under burst load.
-            var __totalStart = System.Diagnostics.Stopwatch.GetTimestamp();
-            string __totalResult = "success";
+            // 0.24.0+ End-to-end server-side timing wrapped in a using-disposable that
+            // records the histogram on scope exit. Tagged by ushort MethodId only — no
+            // name resolution on the hot path. MarkRejected / MarkError set the result tag.
+            // Diff against RpcDuration still surfaces queue / hop overhead.
+            using var __m = SharedMeta.Server.Core.Telemetry.ServerRpcTotalMeasurement.Start(request.MethodId);
             try
             {
                 EnsureSessionConnected();
 
                 if (string.IsNullOrEmpty(request.EntityId))
                 {
-                    __totalResult = "bad_request";
+                    __m.MarkBadRequest();
                     return SessionResponse.ForError("EntityId is required");
                 }
 
@@ -485,7 +483,7 @@ namespace SharedMeta.Server.Core.Transport
                 ushort serverMethodId;
                 if (_clientSignatureHash == 0 || _signatureRegistry == null)
                 {
-                    __totalResult = "rejected";
+                    __m.MarkRejected();
                     return SessionResponse.ForError(
                         "Cannot dispatch RPC: client signature not negotiated. Call RegisterClientSignatureAsync first.");
                 }
@@ -493,23 +491,23 @@ namespace SharedMeta.Server.Core.Transport
                     var c2s = await _signatureRegistry.TryGetClientToServerMapAsync(_clientSignatureHash);
                     if (c2s == null || request.MethodId >= c2s.Length)
                     {
-                        __totalResult = "rejected";
+                        __m.MarkRejected();
                         return SessionResponse.ForError(
                             $"Method id {request.MethodId} is out of range for client signature.");
                     }
                     var mapped = c2s[request.MethodId];
                     if (mapped == ushort.MaxValue)
                     {
-                        __totalResult = "rejected";
+                        __m.MarkRejected();
                         return SessionResponse.ForError(
                             $"Method id {request.MethodId} is not callable by this client.");
                     }
                     serverMethodId = mapped;
                 }
 
-                // Resolve once for the rest of this call's reads (capabilities back-stop +
-                // telemetry tags + patch cache key). Returns (null, null, 0) when signature
-                // isn't wired — log/telemetry fall through to methodId-only diagnostics.
+                // Resolve once for capabilities back-stop + patch cache key. Returns (null,
+                // null, 0) when signature isn't wired. Not used as a telemetry tag anymore —
+                // ServerRpcTotalMeasurement is methodId-only.
                 var (resolvedService, resolvedMethod, resolvedVersion) = ResolveServerMethodEntry(serverMethodId);
 
                 // Server-side back-stop: even if the client bypassed its local CapabilitiesGate,
@@ -521,7 +519,7 @@ namespace SharedMeta.Server.Core.Transport
                     && SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(
                         _clientCapabilities, resolvedService, resolvedMethod, resolvedVersion))
                 {
-                    __totalResult = "rejected";
+                    __m.MarkRejected();
                     return SessionResponse.ForError(
                         $"Method '{resolvedService}.{resolvedMethod}' (v{resolvedVersion}) is rejected for this client signature.");
                 }
@@ -554,10 +552,10 @@ namespace SharedMeta.Server.Core.Transport
                 {
                     foreach (var op in response.Operations)
                     {
-                        if (op.RequestId == request.RequestId && op.OpBytes is { Length: > 0 })
+                        if (op.RequestId == request.RequestId && op.OpBytes.Length > 0)
                         {
-                            var meta = _serializer.Unpack<MetaOperation>(op.OpBytes);
-                            if (meta?.PatchBytes != null)
+                            var meta = _serializer.Unpack<MetaOperation>(op.OpBytes.Memory);
+                            if (meta != null && !meta.PatchBytes.IsEmpty)
                             {
                                 CachePatch(request.EntityId, resolvedService, resolvedMethod, meta.PatchBytes);
                             }
@@ -570,18 +568,9 @@ namespace SharedMeta.Server.Core.Transport
             }
             catch (Exception ex)
             {
-                __totalResult = "error";
+                __m.MarkError();
                 _logger.HandlerRpcCallError(ex);
                 return SessionResponse.ForError(ex.Message);
-            }
-            finally
-            {
-                var __totalElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(__totalStart).TotalMilliseconds;
-                var (telemetryService, telemetryMethod, _) = ResolveServerMethodEntry(request.MethodId);
-                SharedMeta.Server.Core.Telemetry.SharedMetaMeters.ServerRpcTotalDuration.Record(__totalElapsed,
-                    new KeyValuePair<string, object?>("service", telemetryService ?? "?"),
-                    new KeyValuePair<string, object?>("method", telemetryMethod ?? request.MethodId.ToString()),
-                    new KeyValuePair<string, object?>("result", __totalResult));
             }
         }
 
@@ -764,7 +753,7 @@ namespace SharedMeta.Server.Core.Transport
                     // the other didn't, that IS the divergence we want to report.
                     SharedMeta.Core.Patch.PatchNode? serverNode = null;
                     SharedMeta.Core.Patch.PatchNode? clientNode = null;
-                    if (cachedServerPatch is { Length: > 0 })
+                    if (!cachedServerPatch.IsEmpty)
                         serverNode = _serializer.Unpack<SharedMeta.Core.Patch.PatchNode>(cachedServerPatch);
                     if (request.ClientPatchBytes is { Length: > 0 })
                         clientNode = _serializer.Unpack<SharedMeta.Core.Patch.PatchNode>(request.ClientPatchBytes);
@@ -780,9 +769,11 @@ namespace SharedMeta.Server.Core.Transport
                         ? SharedMeta.Core.Patch.PatchNodeDiffer.Compare(serverNode, clientNode)
                         : new List<SharedMeta.Core.Patch.PatchDiffEntry>();
 
-                    report.ServerPatchCrc = cachedServerPatch is { Length: > 0 } ? SharedMeta.Core.Patch.PatchCrc.Compute(cachedServerPatch) : 0u;
+                    // Cold path (desync report): copy to byte[] for PatchCrc.Compute which still
+                    // takes byte[]?. Keeping the cache as ROM avoids the copy on the happy path.
+                    report.ServerPatchCrc = cachedServerPatch.IsEmpty ? 0u : SharedMeta.Core.Patch.PatchCrc.Compute(cachedServerPatch.ToArray());
                     report.ClientPatchCrc = request.ClientPatchBytes is { Length: > 0 } ? SharedMeta.Core.Patch.PatchCrc.Compute(request.ClientPatchBytes) : 0u;
-                    report.ServerPatchBytes = cachedServerPatch;
+                    report.ServerPatchBytes = cachedServerPatch.IsEmpty ? null : cachedServerPatch.ToArray();
                     report.ClientPatchBytes = request.ClientPatchBytes;
                     report.Diff = diffEntries;
                     diffCount = diffEntries.Count;
@@ -832,7 +823,7 @@ namespace SharedMeta.Server.Core.Transport
             }
         }
 
-        private void CachePatch(string entityId, string serviceName, string methodName, byte[] patchBytes)
+        private void CachePatch(string entityId, string serviceName, string methodName, ReadOnlyMemory<byte> patchBytes)
         {
             var cacheSize = _transportOptions?.DesyncReportPatchCacheSize ?? 16;
             lock (_patchCacheLock)
@@ -862,7 +853,7 @@ namespace SharedMeta.Server.Core.Transport
             }
         }
 
-        private byte[]? LookupPatch(string entityId, string serviceName, string methodName)
+        private ReadOnlyMemory<byte> LookupPatch(string entityId, string serviceName, string methodName)
         {
             lock (_patchCacheLock)
             {
@@ -874,7 +865,7 @@ namespace SharedMeta.Server.Core.Transport
                         return node.Value.PatchBytes;
                 }
             }
-            return null;
+            return default;
         }
 
         private void LogDesync(SharedMeta.Core.Diagnostics.DeepDesyncReport report, int diffCount)
@@ -949,9 +940,7 @@ namespace SharedMeta.Server.Core.Transport
             if (!IsSessionConnected) return;
 
             // Session was active and is closing — symmetric to the +1 in SessionConnect success.
-            SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SessionsActive.Add(-1);
-            SharedMeta.Server.Core.Telemetry.SharedMetaMeters.SessionTerminated.Add(1,
-                new KeyValuePair<string, object?>("reason", "transport_drop"));
+            SharedMeta.Server.Core.Telemetry.MetricEvents.Session.Terminated("transport_drop");
 
             _logger.HandlerDisconnected(_connectionId, PlayerId);
 

@@ -199,9 +199,9 @@ namespace SharedMeta.Generator.Generators
             {
                 sb.AppendLine();
                 if (serializer == DetectedSerializer.MemoryPack)
-                    sb.AppendLine($"            return MemoryPackSerializer.Deserialize<{innerType}>(response.ResultBytes)!;");
+                    sb.AppendLine($"            return MemoryPackSerializer.Deserialize<{innerType}>(response.ResultBytes.Span)!;");
                 else
-                    sb.AppendLine($"            return _serializer.Unpack<{innerType}>(response.ResultBytes!)!;");
+                    sb.AppendLine($"            return _serializer.Unpack<{innerType}>(response.ResultBytes)!;");
             }
 
             sb.AppendLine("        }");

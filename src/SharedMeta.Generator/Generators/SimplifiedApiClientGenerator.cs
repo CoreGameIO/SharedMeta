@@ -637,7 +637,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"                || global::SharedMeta.Core.Transport.CapabilitiesGate.IsServiceForcedServerPatchByEntity(_network.EntityCapabilities, ServiceName))");
                     sb.AppendLine($"                return {methodName}Async_ServerPatch({callArgs});");
                 }
-                sb.AppendLine($"            var mode = _modeProvider.GetMode(ServiceName, \"{methodAlias}\", ExecutionMode.{defaultMode});");
+                sb.AppendLine($"            var mode = _modeProvider.GetMode(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, ExecutionMode.{defaultMode});");
                 sb.AppendLine($"            if (mode == ExecutionMode.ServerPatch)");
                 sb.AppendLine($"                return {methodName}Async_ServerPatch({callArgs});");
                 sb.AppendLine($"            if (mode == ExecutionMode.ServerReplace)");
@@ -675,7 +675,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"                || global::SharedMeta.Core.Transport.CapabilitiesGate.IsServiceRejectedByEntity(_network.EntityCapabilities, ServiceName))");
                     sb.AppendLine($"                throw global::SharedMeta.Core.Transport.CapabilitiesGate.RejectedException(ServiceName, \"{methodAlias}\", {methodVersion});");
                 }
-                sb.AppendLine($"            var mode = _modeProvider.GetMode(ServiceName, \"{methodAlias}\", ExecutionMode.{defaultMode});");
+                sb.AppendLine($"            var mode = _modeProvider.GetMode(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, ExecutionMode.{defaultMode});");
                 sb.AppendLine("            if (mode != ExecutionMode.Optimistic && mode != ExecutionMode.Local)");
                 sb.AppendLine("            {");
                 if (syncPolicy == "Warn")
@@ -855,7 +855,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                _ddRoot.Prune();");
                 sb.AppendLine("                if (_ddRoot.HasChanges)");
                 sb.AppendLine("                {");
-                sb.AppendLine("                    _ddLocalPatchBytes = _serializer.Pack(_ddRoot);");
+                sb.AppendLine("                    _ddLocalPatchBytes = _serializer.Pack(_ddRoot).ToArray();");
                 sb.AppendLine("                    _ddLocalCrc = SharedMeta.Core.Patch.PatchCrc.Compute(_ddLocalPatchBytes);");
                 sb.AppendLine("                }");
                 sb.AppendLine("                MetaContextAccessor.Current!.PatchWrapper = null;");
@@ -881,7 +881,7 @@ namespace SharedMeta.Generator.Generators
                     if (serializer == DetectedSerializer.MemoryPack)
                         sb.AppendLine($"                    var localResultBytes = MemoryPackSerializer.Serialize(localResult);");
                     else
-                        sb.AppendLine($"                    var localResultBytes = _serializer.Pack(localResult);");
+                        sb.AppendLine($"                    var localResultBytes = _serializer.Pack(localResult).ToArray();");
                     GenerateResultMismatchReport(sb, methodAlias, "response.ResultBytes", "localResultBytes", "                    ");
                     sb.AppendLine($"                    throw new DesyncException(ServiceName, \"{methodAlias}\", serverResult, localResult);");
                     sb.AppendLine("                }");
@@ -1001,7 +1001,7 @@ namespace SharedMeta.Generator.Generators
             }
             else
             {
-                sb.AppendLine($"{indent}var localResultBytes = _serializer.Pack(localResult);");
+                sb.AppendLine($"{indent}var localResultBytes = _serializer.Pack(localResult).ToArray();");
             }
             sb.AppendLine($"{indent}if (!{serverBytesExpr}.AsSpan().SequenceEqual(localResultBytes))");
         }
@@ -1090,7 +1090,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                _ddPw.Node.Prune();");
                 sb.AppendLine("                if (_ddPw.Node.HasChanges)");
                 sb.AppendLine("                {");
-                sb.AppendLine("                    _ddLocalPatchBytes = _serializer.Pack(_ddPw.Node);");
+                sb.AppendLine("                    _ddLocalPatchBytes = _serializer.Pack(_ddPw.Node).ToArray();");
                 sb.AppendLine("                    _ddLocalCrc = SharedMeta.Core.Patch.PatchCrc.Compute(_ddLocalPatchBytes);");
                 sb.AppendLine("                }");
                 sb.AppendLine("            }");
@@ -1250,7 +1250,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                _ddPw.Node.Prune();");
                 sb.AppendLine("                if (_ddPw.Node.HasChanges)");
                 sb.AppendLine("                {");
-                sb.AppendLine("                    _ddLocalPatchBytes = _serializer.Pack(_ddPw.Node);");
+                sb.AppendLine("                    _ddLocalPatchBytes = _serializer.Pack(_ddPw.Node).ToArray();");
                 sb.AppendLine("                    _ddLocalCrc = SharedMeta.Core.Patch.PatchCrc.Compute(_ddLocalPatchBytes);");
                 sb.AppendLine("                }");
                 sb.AppendLine("            }");
@@ -1408,7 +1408,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                _ddPw.Node.Prune();");
                 sb.AppendLine("                if (_ddPw.Node.HasChanges)");
                 sb.AppendLine("                {");
-                sb.AppendLine("                    _ddLocalPatchBytes = _serializer.Pack(_ddPw.Node);");
+                sb.AppendLine("                    _ddLocalPatchBytes = _serializer.Pack(_ddPw.Node).ToArray();");
                 sb.AppendLine("                    _ddLocalCrc = SharedMeta.Core.Patch.PatchCrc.Compute(_ddLocalPatchBytes);");
                 sb.AppendLine("                }");
                 sb.AppendLine("            }");
@@ -1466,7 +1466,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                            for (int i = 0; i < serverCrossOps.Count && i < localCrossResults.Count; i++)");
                 sb.AppendLine("                            {");
                 sb.AppendLine("                                // Object-level comparison; typed comparison requires generated per-method code");
-                sb.AppendLine("                                _diagnostics?.OnCrossEntityResult(serverCrossOps[i].EntityId, serverCrossOps[i].MethodId, serverCrossOps[i].ResultBytes);");
+                sb.AppendLine("                                _diagnostics?.OnCrossEntityResult(serverCrossOps[i].EntityId, serverCrossOps[i].MethodId, serverCrossOps[i].ResultBytes.IsEmpty ? null : serverCrossOps[i].ResultBytes.ToArray());");
                 sb.AppendLine("                            }");
                 sb.AppendLine("                        }");
                 sb.AppendLine();
@@ -1687,7 +1687,7 @@ namespace SharedMeta.Generator.Generators
                 if (serializer == DetectedSerializer.MemoryPack)
                     sb.AppendLine($"                            var localResultBytes = MemoryPackSerializer.Serialize(localResult);");
                 else
-                    sb.AppendLine($"                            var localResultBytes = _serializer.Pack(localResult);");
+                    sb.AppendLine($"                            var localResultBytes = _serializer.Pack(localResult).ToArray();");
                 GenerateResultMismatchReport(sb, methodAlias, "t.Result.ResultBytes", "localResultBytes", "                            ");
                 sb.AppendLine("                        }");
                 return;
@@ -2001,7 +2001,10 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                }");
             sb.AppendLine("                else");
             sb.AppendLine("                {");
-            sb.AppendLine("                    SetContext(triggerOp.ReplayPayload ?? Array.Empty<byte>(), callerId, serverTimeTicks);");
+            // triggerOp.ReplayPayload is ReadOnlyMemory<byte> on the wire DTO; SetContext takes
+            // byte[] on the client side. Materialise at the boundary (cold-ish path: only fires
+            // when a trigger has no patch/state and needs body replay).
+            sb.AppendLine("                    SetContext(triggerOp.ReplayPayload.IsEmpty ? Array.Empty<byte>() : triggerOp.ReplayPayload.ToArray(), callerId, serverTimeTicks);");
             sb.AppendLine("                    DispatchTrigger(triggerOp.MethodId);");
             sb.AppendLine("                    ClearContext();");
             sb.AppendLine($"                    _stateContainer.NotifyMutated();");

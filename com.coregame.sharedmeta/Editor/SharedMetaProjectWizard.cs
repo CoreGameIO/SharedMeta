@@ -2750,8 +2750,8 @@ Use `Context.ServerTimeTicks` (synchronized UTC ticks) instead.
 ### Runtime Mode Override
 ```csharp
 var modeProvider = client.ModeProvider as ExecutionModeProvider;
-modeProvider.SetMode(""IProfileService"", ""SetName"", ExecutionMode.Server);
-modeProvider.SetServiceMode(""IProfileService"", ExecutionMode.Server);
+// 0.24.0+ keyed by ushort MethodId — use GameMethodIds.{Iface}_{Alias}_v{Version} constants
+modeProvider.SetMode(GameMethodIds.IProfileService_SetName_v0, ExecutionMode.Server);
 modeProvider.Clear(); // Reset to attribute defaults
 ```
 

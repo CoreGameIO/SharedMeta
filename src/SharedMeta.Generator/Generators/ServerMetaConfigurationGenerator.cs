@@ -1095,7 +1095,7 @@ namespace SharedMeta.Generator.Generators
             // 0.24.0+ Switch on global ushort method id. Each method's case routes to its
             // owning service's dispatcher; the dispatcher's inner switch then finds the
             // specific impl by the same id. Jump table on ushort lowers to a computed branch.
-            sb.AppendLine("        protected override System.Threading.Tasks.ValueTask<DispatchResult> DispatchCall(ushort methodId, byte[] payload)");
+            sb.AppendLine("        protected override System.Threading.Tasks.ValueTask<DispatchResult> DispatchCall(ushort methodId, System.ReadOnlyMemory<byte> payload)");
             sb.AppendLine("        {");
             sb.AppendLine("            return methodId switch");
             sb.AppendLine("            {");
@@ -1134,7 +1134,7 @@ namespace SharedMeta.Generator.Generators
             if (servicesWithSubscribers.Count > 0)
             {
                 sb.AppendLine();
-                sb.AppendLine("        protected override System.Threading.Tasks.ValueTask<DispatchResult> DispatchEvent(ushort methodId, byte[] eventData)");
+                sb.AppendLine("        protected override System.Threading.Tasks.ValueTask<DispatchResult> DispatchEvent(ushort methodId, System.ReadOnlyMemory<byte> eventData)");
                 sb.AppendLine("        {");
                 foreach (var service in servicesWithSubscribers)
                 {
@@ -1281,7 +1281,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("            };");
                 sb.AppendLine("            if (!isSignal)");
                 sb.AppendLine("            {");
-                sb.AppendLine("                LogProviderCallError(new System.InvalidOperationException($\"Method id {call.MethodId} is not a signal method\"), \"\", call.MethodId.ToString());");
+                sb.AppendLine("                LogProviderCallError(new System.InvalidOperationException($\"Method id {call.MethodId} is not a signal method\"), call.MethodId);");
                 sb.AppendLine("                return;");
                 sb.AppendLine("            }");
                 sb.AppendLine();
@@ -1297,7 +1297,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine("                    allowed = await CheckAccessAsync(call.CallerId ?? \"\");");
                     sb.AppendLine("                if (!allowed)");
                     sb.AppendLine("                {");
-                    sb.AppendLine("                    LogProviderCallError(new System.UnauthorizedAccessException($\"Access denied for signal id {call.MethodId} from caller '{call.CallerId}' on entity '{MetaContext!.EntityId}'\"), \"\", call.MethodId.ToString());");
+                    sb.AppendLine("                    LogProviderCallError(new System.UnauthorizedAccessException($\"Access denied for signal id {call.MethodId} from caller '{call.CallerId}' on entity '{MetaContext!.EntityId}'\"), call.MethodId);");
                     sb.AppendLine("                    return;");
                     sb.AppendLine("                }");
                     sb.AppendLine("            }");
@@ -1308,25 +1308,23 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("        }");
                 sb.AppendLine();
 
-                sb.AppendLine("        protected override async Task DispatchSignal(string serviceName, string methodName, byte[] payload, int methodVersion)");
+                // 0.24.0+ DispatchSignal is keyed by ushort methodId. Every signal method id
+                // routes to its owning service's SignalDispatcher (which itself switches on
+                // methodId). Two nested O(1) switches — no string-name plumbing on the hot path.
+                sb.AppendLine("        protected override async Task DispatchSignal(ushort methodId, System.ReadOnlyMemory<byte> payload)");
                 sb.AppendLine("        {");
-                sb.AppendLine("            switch (serviceName)");
+                sb.AppendLine("            switch (methodId)");
                 sb.AppendLine("            {");
-                // Group signal methods by interface, one switch arm per service.
-                var signalsByService = allSignalMethods
-                    .GroupBy(x => x.Impl.InterfaceName)
-                    .ToList();
-                foreach (var group in signalsByService)
+                foreach (var x in allSignalMethods)
                 {
-                    var anyImpl = group.First().Impl;
-                    var baseName = GetBaseName(anyImpl.InterfaceName);
-                    // Signal dispatcher is emitted by ServerDispatcherGenerator in the same namespace
-                    // as the main dispatcher — we route by service interface name.
-                    sb.AppendLine($"                case \"{anyImpl.InterfaceName}\":");
-                    sb.AppendLine($"                    await {anyImpl.InterfaceName}SignalDispatcher.Dispatch(Get{baseName}(), methodName, payload, methodVersion, Context.Serializer);");
+                    var baseName = GetBaseName(x.Impl.InterfaceName);
+                    var idConst = "global::" + idsNs + ".Generated.GameMethodIds." +
+                        SignatureHashGenerator.MakeMethodIdConstName(x.Sig.ServiceName, x.Sig.MethodAlias, x.Sig.Version);
+                    sb.AppendLine($"                case {idConst}:");
+                    sb.AppendLine($"                    await {x.Impl.InterfaceName}SignalDispatcher.Dispatch(Get{baseName}(), methodId, payload, Context.Serializer);");
                     sb.AppendLine("                    break;");
                 }
-                sb.AppendLine("                default: throw new MissingMethodException($\"Signal service '{serviceName}' not found\");");
+                sb.AppendLine("                default: throw new MissingMethodException($\"Signal methodId {methodId} not found\");");
                 sb.AppendLine("            }");
                 sb.AppendLine("        }");
                 sb.AppendLine();
@@ -1710,14 +1708,21 @@ namespace SharedMeta.Generator.Generators
                 .SelectMany(s => s.MethodSignatures.Where(m => m.MinStateVersion.HasValue).Select(m => m))
                 .ToList();
 
+            // GameMethodIds lives in {rootNamespace}.Generated — same per-assembly root for
+            // every service in this provider (they all compile into one assembly).
+            var migrationIdsNs = services.FirstOrDefault()?.Namespace ?? "";
+
             if (allSkipMigrationMethods.Count > 0)
             {
-                sb.AppendLine("        protected override bool ShouldSkipMigration(string serviceName, string methodName)");
+                // 0.24.0+ Keyed by client-local MethodId. Generator emits GameMethodIds constants
+                // per declared [NoMigrate] method — the provider's hot path consumes ushort
+                // ids only, no name plumbing.
+                sb.AppendLine("        protected override bool ShouldSkipMigration(ushort methodId)");
                 sb.AppendLine("        {");
-                sb.AppendLine("            return (serviceName, methodName) switch");
+                sb.AppendLine("            return methodId switch");
                 sb.AppendLine("            {");
                 foreach (var m in allSkipMigrationMethods)
-                    sb.AppendLine($"                (\"{m.ServiceName}\", \"{m.MethodAlias}\") => true,");
+                    sb.AppendLine($"                global::{migrationIdsNs}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(m.ServiceName, m.MethodAlias, m.Version)} => true,");
                 sb.AppendLine("                _ => false");
                 sb.AppendLine("            };");
                 sb.AppendLine("        }");
@@ -1726,12 +1731,12 @@ namespace SharedMeta.Generator.Generators
 
             if (allMinStateMethods.Count > 0)
             {
-                sb.AppendLine("        protected override int? GetMethodMinStateVersion(string serviceName, string methodName)");
+                sb.AppendLine("        protected override int? GetMethodMinStateVersion(ushort methodId)");
                 sb.AppendLine("        {");
-                sb.AppendLine("            return (serviceName, methodName) switch");
+                sb.AppendLine("            return methodId switch");
                 sb.AppendLine("            {");
                 foreach (var m in allMinStateMethods)
-                    sb.AppendLine($"                (\"{m.ServiceName}\", \"{m.MethodAlias}\") => {m.MinStateVersion!.Value},");
+                    sb.AppendLine($"                global::{migrationIdsNs}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(m.ServiceName, m.MethodAlias, m.Version)} => {m.MinStateVersion!.Value},");
                 sb.AppendLine("                _ => null");
                 sb.AppendLine("            };");
                 sb.AppendLine("        }");
@@ -1878,6 +1883,11 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        {");
             sb.AppendLine("            // Configure server-side services (e.g., IRandomService)");
             sb.AppendLine("            configureServices?.Invoke(services);");
+            sb.AppendLine();
+            sb.AppendLine("            // Populate DispatchResult.True/False/Int/Void cache at host startup —");
+            sb.AppendLine("            // hosted service ctor resolves IMetaSerializer and calls InitializeCache");
+            sb.AppendLine("            // before any grain activation can dispatch a method.");
+            sb.AppendLine("            services.AddHostedService<global::SharedMeta.Server.Core.DispatchResultCacheInitializer>();");
             sb.AppendLine();
             sb.AppendLine("            // Service resolver (resolves from DI)");
             sb.AppendLine("            Func<Type, object> serviceResolver = type =>");

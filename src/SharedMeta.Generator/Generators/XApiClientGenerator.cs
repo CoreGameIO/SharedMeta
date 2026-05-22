@@ -475,7 +475,7 @@ namespace SharedMeta.Generator.Generators
                         var transformerTypeName = typeOf.Type.ToString();
                         sb.AppendLine($"{indent}var boxed_{paramName} = _context.BoxValue(typeof({transformerTypeName}), {paramName}!);");
                         sb.AppendLine($"{indent}var simpleType_{paramName} = MetaContext.GetSimpleType(typeof({transformerTypeName}));");
-                        sb.AppendLine($"{indent}var boxedPayload_{paramName} = _serializer.Pack(simpleType_{paramName}, boxed_{paramName});");
+                        sb.AppendLine($"{indent}var boxedPayload_{paramName} = _serializer.Pack(simpleType_{paramName}, boxed_{paramName}).ToArray();");
                         sb.AppendLine($"{indent}writer.Write(boxedPayload_{paramName});");
                     }
                     else

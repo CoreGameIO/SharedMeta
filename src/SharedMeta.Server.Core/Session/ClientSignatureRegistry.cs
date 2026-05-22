@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Orleans;
 using SharedMeta.Core.Transport;
@@ -44,6 +45,13 @@ namespace SharedMeta.Server.Core.Session
         // server's inbound RPC translation.
         private readonly ConcurrentDictionary<ulong, ushort[]> _clientToServerCache = new();
 
+        // Lazily resolved on first use so unit tests can construct the registry with a
+        // null IGrainFactory and exercise the pure ComputeCapabilitiesAndMaps path without
+        // touching Orleans. Production code always supplies a real grain factory.
+        private IClientSignatureManagerGrain? _manager;
+        private IClientSignatureManagerGrain Manager
+            => _manager ??= _grainFactory.GetGrain<IClientSignatureManagerGrain>("global");
+
         public ClientSignatureRegistry(IGrainFactory grainFactory, MetaServerSignature? serverSignature = null)
         {
             _grainFactory = grainFactory;
@@ -53,8 +61,7 @@ namespace SharedMeta.Server.Core.Session
         public async Task<bool> IsKnownAsync(ulong signatureHash)
         {
             if (_cache.ContainsKey(signatureHash)) return true;
-            var manager = _grainFactory.GetGrain<IClientSignatureManagerGrain>("global");
-            return await manager.IsKnownAsync(signatureHash);
+            return await Manager.IsKnownAsync(signatureHash);
         }
 
         public async Task<ClientCapabilities?> TryGetCapabilitiesAsync(ulong signatureHash)
@@ -63,8 +70,7 @@ namespace SharedMeta.Server.Core.Session
 
             // Check directory first — cheap, avoids spinning up a per-hash grain activation
             // for hashes that have never been registered.
-            var manager = _grainFactory.GetGrain<IClientSignatureManagerGrain>("global");
-            if (!await manager.IsKnownAsync(signatureHash)) return null;
+            if (!await Manager.IsKnownAsync(signatureHash)) return null;
 
             // Known to the directory but not in our cache — fetch from the per-hash grain.
             var sigGrain = _grainFactory.GetGrain<IClientSignatureGrain>((long)signatureHash);
@@ -75,16 +81,24 @@ namespace SharedMeta.Server.Core.Session
 
         public async Task<ClientCapabilities> RegisterAsync(MetaClientSignature signature)
         {
+            // Fast path: another connect (or this same connect's earlier handshake) already
+            // populated the cache. No grain hop needed.
+            if (_cache.TryGetValue(signature.SignatureHash, out var cached))
+                return cached;
+
             var (capabilities, clientToServer) = ComputeCapabilitiesAndMaps(signature);
 
-            var sigGrain = _grainFactory.GetGrain<IClientSignatureGrain>((long)signature.SignatureHash);
-            await sigGrain.SetAsync(signature, capabilities);
+            if (!_cache.TryAdd(signature.SignatureHash, capabilities))
+                return capabilities;
 
-            var manager = _grainFactory.GetGrain<IClientSignatureManagerGrain>("global");
-            await manager.RegisterAsync(signature.SignatureHash);
-
-            _cache[signature.SignatureHash] = capabilities;
             _clientToServerCache[signature.SignatureHash] = clientToServer;
+
+            if (!await Manager.IsKnownAsync(signature.SignatureHash)) {
+                var sigGrain = _grainFactory.GetGrain<IClientSignatureGrain>((long)signature.SignatureHash);
+                await sigGrain.SetAsync(signature, capabilities);
+                await Manager.RegisterAsync(signature.SignatureHash);
+            }
+
             return capabilities;
         }
 

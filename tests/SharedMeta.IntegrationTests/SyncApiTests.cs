@@ -66,7 +66,7 @@ public class SyncApiTests
         // Simulate a downloaded config promoting AwardExp to Server mode at runtime.
         // SyncPolicy defaults to Throw → the sync overload must refuse to execute.
         var modeProvider = new ExecutionModeProvider()
-            .SetMode("IPartyService", "AwardExp", ExecutionMode.Server);
+            .SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.IPartyService_AwardExp_v0, ExecutionMode.Server);
 
         var playerId = "party-sync-throw-" + Guid.NewGuid().ToString("N")[..8];
         await using var client = new TestClientSetup(server, playerId, diagnostics: diagnostics, modeProvider: modeProvider);

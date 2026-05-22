@@ -563,7 +563,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{inner}            {{");
             sb.AppendLine($"{inner}                Kind = SharedMeta.Core.Patch.PatchListOpKind.Set,");
             sb.AppendLine($"{inner}                Index = index,");
-            sb.AppendLine($"{inner}                ElementBytes = _serializer!.Pack(value.Raw),");
+            sb.AppendLine($"{inner}                ElementBytes = _serializer!.Pack(value.Raw).ToArray(),");
             sb.AppendLine($"{inner}            }});");
             sb.AppendLine($"{inner}        }}");
             sb.AppendLine($"{inner}    }}");
@@ -578,7 +578,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{inner}        {{");
             sb.AppendLine($"{inner}            Kind = SharedMeta.Core.Patch.PatchListOpKind.Insert,");
             sb.AppendLine($"{inner}            Index = _list.Count - 1,");
-            sb.AppendLine($"{inner}            ElementBytes = _serializer!.Pack(item.Raw),");
+            sb.AppendLine($"{inner}            ElementBytes = _serializer!.Pack(item.Raw).ToArray(),");
             sb.AppendLine($"{inner}        }});");
             sb.AppendLine($"{inner}    }}");
             sb.AppendLine($"{inner}}}");
@@ -594,7 +594,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{inner}        {{");
             sb.AppendLine($"{inner}            Kind = SharedMeta.Core.Patch.PatchListOpKind.Insert,");
             sb.AppendLine($"{inner}            Index = index,");
-            sb.AppendLine($"{inner}            ElementBytes = _serializer!.Pack(item.Raw),");
+            sb.AppendLine($"{inner}            ElementBytes = _serializer!.Pack(item.Raw).ToArray(),");
             sb.AppendLine($"{inner}        }});");
             sb.AppendLine($"{inner}    }}");
             sb.AppendLine($"{inner}}}");

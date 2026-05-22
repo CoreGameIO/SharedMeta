@@ -69,8 +69,8 @@ public class ClientApiSecurityTests
 
         // The framework returns an error either as the SessionResponse top-level Error or
         // on the matching SessionOp. Either way, the rejection message identifies it.
-        var error = response.Error
-            ?? response.Operations.FirstOrDefault(op => op.RequestId == forgedRequestId)?.ErrorMessage;
+        var matchingOp = response.Operations.FirstOrDefault(op => op.RequestId == forgedRequestId);
+        var error = response.Error ?? matchingOp.ErrorMessage;
         Assert.NotNull(error);
         // 0.24.0+: the rejection moved from the dispatcher's inline gate ("not callable
         // from clients") to the MethodId-translation back-stop in MetaConnectionHandler,

@@ -20,7 +20,7 @@ namespace SharedMeta.Core
         /// </summary>
         [Id(0), Key(0)] public ushort MethodId { get; set; }
 
-        [Id(1), Key(1)] public byte[] Payload { get; set; } = Array.Empty<byte>();
+        [Id(1), Key(1), MemoryPackAllowSerialize] public ReadOnlyMemory<byte> Payload { get; set; }
 
         [Id(2), Key(2)] public PayloadDebug? Debug { get; set; }
 
@@ -34,7 +34,7 @@ namespace SharedMeta.Core
         /// Server-side replay context for deterministic client execution.
         /// Only set for incoming broadcasts, null for outgoing calls.
         /// </summary>
-        [Id(4), Key(4)] public byte[]? ReplayPayload { get; set; }
+        [Id(4), Key(4), MemoryPackAllowSerialize] public ReadOnlyMemory<byte> ReplayPayload { get; set; }
 
         /// <summary>
         /// When true, SessionManager suppresses cross-entity broadcasts for the caller

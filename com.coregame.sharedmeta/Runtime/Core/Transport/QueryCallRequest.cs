@@ -16,7 +16,7 @@ namespace SharedMeta.Core.Transport
         [Id(0), Key(0)] public string EntityId { get; set; } = "";
 
         /// <summary>Serialized method arguments.</summary>
-        [Id(3), Key(3)] public byte[] Payload { get; set; } = Array.Empty<byte>();
+        [Id(3), Key(3), MemoryPackAllowSerialize] public ReadOnlyMemory<byte> Payload { get; set; }
 
         /// <summary>
         /// 0.24.0+ Client's global method index from <c>GameMethodIds</c>. The server

@@ -42,7 +42,10 @@ namespace SharedMeta.Orleans.Serialization
             return new RpcCallSurrogate
             {
                 MethodId = value.MethodId,
-                PayloadBytes = value.Payload ?? [],
+                // RpcCall.Payload is ROM (0.25.x); surrogate carries byte[] for the cross-silo
+                // Orleans wire shape. Materialise here — Orleans wire path is rare relative to
+                // in-silo dispatch, the materialisation is bounded by silo membership churn.
+                PayloadBytes = value.Payload.IsEmpty ? System.Array.Empty<byte>() : value.Payload.ToArray(),
                 CallerId = value.CallerId,
                 DebugInfo = value.Debug?.PayloadItemInfo
             };
