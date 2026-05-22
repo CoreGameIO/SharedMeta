@@ -37,11 +37,6 @@ public class TestClusterFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        // Opt the registry into per-slot stack-trace history so a double-release / use-after-free
-        // throw includes the full Acquire/IncrementRef/Release chain. Tests-only — too expensive
-        // for production.
-        SharedMeta.Server.Core.Memory.PooledPayloadRegistry.EnableHistory = true;
-
         var builder = new TestClusterBuilder();
         builder.AddSiloBuilderConfigurator<SiloConfigurator>();
 
@@ -137,8 +132,14 @@ public class TestClusterFixture : IAsyncLifetime
                     // unbound SiloId; PooledPayloadRegistryStartupTask (registered above) calls
                     // the cluster-singleton coordinator grain on silo startup and pins a unique
                     // id, so multi-silo Ref encodings cannot collide on slot-index interpretation.
-                    services.AddSingleton<SharedMeta.Server.Core.Memory.PooledPayloadRegistry>(_ =>
-                        new SharedMeta.Server.Core.Memory.PooledPayloadRegistry());
+                    // Tests opt into the pool path AND per-slot history so double-release / leak
+                    // failures dump the full Acquire/IncrementRef/Release chain.
+                    services.Configure<SharedMeta.Server.Core.Memory.PooledPayloadOptions>(o =>
+                    {
+                        o.UsePoolPath   = true;
+                        o.EnableHistory = true;
+                    });
+                    services.AddSingleton<SharedMeta.Server.Core.Memory.PooledPayloadRegistry>();
 
                     // Configure test meta services
                     services.ConfigureTestMeta();

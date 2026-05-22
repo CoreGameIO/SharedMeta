@@ -349,22 +349,19 @@ public partial class ProfileService : IProfileService
 
 ### Runtime Execution Mode Override
 
-Override the `[MetaMethod]` default at runtime without recompilation:
+Override the `[MetaMethod]` default at runtime without recompilation. 0.23.0+ keyed by `ushort MethodId` from the generator-emitted `{RootNamespace}.Generated.GameMethodIds` const table — string-keyed overloads were removed:
 
 ```csharp
 var modeProvider = client.ModeProvider as ExecutionModeProvider;
 
-// Override specific method
-modeProvider.SetMode("IProfileService", "SetName", ExecutionMode.Server);
-
-// Override all methods in a service
-modeProvider.SetServiceMode("IProfileService", ExecutionMode.Server);
+// Override specific method (string overloads + SetServiceMode + LoadManifest gone in 0.23.0)
+modeProvider.SetMode(GameMethodIds.IProfileService_SetName_v0, ExecutionMode.Server);
 
 // Reset to attribute defaults
 modeProvider.Clear();
 ```
 
-**Priority:** Specific method → Service-wide → Attribute default
+**Priority:** specific method override → attribute default.
 
 ---
 

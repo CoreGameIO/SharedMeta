@@ -79,12 +79,12 @@ public static class PatchRoundtrip
     }
 
     public static FuzzState DeepCopy(FuzzState state)
-        => Serializer.Unpack<FuzzState>(Serializer.Pack(state))!;
+        => Serializer.Unpack<FuzzState>((ReadOnlyMemory<byte>)Serializer.Pack(state))!;
 
     public static void AssertStatesEqual(FuzzState a, FuzzState b)
     {
-        var ab = Serializer.Pack(a);
-        var bb = Serializer.Pack(b);
+        var ab = Serializer.Pack(a).ToArray();
+        var bb = Serializer.Pack(b).ToArray();
         if (!ByteSpanEquals(ab, bb))
         {
             throw new Xunit.Sdk.XunitException(

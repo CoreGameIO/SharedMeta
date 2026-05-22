@@ -782,21 +782,15 @@ Client                                    Server
 
 The execution mode defined in `[MetaMethod(Mode = ...)]` is the default. You can override it at runtime using `IExecutionModeProvider` — without recompilation or redeployment.
 
-**Override a specific method:**
+**Override a specific method** (0.23.0+ — keyed by `ushort MethodId` from the generator-emitted `GameMethodIds` const table):
 ```csharp
 var modeProvider = client.ModeProvider as ExecutionModeProvider;
 
 // Force "SetName" to always go through the server
-modeProvider.SetMode("IProfileService", "SetName", ExecutionMode.Server);
+modeProvider.SetMode(GameMethodIds.IProfileService_SetName_v0, ExecutionMode.Server);
 
 // Force "PlayCard" to local-only (e.g., during offline mode)
-modeProvider.SetMode("ICardGameService", "PlayCard", ExecutionMode.Local);
-```
-
-**Override all methods in a service:**
-```csharp
-// All profile methods become server-authoritative
-modeProvider.SetServiceMode("IProfileService", ExecutionMode.Server);
+modeProvider.SetMode(GameMethodIds.ICardGameService_PlayCard_v0, ExecutionMode.Local);
 ```
 
 **Reset overrides:**
@@ -805,9 +799,10 @@ modeProvider.Clear();  // Revert to [MetaMethod] defaults
 ```
 
 **Priority order:**
-1. Specific method override (`SetMode("IService", "Method", ...)`)
-2. Service-wide override (`SetServiceMode("IService", ...)`)
-3. Attribute default (`[MetaMethod(Mode = ...)]`)
+1. Specific method override via `SetMode(GameMethodIds.X, mode)`
+2. Attribute default (`[MetaMethod(Mode = ...)]`)
+
+> **0.23.0 breaking change** — the previous `SetMode(string serviceName, string methodName, mode)` / `SetServiceMode(string, mode)` / `LoadManifest(json)` overloads were removed when the wire-level method addressing switched to `ushort MethodId`. To configure overrides from a JSON manifest in your own code, resolve `"IService.Method"` → `GameMethodIds.X` constant at config-load time (the constants are public `const ushort` fields, accessible via reflection on the `{RootNamespace}.Generated.GameMethodIds` type) and feed the result into `SetMode(ushort, mode)`.
 
 **Use cases:**
 - Force `Server` mode during tournaments for maximum authority
@@ -815,7 +810,7 @@ modeProvider.Clear();  // Revert to [MetaMethod] defaults
 - A/B testing different execution strategies without code changes
 - Debugging desyncs by switching suspected methods to `Server` mode
 
-Generated API client code calls `_modeProvider.GetMode(serviceName, methodAlias, defaultMode)` before every RPC to determine the execution path.
+Generated API client code calls `_modeProvider.GetMode(GameMethodIds.X, defaultMode)` before every RPC to determine the execution path. The lookup is a single dictionary read on a `ushort` — no string allocation per call.
 
 ### ServerPatch Mode
 
@@ -2088,17 +2083,28 @@ server.FailureSimulation = new FailureSimulationSettings
 ```csharp
 public interface IMetaSerializer
 {
-    byte[] Pack<T>(T value);
+    // Single-value: returns ROM<byte> (0.23.0+). Stock codec wraps a fresh byte[];
+    // GrainScopedSerializer writes into per-grain scratch and returns a slice (ephemeral —
+    // valid until the next Handle*Async entry resets the pool). Use .ToArray() at the
+    // boundary where ownership matters (persistence, cross-grain hop without a pooled payload).
+    ReadOnlyMemory<byte> Pack<T>(T value);
+    void Pack<T>(T value, IBufferWriter<byte> writer);                    // zero-alloc writer overload
     T Unpack<T>(byte[] bytes);
-    byte[] Pack(Type type, object value);
+    T Unpack<T>(ReadOnlyMemory<byte> bytes);
+
+    ReadOnlyMemory<byte> Pack(Type type, object value);
     object Unpack(Type type, byte[] bytes);
     T Clone<T>(T value);
+
     IPayloadWriter CreateWriter();
     IPayloadReader CreateReader(byte[] bytes);
+    IPayloadReader CreateReader(ReadOnlyMemory<byte> bytes);
     byte[] SerializeRpcCall(RpcCall call);
     RpcCall DeserializeRpcCall(byte[] bytes);
 }
 ```
+
+> **Wire-DTO shape (0.23.0+).** Hot-path packets carry payloads as `ReadOnlyMemory<byte>` instead of `byte[]?` — `MetaOperation`, `RpcCall`, `SessionOp`, `EntityBroadcast.OpBytes`, etc. MemoryPack wire-bytes are identical to the prior shape (`bin` length-prefix + bytes); MessagePack uses a custom formatter for ROM round-trip. JSON-based clients on Newtonsoft.Json (Unity HTTP polling) need `RomByteJsonConverter` registered in `JsonSettings.Converters` — System.Text.Json's built-in converter already uses base64 strings matching the wire. Persistence fields (`EntityGrainState.*Bytes`) stay `byte[]`.
 
 ### MemoryPack (default)
 
@@ -3968,6 +3974,29 @@ var app = builder.Build();
 app.MapMetaHub("/meta");  // SignalR endpoint
 app.Run();
 ```
+
+#### Optional: Outgoing-payload pool (0.23.0+)
+
+`PooledPayloadRegistry` is a silo-scoped ref-counted byte-buffer pool. When enabled, broadcast and response payloads serialize into pool slots instead of fresh `byte[]` per call — fan-out reuses one buffer across N receivers. Default OFF; opt in once profiling shows the pool pays off for your workload (it favours high-fan-out broadcasts; single-receiver paths see no win).
+
+```csharp
+silo.AddStartupTask<PooledPayloadRegistryStartupTask>()   // assigns unique SiloId via cluster-singleton coordinator grain
+    .ConfigureServices(services =>
+    {
+        services.AddSingleton<IMetaSerializer>(new MemoryPackMetaSerializer());
+        services.Configure<PooledPayloadOptions>(o =>
+        {
+            o.UsePoolPath   = true;   // route broadcast/response through ref-counted slots
+            o.EnableHistory = false;  // per-slot Acquire/IncrementRef/Release stack capture (debug only)
+        });
+        services.AddSingleton<PooledPayloadRegistry>();
+        services.ConfigureMeta();
+    });
+```
+
+When OFF, `MetaProviderBase.PackBroadcastVariant` falls back to a fresh `byte[]` wrapped as `PooledPayload(bytes, 0)` — GC-managed, no pool plumbing involved at runtime. The wire shape is identical either way; the difference is just where the bytes live.
+
+> **Note.** Intermediate serializations (dispatcher result, patch tree, state pack) always route through the per-grain `GrainScopedSerializer` scratch buffer, regardless of `UsePoolPath`. The pool toggle only affects the outgoing wire payload. ADR: [docs/adr/0.23.0-meta-operation-unification.md](adr/0.23.0-meta-operation-unification.md).
 
 ### Step 5: Client Configuration
 

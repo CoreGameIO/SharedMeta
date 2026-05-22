@@ -108,6 +108,10 @@ SharedMeta is a framework for **shared game meta-logic** between Client and Serv
 
 **Payload format:** Length-prefixed multi-value sequences (`int32 length + bytes` per value). Both serializers use the same `IPayloadWriter` / `IPayloadReader` contract for recording non-deterministic values during replay.
 
+**Wire-DTO shape (0.23.0+):** hot-path DTOs (`MetaOperation`, `RpcCall`, `SessionOp`, `EntityBroadcast`, etc.) carry payloads as `ReadOnlyMemory<byte>` rather than `byte[]`. MemoryPack wire-bytes are identical to the prior shape (`bin` family length-prefix + bytes); MessagePack adopts a custom formatter for ROM round-trip. JSON-based transports (HTTP polling on Unity via Newtonsoft) need a `RomByteJsonConverter` shim — System.Text.Json's built-in `ReadOnlyMemoryByteConverter` already serializes as base64 string, matching the wire. Persistence fields (`EntityGrainState.*Bytes`) stay `byte[]` (cold path).
+
+**`IMetaSerializer.Pack<T>(T)` returns `ReadOnlyMemory<byte>`.** Stock codec wraps a fresh `byte[]`; the per-grain `GrainScopedSerializer` (§4.6) writes into scratch and returns a slice. Callers that need ownership do `.ToArray()` at the boundary (persistence, cross-grain hop without a pooled payload).
+
 ### 3.3 Transport: SignalR (primary) + HTTP Long-Polling (universal)
 
 **Choice:** Two transport implementations behind `IConnection` interface.
@@ -317,6 +321,56 @@ Client                              Server
 - `RequestHang` — throws `HttpRequestException` immediately, realistic for HTTP polling where individual requests can fail. `SendAndCompleteAsync` catches the exception, keeps the request pending, and client auto-retry handles resending
 
 Settings are mutable at runtime, enabling live adjustment from debug UI (see Expedition Unity example).
+
+### 4.6 Hot-Path Allocation Strategy (0.23.0+)
+
+Server-side RPC dispatch had two structural sources of per-call allocation: outgoing wire payloads (broadcast variants × N receivers) and intermediate serializations (dispatcher result, patch tree, state pack, triggers). Both were addressed without changing the user-visible call shape.
+
+**Intermediate serialization → per-grain scratch.** Each `EntityGrain<TState>` activation owns one `ScratchBufferPool` (growable `byte[]` rented once, reused for the grain's lifetime). The `IMetaSerializer` injected into `Context.Serializer` is wrapped in a `GrainScopedSerializer` whose `Pack<T>(T)` writes into the scratch and returns a `ReadOnlyMemory<byte>` slice over it. ROMs are valid only until the next `Handle*Async` entry — the provider resets the pool at the top of each call. The wrapper is transparent: generator-emitted dispatchers and user code call `Context.Serializer.Pack(value)` exactly as before; no API change at the consumer level.
+
+**Outbound wire payload → ref-counted pool.** `PooledPayloadRegistry` is an opt-in silo-scoped pool of pinned `byte[]` slots. `MetaProviderBase.PackBroadcastVariant` packs each outgoing `MetaOperation` (response + broadcast replay + broadcast patch) into a fresh slot; `EntityGrain.DistributeBroadcasts` pre-counts subscribers needing each variant and calls `IncrementRef(N-1)` before fan-out. Each receiver's `SessionManagerGrain` holds the `PooledPayload` token until eviction (ack / count-cap / disconnect / deactivate), then `Release` returns the buffer to `ArrayPool<byte>.Shared`.
+
+```
+[silo A] EntityGrain.HandleCallAsync
+  ├─ provider packs response  → slot S1 (refcount=1)
+  ├─ provider packs broadcast → slot S2 (refcount=1, IncrementRef(N-1) → N)
+  ├─ EntityCallResult.OpBytes = PooledPayload(S1)  ─┐
+  ├─ EntityBroadcast.OpBytes  = PooledPayload(S2) ─┐│
+  └─ ↓ Orleans grain hop (in-silo skip-copy via [Immutable])
+[silo A] N × SessionManagerGrain.ReceiveBroadcastAsync(broadcast)
+  └─ session adds to _pendingPackets — token survives until client ack
+  └─ on ack/evict/disconnect: registry.Release(token) → refcount--
+```
+
+**Ref encoding:** `PooledPayload.Ref` packs `(siloId : 5 bits, slotIndex : 27 bits)` — up to 32 silos × ~134M slots. `Ref==0` is the sentinel for "byte[]-backed fallback, no slot to release" (returned when the pool is OFF or the registry is unwired). Cross-silo decrement (a receiver on silo B signalling silo A to release) is deferred — current implementation silently drops cross-silo `Release` calls; production multi-silo wires unique SiloIds via the cluster-singleton `IPooledPayloadRegistryCoordinator` grain + `PooledPayloadRegistryStartupTask`.
+
+**DI options (default OFF).** Hosts opt in via `services.Configure<PooledPayloadOptions>(o => { o.UsePoolPath = true; o.EnableHistory = false; })`. `EnableHistory` flips on per-slot stack-trace capture for double-release / leak diagnostics (heavy — debug only). When OFF, `MetaProviderBase.PackBroadcastVariant` falls back to a fresh `byte[]` per call wrapped as `PooledPayload(bytes, 0)` — all `Increment/Release` paths short-circuit on `Ref==0`. The fallback is the safe default: the pool's win is workload-dependent (high fan-out reaps it, single-receiver paths don't), so opt in only after profiling confirms it pays off.
+
+**Primitive-return cache.** `DispatchResult.True/False/Int[0..31]/Void` are pre-populated at silo startup by `DispatchResultCacheInitializer` (auto-registered hosted service via `ConfigureMeta`). Generated dispatchers return these cached structs for primitive method returns, skipping `serializer.Pack(value)` + scratch write entirely. Codec-aware — the cache populates using whatever `IMetaSerializer` the host registered (MemoryPack / MessagePack bytes differ).
+
+**Observability.** `SharedMetaMeters` exposes `sharedmeta.pool.allocated_slots` (gauge), `sharedmeta.pool.acquire.count` / `sharedmeta.pool.release.count` (counters). `/debug/pool` HTTP endpoint in `ClanWars.Server` dumps live slot occupancy + ages + (with `EnableHistory`) full Acquire/IncrementRef/Release stacks.
+
+### 4.7 Wire Method Addressing — `ushort MethodId` (0.23.0 wire)
+
+Pre-0.23 wire packets identified target method by `(ServiceName : string, MethodName : string, MethodVersion : int)` triple. Per-RPC string allocation, per-call hash table lookup, dispatcher's nested `switch (svc) { switch (method) { switch (version) } }`. 0.23.0 ripped the triple off the wire — `ushort MethodId` is the only method-addressing field on `RpcCall`, `RpcCallRequest`, `MetaOperation`, `NetworkBroadcast`, `SessionOp`, `QueryCallRequest`, `SignalCallRequest`.
+
+**`GameMethodIds` const table.** The generator emits `public const ushort I{Service}_{Alias}_v{Version}` for every `[MetaMethod]` declaration in the shared assembly, ordered by FNV-1a hash of `(InterfaceFullName, Alias, Version)`. The same ordering on both sides means server's `MethodId` for `(I, A, V)` == client's `MethodId` — **as long as both sides build from the same shared assembly**. Client/server pairs from different protocol surfaces negotiate translation via the signature handshake (next paragraph).
+
+**Cross-build translation.** `MetaServerSignature` and `MetaClientSignature` both carry `GlobalIndex` per method entry. During `SessionConnect` phase-2 (`RegisterClientSignature`), `MetaConnectionHandler` builds two maps: `clientToServer[clientId] = serverId` (rejected methods get `ushort.MaxValue` sentinel) and `serverToClient[serverId] = clientId` (shipped to the client via `ClientCapabilities.ServerToClientMethodIds`). RPC dispatch translates on receive; broadcasts translate on send.
+
+> **`GenerateClientApi = false` invariant** — methods marked server-only must STILL appear in `serverToClient` (so a `Notification`-mode broadcast can deliver to the client's local replay handler) even though they are absent from `clientToServer` (so a forged client RPC is rejected). Stripping the method from both directions — a regression discovered during the 0.23 wire-cleanup — silently dropped `OfferMembership` broadcasts on the client, producing `server=AlreadyIn / local=Ok` desyncs on the next Server-mode RPC. Fix: `ClientSignatureRegistry.ComputeCapabilitiesAndMaps` populates `serverToClient[serverMethod.GlobalIndex] = clientIdx` unconditionally when the client knows the (Service, Alias, Version) tuple, regardless of `GenerateClientApi`.
+
+**Hot-path benefits:**
+- Wire bytes per RPC: ~30 bytes saved (no string allocation, just `ushort`).
+- Dispatch: flat `switch (methodId)` jump table per `(Service, Alias, Version)` — JIT lowers to a computed branch on the `ushort`. No string interning, no nested switches.
+- Force-patch refcounts (per-entity): `int[]` indexed by `MethodId` (sized to `MetaServerSignature.Methods.Count`) — single bounds check + array read. Replaces `Dictionary<(string,string,int),int>` (~200 B vs ~6 KB per entity at 100 methods).
+- Provider hot path is name-free: `MetaProviderBase.HandleCallAsync` / `HandleQueryAsync` / `HandleSignalAsync` never call `ResolveMethodNames(call.MethodId)`. Migration policy (`ShouldSkipMigration` / `GetMethodMinStateVersion`), runtime mode lookup (`IExecutionModeProvider.GetMode`), signal dispatch (`DispatchSignal`), and error logging (`LogProviderCallError`) are all keyed by `ushort methodId`. Triggers stored as `DispatchResult.TriggersToExecute : List<ushort>` populated by the generator with `GameMethodIds.X` constants directly — no runtime alias-to-id lookup.
+
+**Wire-breaking, not additive.** A 0.22.x client cannot dispatch against a 0.23.x server (it sends the legacy string triple which the server no longer reads; if it sends `MethodId=0` that only happens to address whatever method got globalIndex 0 in the server's canonical sort). Both sides must build 0.23+. The compat-negotiation handshake catches version skew explicitly via `ClientSignature.SignatureHash`; the `MetaConnectionHandler` rejects RPCs from clients that never registered with `"Cannot dispatch RPC: client signature not negotiated"`.
+
+**Host wiring requirements.** Two pieces must be in place on the server host before the first RPC arrives:
+1. `services.AddSingleton<MetaServerSignature>(global::{RootNamespace}.GameServiceDiscoveryBase.ServerSignature)` at host scope. `ConfigureMeta()` adds the same registration at the silo scope; both layers need it because `MetaConnectionHandler` (host scope) resolves the signature independently from `EntityGrain` (silo scope). Hand-rolled stub signatures with empty `Alias` fields rejected every client method via `ComputeCapabilitiesAndMaps` — the early-0.24 ClanWars example hit exactly this.
+2. The `IMetaConnectionHandlerFactory` registration must pass `serverSignature: sp.GetService<MetaServerSignature>()` to the `MetaConnectionHandlerFactory` constructor. Without it, the handler's `_serverSignature` is `null`, `ResolveServerMethodEntry(serverMethodId)` returns `(null, null, 0)`, and `QueryCallAsync` / `SignalCallAsync` reject with `"method id N is unknown on this server"`. See `examples/ClanWars/ClanWars.Server/Program.cs` for the canonical wiring.
 
 ---
 
@@ -539,6 +593,8 @@ The same business code runs on Orleans server and local backend without modifica
 
 | Version | Architectural change |
 |---|---|
+| 0.23.0 | **Hot-path allocation overhaul** (§4.6) — `PooledPayloadRegistry` (silo-scoped ref-counted slot pool, DI options, default OFF), `GrainScopedSerializer` over per-grain `ScratchBufferPool` (intermediate ROM<byte> slices), `DispatchResult` primitive-return cache (`True`/`False`/`Int[0..31]`/`Void`). **Wire-breaking**: hot-path DTO byte fields → `ReadOnlyMemory<byte>` (`MetaOperation`, `RpcCall`, `SessionOp`, `EntityBroadcast.OpBytes` was `ImmutableArray<byte>`, …). **`ushort MethodId` end-to-end** (§4.7) — `GameMethodIds` const table, flat `switch (methodId)` dispatcher, force-patch refcounts `int[]`-indexed. Cluster-singleton `IPooledPayloadRegistryCoordinator` grain assigns unique SiloIds. `IMetaSerializer.Pack<T>(T)` now returns `ReadOnlyMemory<byte>`. Removed: static `PooledPayloadRegistry.EnableHistory`/`UsePoolPath`, `MetaSerializerExtensions.PackResultMaybePooled`, `IPayloadPool`, `MetaContext.PooledPayloadPool`, `DispatchResult.OwnedResult` |
+| 0.22.0 | Compatibility negotiation pipeline (two-phase signature handshake — phase-1 hash check, phase-2 registration). `[MetaStateVersion(Breaking)]`, `[MetaConfigStructureBoundary]`, per-subscriber broadcast tailoring (replay vs patch by capability), `EntityAugmentedCapabilities` overlay. `ExecutionMode.Notification` (entity → entity fire-and-forget via Orleans `[OneWay]`). `SharedMeta.Debug.Mux` transport (N logical sessions per physical SignalR socket for stress tests). `PlayerVersionGrain` moved into `SharedMeta.Server.Core` |
 | 0.20.1 | `[MetaMethod(GenerateClientApi=false)]` actually enforced — client API suppression + server dispatcher gate via new `MetaContext.IsClientCall`. `IMetaProvider` slimmed: `IsQueryMethod`/`IsSignalMethod`/`IsOpenAccessQuery` removed from interface, validation inlined in generator-emitted Handle*Async overrides. `HandleCallAsync` gains `bool isClientOriginated` |
 | 0.20.0 | Sibling-bypass for multi-service-on-same-state (typed in-process call, fixes gift-to-self deadlock); `Get{Iface}SiblingAsync()` + multi-config siblings; `[MetaInit]` reactivation re-run fix (`SeedSchemaVersion`); user-code `Context` is instance property (AsyncLocal kept as ambient primitive); generator hygiene — entity-caller helpers per `(namespace, dep)` instead of per consumer; `[MetaService(StateType)]` required for cross-entity deps |
 | 0.19.0 / 0.19.1 | Per-client config branches via `[MetaConfigVersion]`; state schema migration via `[MetaStateVersion]` + per-client cap; `[MetaInit]` two-arg form + `Context.Version`/`Context.ConfigVersion`; per-method `[NoMigrate]` / `[MinStateVersion(N)]`; `MaxClientVersion` + per-PlayerId downgrade tracking; `EntityGrainOptions.FreshRandomSeedFactory` |
@@ -567,8 +623,10 @@ The same business code runs on Orleans server and local backend without modifica
 These areas have explicit extension points for future evolution:
 
 - **Transport:** `IConnection` interface — new transports (gRPC, WebTransport, UDP) plug in without touching game logic
-- **Serialization:** `IMetaSerializer` interface — new serializers plug in without touching transport or game logic
+- **Serialization:** `IMetaSerializer` interface — new serializers plug in without touching transport or game logic. `GrainScopedSerializer` proves a decorator can intercept `Pack<T>(T)` without forcing a recompile of consumers (§4.6)
 - **Server backend:** `IMetaProvider<TState>` interface — already proven by the `SharedMeta.Backend.Local` plugin (in-process re-implementation without Orleans, see §9.4). Future backends (different actor framework, monolith, single-process simulation) can plug in without touching shared business logic
 - **Auth:** `IExternalAuthValidator` — new platform providers (Epic, Discord, etc.) are isolated packages
 - **Config:** `IMetaConfigProvider<TConfig>` + `IConfigVersionResolver` — A/B testing, remote config, CDN delivery
 - **Persistence:** Orleans `IPersistentState` — pluggable storage (Azure Table, Redis, PostgreSQL, etc.)
+- **Cross-silo pool refcount:** current `PooledPayloadRegistry.Release` on a foreign-silo `Ref` silently drops. The `Ref` already carries `siloId`; a future `IDecrementService` grain on each silo + batched fire-and-forget notifications close the loop (deferred — single-silo and in-silo fan-out are the common case)
+- **SiloId allocation:** `IPooledPayloadRegistryCoordinator` assigns at startup from in-memory state — survives single-silo restarts but not coordinator failover. A persistent state grain is the obvious next step when production deployments need it

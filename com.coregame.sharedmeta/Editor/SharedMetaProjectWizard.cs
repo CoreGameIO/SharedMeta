@@ -1585,7 +1585,20 @@ namespace SharedMeta.Editor
             sb.AppendLine("                // svc.AddTransient<IRandomService, RandomServiceImpl>();");
             sb.AppendLine("                svc.AddTransient<ILobbyRequester>(sp => new OrleansLobbyRequester(sp.GetRequiredService<IGrainFactory>()));");
             sb.AppendLine("            });");
-            sb.AppendLine("        });");
+            sb.AppendLine();
+            sb.AppendLine("            // Optional: enable the per-silo PooledPayload registry for ref-counted broadcast fan-out.");
+            sb.AppendLine("            // Disabled by default — opt in when profiling shows the byte[] path is a bottleneck.");
+            sb.AppendLine("            // services.Configure<SharedMeta.Server.Core.Memory.PooledPayloadOptions>(o =>");
+            sb.AppendLine("            // {");
+            sb.AppendLine("            //     o.UsePoolPath = true;       // route broadcasts through ref-counted pool slots");
+            sb.AppendLine("            //     o.EnableHistory = false;    // diagnostic stack-trace capture (heavy)");
+            sb.AppendLine("            // });");
+            sb.AppendLine("            // services.AddSingleton<SharedMeta.Server.Core.Memory.PooledPayloadRegistry>();");
+            sb.AppendLine("        })");
+            sb.AppendLine("        // Required if PooledPayloadRegistry is registered above — assigns a unique SiloId");
+            sb.AppendLine("        // via the cluster-singleton coordinator grain before any grain activates.");
+            sb.AppendLine("        // .AddStartupTask<SharedMeta.Server.Core.Memory.PooledPayloadRegistryStartupTask>()");
+            sb.AppendLine("        ;");
             sb.AppendLine("});");
             sb.AppendLine();
 
@@ -1679,7 +1692,7 @@ namespace SharedMeta.Editor
             sb.AppendLine("// app.MapGet(\"/meta/config/{major:int}/{minor:int}\", (int major, int minor, IMetaSerializer ser, IMetaConfigProvider<YourConfig> provider) =>");
             sb.AppendLine("// {");
             sb.AppendLine("//     var config = provider.GetConfig(\"\");");
-            sb.AppendLine("//     return Results.Bytes(ser.Pack(config), \"application/octet-stream\");");
+            sb.AppendLine("//     return Results.Bytes(ser.Pack(config).ToArray(), \"application/octet-stream\");");
             sb.AppendLine("// });");
             sb.AppendLine();
 
