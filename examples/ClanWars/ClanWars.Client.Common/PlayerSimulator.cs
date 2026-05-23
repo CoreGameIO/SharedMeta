@@ -64,6 +64,7 @@ namespace ClanWars.Client.Common
                 {
                     PlayerId = _playerId,
                     ClientAppVersion = _options.ClientAppVersion,
+                    ClientSignature = ClanWars.Shared.GameServiceDiscoveryBase.ClientSignature,
                 });
             // Register a static ClanConfig that matches the simulator's app version. v1 clients
             // never touch MaxFriendships / MaxOfficers in their method paths so the defaults
@@ -117,15 +118,61 @@ namespace ClanWars.Client.Common
 
         private async Task StepAsync(MetaClient client, ProfileServiceApiClient profileApi, ProfileServiceEntityQueryApi profileQuery, ClanServiceQueryApi clanQuery, CancellationToken ct)
         {
-            // Weighted action picker. GainPoints dominates so we get a steady stream of clan-
-            // power broadcasts; clan management actions are rarer but produce the version-
-            // sensitive cross-entity / broadcast paths we want to exercise.
+            // Realistic action mix approximating a meta-game session:
+            //   ~80% — single-player profile mutations (buy item, finish level, upgrade hero).
+            //          No clan side-effects. The bulk of normal play.
+            //   ~10% — GainPoints, which forwards a power delta to the clan via cross-entity
+            //          Notification (AddPower). One of these per ~5-10 normal actions matches
+            //          typical clan-game tempo where social progression is the slower axis.
+            //   ~10% — clan management (preview, apply, accept/reject as leader, switch invite,
+            //          leave). Rare social-flow actions exercising the heavy broadcast paths.
             var roll = _rng.NextDouble();
-            if (roll < 0.60)
+            if (roll < 0.80)
+            {
+                // Normal profile op — pick one of nine mobile-RPG meta actions. Cumulative
+                // weights below split the 80% slot into a realistic mobile-RPG action mix:
+                //   25% BuyItem            — biggest single bucket: shop / craft / quick-grab
+                //   8%  SellItem           — periodic inventory cleanup
+                //   2%  HireHero           — roster expansion, rare
+                //   12% LevelUpHero        — main progression spend
+                //   8%  EquipItem          — moving gear around heroes
+                //   3%  UnequipItem        — switching builds
+                //   25% CompleteLevel      — primary "play the game" loop
+                //   5%  OpenChest          — periodic rewards
+                //   3%  ClaimDailyReward   — daily login bonus
+                var sub = _rng.NextDouble();
+                if (sub < 0.25)
+                    await TimedAsync("BuyItem", async () => await profileApi.BuyItemAsync(_rng.Next(1, 5)));
+                else if (sub < 0.33)
+                    await TimedAsync("SellItem", async () => await profileApi.SellItemAsync(_rng.Next(0, 50)));
+                else if (sub < 0.35)
+                    await TimedAsync("HireHero", async () => await profileApi.HireHeroAsync("Warrior"));
+                else if (sub < 0.47)
+                    await TimedAsync("LevelUpHero", async () => await profileApi.LevelUpHeroAsync(_rng.Next(1, 30)));
+                else if (sub < 0.55)
+                    await TimedAsync("EquipItem", async () => await profileApi.EquipItemAsync(_rng.Next(1, 30), _rng.Next(0, 50)));
+                else if (sub < 0.58)
+                    await TimedAsync("UnequipItem", async () => await profileApi.UnequipItemAsync(_rng.Next(1, 30), "weapon"));
+                else if (sub < 0.83)
+                    await TimedVoid("CompleteCampaignLevel",
+                        () => profileApi.CompleteCampaignLevelAsync($"level-{_rng.Next(1, 200)}", _rng.Next(1, 4), _rng.Next(100, 10000)));
+                else if (sub < 0.88)
+                    await TimedVoid("OpenChest", () => profileApi.OpenChestAsync(_rng.Next(1, 5)));
+                else
+                    await TimedVoid("ClaimDailyReward", () => profileApi.ClaimDailyRewardAsync());
+                return;
+            }
+            if (roll < 0.90)
             {
                 await TimedVoid("GainPoints", () => profileApi.GainPointsAsync(_rng.Next(1, 20)));
                 return;
             }
+            // The remaining ~10% falls through to the clan-management block below.
+            // Re-roll fresh: the clan block's sub-decisions (create vs apply, switch invite,
+            // leave) need a uniform [0,1) draw. Reusing the outer roll (always in [0.90,1.0))
+            // would silently disable some sub-branches — e.g. `roll < 0.75` for CreateClan
+            // would never fire.
+            roll = _rng.NextDouble();
 
             // Cached summary so we know whether we're in a clan + what invitations are parked.
             var summary = profileApi.GetSummary();

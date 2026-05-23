@@ -31,5 +31,16 @@ namespace ClanWars.Client.Common
 
         /// <summary>Mux endpoint URL. Ignored when <see cref="MuxChannels"/> = 0.</summary>
         public string MuxServerUrl { get; set; } = "http://localhost:5050/meta-mux";
+
+        /// <summary>Enable batched RPC mode (multiple RpcCallRequests packed into one
+        /// BatchRpcCall frame). Reduces SignalR per-frame overhead. Ignored unless
+        /// <see cref="MuxChannels"/> &gt; 0.</summary>
+        public bool MuxBatching { get; set; } = false;
+
+        /// <summary>Maximum entries per batch frame (when MuxBatching is on).</summary>
+        public int MuxBatchSize { get; set; } = 64;
+
+        /// <summary>Flush interval for the batching pump in ms (when MuxBatching is on).</summary>
+        public int MuxBatchFlushMs { get; set; } = 1;
     }
 }

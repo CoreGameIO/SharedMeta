@@ -91,8 +91,9 @@
     {
       "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
       "type": "timeseries",
-      "title": "Server RPC p95 by method (ms)",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "title": "Server RPC p95 by method (ms) — method body only",
+      "description": "Time spent INSIDE EntityGrain.HandleCallAsync — provider dispatch, method body, broadcasts, persistence. Does NOT include SignalR hub dispatch or SessionManagerGrain queueing. Compare with the 'Server-side total' panel: large diff = queue/grain-hop overhead (often caused by SignalR MaximumParallelInvocationsPerClient = 1 default).",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 6 },
       "id": 10,
       "fieldConfig": {
         "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5, "showPoints": "never" } },
@@ -106,8 +107,26 @@
     {
       "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
       "type": "timeseries",
+      "title": "Server-side total p50/p95/p99 (ms) — hub-entry to response",
+      "description": "End-to-end at MetaConnectionHandler.RpcCallAsync: SessionManagerGrain queue + grain-hop + method body + response build. Gap vs the 'method body only' panel reveals queue / hop overhead. Reproduces client-perceived server latency without the network leg.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 6 },
+      "id": 12,
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le) (rate(sharedmeta_server_rpc_total_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum by (le) (rate(sharedmeta_server_rpc_total_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "p95", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(sharedmeta_server_rpc_total_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "p99", "refId": "C" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "type": "timeseries",
       "title": "Server RPC rate by method (req/sec)",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 6 },
       "id": 11,
       "fieldConfig": {
         "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 20, "showPoints": "never", "stacking": { "mode": "normal" } } },
@@ -384,6 +403,66 @@
       },
       "options": { "tooltip": { "mode": "single" }, "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false } },
       "targets": [{ "expr": "rate(dotnet_monitor_lock_contentions_total[$__rate_interval])", "legendFormat": "contentions", "refId": "A" }]
+    },
+
+    {
+      "type": "row",
+      "title": "Pooled payload buffers",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 58 },
+      "id": 106,
+      "collapsed": false
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "type": "timeseries",
+      "title": "Pool slots in use (allocated)",
+      "description": "Live PooledPayloadRegistry slots — buffers with refCount > 0. Should stay bounded under steady load (response/broadcast/event payloads in flight + retained in SessionManager._pendingPackets until ack/evict). An upward drift indicates a missing Release somewhere.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 59 },
+      "id": 60,
+      "fieldConfig": {
+        "defaults": { "unit": "none", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "tooltip": { "mode": "single" }, "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false } },
+      "targets": [
+        { "expr": "sharedmeta_pool_allocated_slots", "legendFormat": "allocated", "refId": "A" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "type": "timeseries",
+      "title": "Pool acquire / release rate (slots/sec)",
+      "description": "Cumulative-counter rate of slot acquisitions vs final releases (refCount → 0). Lines should track each other closely; persistent divergence reveals a leak (acquire > release) or double-release (release > acquire).",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 59 },
+      "id": 61,
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "acquire" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }] },
+          { "matcher": { "id": "byName", "options": "release" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] }
+        ]
+      },
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean"] } },
+      "targets": [
+        { "expr": "rate(sharedmeta_pool_acquire_count_total[$__rate_interval])", "legendFormat": "acquire", "refId": "A" },
+        { "expr": "rate(sharedmeta_pool_release_count_total[$__rate_interval])", "legendFormat": "release", "refId": "B" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "type": "timeseries",
+      "title": "Net slot drift (acquire − release over window)",
+      "description": "If this is non-zero on average, the pool is leaking (or double-releasing). Should hover around 0 under steady load. Spikes are normal during burst; sustained drift is a bug.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 59 },
+      "id": 62,
+      "fieldConfig": {
+        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 15, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "tooltip": { "mode": "single" }, "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false } },
+      "targets": [
+        { "expr": "rate(sharedmeta_pool_acquire_count_total[$__rate_interval]) - rate(sharedmeta_pool_release_count_total[$__rate_interval])", "legendFormat": "net", "refId": "A" }
+      ]
     }
   ],
   "refresh": "5s",

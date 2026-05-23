@@ -26,11 +26,13 @@ namespace ClanWars.Server
         private readonly ConcurrentDictionary<string, int> _pendingPowerDeltas = new();
         private Timer? _flushTimer;
         private static readonly TimeSpan FlushInterval = TimeSpan.FromSeconds(5);
+        private IClanContainerGrain _containerGrain;
 
         public ClanContainerService(IGrainFactory grainFactory, ILogger<ClanContainerService> logger)
         {
             _grainFactory = grainFactory;
             _logger = logger;
+            _containerGrain = _grainFactory.GetGrain<IClanContainerGrain>("global");
         }
 
         public async Task StartAsync(CancellationToken cancellationToken)
@@ -38,10 +40,10 @@ namespace ClanWars.Server
             // Cold-start hydration: pull the full clan list from the grain.
             try
             {
-                var grain = _grainFactory.GetGrain<IClanContainerGrain>("global");
-                var all = await grain.GetAllAsync();
+
+                var all = await _containerGrain.GetAllAsync();
                 foreach (var s in all) _cache[s.ClanId] = s;
-                _logger.LogInformation("[ClanContainer] Hydrated {Count} clans from grain.", all.Count);
+                _logger.LogInformation("[ClanContainer] Hydrated {Count} clans from _containerGrain.", all.Count);
             }
             catch (Exception ex)
             {
@@ -77,34 +79,36 @@ namespace ClanWars.Server
             _cache[summary.ClanId] = summary;
             // Register flushed eagerly — recommendations should see new clans without waiting
             // for the periodic flush window.
-            var grain = _grainFactory.GetGrain<IClanContainerGrain>("global");
-            await grain.RegisterClanAsync(summary);
+
+            await _containerGrain.RegisterClanAsync(summary);
         }
 
         public async Task UnregisterClanAsync(string clanId)
         {
             _cache.TryRemove(clanId, out _);
             _pendingPowerDeltas.TryRemove(clanId, out _);
-            var grain = _grainFactory.GetGrain<IClanContainerGrain>("global");
-            await grain.UnregisterClanAsync(clanId);
+
+            await _containerGrain.UnregisterClanAsync(clanId);
         }
 
-        public Task ApplyPowerDeltaAsync(string clanId, int delta)
+        public ValueTask ApplyPowerDeltaAsync(string clanId, int delta)
         {
             // Apply to cache immediately (so GetRecommended sees current power ordering),
             // accumulate the delta for the periodic grain flush.
             if (_cache.TryGetValue(clanId, out var s))
                 s.Power = Math.Max(0, s.Power + delta);
             _pendingPowerDeltas.AddOrUpdate(clanId, delta, (_, existing) => existing + delta);
-            return Task.CompletedTask;
+            return ValueTask.CompletedTask;
         }
 
-        public async Task UpdateMemberCountAsync(string clanId, int memberCount)
+        public ValueTask UpdateMemberCountAsync(string clanId, int memberCount)
         {
             if (_cache.TryGetValue(clanId, out var s))
                 s.MemberCount = memberCount;
-            var grain = _grainFactory.GetGrain<IClanContainerGrain>("global");
-            await grain.UpdateMemberCountAsync(clanId, memberCount);
+
+            _containerGrain.UpdateMemberCountAsync(clanId, memberCount).Ignore();
+
+            return ValueTask.CompletedTask;
         }
 
         private async Task FlushPendingAsync()
@@ -121,8 +125,7 @@ namespace ClanWars.Server
 
             try
             {
-                var grain = _grainFactory.GetGrain<IClanContainerGrain>("global");
-                await grain.ApplyPowerDeltasAsync(snapshot);
+                await _containerGrain.ApplyPowerDeltasAsync(snapshot);
             }
             catch (Exception ex)
             {

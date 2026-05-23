@@ -30,6 +30,9 @@ static void ParseArgs(string[] args, StressTestOptions o)
             case "--prefix": o.PlayerPrefix = val; break;
             case "--mux-channels": o.MuxChannels = int.Parse(val); break;
             case "--mux-url": o.MuxServerUrl = val; break;
+            case "--mux-batch": o.MuxBatching = bool.Parse(val); break;
+            case "--mux-batch-size": o.MuxBatchSize = int.Parse(val); break;
+            case "--mux-batch-flush": o.MuxBatchFlushMs = int.Parse(val); break;
         }
     }
 }

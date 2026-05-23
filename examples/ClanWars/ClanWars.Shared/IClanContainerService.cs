@@ -21,7 +21,7 @@ namespace ClanWars.Shared
         List<ClanSummary> GetRecommended(int limit);
         Task RegisterClanAsync(ClanSummary summary);
         Task UnregisterClanAsync(string clanId);
-        Task ApplyPowerDeltaAsync(string clanId, int delta);
-        Task UpdateMemberCountAsync(string clanId, int memberCount);
+        ValueTask ApplyPowerDeltaAsync(string clanId, int delta);
+        ValueTask UpdateMemberCountAsync(string clanId, int memberCount);
     }
 }

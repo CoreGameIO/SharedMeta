@@ -50,9 +50,15 @@ namespace ClanWars.Client.Common
                 channels = new MuxChannel[options.MuxChannels];
                 for (int i = 0; i < channels.Length; i++)
                     channels[i] = new MuxChannel(options.MuxServerUrl,
-                        configureBuilder: b => b.AddMetaMessagePackProtocol());
+                        configureBuilder: b => b.AddMetaMessagePackProtocol(),
+                        enableBatching: options.MuxBatching,
+                        maxBatchSize: options.MuxBatchSize,
+                        flushIntervalMs: options.MuxBatchFlushMs);
                 await Task.WhenAll(channels.Select(c => c.StartAsync()));
-                Console.WriteLine($"[stress] Mux pool ready: {channels.Length} physical SignalR sockets connected (MessagePack protocol).");
+                var batchNote = options.MuxBatching
+                    ? $" + batching (max={options.MuxBatchSize}, flush={options.MuxBatchFlushMs}ms)"
+                    : string.Empty;
+                Console.WriteLine($"[stress] Mux pool ready: {channels.Length} physical SignalR sockets connected (MessagePack protocol){batchNote}.");
             }
 
             try

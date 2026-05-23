@@ -164,15 +164,15 @@ namespace ClanWars.Shared
             return Context.ResolveService<IClanContainerService>().RegisterClanAsync(GetSummary());
         }
 
-        private Task NotifyContainerPowerDelta(int delta)
+        private ValueTask NotifyContainerPowerDelta(int delta)
         {
-            if (!Context.IsServer) return Task.CompletedTask;
+            if (!Context.IsServer) return ValueTask.CompletedTask;
             return Context.ResolveService<IClanContainerService>().ApplyPowerDeltaAsync(Context.EntityId ?? "", delta);
         }
 
-        private Task NotifyContainerMemberCount(int count)
+        private ValueTask NotifyContainerMemberCount(int count)
         {
-            if (!Context.IsServer) return Task.CompletedTask;
+            if (!Context.IsServer) return ValueTask.CompletedTask;
             return Context.ResolveService<IClanContainerService>().UpdateMemberCountAsync(Context.EntityId ?? "", count);
         }
     }

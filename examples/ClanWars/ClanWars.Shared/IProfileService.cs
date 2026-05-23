@@ -4,6 +4,14 @@ using SharedMeta.Core;
 
 namespace ClanWars.Shared
 {
+    public enum ApplyResult
+    {
+        Ok,
+        NoClan,
+        AlreadyIn,
+        Contains
+    }
+
     [MetaService(StateType = typeof(ProfileState), ConfigType = typeof(ClanConfig))]
     public interface IProfileService : IMetaService
     {
@@ -17,7 +25,7 @@ namespace ClanWars.Shared
 
         /// <summary>Submit an application to join a clan. Cross-entity call into ClanService.</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task<bool> ApplyToClan(string clanId);
+        Task<ApplyResult> ApplyToClan(string clanId);
 
         /// <summary>Leave the current clan. Player's score is subtracted from clan power.</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
@@ -41,6 +49,49 @@ namespace ClanWars.Shared
         /// <summary>Read profile summary without modifying state.</summary>
         [MetaMethod(Mode = ExecutionMode.Query)]
         ProfileSummary GetSummary();
+
+        // ── Day-to-day profile mutations ─────────────────────────────────────────
+        // None of these touch the clan. They're the "normal" non-social game actions
+        // (heroes, gear, levels, chests) typical of a mobile RPG meta loop. The stress
+        // simulator runs ~80% of its actions through these to approximate real meta
+        // payloads and per-RPC work; the other 20% is the clan flow (GainPoints +
+        // social actions).
+
+        /// <summary>Buy a new item of the given tier — adds an InventoryItem.</summary>
+        [MetaMethod(Mode = ExecutionMode.Server)]
+        Task<bool> BuyItem(int tier);
+
+        /// <summary>Sell an inventory item by index — removes it, refunds money.</summary>
+        [MetaMethod(Mode = ExecutionMode.Server)]
+        Task<bool> SellItem(int inventoryIndex);
+
+        /// <summary>Hire a new hero of the given class.</summary>
+        [MetaMethod(Mode = ExecutionMode.Server)]
+        Task<bool> HireHero(string heroClass);
+
+        /// <summary>Spend money + XP, bump hero level by 1.</summary>
+        [MetaMethod(Mode = ExecutionMode.Server)]
+        Task<bool> LevelUpHero(int heroId);
+
+        /// <summary>Equip a stored inventory item onto a hero's slot.</summary>
+        [MetaMethod(Mode = ExecutionMode.Server)]
+        Task<bool> EquipItem(int heroId, int inventoryIndex);
+
+        /// <summary>Move an equipped item from a hero back to the inventory.</summary>
+        [MetaMethod(Mode = ExecutionMode.Server)]
+        Task<bool> UnequipItem(int heroId, string slot);
+
+        /// <summary>Mark a campaign level as completed (or improved).</summary>
+        [MetaMethod(Mode = ExecutionMode.Server)]
+        Task CompleteCampaignLevel(string levelId, int stars, int score);
+
+        /// <summary>Open a chest — adds a record + a handful of inventory items.</summary>
+        [MetaMethod(Mode = ExecutionMode.Server)]
+        Task OpenChest(int tier);
+
+        /// <summary>Award daily login bonus — adds money + a resource bump.</summary>
+        [MetaMethod(Mode = ExecutionMode.Server)]
+        Task ClaimDailyReward();
 
         /// <summary>
         /// Cross-entity Notification from <see cref="IClanService.AcceptApplication"/>. Tells
