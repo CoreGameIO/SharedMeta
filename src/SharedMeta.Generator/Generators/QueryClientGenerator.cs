@@ -188,9 +188,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            var response = await _connection.QueryCallAsync(new QueryCallRequest");
             sb.AppendLine("            {");
             sb.AppendLine("                EntityId = _entityId,");
-            sb.AppendLine("                ServiceName = ServiceName,");
-            sb.AppendLine($"                MethodName = \"{method.Alias}\",");
-            sb.AppendLine($"                MethodVersion = {method.Version},");
+            sb.AppendLine($"                MethodId = global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, method.Alias, method.Version)},");
             sb.AppendLine("                Payload = argsBytes");
             sb.AppendLine("            });");
             sb.AppendLine();
@@ -201,9 +199,9 @@ namespace SharedMeta.Generator.Generators
             {
                 sb.AppendLine();
                 if (serializer == DetectedSerializer.MemoryPack)
-                    sb.AppendLine($"            return MemoryPackSerializer.Deserialize<{innerType}>(response.ResultBytes)!;");
+                    sb.AppendLine($"            return MemoryPackSerializer.Deserialize<{innerType}>(response.ResultBytes.Span)!;");
                 else
-                    sb.AppendLine($"            return _serializer.Unpack<{innerType}>(response.ResultBytes!)!;");
+                    sb.AppendLine($"            return _serializer.Unpack<{innerType}>(response.ResultBytes)!;");
             }
 
             sb.AppendLine("        }");

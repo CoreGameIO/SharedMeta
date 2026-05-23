@@ -1,13 +1,17 @@
+using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using SharedMeta.Core;
 using SharedMeta.Core.Logging;
+using SharedMeta.Core.Memory;
 using SharedMeta.Core.Network;
+using SharedMeta.Core.Packets;
 using SharedMeta.Core.Patch;
 using SharedMeta.Core.Random;
 using SharedMeta.Core.Transport;
 using SharedMeta.Server;
 using SharedMeta.Server.Core.Grains;
+using SharedMeta.Server.Core.Memory;
 
 namespace SharedMeta.Server.Core;
 
@@ -22,19 +26,90 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     protected ServerMetaContext<TState>? MetaContext { get; private set; }
     protected ILogger Logger { get; private set; } = NullLogger.Instance;
 
-    /// <summary>
-    /// 0.20.0: helper used by generator-emitted Handle*Async overrides in user assemblies
-    /// to log validation failures. The underlying <c>Log.ProviderCallError</c> extension is
-    /// internal to <c>SharedMeta.Server.Core</c>, so generated code in user assemblies cannot
-    /// call it directly — this thin wrapper exposes the logging surface.
-    /// </summary>
-    protected void LogProviderCallError(Exception ex, string serviceName, string methodName)
-        => Logger.ProviderCallError(ex, serviceName, methodName);
+    // Thin wrapper exposing ProviderCallError logging to generated code in user assemblies
+    // (the underlying Log extension is internal to SharedMeta.Server.Core).
+    // 0.24.0+ Keyed by ushort methodId — generated overrides log with the wire id only,
+    // no name plumbing on the failure path.
+    protected void LogProviderCallError(Exception ex, ushort methodId)
+        => Logger.ProviderCallError(ex, methodId);
 
     private MetaRandom _serverRandom = null!;
     private MetaRandom _optimisticRandom = null!;
     private MetaRandom[] _namedRandoms = System.Array.Empty<MetaRandom>();
     private IMetaRandom[]? _namedRandomsView;
+
+    // ── Pooled MetaOperation instances ─────────────────────────────────────────
+    // Reused across HandleCallAsync invocations so MetaOperation does not allocate
+    // per RPC. The instances live for the grain's lifetime; serialized bytes are
+    // the only thing that leaves the grain. Triggers use a growing list of pooled
+    // MetaOperation instances — high-water-mark across a session's worst-case
+    // trigger fan-out.
+    private readonly MetaOperation _pooledResponseOp = new();
+    private readonly MetaOperation _pooledBroadcastOp = new();
+    private readonly List<MetaOperation> _triggerOpPool = new();
+    private readonly List<MetaOperation> _pooledTriggerSlice = new();   // reused holder
+
+    private static void ResetMetaOperation(MetaOperation op)
+    {
+        op.MethodId = 0;
+        op.Payload = null;
+        op.CallerId = null;
+        op.ResultBytes = null;
+        op.ReplayPayload = null;
+        op.PatchBytes = null;
+        op.StateBytes = null;
+        op.RandomScrollDelta = 0;
+        op.NamedRandomScrollDeltas = null;
+        op.ServerTimeTicks = 0;
+        op.ExecutedConfigVersion = default;
+        op.DeepDesyncCrc = null;
+        op.Error = null;
+        op.Debug = null;
+        op.Triggers = null;
+    }
+
+    private MetaOperation RentTriggerOp(int index)
+    {
+        while (_triggerOpPool.Count <= index)
+            _triggerOpPool.Add(new MetaOperation());
+        var op = _triggerOpPool[index];
+        ResetMetaOperation(op);
+        return op;
+    }
+
+    // Pre-pool fallback: when the host has not wired PooledPayloadRegistry into the provider
+    // context, serialize through the byte[]-allocating shortcut. ROM is taken over the fresh
+    // byte[] (single owner, no copy beyond what the serializer itself emits). Used for the
+    // response payload — Orleans-copy timing of EntityGrain.HandleCallAsync return values is
+    // hard to align with explicit Release in this iteration, so response stays byte[]-backed.
+    private static ReadOnlyMemory<byte> PackBytes(IMetaSerializer serializer, MetaOperation op)
+    {
+        return serializer.Pack(op);
+    }
+
+    /// <summary>
+    /// Serialize <paramref name="op"/> into a pool-rented buffer when the silo-scoped
+    /// <see cref="PooledPayloadRegistry"/> is wired; otherwise serialize via the byte[]
+    /// fallback and wrap the result as a Ref=0 <see cref="PooledPayload"/> so callers can
+    /// treat both paths uniformly (Ref=0 means "no slot to release"; GC reclaims the byte[]).
+    /// Returns <c>(Bytes, Owned)</c>: <c>Bytes</c> is <c>Owned.Memory</c>, exposed separately
+    /// so call sites that only need the ROM (state-bytes carrier, error-response) don't have
+    /// to peek into the struct.
+    /// </summary>
+    private (ReadOnlyMemory<byte> Bytes, PooledPayload Owned) PackBroadcastVariant(MetaOperation op)
+    {
+        var registry = Context.Registry;
+        // PooledPayloadOptions.UsePoolPath gates whether outgoing serialization rents a pool
+        // slot (ref-counted fan-out) or allocates a fresh byte[] (Ref=0, GC-managed). Default
+        // OFF; hosts opt in via services.Configure<PooledPayloadOptions>(o => o.UsePoolPath = true).
+        if (registry?.IsEnabled == true)
+        {
+            var owned = Context.Serializer.PackPooled(op, registry);
+            return (owned.Memory, owned);
+        }
+        var bytes = PackBytes(Context.Serializer, op);
+        return (bytes, new PooledPayload(bytes, 0));
+    }
 
     /// <summary>
     /// Service resolver for dependency injection (e.g., IRandomService).
@@ -45,16 +120,16 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// <summary>
     /// Handler for cross-entity calls (when a service calls another entity).
     /// Returns CrossEntityCallInfo with EntitySequenceNumber and ResultBytes.
+    /// The last <c>ushort</c> argument is the server-side global <c>MethodId</c> stamped
+    /// by the recorder (<c>0</c> = legacy / unknown, the target grain resolves from strings).
     /// Set via constructor or before Initialize is called.
     /// </summary>
-    public Func<string, string, string, byte[], long, Task<CrossEntityCallInfo>>? EntityCallHandler { get; set; }
+    public Func<string, ushort, byte[], long, Task<CrossEntityOperationInfo>>? EntityCallHandler { get; set; }
 
-    /// <summary>
-    /// 0.22.0+: Handler for fire-and-forget cross-entity calls (methods marked
-    /// <c>[MetaMethod(OneWay = true)]</c>). Source grain dispatches via Orleans <c>[OneWay]</c>
-    /// and continues immediately — handler returns void.
-    /// </summary>
-    public Action<string, string, string, byte[], long>? EntityCallOneWayHandler { get; set; }
+    // Fire-and-forget cross-entity dispatch for [MetaMethod(OneWay = true)] — routes through
+    // Orleans [OneWay] so the source doesn't wait for a reply envelope. Same MethodId
+    // semantics as EntityCallHandler.
+    public Action<string, ushort, byte[], long>? EntityCallOneWayHandler { get; set; }
 
     /// <summary>
     /// Handler for read-only cross-entity state access.
@@ -62,6 +137,29 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// Set via constructor or before Initialize is called.
     /// </summary>
     public Func<string, string, Task<byte[]?>>? EntityStateHandler { get; set; }
+
+    /// <summary>
+    /// 0.24.0+ Server-side signature for reverse <c>MethodId → ServerMethodEntry</c> lookup.
+    /// Wired by <c>EntityGrain</c> from DI. Provider uses this to populate
+    /// <c>MetaOperation.ServiceName/MethodName/MethodVersion</c> on the outgoing response/broadcast
+    /// (those strings are still on the wire for clients that haven't migrated) and to surface
+    /// service/method names in logs and migration policy lookups now that <c>RpcCall</c> only
+    /// carries the ushort id.
+    /// </summary>
+    public SharedMeta.Core.Transport.MetaServerSignature? ServerSignature { get; set; }
+
+    /// <summary>
+    /// Resolve a server-side MethodId to <c>(ServiceName, Alias, Version)</c>. Returns
+    /// empty strings when no signature is wired — callers must tolerate that, since
+    /// pre-0.24 paths still pass MethodId=0 / no-signature builds.
+    /// </summary>
+    protected (string ServiceName, string MethodName, int MethodVersion) ResolveMethodNames(ushort methodId)
+    {
+        var entry = ServerSignature?.GetMethodEntry(methodId);
+        return entry == null
+            ? ("", "", 0)
+            : (entry.ServiceName, entry.Alias, entry.Version);
+    }
 
     /// <summary>
     /// Handler for mid-method state persistence.
@@ -97,9 +195,9 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         MetaContext.EntityCallOneWayHandler = EntityCallOneWayHandler;
         MetaContext.EntityStateHandler = EntityStateHandler;
         MetaContext.SaveStateHandler = SaveStateHandler;
-        // 0.20.0: Wire sibling-service resolver so generated cross-entity accessors can
-        // detect self-targeted calls and dispatch directly on the cached sibling impl
-        // instance — no serialization, no grain RPC.
+        // Sibling-service resolver: generated cross-entity accessors detect self-targeted
+        // calls and dispatch directly on the cached sibling impl — no serialization, no
+        // grain RPC, no re-entrancy deadlock.
         MetaContext.SiblingServiceResolver = ResolveSiblingByType;
 
         // Initialize deterministic randoms. Seed string only matters for FRESH entities
@@ -215,6 +313,123 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             _namedRandomsView[i] = _namedRandoms[i];
     }
 
+    // ── Named random scroll-delta pool ────────────────────────────────────
+    // Both the capture-snapshot (before-image) and the compute-deltas result are
+    // exactly _namedRandoms.Length longs. We pool them via a single Stack so both
+    // are reclaimed and reused across calls. Snapshots are short-lived (Capture →
+    // Compute) and returned synchronously inside ComputeNamedScrollDeltas; deltas
+    // are long-lived (referenced from MetaOperation.NamedRandomScrollDeltas through
+    // serialization) and stashed in _pendingDeltasReturns, flushed at the next
+    // HandleCallAsync entry once the wire snapshot has been emitted.
+    private readonly Stack<long[]> _namedScrollPool = new();
+    private readonly List<long[]> _pendingDeltasReturns = new();
+
+    private long[] RentNamedScrollArray()
+    {
+        return _namedScrollPool.TryPop(out var arr) ? arr : new long[_namedRandoms.Length];
+    }
+
+    private void ReturnNamedScrollArray(long[] arr)
+    {
+        if (arr.Length == _namedRandoms.Length) _namedScrollPool.Push(arr);
+    }
+
+    /// <summary>
+    /// Return any scroll-delta arrays referenced by the previous call to the snapshot pool.
+    /// Called at HandleCallAsync entry — by that point the previous call's wire frame has
+    /// been serialized and shipped; the underlying arrays are no longer observed.
+    /// </summary>
+    private void FlushPendingNamedScrollReturns()
+    {
+        for (int i = 0; i < _pendingDeltasReturns.Count; i++)
+            ReturnNamedScrollArray(_pendingDeltasReturns[i]);
+        _pendingDeltasReturns.Clear();
+    }
+
+    // ── Intermediate scratch buffer ───────────────────────────────────────
+    // Single growable byte[] used for ALL intermediate serializations within one
+    // Handle*Async invocation (recorder replay, patch tree, state snapshot, per-trigger
+    // replay/patch). Lifetime is provider/grain — the buffer is allocated once, grown
+    // on-demand, and reused across calls. PooledPayloadRegistry is NOT involved: it stays
+    // reserved exclusively for outgoing payloads that cross the grain boundary.
+    //
+    // Growth strategy: when a writer doesn't fit, it allocates a new byte[] and copies its
+    // already-written bytes there; the pool's Buffer field is repointed. The OLD byte[]
+    // is NOT explicitly freed — it stays alive through outstanding ROM references handed
+    // out by earlier writers in the same call (GC reclaims it once those references fall
+    // out of scope, typically at the next call's reset when the embedding response/
+    // broadcast has been packed and shipped).
+    private readonly ScratchBufferPool _scratchPool = new();
+
+    // ── Outgoing pool tokens ──────────────────────────────────────────────
+    // Filled by serialization paths inside HandleCallAsync / HandleExternalEventAsync; taken
+    // by EntityGrain via TakeOutgoing* before wrapping into PooledPayload-typed wire fields
+    // (EntityCallResult.OpBytes / EntityBroadcast.OpBytes etc.).
+    // <para>
+    // The sender (us) does NOT release outgoing payloads — the receiving grain / wire pipeline
+    // owns the buffer once the PooledPayload crosses the boundary, and Release fires there.
+    // Untaken tokens (e.g. fan-out had zero subscribers, or a code path forgot to Take) are
+    // released as a safety net at the next provider entry by <see cref="FlushPendingOutgoing"/>.
+    // </para>
+    private PooledPayload _outgoingResponse;
+    private PooledPayload _outgoingResult;
+    private PooledPayload _outgoingBroadcastReplay;
+    private PooledPayload _outgoingBroadcastPatch;
+    private PooledPayload _outgoingEventBroadcast;
+
+    public PooledPayload TakeOutgoingResponse()
+    {
+        var p = _outgoingResponse;
+        _outgoingResponse = default;
+        return p;
+    }
+
+    public PooledPayload TakeOutgoingResult()
+    {
+        var p = _outgoingResult;
+        _outgoingResult = default;
+        return p;
+    }
+
+    public PooledPayload TakeOutgoingBroadcastReplay()
+    {
+        var p = _outgoingBroadcastReplay;
+        _outgoingBroadcastReplay = default;
+        return p;
+    }
+
+    public PooledPayload TakeOutgoingBroadcastPatch()
+    {
+        var p = _outgoingBroadcastPatch;
+        _outgoingBroadcastPatch = default;
+        return p;
+    }
+
+    public PooledPayload TakeOutgoingEventBroadcast()
+    {
+        var p = _outgoingEventBroadcast;
+        _outgoingEventBroadcast = default;
+        return p;
+    }
+
+    private void FlushPendingOutgoing()
+    {
+        var registry = Context?.Registry;
+        if (registry == null) return;
+        // Ref==0 is the byte[]-fallback wrapper — no slot to release, GC reclaims naturally.
+        // Only pool-backed (Ref!=0) tokens need explicit Release here.
+        if (_outgoingResponse.Ref != 0) registry.Release(_outgoingResponse);
+        if (_outgoingResult.Ref != 0) registry.Release(_outgoingResult);
+        if (_outgoingBroadcastReplay.Ref != 0) registry.Release(_outgoingBroadcastReplay);
+        if (_outgoingBroadcastPatch.Ref != 0) registry.Release(_outgoingBroadcastPatch);
+        if (_outgoingEventBroadcast.Ref != 0) registry.Release(_outgoingEventBroadcast);
+        _outgoingResponse = default;
+        _outgoingResult = default;
+        _outgoingBroadcastReplay = default;
+        _outgoingBroadcastPatch = default;
+        _outgoingEventBroadcast = default;
+    }
+
     /// <summary>
     /// Snapshot current ScrollId of each named random. Returns null if no named randoms declared
     /// so callers can skip the work entirely.
@@ -222,7 +437,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     private long[]? CaptureNamedScrolls()
     {
         if (_namedRandoms.Length == 0) return null;
-        var snap = new long[_namedRandoms.Length];
+        var snap = RentNamedScrollArray();
         for (int i = 0; i < _namedRandoms.Length; i++)
             snap[i] = _namedRandoms[i].ScrollId;
         return snap;
@@ -240,9 +455,21 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         {
             var d = _namedRandoms[i].ScrollId - before[i];
             if (d == 0) continue;
-            deltas ??= new long[before.Length];
+            if (deltas == null)
+            {
+                deltas = RentNamedScrollArray();
+                // Pool arrays may carry stale data from a prior tenant — zero out so unused
+                // indices don't surface as fake non-zero deltas in the wire frame.
+                System.Array.Clear(deltas);
+            }
             deltas[i] = d;
         }
+        // Snapshot is consumed — pool it for the next Capture.
+        ReturnNamedScrollArray(before);
+        // Stash the deltas so the next HandleCallAsync entry reclaims it after the wire
+        // snapshot has shipped (MetaOperation.NamedRandomScrollDeltas still references it
+        // through serialization).
+        if (deltas != null) _pendingDeltasReturns.Add(deltas);
         return deltas;
     }
 
@@ -253,41 +480,38 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     protected virtual void OnInitialize() { }
 
     /// <summary>
-    /// Dispatch a service method call. Implemented by generated code.
-    /// <para><c>methodVersion</c> (0.22.0+) selects between coexisting versions of the same
-    /// <c>(serviceName, methodName)</c> declared with <c>[MetaMethod(Version = N)]</c>. Pass
-    /// <c>0</c> for the legacy / unversioned route — the generated dispatcher resolves it to
-    /// the lowest-versioned implementation under the alias so older clients still dispatch.</para>
+    /// Dispatches a service method call by global method id. Implemented by generated code
+    /// as a jump table on <see cref="ServerMethodEntry.GlobalIndex"/> (via
+    /// <c>SharedMeta.Generated.GameMethodIds</c> constants). The version is encoded in
+    /// the id, so no separate version parameter is needed.
     /// </summary>
-    protected abstract Task<DispatchResult> DispatchCall(string serviceName, string methodName, byte[] payload, int methodVersion);
+    protected abstract ValueTask<DispatchResult> DispatchCall(ushort methodId, ReadOnlyMemory<byte> payload);
 
     /// <summary>
-    /// 0.20.0: Resolve a sibling-service impl instance by interface type. Default returns
-    /// null. Generated providers override with a switch over service interface types,
-    /// returning the cached <c>Get{Name}()</c> instance for any service hosted on this
-    /// entity's <c>TState</c>. Wired into <see cref="MetaContext.SiblingServiceResolver"/>
-    /// by <c>EntityGrain.OnActivateAsync</c> so generated cross-entity accessors can
-    /// short-circuit self-targeted calls into typed sibling invocations.
+    /// Resolves a sibling-service impl by interface type. Default returns null; generated
+    /// providers override with a switch over services hosted on this entity's TState so
+    /// self-targeted cross-entity calls dispatch directly without an Orleans hop.
     /// </summary>
     public virtual object? ResolveSiblingByType(System.Type interfaceType) => null;
 
     /// <summary>
-    /// Dispatch a signal method call (void return, fire-and-forget). Default no-op;
-    /// generated code overrides when the provider has one or more <c>[MetaMethod(Signal = true)]</c>
-    /// methods and wires them into a generated <c>{Service}SignalDispatcher.Dispatch</c>.
-    /// <para><c>methodVersion</c> (0.22.0+) routes to a specific declared body when multiple
-    /// <c>[MetaMethod]</c> declarations share the same alias; legacy callers (methodVersion=0)
-    /// resolve to the lowest-versioned signal implementation under the alias.</para>
+    /// Dispatches a signal method call (void, fire-and-forget). Default no-op; generated
+    /// code overrides with a <c>switch (methodId)</c> against <c>GameMethodIds</c> for
+    /// providers that have <c>[MetaMethod(Mode = ExecutionMode.Signal)]</c> methods,
+    /// routing them through <c>{Service}SignalDispatcher.Dispatch</c>.
+    /// 0.24.0+ Keyed by client-local <c>MethodId</c> — no string-name plumbing.
     /// </summary>
-    protected virtual Task DispatchSignal(string serviceName, string methodName, byte[] payload, int methodVersion)
+    protected virtual Task DispatchSignal(ushort methodId, ReadOnlyMemory<byte> payload)
         => Task.CompletedTask;
 
     /// <summary>
     /// Dispatch an external event. Override in derived class if needed.
+    /// 0.24.0+ dispatches by <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/> ushort
+    /// constants rather than <c>(subscriberInterface, methodName)</c> string pair.
     /// </summary>
-    protected virtual Task<DispatchResult> DispatchEvent(string subscriberInterface, string methodName, byte[] eventData)
+    protected virtual ValueTask<DispatchResult> DispatchEvent(ushort methodId, ReadOnlyMemory<byte> eventData)
     {
-        return Task.FromResult(new DispatchResult { ResultBytes = null, TriggersToExecute = null });
+        return new ValueTask<DispatchResult>(new DispatchResult { ResultBytes = default, TriggersToExecute = null });
     }
 
     /// <summary>
@@ -302,11 +526,10 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     protected int CurrentStateSchemaVersion { get; private set; }
 
     /// <summary>
-    /// 0.20.0 fix: Seed the provider's schema version from the persisted <c>state.Version</c>
-    /// at grain activation, BEFORE any deferred lazy-migration check runs. Without this, the
-    /// fresh-entity-floor rule in the generated <c>CheckAndRunLazyMigrationAsync</c> sees
-    /// <c>CurrentStateSchemaVersion == 0</c> on every activation and re-runs <c>[MetaInit]</c>
-    /// even when the state has already been initialized in a previous session.
+    /// Seeds the provider's schema version from persisted state at grain activation, BEFORE
+    /// any deferred lazy-migration check runs. Without this the fresh-entity-floor rule in
+    /// the generated <c>CheckAndRunLazyMigrationAsync</c> would re-run [MetaInit] on every
+    /// activation, mistaking persisted state for fresh.
     /// </summary>
     public void SeedSchemaVersion(int persistedVersion)
     {
@@ -336,8 +559,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// migration (e.g. the calling client on HandleCallAsync, the subscribing client on
     /// EntityGrain.SubscribeAsync). Required — generated migration step conditions resolve
     /// the relevant config versions from it via
-    /// <see cref="IMetaConfigProvider{TConfig}.ResolveForClient"/>. 0.21.0+: migration is
-    /// always client-driven; passing null indicates "no migration available."
+    /// <see cref="IMetaConfigProvider{TConfig}.ResolveForClient"/>. Migration is always
+    /// client-driven; passing null indicates "no migration available."
     /// </para>
     /// <para>
     /// <paramref name="schemaCap"/> caps the migration target — when non-null, the framework
@@ -358,9 +581,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     protected string? MigrationClientVersion { get; set; }
 
     /// <summary>
-    /// The <see cref="EntityScope"/> declared on the state class via
-    /// <see cref="EntityScopeAttribute"/>. Default is <see cref="EntityScope.Private"/>
-    /// (no attribute / pre-0.21.0 code). Generated providers override when the state
+    /// The <see cref="EntityScope"/> declared on the state class. Default is
+    /// <see cref="EntityScope.Private"/>; generated providers override when the state
     /// class declares <c>[EntityScope(...)]</c>.
     /// </summary>
     public virtual EntityScope Scope => EntityScope.Private;
@@ -375,23 +597,13 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// </summary>
     protected virtual string? ResolveMigrationDriverForGlobal(string? callerClientVersion) => callerClientVersion;
 
-    // ── Runtime config-version pin (0.21.0 Phase 4) ──────────────────────────────────
-    //
-    // Per [EntityScope], the framework pins config versions to the grain's active lifetime:
-    //
-    //   • EntityScope.Private — pin established on the (single) subscriber's connect; lives
-    //     in this dictionary for the grain's active lifetime. Cold calls (no active
-    //     subscriber, no pin) fall back to project policy via IConfigVersionResolver.
-    //   • EntityScope.Shared  — pin established on the FIRST subscriber's connect; subsequent
-    //     joiners are validated against it (patch-downgrade OK, Major.Minor must match).
-    //   • EntityScope.Global  — pin is NEVER set. Every call resolves config versions
-    //     freshly from IConfigVersionResolver.CurrentClientVersion.
-    //
-    // The pin is RUNTIME state, not persisted (per user feedback: "это рантайм состояние в
-    // грейне энтити" — it dies with grain deactivation, re-establishes on the next first
-    // subscribe). Keyed by configType.FullName so multi-config entities pin one version per
-    // config type independently.
-
+    // Runtime-only config-version pins (not persisted): die with grain deactivation,
+    // re-establish on the next first-subscribe. Keyed by configType.FullName so
+    // multi-config entities pin one version per type independently. Per-scope rules:
+    //   Private — pin set on owner's subscribe, lives until deactivation.
+    //   Shared  — pin set by first subscriber; joiners validated (Major.Minor match,
+    //             Patch may downgrade); Major.Minor mismatch rejects.
+    //   Global  — never pins; every call resolves freshly from the resolver.
     private readonly Dictionary<string, MetaConfigVersion> _activeConfigPins = new();
 
     /// <summary>
@@ -402,11 +614,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     public IReadOnlyDictionary<string, MetaConfigVersion> ActiveConfigPins => _activeConfigPins;
 
     /// <summary>
-    /// Set the pinned <see cref="MetaConfigVersion"/> for a config type on this active
-    /// provider. Phases 5-7 call this from <c>EntityGrain.SubscribeAsync</c> per scope:
-    /// Private (first subscriber for the owner), Shared (first subscriber overall).
-    /// Replaces an existing pin for the same key — callers that need first-write-wins
-    /// semantics should check <see cref="TryGetConfigPin"/> first.
+    /// Sets a pin for a config type. Replaces any existing pin for the same key — callers
+    /// that need first-write-wins semantics should check <see cref="TryGetConfigPin"/> first.
     /// </summary>
     public void SetConfigPin(string configTypeFullName, MetaConfigVersion version)
     {
@@ -428,10 +637,9 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     }
 
     /// <summary>
-    /// Drop all active pins. Phases 5-7 call this from the EntityGrain unsubscribe path
-    /// when the last active subscriber leaves — the next first-subscribe re-establishes
-    /// fresh pins (which may be newer versions if the calling client / current default has
-    /// advanced since).
+    /// Drops all active pins. Called by EntityGrain when the last subscriber leaves — the
+    /// next first-subscribe re-establishes pins, picking up any newer versions published
+    /// while the entity was idle.
     /// </summary>
     public void ClearConfigPins()
     {
@@ -455,21 +663,11 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     }
 
     /// <summary>
-    /// 0.21.0 Phase 6 — Shared scope only: validate that a joining client's resolved config
-    /// versions are compatible with the pins established by the first subscriber. Returns
-    /// <c>true</c> when every pinned config type's <c>Major.Minor</c> matches the joiner's
-    /// resolved version (Patch can differ — joiner downgrades to the pinned patch). Returns
-    /// <c>false</c> when any config diverges on Major or Minor — the joiner is on a different
-    /// branch and cannot share the session.
-    /// <para>
-    /// On rejection, <paramref name="reason"/> is populated with a human-readable diff that
-    /// <c>EntityGrain.SubscribeAsync</c> includes in the rejection exception.
-    /// </para>
-    /// <para>
-    /// Default base impl returns <c>true</c>. Generator emits an override for states declared
-    /// with <see cref="EntityScope.Shared"/>. Private/Global never reach this method
-    /// (Private has only one subscriber; Global pins nothing).
-    /// </para>
+    /// Shared scope only: validates a joining client's config versions against the pins.
+    /// Returns true when every pinned config's Major.Minor matches the joiner's resolved
+    /// version (Patch may differ — joiner downgrades). False = joiner on a different branch;
+    /// <paramref name="reason"/> carries a human-readable diff for the rejection exception.
+    /// Default returns true; generator emits an override for Shared-scope states.
     /// </summary>
     public virtual bool ValidateClientCompatibleWithPins(string? clientVersion, out string? reason)
     {
@@ -497,22 +695,10 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         => CheckAndRunLazyMigrationAsync(callerClientVersion, schemaCap);
 
     /// <summary>
-    /// 0.21.0 — admin API: force this entity to migrate to at least the schema required by
-    /// <paramref name="floorClientVersion"/>. Returns <c>true</c> when migration ran (state
-    /// schema advanced), <c>false</c> when the entity was already at-or-above the floor.
-    /// <para>
-    /// Use case: dropping support for an old config branch. Admin code iterates entity IDs
-    /// of a given state type (sourced from your project's player DB or storage layer) and
-    /// invokes <see cref="IEntityGrain{TState}.ForceMigrateToFloorAsync"/> on each. The
-    /// floor's client version drives the framework's normal migration pipeline — same
-    /// behaviour as a real subscriber connecting at that version, but without subscribing.
-    /// </para>
-    /// <para>
-    /// Per-step <c>[MetaInit]</c> calls receive their configured transition config
-    /// (via <c>ResolveForClient</c>), so state ends up at the same shape it would have if
-    /// a real client at <paramref name="floorClientVersion"/> had triggered the migration
-    /// naturally. EntityGrain force-persists when this method returns <c>true</c>.
-    /// </para>
+    /// Admin entry point — drives the standard migration pipeline against
+    /// <paramref name="floorClientVersion"/> without requiring a real subscriber. Returns
+    /// true when migration ran. Use case: dropping support for an old config branch, iterate
+    /// known entity IDs and call on each. EntityGrain force-persists on true.
     /// </summary>
     public Task<bool> ForceMigrateToFloorAsync(string floorClientVersion)
     {
@@ -526,15 +712,19 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
 
     /// <summary>
     /// Per-method migration policy: returns true when the dispatched method carries
-    /// <c>[NoMigrate]</c>. Generated providers override; default is no skips.
+    /// <c>[NoMigrate]</c>. Generated providers override with a <c>switch (methodId)</c>
+    /// against <c>GameMethodIds</c> constants; default is no skips.
+    /// 0.24.0+ Keyed by client-local <c>MethodId</c> — no string-name plumbing on the hot path.
     /// </summary>
-    protected virtual bool ShouldSkipMigration(string serviceName, string methodName) => false;
+    protected virtual bool ShouldSkipMigration(ushort methodId) => false;
 
     /// <summary>
     /// Per-method migration policy: returns the schema cap declared via
-    /// <c>[MinStateVersion(N)]</c>, or null when uncapped. Generated providers override.
+    /// <c>[MinStateVersion(N)]</c>, or null when uncapped. Generated providers override with
+    /// a <c>switch (methodId)</c> against <c>GameMethodIds</c> constants.
+    /// 0.24.0+ Keyed by client-local <c>MethodId</c>.
     /// </summary>
-    protected virtual int? GetMethodMinStateVersion(string serviceName, string methodName) => null;
+    protected virtual int? GetMethodMinStateVersion(ushort methodId) => null;
 
     /// <summary>
     /// For <c>[NoMigrate]</c> calls: returns the config object pinned to the schema-floor
@@ -551,16 +741,15 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// </summary>
     protected virtual MetaConfigVersion GetSchemaFloorConfigVersion(int stateSchema) => default;
 
-    // 0.20.0: per-method validation (IsClientCallable for GenerateClientApi=false guards) is
-    // emitted inline by the generator as a HandleCallAsync override that runs the switch and
-    // then calls base.HandleCallAsync. Generation is conditional — the override is only
-    // produced when at least one method opts out of client API. For projects with no such
-    // methods, this entry point is reached directly with zero validation overhead.
-    public virtual async Task<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true, bool requirePatchForFanOut = false)
+    // Per-method validation (e.g. IsClientCallable guards for [GenerateClientApi=false]) is
+    // emitted inline by the generator as a HandleCallAsync override that runs the switch then
+    // calls base. Conditional: only emitted when at least one method opts out, so projects
+    // with no such methods reach this entry point with zero validation overhead.
+    public virtual async ValueTask<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true, bool requirePatchForFanOut = false)
     {
         if (MetaContext == null || Context == null)
         {
-            return new HandleCallResult { Response = new RpcResponse { Error = "Provider not initialized" } };
+            return new HandleCallResult { Error = "Provider not initialized" };
         }
 
         // Per-call migration policy. Two caps stack:
@@ -571,17 +760,18 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         //                                 a fresh entity it just activated).
         // Effective cap = min of the two non-null caps. Per-caller config pin then runs
         // through GetCachedConfigForClient.
-        bool skipMigration = ShouldSkipMigration(call.ServiceName, call.MethodName);
+        // 0.24.0+ Migration-policy virtuals are keyed by the ushort MethodId. Generated
+        // providers emit a switch (methodId) against GameMethodIds constants — no
+        // string-name resolution on the hot path.
+        bool skipMigration = ShouldSkipMigration(call.MethodId);
         int? schemaCap = null;
-        // 0.21.0: Private/Shared entities with an active pin lock schema to subscribe-time
-        // driver. Cross-entity calls from higher-version clients don't get to advance schema —
-        // pin represents "this entity's schema is fixed at this version for its session."
-        // Global scope substitutes IConfigVersionResolver.CurrentClientVersion as the migration
-        // driver (server-side ground truth, independent of caller's own version).
+        // Private/Shared with an active pin lock schema to subscribe-time driver: a
+        // cross-entity call from a higher-version client can't advance schema. Global
+        // substitutes the resolver's CurrentClientVersion as the migration driver.
         bool pinLocksMigration = ActiveConfigPins.Count > 0 && Scope != EntityScope.Global;
         if (!skipMigration && !pinLocksMigration)
         {
-            var methodCap = GetMethodMinStateVersion(call.ServiceName, call.MethodName);
+            var methodCap = GetMethodMinStateVersion(call.MethodId);
             var migrationDriver = Scope == EntityScope.Global ? ResolveMigrationDriverForGlobal(call.CallerClientVersion) : call.CallerClientVersion;
             var clientCap = ComputeSchemaCapForClient(migrationDriver);
             schemaCap = methodCap.HasValue && clientCap.HasValue
@@ -621,6 +811,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         {
             MetaContext.CallerId = call.CallerId;
             MetaContext.CallerClientVersion = call.CallerClientVersion;
+            MetaContext.IsCrossOptimistic = call.IsCrossOptimistic;
             MetaContext.ServerTimeTicks = call.ServerTimeTicks;
             MetaContext.IsClientCall = isClientOriginated;
             MetaContext.Random = _optimisticRandom;
@@ -628,19 +819,34 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContext.NamedRandoms = _namedRandomsView;
             MetaContextAccessor.Current = MetaContext;
 
+            // Reclaim arrays referenced by the previous call: named-scroll snapshots/deltas,
+            // any pool-rented replay/patch buffers stashed mid-dispatch, and any outgoing
+            // pool tokens that the previous call's caller forgot to take (safety net — should
+            // be empty in normal flow because EntityGrain Takes everything before returning).
+            FlushPendingNamedScrollReturns();
+            FlushPendingOutgoing();
+
+            // Rewind the intermediate scratch buffer for this call. Any ROMs the PREVIOUS
+            // call handed out (replay/patch/state/triggers) have already been embedded into
+            // the outgoing PooledPayload during PackBroadcastVariant and shipped — they
+            // mustn't be re-read after this point.
+            _scratchPool.Reset();
+            // Same for the per-grain GrainScopedSerializer's pool used by implicit Pack(T)
+            // calls (dispatcher result, patchable setters going through Context.Serializer).
+            (Context.Serializer as Memory.GrainScopedSerializer)?.ResetScratch();
+
             // Capture optimistic random scroll position before dispatch
             var scrollIdBefore = _optimisticRandom.ScrollId;
             var namedScrollsBefore = CaptureNamedScrolls();
 
-            // Determine server-side execution mode
+            // Determine server-side execution mode. 0.24.0+ keyed by methodId — no name plumbing.
             var executionMode = ExecutionModeProvider?.GetMode(
-                call.ServiceName, call.MethodName, ExecutionMode.Optimistic) ?? ExecutionMode.Optimistic;
+                call.MethodId, ExecutionMode.Optimistic) ?? ExecutionMode.Optimistic;
 
-            // Set up patch tracking for ServerPatch mode or deep desync detection.
-            // 0.22.0+: also activate when EntityGrain signals that at least one subscriber
-            // needs the patch payload (via requirePatchForFanOut) — the broadcast will then
-            // carry BOTH replay payload AND patch bytes, and SessionManagerGrain tailors per
-            // subscriber (legacy keeps patch, modern keeps replay).
+            // Activate patch tracking when ServerPatch mode is in effect, deep-desync needs
+            // a CRC, OR EntityGrain signals that at least one subscriber needs the patch
+            // payload (requirePatchForFanOut) — in the last case the broadcast carries BOTH
+            // replay and patch; per-subscriber tailoring strips one on fan-out.
             PatchNode? patchRoot = null;
             bool isServerReplace = executionMode == ExecutionMode.ServerReplace;
             bool deepDesyncActive = DeepDesyncEnabled || call.DeepDesyncRequested;
@@ -653,19 +859,59 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // Begin recording for replay
             MetaContext.BeginOperation();
 
-            // Dispatch the call
-            var result = await DispatchCall(call.ServiceName, call.MethodName, call.Payload, call.MethodVersion);
+            // Dispatch the call. The generated dispatcher emits serializer.Pack(result) via
+            // Context.Serializer (GrainScopedSerializer) — result.ResultBytes is a ROM slice
+            // over the per-grain scratch buffer, valid until the next Handle*Async entry.
+            var result = await DispatchCall(call.MethodId, call.Payload);
 
-            // End recording and get replay payload
-            var replayPayload = MetaContext.EndOperation();
+            // For cross-entity calls, the inner result IS the outgoing payload (the source
+            // grain hands it back via CrossEntityCallReturn.ResultBytes). The dispatcher's
+            // result bytes are now ROM-over-scratch (GrainScopedSerializer.Pack), which the
+            // next HandleCallAsync entry would invalidate via _scratchPool.Reset(). For
+            // in-silo Orleans hops PooledPayload is [Immutable] and skipped during deep-copy
+            // → the receiver would read stale bytes. .ToArray() here puts the result on a
+            // stable byte[] that outlives the source grain's next call.
+            if (!isClientOriginated)
+                _outgoingResult = new PooledPayload(result.ResultBytes.ToArray(), 0);
 
-            // Collect patch bytes if ServerPatch mode was active
-            byte[]? patchBytes = null;
+            // End recording. The recorder's IBufferWriter wrote into its own ArrayPool-rented
+            // byte[]; copy the bytes into our scratch buffer so the rented array can be
+            // returned to ArrayPool immediately (no lingering ownership).
+            ReadOnlyMemory<byte> replayPayload;
+            if (MetaContext.EndOperationAsRented(out var replayRented, out var replayLen))
+            {
+                if (replayLen > 0)
+                {
+                    var w = new ScratchBufferWriter(_scratchPool);
+                    var span = w.GetSpan(replayLen);
+                    replayRented.AsSpan(0, replayLen).CopyTo(span);
+                    w.Advance(replayLen);
+                    replayPayload = w.WrittenMemory;
+                }
+                else
+                {
+                    replayPayload = default;
+                }
+                System.Buffers.ArrayPool<byte>.Shared.Return(replayRented, clearArray: false);
+            }
+            else
+            {
+                replayPayload = MetaContext.EndOperation();
+            }
+
+            // Collect patch bytes if ServerPatch mode was active. Scratch-backed writer —
+            // content is copied into the response/broadcast pool slot during
+            // PackBroadcastVariant below, scratch is reset at the next call entry.
+            ReadOnlyMemory<byte> patchBytes = default;
             if (patchRoot != null)
             {
                 patchRoot.Prune();
                 if (patchRoot.HasChanges)
-                    patchBytes = Context.Serializer.Pack(patchRoot);
+                {
+                    var patchWriter = new ScratchBufferWriter(_scratchPool);
+                    Context.Serializer.Pack(patchRoot, patchWriter);
+                    patchBytes = patchWriter.WrittenMemory;
+                }
                 MetaContext.PatchWrapper = null;
             }
 
@@ -692,58 +938,54 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // Capture cross-entity calls made during this operation
             var crossEntityCalls = MetaContext.CrossEntityCalls;
 
-            // Build response
-            var response = new HandleCallResult
-            {
-                Response = new RpcResponse
-                {
-                    ResultBytes = result.ResultBytes,
-                    ReplayPayload = replayPayload,
-                    Error = null,
-                    RandomScrollDelta = randomScrollDelta,
-                    NamedRandomScrollDeltas = namedRandomScrollDeltas,
-                    PatchBytes = patchBytes,
-                    DeepDesyncCrc = deepDesyncCrc,
-                    // 0.21.0: tell the client which config version was actually in effect for
-                    // this call. Caller's optimistic replay path uses this to materialize
-                    // the same config branch the server used, decoupling replay from
-                    // session-resolved versions (fixes [EntityScope(Global)] and hot rollout).
-                    ExecutedConfigVersion = MetaContext.ConfigVersion
-                },
-                Broadcasts = new List<EntityBroadcast>(),
-                CrossEntityCalls = crossEntityCalls,
-                ForcePersist = result.ForcePersist
-            };
+            // Populate pooled response — the originator's RPC reply shape. Carries both
+            // ReplayPayload and PatchBytes when both are available; the client picks the
+            // applicable form based on its own execution mode for this method.
+            ResetMetaOperation(_pooledResponseOp);
+            _pooledResponseOp.MethodId = call.MethodId;
+            _pooledResponseOp.Payload = call.Payload;
+            _pooledResponseOp.ResultBytes = result.ResultBytes;
+            _pooledResponseOp.ReplayPayload = replayPayload;
+            _pooledResponseOp.PatchBytes = patchBytes;
+            _pooledResponseOp.RandomScrollDelta = randomScrollDelta;
+            _pooledResponseOp.NamedRandomScrollDeltas = namedRandomScrollDeltas;
+            _pooledResponseOp.DeepDesyncCrc = deepDesyncCrc;
+            _pooledResponseOp.ServerTimeTicks = call.ServerTimeTicks;
+            // Caller's optimistic replay materializes the same config branch the server used —
+            // decoupling replay from session-resolved versions (Global scope, mid-rollout).
+            _pooledResponseOp.ExecutedConfigVersion = MetaContext.ConfigVersion;
 
-            // Create broadcast for this call (to other subscribers)
-            var mainBroadcast = new EntityBroadcast
-            {
-                ServiceName = call.ServiceName,
-                MethodName = call.MethodName,
-                Payload = call.Payload,
-                ReplayPayload = replayPayload,
-                ExcludePlayerId = call.CallerId, // Don't broadcast back to caller
-                ServerTimeTicks = call.ServerTimeTicks,
-                RandomScrollDelta = randomScrollDelta,
-                NamedRandomScrollDeltas = namedRandomScrollDeltas,
-                PatchBytes = patchBytes,
-                // 0.21.0: every observer replays this broadcast under the same config the
-                // server used — not their own session-resolved version. Critical for
-                // [EntityScope(Global)] (server normalized to CurrentClientVersion) and for
-                // mid-session config rollouts that haven't reached all observers yet.
-                ExecutedConfigVersion = MetaContext.ConfigVersion
-            };
+            // Populate pooled broadcast — the form sent to OTHER subscribers. CallerId is
+            // set so subscribers can attribute the op to the originator on their side.
+            // Cross-entity broadcasts (isClientOriginated=false) NULL the CallerId so the
+            // outer caller's client doesn't filter them as own-RPC echoes — the outer caller
+            // didn't directly RPC THIS entity, just transitively touched it through another
+            // entity's method. Direct subscribers of THIS entity still get the broadcast;
+            // they just lose cross-entity attribution (the broadcast wasn't directly theirs).
+            ResetMetaOperation(_pooledBroadcastOp);
+            _pooledBroadcastOp.MethodId = call.MethodId;
+            _pooledBroadcastOp.Payload = call.Payload;
+            _pooledBroadcastOp.CallerId = isClientOriginated ? call.CallerId : null;
+            _pooledBroadcastOp.ReplayPayload = replayPayload;
+            _pooledBroadcastOp.PatchBytes = patchBytes;
+            _pooledBroadcastOp.RandomScrollDelta = randomScrollDelta;
+            _pooledBroadcastOp.NamedRandomScrollDeltas = namedRandomScrollDeltas;
+            _pooledBroadcastOp.ServerTimeTicks = call.ServerTimeTicks;
+            _pooledBroadcastOp.ExecutedConfigVersion = MetaContext.ConfigVersion;
 
-            // Handle triggers if any — nest inside main broadcast
+            // Handle triggers — populate pooled trigger ops, attach to broadcast's Triggers list.
+            // 0.24.0+ TriggersToExecute carries client-local MethodIds directly (emitted by the
+            // dispatcher as GameMethodIds constants). No runtime alias-to-id lookup or string
+            // plumbing — DispatchCall takes the id straight through.
             if (result.TriggersToExecute is { Count: > 0 } triggers)
             {
-                mainBroadcast.TriggerBroadcasts = new List<EntityBroadcast>();
-                foreach (var triggerMethod in triggers)
+                _pooledTriggerSlice.Clear();
+                int triggerIndex = 0;
+                foreach (var triggerMethodId in triggers)
                 {
                     var triggerScrollBefore = _optimisticRandom.ScrollId;
                     var triggerNamedScrollsBefore = CaptureNamedScrolls();
 
-                    // Set up patch tracking for trigger (if ServerPatch mode)
                     PatchNode? triggerPatchRoot = null;
                     if (executionMode == ExecutionMode.ServerPatch)
                     {
@@ -752,62 +994,162 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                     }
 
                     MetaContext.BeginOperation();
-                    // Triggers always dispatch via the legacy/unversioned route (methodVersion=0).
-                    // They're internal hop-overs, not external calls — there is no client-side
-                    // [MetaMethod(Version)] choice in play, so the dispatcher resolves them to
-                    // the lowest-versioned trigger implementation under the alias.
-                    var triggerResult = await DispatchCall(call.ServiceName, triggerMethod, [], 0);
-                    var triggerReplay = MetaContext.EndOperation();
+                    var triggerResult = await DispatchCall(triggerMethodId, default(ReadOnlyMemory<byte>));
+                    // triggerResult.ResultBytes is byte[]-backed (dispatcher no longer pools).
+                    // Embedded into the trigger op below; GC reclaims when the op resets.
 
-                    // Collect trigger patch bytes
-                    byte[]? triggerPatchBytes = null;
+                    // Per-trigger replay payload — copy recorder's ArrayPool rental into our
+                    // scratch buffer, return the rental immediately.
+                    ReadOnlyMemory<byte> triggerReplay;
+                    if (MetaContext.EndOperationAsRented(out var trigRented, out var trigLen))
+                    {
+                        if (trigLen > 0)
+                        {
+                            var w = new ScratchBufferWriter(_scratchPool);
+                            var span = w.GetSpan(trigLen);
+                            trigRented.AsSpan(0, trigLen).CopyTo(span);
+                            w.Advance(trigLen);
+                            triggerReplay = w.WrittenMemory;
+                        }
+                        else
+                        {
+                            triggerReplay = default;
+                        }
+                        System.Buffers.ArrayPool<byte>.Shared.Return(trigRented, clearArray: false);
+                    }
+                    else
+                    {
+                        triggerReplay = MetaContext.EndOperation();
+                    }
+
+                    ReadOnlyMemory<byte> triggerPatchBytes = default;
                     if (triggerPatchRoot != null)
                     {
                         triggerPatchRoot.Prune();
                         if (triggerPatchRoot.HasChanges)
-                            triggerPatchBytes = Context.Serializer.Pack(triggerPatchRoot);
+                        {
+                            var w = new ScratchBufferWriter(_scratchPool);
+                            Context.Serializer.Pack(triggerPatchRoot, w);
+                            triggerPatchBytes = w.WrittenMemory;
+                        }
                         MetaContext.PatchWrapper = null;
                     }
 
                     var triggerScrollDelta = _optimisticRandom.ScrollId - triggerScrollBefore;
                     var triggerNamedDeltas = ComputeNamedScrollDeltas(triggerNamedScrollsBefore);
 
-                    mainBroadcast.TriggerBroadcasts.Add(new EntityBroadcast
-                    {
-                        ServiceName = call.ServiceName,
-                        MethodName = triggerMethod,
-                        Payload = [], // Triggers have no arguments
-                        ReplayPayload = triggerReplay,
-                        ExcludePlayerId = null, // Broadcast triggers to everyone
-                        ServerTimeTicks = call.ServerTimeTicks,
-                        RandomScrollDelta = triggerScrollDelta,
-                        NamedRandomScrollDeltas = triggerNamedDeltas,
-                        PatchBytes = triggerPatchBytes,
-                        // Triggers run under the same MetaContext as the outer call — same config.
-                        ExecutedConfigVersion = MetaContext.ConfigVersion
-                    });
+                    var triggerOp = RentTriggerOp(triggerIndex++);
+                    triggerOp.MethodId = triggerMethodId;
+                    triggerOp.Payload = System.Array.Empty<byte>();
+                    triggerOp.CallerId = call.CallerId;
+                    triggerOp.ReplayPayload = triggerReplay;
+                    triggerOp.PatchBytes = triggerPatchBytes;
+                    triggerOp.RandomScrollDelta = triggerScrollDelta;
+                    triggerOp.NamedRandomScrollDeltas = triggerNamedDeltas;
+                    triggerOp.ServerTimeTicks = call.ServerTimeTicks;
+                    triggerOp.ExecutedConfigVersion = MetaContext.ConfigVersion;
+                    _pooledTriggerSlice.Add(triggerOp);
                 }
+                // Both response and broadcast carry the SAME trigger list (same object reference
+                // is OK pre-serialization — neither is mutated independently). Will be cleared
+                // before next call via the broadcast op's reset.
+                _pooledResponseOp.Triggers = _pooledTriggerSlice;
+                _pooledBroadcastOp.Triggers = _pooledTriggerSlice;
             }
 
-            // ServerReplace: serialize full state AFTER all triggers, capturing final state
-            byte[]? stateBytes = null;
+            // ServerReplace: serialize full state AFTER all triggers, capturing final state.
+            // Strips ReplayPayload from both response and broadcast (state replaces it on the client).
+            // State is intermediate (content is copied into response/broadcast pool slots during
+            // PackBroadcastVariant below) — use the ArrayPool-backed writer, NOT the registry.
+            ReadOnlyMemory<byte> stateBytes = default;
             if (isServerReplace)
             {
-                stateBytes = GetStateBytes();
-                response.Response.StateBytes = stateBytes;
-                response.Response.ReplayPayload = null; // no replay needed
-                mainBroadcast.StateBytes = stateBytes;
-                mainBroadcast.ReplayPayload = null;
+                if (State != null)
+                {
+                    var stateWriter = new ScratchBufferWriter(_scratchPool);
+                    Context.Serializer.Pack(State, stateWriter);
+                    stateBytes = stateWriter.WrittenMemory;
+                }
+                _pooledResponseOp.StateBytes = stateBytes;
+                _pooledResponseOp.ReplayPayload = default;
+                _pooledBroadcastOp.StateBytes = stateBytes;
+                _pooledBroadcastOp.ReplayPayload = default;
             }
 
-            response.Broadcasts.Add(mainBroadcast);
+            // Serialize response once — only when needed for the originating client's RPC reply.
+            // Cross-entity callers (isClientOriginated=false) read just ResultBytes from the
+            // slim CrossEntityCallReturn; the full ResponseBytes would be ignored, so skip it.
+            // Pool path: owned slot rides out as EntityCallResult.OpBytes (PooledPayload).
+            // Sender does not Release — the SessionManager / wire pipeline owns the buffer
+            // once the result crosses the grain boundary.
+            ReadOnlyMemory<byte> responseBytes = default;
+            PooledPayload ownedResponse = default;
+            if (isClientOriginated)
+                (responseBytes, ownedResponse) = PackBroadcastVariant(_pooledResponseOp);
 
-            return response;
+            // Serialize broadcast variants — high fan-out, this is where the pool win is.
+            // Common case: one variant (replay-only). When requirePatchForFanOut is on we also
+            // need a patch-only variant for the legacy subscriber population.
+            ReadOnlyMemory<byte> broadcastReplayBytes = default;
+            ReadOnlyMemory<byte> broadcastPatchBytes = default;
+            PooledPayload ownedBroadcastReplay = default;
+            PooledPayload ownedBroadcastPatch = default;
+
+            // Variant 1: replay-eligible audience. Strip PatchBytes so the variant carries
+            // only the replay payload (and state, for ServerReplace which already null'd replay).
+            var origPatch = _pooledBroadcastOp.PatchBytes;
+            _pooledBroadcastOp.PatchBytes = default;
+            (broadcastReplayBytes, ownedBroadcastReplay) = PackBroadcastVariant(_pooledBroadcastOp);
+            _pooledBroadcastOp.PatchBytes = origPatch;
+
+            // Variant 2: patch-eligible audience. Only emit when force-patch tailoring is
+            // requested OR the call executed under ServerPatch (then ALL subscribers get patch
+            // and the replay variant is what we don't ship). For ServerPatch we still emit
+            // both variants but the broadcast distributor will use the patch variant.
+            if (requirePatchForFanOut && !origPatch.IsEmpty)
+            {
+                var origReplay = _pooledBroadcastOp.ReplayPayload;
+                _pooledBroadcastOp.ReplayPayload = default;
+                (broadcastPatchBytes, ownedBroadcastPatch) = PackBroadcastVariant(_pooledBroadcastOp);
+                _pooledBroadcastOp.ReplayPayload = origReplay;
+            }
+
+            // Outgoing pool tokens — EntityGrain takes them via TakeOutgoing* and wraps into
+            // PooledPayload-typed wire fields (EntityCallResult.OpBytes / EntityBroadcast.OpBytes).
+            // Sender (us) does NOT release these; the receiving grain / wire pipeline owns the
+            // buffer once it crosses the boundary. Any token left un-taken at the next provider
+            // entry is released as a safety net via FlushPendingOutgoing.
+            _outgoingResponse = ownedResponse;
+            _outgoingBroadcastReplay = ownedBroadcastReplay;
+            _outgoingBroadcastPatch = ownedBroadcastPatch;
+
+            return new HandleCallResult
+            {
+                ResponseBytes = responseBytes,
+                ResultBytes = result.ResultBytes,
+                BroadcastReplayBytes = broadcastReplayBytes,
+                BroadcastPatchBytes = broadcastPatchBytes,
+                CrossEntityCalls = crossEntityCalls,
+                ForcePersist = result.ForcePersist,
+                Error = null,
+            };
         }
         catch (Exception ex)
         {
-            Logger.ProviderCallError(ex, call.ServiceName, call.MethodName);
-            return new HandleCallResult { Response = new RpcResponse { Error = ex.Message } };
+            Logger.ProviderCallError(ex, call.MethodId);
+            // Build an error-only response op so the wire payload is well-formed (client
+            // dispatchers always Unpack OpBytes). Error path stays byte[]-backed (Ref=0):
+            // hot path is the success branch, error allocations are not on a budget.
+            ResetMetaOperation(_pooledResponseOp);
+            _pooledResponseOp.MethodId = call.MethodId;
+            _pooledResponseOp.Error = ex.Message;
+            var errBytes = PackBytes(Context.Serializer, _pooledResponseOp);
+            _outgoingResponse = new PooledPayload(errBytes, 0);
+            return new HandleCallResult
+            {
+                ResponseBytes = errBytes,
+                Error = ex.Message,
+            };
         }
         finally
         {
@@ -816,31 +1158,14 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     }
 
     /// <summary>
-    /// 0.20.0: Same-grain nested call dispatcher. Used by <c>EntityGrain.EntityCallHandler</c>
-    /// when a cross-entity call's <c>targetEntityId</c> resolves to the calling grain itself
-    /// (gift-to-self). Bypasses Orleans grain RPC — which would deadlock since
-    /// <c>EntityGrain</c> is non-reentrant — and dispatches directly on this provider's
-    /// cached service instances under the same <see cref="MetaContext"/>.
-    /// <para>
-    /// The nested call runs as a sub-operation: it gets its own replay-payload buffer and
-    /// its own <c>CrossEntityCalls</c> list (so further-nested calls don't pollute the
-    /// outer's collection), but shares state, randoms, named-randoms, and the outer's
-    /// <c>PatchWrapper</c> (mutations flow into the outer's patch tree — patches stay one
-    /// per outer call from the client's perspective).
-    /// </para>
-    /// <para>
-    /// Caller-context fields (<c>CallerId</c>, <c>CallerClientVersion</c>,
-    /// <c>ServerTimeTicks</c>) are inherited from the outer call — the original network
-    /// caller is still the originator of every nested step.
-    /// </para>
-    /// <para>
-    /// Returns a <see cref="CrossEntityCallInfo"/> populated with inner replay bytes and
-    /// result bytes so the upstream <c>CallEntityAsync</c> caller produces the same
-    /// recording shape as a real cross-entity hop — clients replaying the outer operation
-    /// see the inner step exactly as if it had crossed grain boundaries.
-    /// </para>
+    /// Self-call dispatcher: a cross-entity call whose target resolves to this grain runs
+    /// here instead of through Orleans (which would deadlock — EntityGrain is non-reentrant).
+    /// The nested op gets its own replay buffer and <c>CrossEntityCalls</c> list but shares
+    /// state, randoms, and the outer's <c>PatchWrapper</c> so the patch tree stays one-per-RPC
+    /// from the client's perspective. Returns a <see cref="CrossEntityOperationInfo"/> shaped
+    /// identically to the real cross-entity path so replay sees no difference.
     /// </summary>
-    public async Task<CrossEntityCallInfo> HandleNestedCallAsync(string targetEntityId, string serviceName, string methodName, byte[] argsBytes)
+    public async Task<CrossEntityOperationInfo> HandleNestedCallAsync(string targetEntityId, ushort methodId, byte[] argsBytes)
     {
         if (MetaContext == null)
             throw new InvalidOperationException("Provider not initialized.");
@@ -854,9 +1179,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         DispatchResult result;
         try
         {
-            // Sibling/cross-entity nested call. Routes via the legacy/unversioned method-version
-            // bucket — internal hop, not a client call carrying a specific [MetaMethod(Version)].
-            result = await DispatchCall(serviceName, methodName, argsBytes, 0);
+            // Sibling nested call.
+            result = await DispatchCall(methodId, argsBytes);
         }
         finally
         {
@@ -864,20 +1188,17 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContext.PopNestedOperation(frame, out _);
         }
 
-        return new CrossEntityCallInfo
-        {
+        return new CrossEntityOperationInfo {
             EntityId = targetEntityId,
-            ServiceName = serviceName,
-            MethodName = methodName,
+            MethodId = methodId,
             ResultBytes = result.ResultBytes,
             EntitySequenceNumber = 0  // self-call shares outer's sequence; no separate seq increment
         };
     }
 
-    public async Task<HandleEventResult> HandleExternalEventAsync(
-        string subscriberInterface,
-        string methodName,
-        byte[] eventData,
+    public async ValueTask<HandleEventResult> HandleExternalEventAsync(
+        ushort methodId,
+        ReadOnlyMemory<byte> eventData,
         string? callerId = null)
     {
         if (MetaContext == null || Context == null)
@@ -891,29 +1212,63 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContext.ServerTimeTicks = DateTime.UtcNow.Ticks;
             MetaContextAccessor.Current = MetaContext;
 
+            // Reclaim any pool buffers / outgoing tokens left over from the previous call.
+            FlushPendingNamedScrollReturns();
+            FlushPendingOutgoing();
+            _scratchPool.Reset();
+            (Context.Serializer as Memory.GrainScopedSerializer)?.ResetScratch();
+
             MetaContext.BeginOperation();
-            var result = await DispatchEvent(subscriberInterface, methodName, eventData);
-            var replayPayload = MetaContext.EndOperation();
+            var result = await DispatchEvent(methodId, eventData);
+            // result.ResultBytes is byte[]-backed (dispatcher no longer pools). It's embedded
+            // into the broadcast op below and GC reclaims after the op is packed.
 
-            var broadcasts = new List<EntityBroadcast>();
-
-            // Create broadcast for this event
-            broadcasts.Add(new EntityBroadcast
+            // Replay payload: copy recorder's rental into scratch, return rental immediately.
+            ReadOnlyMemory<byte> replayPayload;
+            if (MetaContext.EndOperationAsRented(out var rented, out var rentedLen))
             {
-                ServiceName = subscriberInterface,
-                MethodName = methodName,
-                Payload = eventData,
-                ReplayPayload = replayPayload,
-                ExcludePlayerId = null, // Broadcast to everyone
-                ServerTimeTicks = MetaContext.ServerTimeTicks,
-                ExecutedConfigVersion = MetaContext.ConfigVersion
-            });
+                if (rentedLen > 0)
+                {
+                    var w = new ScratchBufferWriter(_scratchPool);
+                    var span = w.GetSpan(rentedLen);
+                    rented.AsSpan(0, rentedLen).CopyTo(span);
+                    w.Advance(rentedLen);
+                    replayPayload = w.WrittenMemory;
+                }
+                else
+                {
+                    replayPayload = default;
+                }
+                System.Buffers.ArrayPool<byte>.Shared.Return(rented, clearArray: false);
+            }
+            else
+            {
+                replayPayload = MetaContext.EndOperation();
+            }
 
-            return new HandleEventResult { Broadcasts = broadcasts };
+            // Populate pooled broadcast for this event and serialize. Wire identifier is the
+            // framework subscriber method id (high-range ushort from FrameworkMethodIds);
+            // client-side dispatch keys on this. ServiceName/MethodName left empty — they're
+            // diagnostic only and not used by per-method routing anymore.
+            ResetMetaOperation(_pooledBroadcastOp);
+            _pooledBroadcastOp.MethodId = methodId;
+            _pooledBroadcastOp.Payload = eventData;
+            _pooledBroadcastOp.ReplayPayload = replayPayload;
+            _pooledBroadcastOp.ServerTimeTicks = MetaContext.ServerTimeTicks;
+            _pooledBroadcastOp.ExecutedConfigVersion = MetaContext.ConfigVersion;
+
+            // Pool path: owned slot rides out as EntityBroadcast.OpBytes (PooledPayload) and
+            // receivers release. Falls back to byte[] when registry isn't wired.
+            var (broadcastBytes, ownedEventBroadcast) = PackBroadcastVariant(_pooledBroadcastOp);
+            _outgoingEventBroadcast = ownedEventBroadcast;
+            return new HandleEventResult
+            {
+                BroadcastBytes = broadcastBytes,
+            };
         }
         catch (Exception ex)
         {
-            Logger.ProviderEventError(ex, subscriberInterface, methodName);
+            Logger.ProviderEventError(ex, "(framework)", "id=" + methodId);
             return new HandleEventResult();
         }
         finally
@@ -922,25 +1277,26 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         }
     }
 
-    // 0.20.0: per-method validation (this-is-a-query-method, IsClientCallable for
-    // GenerateClientApi=false, IsOpenAccessQuery + access-policy ladder) is emitted by the
-    // generator as a HandleQueryAsync override running an inline switch before delegating
-    // to base. Generation is conditional on the project containing at least one query method.
-    // Default base behaviour: any HandleQueryAsync call without a generator override is
-    // rejected — there are no registered query methods to dispatch.
-    public virtual async Task<QueryCallResponse> HandleQueryAsync(RpcCall call)
+    // Per-method validation (is-a-query-method, IsClientCallable, IsOpenAccessQuery +
+    // access-policy ladder) is emitted by the generator as a HandleQueryAsync override that
+    // runs an inline switch before delegating to base. Generated only when the project has
+    // at least one query method; base behaviour without an override rejects all calls since
+    // there's nothing to dispatch.
+    public virtual async ValueTask<QueryCallResponse> HandleQueryAsync(RpcCall call)
     {
         if (MetaContext == null || Context == null)
             return new QueryCallResponse { Error = "Provider not initialized" };
 
-        bool skipMigration = ShouldSkipMigration(call.ServiceName, call.MethodName);
+        // 0.24.0+ Migration policy keyed by ushort MethodId — generated overrides switch on
+        // GameMethodIds constants. No name plumbing on the hot path.
+        bool skipMigration = ShouldSkipMigration(call.MethodId);
         int? schemaCap = null;
-        // 0.21.0: Private/Shared with active pin → migration locked to subscribe-time driver.
-        // Global → CurrentClientVersion-driven via ResolveMigrationDriverForGlobal.
+        // Pin locks schema for Private/Shared with an active pin; Global substitutes
+        // CurrentClientVersion as the migration driver instead of the caller's own version.
         bool pinLocksMigration = ActiveConfigPins.Count > 0 && Scope != EntityScope.Global;
         if (!skipMigration && !pinLocksMigration)
         {
-            var methodCap = GetMethodMinStateVersion(call.ServiceName, call.MethodName);
+            var methodCap = GetMethodMinStateVersion(call.MethodId);
             var migrationDriver = Scope == EntityScope.Global ? ResolveMigrationDriverForGlobal(call.CallerClientVersion) : call.CallerClientVersion;
             var clientCap = ComputeSchemaCapForClient(migrationDriver);
             schemaCap = methodCap.HasValue && clientCap.HasValue
@@ -948,13 +1304,9 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                 : (methodCap ?? clientCap);
         }
 
-        // Lazy migration: run any pending config-driven schema steps before serving the
-        // query so the result reflects the up-to-date state. Queries don't go through
-        // HandleCallAsync, so the check is duplicated here. EntityGrain checks
-        // LazyMigrationCompleted after HandleCallAsync; for queries we persist inline via
-        // SaveStateHandler when migration ran. [NoMigrate]/[MinStateVersion] policies apply.
-        // 0.21.0: pin-locked Private/Shared skip migration entirely; Global uses the
-        // CurrentClientVersion-substituted driver computed above.
+        // Queries don't go through HandleCallAsync, so the lazy-migration check is duplicated
+        // here. EntityGrain doesn't see LazyMigrationCompleted on the query path, so we
+        // persist inline via SaveStateHandler when migration ran.
         if (!skipMigration && !pinLocksMigration)
         {
             var queryDriver = Scope == EntityScope.Global ? ResolveMigrationDriverForGlobal(call.CallerClientVersion) : call.CallerClientVersion;
@@ -992,8 +1344,17 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContext.IsClientCall = true; // queries always come from clients
             MetaContextAccessor.Current = MetaContext;
 
-            // Dispatch the call — same dispatcher, but no replay/random/broadcast machinery
-            var result = await DispatchCall(call.ServiceName, call.MethodName, call.Payload, call.MethodVersion);
+            // Reclaim any pool buffers / outgoing tokens left over from the previous call.
+            FlushPendingNamedScrollReturns();
+            FlushPendingOutgoing();
+            _scratchPool.Reset();
+            (Context.Serializer as Memory.GrainScopedSerializer)?.ResetScratch();
+
+            // Dispatch the call — same dispatcher, but no replay/random/broadcast machinery.
+            // result.ResultBytes is byte[]-backed (dispatcher no longer uses PooledPayload
+            // for intermediate dispatcher results); the byte[] survives the EntityGrain →
+            // SessionManager grain hop normally and reaches the client.
+            var result = await DispatchCall(call.MethodId, call.Payload);
 
             return new QueryCallResponse
             {
@@ -1003,7 +1364,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         }
         catch (Exception ex)
         {
-            Logger.ProviderCallError(ex, call.ServiceName, call.MethodName);
+            Logger.ProviderCallError(ex, call.MethodId);
             return new QueryCallResponse { Error = ex.Message };
         }
         finally
@@ -1012,11 +1373,10 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         }
     }
 
-    // 0.20.0: removed protected lookup hooks (IsQueryMethod / IsSignalMethod /
-    // IsOpenAccessQuery / IsClientCallable). Validation moved into generator-emitted
-    // overrides of HandleCallAsync / HandleQueryAsync / HandleSignalAsync, where each switch
-    // contains exactly the methods it needs to gate. Projects with no GenerateClientApi=false,
-    // no Query, or no Signal methods generate zero validation code for those gates.
+    // Per-method classification (IsQueryMethod / IsSignalMethod / IsOpenAccessQuery /
+    // IsClientCallable) deliberately lives inline in the generator-emitted Handle*Async
+    // overrides, not as virtual lookups here — each switch contains exactly the methods it
+    // needs to gate, and projects without those gate flavours emit zero validation code.
 
     /// <summary>
     /// Handle a signal call. Dispatches the method through <see cref="DispatchSignal"/> but skips
@@ -1026,16 +1386,14 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// recording is a no-op.
     /// Errors are caught and logged — they do not propagate back to the client (fire-and-forget).
     /// </summary>
-    // 0.20.0: per-method validation (this-is-a-signal-method, IsClientCallable, access-policy
-    // ladder) is emitted inline by the generator as a HandleSignalAsync override that runs
-    // before base. Generation is conditional on the project containing at least one signal
-    // method. Default base behaviour: a HandleSignalAsync without a generator override
-    // silently no-ops on DispatchSignal — no signal methods registered.
-    public virtual async Task HandleSignalAsync(RpcCall call)
+    // Per-method validation (is-a-signal-method, IsClientCallable, access-policy ladder) is
+    // emitted by the generator as a HandleSignalAsync override that runs before base.
+    // Generated only when the project has at least one signal method.
+    public virtual async ValueTask HandleSignalAsync(RpcCall call)
     {
         if (MetaContext == null || Context == null)
         {
-            Logger.ProviderCallError(new InvalidOperationException("Provider not initialized"), call.ServiceName, call.MethodName);
+            Logger.ProviderCallError(new InvalidOperationException("Provider not initialized"), call.MethodId);
             return;
         }
 
@@ -1049,13 +1407,15 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContext.SignalMode = true;
             MetaContextAccessor.Current = MetaContext;
 
-            await DispatchSignal(call.ServiceName, call.MethodName, call.Payload, call.MethodVersion);
+            // 0.24.0+ DispatchSignal keyed by methodId — generated override switches on
+            // GameMethodIds constants per signal method on this provider's services.
+            await DispatchSignal(call.MethodId, call.Payload);
         }
         catch (Exception ex)
         {
             // Signal is fire-and-forget by contract — log and swallow so the entity grain
             // does not see an exception that would become a transport-level error on the session.
-            Logger.ProviderCallError(ex, call.ServiceName, call.MethodName);
+            Logger.ProviderCallError(ex, call.MethodId);
         }
         finally
         {
@@ -1067,25 +1427,26 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     public byte[] GetStateBytes()
     {
         if (Context == null || State == null) return [];
-        return Context.Serializer.Pack(State);
+        // .ToArray(): caller (snapshot, persistence) needs owned byte[] outliving the scratch.
+        return Context.Serializer.Pack(State).ToArray();
     }
 
     public byte[] GetServerRandomBytes()
     {
         if (Context == null) return [];
-        return Context.Serializer.Pack(_serverRandom);
+        return Context.Serializer.Pack(_serverRandom).ToArray();
     }
 
     public byte[] GetOptimisticRandomBytes()
     {
         if (Context == null) return [];
-        return Context.Serializer.Pack(_optimisticRandom);
+        return Context.Serializer.Pack(_optimisticRandom).ToArray();
     }
 
     public byte[] GetNamedRandomsBytes()
     {
         if (Context == null || _namedRandoms.Length == 0) return [];
-        return Context.Serializer.Pack(_namedRandoms);
+        return Context.Serializer.Pack(_namedRandoms).ToArray();
     }
 
     public async Task<int> InitializeStateAsync(int currentVersion)
@@ -1140,12 +1501,10 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     public MetaConfigVersion ConfigVersion { get; private set; }
 
     /// <summary>
-    /// Initialize config for this entity with the given version. Default impl just records
-    /// the version; generated providers override to additionally materialize the
-    /// <see cref="MetaContext{TState}.Config"/> object from <see cref="IMetaConfigProvider{TConfig}"/>.
-    /// 0.21.0 retains the sync entry point for backward compatibility — providers that need
-    /// async materialization (e.g. <c>BroadcastingConfigProvider</c> on cache miss) should
-    /// override <see cref="InitializeConfigAsync"/> instead.
+    /// Records the version. Generated providers additionally materialize
+    /// <see cref="MetaContext{TState}.Config"/> from <see cref="IMetaConfigProvider{TConfig}"/>.
+    /// Providers that need async materialization should override
+    /// <see cref="InitializeConfigAsync"/> instead.
     /// </summary>
     public virtual void InitializeConfig(MetaConfigVersion version)
     {
@@ -1198,22 +1557,11 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     protected virtual object? GetCachedConfigForClient(string? clientVersion) => null;
 
     /// <summary>
-    /// 0.21.0 — scope-aware effective config version that the framework will actually use
-    /// for dispatching calls under this provider for a given subscribing client:
-    /// <list type="bullet">
-    ///   <item><see cref="EntityScope.Private"/> / <see cref="EntityScope.Shared"/> — pin's
-    ///         primary-config version if pin is established; otherwise the joiner's resolved
-    ///         version (which becomes the pin on first subscribe).</item>
-    ///   <item><see cref="EntityScope.Global"/> — the version resolved from
-    ///         <see cref="IConfigVersionResolver.CurrentClientVersion"/>, ignoring the
-    ///         joiner's own version.</item>
-    /// </list>
-    /// Used by <c>EntityGrain.SubscribeAsync</c> to populate <see cref="SubscribeResponse"/>'s
-    /// config version so the client materializes the same config the server will dispatch under.
-    /// <para>
-    /// Default base impl returns <see cref="ResolveClientConfigVersion"/> (pin-free, joiner-direct).
-    /// Generated providers override when they have a primary config registered.
-    /// </para>
+    /// Scope-aware effective config version the framework will dispatch under for a given
+    /// subscriber. Private/Shared: pin's version when pinned, else the joiner's resolved
+    /// version (becomes the pin on first subscribe). Global: <see cref="IConfigVersionResolver.CurrentClientVersion"/>
+    /// resolution, ignoring the joiner's own version. Populated on the SubscribeResponse so
+    /// the client materializes the same config the server will use.
     /// </summary>
     public virtual MetaConfigVersion ResolveEffectiveConfigVersion(string? clientVersion)
         => ResolveClientConfigVersion(clientVersion);

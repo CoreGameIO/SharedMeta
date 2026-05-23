@@ -45,7 +45,11 @@ public class TestClientSetup : IAsyncDisposable
                 PlayerId = playerId,
                 Diagnostics = diagnostics,
                 ModeProvider = modeProvider,
-                ClientAppVersion = clientAppVersion ?? "1.0.0"
+                ClientAppVersion = clientAppVersion ?? "1.0.0",
+                // 0.24.0+ Wire the generated client signature so the session handshake
+                // exercises the same negotiation path production clients use, and so the
+                // server can produce per-method MethodId translation maps.
+                ClientSignature = SharedMeta.Test.Meta1.GameServiceDiscoveryBase.ClientSignature
             }
         );
 
@@ -83,7 +87,7 @@ public class TestClientSetup : IAsyncDisposable
             Console.Error.WriteLine(msg);
         }
 
-        public void OnCrossEntityResult(string entityId, string serviceName, string methodName, byte[]? resultBytes)
+        public void OnCrossEntityResult(string entityId, ushort methodId, byte[]? resultBytes)
         {
             // Log cross-entity results for debugging
         }

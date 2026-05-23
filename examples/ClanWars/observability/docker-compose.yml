@@ -1,0 +1,53 @@
+# SharedMeta / ClanWars observability stack — Prometheus + Grafana via Docker.
+#
+# Targets a host-running ClanWars.Server. The container reaches the host via
+# `host.docker.internal` which Docker Desktop on Windows/macOS injects automatically.
+# On vanilla Linux Docker (no Desktop) `host.docker.internal` is mapped explicitly via
+# the `extra_hosts` line below — this is a no-op on Windows/macOS.
+#
+# Usage:
+#   1) Start ClanWars.Server on the host (it listens on :5050 with /metrics exposed)
+#   2) docker compose up -d
+#   3) Open http://localhost:3000 (Grafana, admin / admin)
+#   4) Dashboard "SharedMeta / ClanWars" is auto-provisioned
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: sharedmeta-prom
+    ports:
+      - "9090:9090"          # Prometheus UI / API
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # required on Linux, harmless on Win/mac
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=24h"
+      - "--web.enable-lifecycle"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    container_name: sharedmeta-grafana
+    ports:
+      - "3000:3000"          # Grafana UI
+    depends_on:
+      - prometheus
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_DEFAULT_THEME=dark
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  prom-data:
+  grafana-data:

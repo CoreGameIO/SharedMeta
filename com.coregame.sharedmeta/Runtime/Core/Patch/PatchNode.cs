@@ -109,6 +109,14 @@ namespace SharedMeta.Core.Patch
         }
 
         /// <summary>
+        /// ROM overload — copies the slice into an owned byte[] before storing. Patch tree
+        /// is wire-serialized and may live past the source scratch's reset; .ToArray() is the
+        /// minimum needed copy here (single alloc per Tracked setter, no behavioural change
+        /// vs. the previous byte[]-returning Pack path).
+        /// </summary>
+        public void MarkTerminal(System.ReadOnlyMemory<byte> value) => MarkTerminal(value.ToArray());
+
+        /// <summary>
         /// Get or create a Field child with the given field id. Field children are
         /// distinguished from element children by <see cref="Kind"/>.
         /// </summary>
@@ -232,6 +240,9 @@ namespace SharedMeta.Core.Patch
             child.MarkTerminal(value);
         }
 
+        public void MarkChildTerminal(long fieldId, System.ReadOnlyMemory<byte> value)
+            => MarkChildTerminal(fieldId, value.ToArray());
+
         /// <summary>
         /// Get or create a list-typed collection child and record a wholesale replacement
         /// as a <see cref="PatchListOpKind.FullReplace"/> structural op. Drops any prior
@@ -255,6 +266,9 @@ namespace SharedMeta.Core.Patch
                 ElementBytes = packedList,
             });
         }
+
+        public void MarkChildFullReplace(long fieldId, System.ReadOnlyMemory<byte> packedList)
+            => MarkChildFullReplace(fieldId, packedList.ToArray());
 
         /// <summary>
         /// Walk up the Parent chain setting HasChanges = true.

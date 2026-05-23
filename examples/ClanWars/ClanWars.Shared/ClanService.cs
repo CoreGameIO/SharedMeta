@@ -9,7 +9,7 @@ namespace ClanWars.Shared
     /// the sum of member Scores. The container DI service (server-only, reached via
     /// Context.Resolver) is notified of join/leave/power events for the recommendation cache.
     /// </summary>
-    [MetaServiceImpl(typeof(IClanService), typeof(ClanState))]
+    [MetaServiceImpl(typeof(IClanService), typeof(ClanState), typeof(IProfileService))]
     public partial class ClanService : IClanService
     {
         private ClanState S => State;
@@ -55,12 +55,32 @@ namespace ClanWars.Shared
             return true;
         }
 
-        public async Task<bool> AcceptApplication(string playerId)
+        public Task<bool> AcceptApplication(string playerId)
         {
-            if (Context.CallerId != S.LeaderId && !S.Officers.Contains(Context.CallerId ?? "")) return false;
-            if (!S.Applications.Remove(playerId)) return false;
-            if (S.Members.Count >= C.MaxMembers) return false;
+            if (Context.CallerId != S.LeaderId && !S.Officers.Contains(Context.CallerId ?? "")) return Task.FromResult(false);
+            if (!S.Applications.Remove(playerId)) return Task.FromResult(false);
+            if (S.Members.Count >= C.MaxMembers) return Task.FromResult(false);
+            // Don't add to Members yet — player may already be in another clan and decline.
+            // Fire-and-forget the offer; profile will call back ConfirmJoin if they accept.
+            GetIProfileService(playerId).OfferMembership(Context.EntityId ?? "");
+            return Task.FromResult(true);
+        }
+
+        /// <summary>
+        /// Cross-entity Notification callback from <see cref="ProfileService.OfferMembership"/> /
+        /// <see cref="ProfileService.AcceptInvitation"/>. The player has decided to join, so we
+        /// add them to Members and bump Power. Idempotent on roster-full / already-member.
+        /// </summary>
+        public async Task<bool> ConfirmJoin(string playerId, int playerScore)
+        {
+            if (S.Members.Contains(playerId)) return true;        // idempotent: already in
+            if (S.Members.Count >= C.MaxMembers) return false;    // roster full
             S.Members.Add(playerId);
+            if (playerScore > 0)
+            {
+                S.Power += playerScore;
+                await NotifyContainerPowerDelta(playerScore);
+            }
             await NotifyContainerMemberCount(S.Members.Count);
             return true;
         }
@@ -125,6 +145,13 @@ namespace ClanWars.Shared
                 MemberCount = S.Members.Count,
                 Power = S.Power,
             };
+
+        // EntityAccessPolicy.Authorized hook. EntityGrain.SubscribeAsync invokes this; only
+        // current clan members (leader included — added in Initialize) may hold a subscription.
+        // Non-members can still hit [MetaMethod(OpenAccess = true)] entries (GetSummary) and
+        // cross-entity entry points (SubmitApplication / AddPower / Initialize) which run
+        // through the grain's call-handler path, not the subscribe path.
+        public bool IsAuthorized(string playerId) => S.Members.Contains(playerId);
 
         // ── Container DI notifications ───────────────────────────────────────────
         // Container is a server-only DI singleton. Method bodies run on BOTH server

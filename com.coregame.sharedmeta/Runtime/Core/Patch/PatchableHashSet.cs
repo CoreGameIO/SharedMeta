@@ -38,7 +38,7 @@ namespace SharedMeta.Core.Patch
         private void MarkChanged()
         {
             if (_parentNode != null && _serializer != null)
-                _parentNode.MarkChildTerminal(_fieldId, _serializer.Pack(_set));
+                _parentNode.MarkChildTerminal(_fieldId, _serializer.Pack(_set).ToArray());
         }
 
         // === Mutating operations (auto-mark dirty) ===

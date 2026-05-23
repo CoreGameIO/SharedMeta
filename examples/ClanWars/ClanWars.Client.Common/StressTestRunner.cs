@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using SharedMeta.Debug.Mux;
+using SharedMeta.Transport.SignalR;     // AddMetaMessagePackProtocol extension
 
 namespace ClanWars.Client.Common
 {
@@ -38,14 +39,20 @@ namespace ClanWars.Client.Common
 
             // Optional Mux channel pool. Built and started BEFORE simulators spin up so the
             // physical sockets are live before any SessionConnect fires.
+            //
+            // 0.23.0+ Pass AddMetaMessagePackProtocol so MuxChannel.StartAsync() negotiates
+            // binary MessagePack instead of falling back to SignalR's default JSON protocol.
+            // The server already exposes MessagePack via AddMetaMessagePackProtocol(); previously
+            // the Mux client was JSON-only and System.Text.Json ate ~8.5% of server allocations.
             MuxChannel[]? channels = null;
             if (options.MuxChannels > 0)
             {
                 channels = new MuxChannel[options.MuxChannels];
                 for (int i = 0; i < channels.Length; i++)
-                    channels[i] = new MuxChannel(options.MuxServerUrl);
+                    channels[i] = new MuxChannel(options.MuxServerUrl,
+                        configureBuilder: b => b.AddMetaMessagePackProtocol());
                 await Task.WhenAll(channels.Select(c => c.StartAsync()));
-                Console.WriteLine($"[stress] Mux pool ready: {channels.Length} physical SignalR sockets connected.");
+                Console.WriteLine($"[stress] Mux pool ready: {channels.Length} physical SignalR sockets connected (MessagePack protocol).");
             }
 
             try

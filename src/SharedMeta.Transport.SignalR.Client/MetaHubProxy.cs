@@ -19,6 +19,9 @@ namespace SharedMeta.Transport.SignalR
         public Task<SessionConnectResponse> SessionConnect(SessionConnectRequest request)
             => _connection.InvokeAsync<SessionConnectResponse>(nameof(SessionConnect), request);
 
+        public Task<RegisterClientSignatureResponse> RegisterClientSignature(RegisterClientSignatureRequest request)
+            => _connection.InvokeAsync<RegisterClientSignatureResponse>(nameof(RegisterClientSignature), request);
+
         public Task<SubscribeResponse> Subscribe(SubscribeRequest request)
             => _connection.InvokeAsync<SubscribeResponse>(nameof(Subscribe), request);
 

@@ -205,7 +205,7 @@ No server communication. Instant. State changes are client-only. Good for UI sta
 
 ### CrossOptimistic
 
-Client executes locally including cross-entity calls on cached local state. Server validates. Used for interactive cross-entity gameplay (trading, multiplayer moves).
+**Split-profile mode.** When a player's data is split across multiple `ISharedState` entities owned by the same player, `CrossOptimistic` lets the client execute methods that touch more than one of those states locally without waiting for a server round-trip.
 
 ```
 Client                                    Server
@@ -219,6 +219,13 @@ Client                                    Server
   │  ◄──── Return with cross-entity info ────┤
   ├─ Compare local vs server results         │
 ```
+
+**Invariant:** the cross-call target must be owned by the same player as the caller — no other client and no independent server-side mutator writes to it concurrently. Two framework behaviors depend on this:
+
+- `EntityGrain.HandleCallFromEntityAsync` excludes the originating caller from `DistributeBroadcasts` when the outer call's `IsCrossOptimistic` flag is true. The cross-call's effect on the target is inlined in the outer call's replay payload, so a duplicate broadcast back to the caller would double-apply.
+- `SessionManagerGrain.ExecuteOneCallAsync` reserves the target's sequence slot for the cross-call via a `CrossCallSlotMarker` in `HeldBroadcasts`. If a concurrent third-party server-side write to the target slipped between our `KnownEntitySequence` and the cross-call's sequence, the marker waits in the gap so the intermediate broadcast can drain through normally instead of being silently dropped as old/duplicate.
+
+**Do not** use `CrossOptimistic` against shared multi-writer entities (clans, lobbies, markets, two-player trades). Those need `Server` mode — the caller relies on broadcasts to learn the target's state change, and the cross-call's broadcast suppression here would block that.
 
 ### ServerPatch
 
@@ -342,22 +349,19 @@ public partial class ProfileService : IProfileService
 
 ### Runtime Execution Mode Override
 
-Override the `[MetaMethod]` default at runtime without recompilation:
+Override the `[MetaMethod]` default at runtime without recompilation. 0.23.0+ keyed by `ushort MethodId` from the generator-emitted `{RootNamespace}.Generated.GameMethodIds` const table — string-keyed overloads were removed:
 
 ```csharp
 var modeProvider = client.ModeProvider as ExecutionModeProvider;
 
-// Override specific method
-modeProvider.SetMode("IProfileService", "SetName", ExecutionMode.Server);
-
-// Override all methods in a service
-modeProvider.SetServiceMode("IProfileService", ExecutionMode.Server);
+// Override specific method (string overloads + SetServiceMode + LoadManifest gone in 0.23.0)
+modeProvider.SetMode(GameMethodIds.IProfileService_SetName_v0, ExecutionMode.Server);
 
 // Reset to attribute defaults
 modeProvider.Clear();
 ```
 
-**Priority:** Specific method → Service-wide → Attribute default
+**Priority:** specific method override → attribute default.
 
 ---
 
@@ -1364,6 +1368,29 @@ Assert.Empty(client.DetectedIssues);  // No desyncs
 `SharedMeta.Debug.Mux` — debug-only transport where N logical client sessions share one physical SignalR socket. Map `app.MapMetaMuxHub("/meta-mux")` on the server (alongside `/meta`); on the client build a pool of `MuxChannel` instances and call `channel.CreateConnection(tag)` per simulator. Each `MuxConnection` implements `IConnection`, so the rest of the MetaClient stack is unchanged.
 
 Use when you want 1000+ simulated players from one client process without burning a WebSocket per simulator. See `examples/ClanWars/ClanWars.Client.Common/StressTestRunner.cs` for a runner pattern with channel-pool construction and round-robin tag assignment, and [docs/GUIDE.md § Mux Transport](../docs/GUIDE.md#mux-transport--high-fanout-stress-tests-0220) for the full API + trade-offs.
+
+### Observability (0.23.0+)
+
+SharedMeta exposes two static `Meter` + `ActivitySource` pairs — server-side `"SharedMeta"` (in `SharedMeta.Server.Core.Telemetry.SharedMetaMeters`) and client-side `"SharedMeta.Client"` (in `SharedMeta.Client.Telemetry.SharedMetaClientMeters`). Hosts subscribe via OpenTelemetry:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(b => b
+        .AddMeter(SharedMetaMeters.MeterName)         // "SharedMeta"
+        .AddRuntimeInstrumentation()
+        .AddPrometheusExporter())
+    .WithTracing(t => t
+        .AddSource(SharedMetaActivities.SourceName)); // also "SharedMeta"
+app.MapPrometheusScrapingEndpoint();
+```
+
+No OpenTelemetry NuGet dependency in framework packages — meters use only built-in `System.Diagnostics.Metrics`. When no listener is attached, every `Counter.Add` / `Histogram.Record` is a volatile-flag check, no allocation.
+
+Server-side instrumentation covers: `session.connect.duration`, `session.active`, `entity.subscribe.duration`, `entity.rpc.duration` (per service+method+result), `entity.rpc.request_bytes`, `cross_entity.call.duration` (kind = `normal | notification`), `broadcast.fan_out_size`, `broadcast.payload_bytes` (kind = `replay | patch | state`), `broadcast.tailored.count`, `persistence.write.duration`, `compat.force_patch.applied`, `grain.activation.count`, `grain.active`. Plus distributed-tracing spans nested via in-process `Activity.Current`.
+
+Client → server W3C `traceparent` propagation on RPC envelopes is **not yet implemented** — client and server traces are independent for now.
+
+Reference wire-up: `examples/ClanWars/ClanWars.Server/Program.cs` (Prometheus exporter on `/metrics`). Full catalog: [docs/GUIDE.md § Observability](../docs/GUIDE.md#observability-0230).
 
 ---
 

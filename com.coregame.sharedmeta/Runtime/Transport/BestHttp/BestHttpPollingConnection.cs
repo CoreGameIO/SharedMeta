@@ -63,6 +63,11 @@ namespace SharedMeta.Transport.BestHttp
         {
             ContractResolver = new CamelCasePropertyNamesContractResolver(),
             NullValueHandling = NullValueHandling.Ignore,
+            // ROM<byte> ↔ base64 string. See RomByteJsonConverter.cs — wire DTOs use
+            // ReadOnlyMemory<byte> after 0.23.0; without this converter Newtonsoft serializes
+            // the struct's fields and the server's System.Text.Json deserializer (which expects
+            // base64) throws JsonException.
+            Converters = { new RomByteJsonConverter() },
         };
 
         private readonly BestHttpPollingConnectionOptions _options;

@@ -297,7 +297,7 @@ public class ReactiveIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ServerPatch_AddReactive_SingleClient_UpdatesViaPatch()
     {
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "AddReactive", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_AddReactive_v0, ExecutionMode.ServerPatch);
         try
         {
             var server = new InProcessServer(_fixture.CreateHandlerFactory());
@@ -323,7 +323,7 @@ public class ReactiveIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ServerPatch_AddReactive_MultipleAdds_Accumulates()
     {
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "AddReactive", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_AddReactive_v0, ExecutionMode.ServerPatch);
         try
         {
             var server = new InProcessServer(_fixture.CreateHandlerFactory());
@@ -351,7 +351,7 @@ public class ReactiveIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ServerPatch_AddReactive_BroadcastAppliesPatch()
     {
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "AddReactive", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_AddReactive_v0, ExecutionMode.ServerPatch);
         try
         {
             var server = new InProcessServer(_fixture.CreateHandlerFactory());
@@ -387,7 +387,7 @@ public class ReactiveIntegrationTests
     {
         // OnStateMutated fires on the BROADCAST RECEIVER, not the caller.
         // Verify it fires on client2 for each patch broadcast from client1.
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "AddReactive", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_AddReactive_v0, ExecutionMode.ServerPatch);
         try
         {
             var server = new InProcessServer(_fixture.CreateHandlerFactory());
@@ -423,7 +423,7 @@ public class ReactiveIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ServerPatch_AddReactive_OnReplayed_Fires()
     {
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "AddReactive", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_AddReactive_v0, ExecutionMode.ServerPatch);
         try
         {
             var server = new InProcessServer(_fixture.CreateHandlerFactory());
@@ -460,7 +460,7 @@ public class ReactiveIntegrationTests
     public async Task ServerPatch_MixedModes_ReactiveAndRegular()
     {
         // AddReactive in ServerPatch, AddValue in Server mode
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "AddReactive", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_AddReactive_v0, ExecutionMode.ServerPatch);
         try
         {
             var server = new InProcessServer(_fixture.CreateHandlerFactory());
@@ -491,7 +491,7 @@ public class ReactiveIntegrationTests
     public async Task ServerPatch_AddReactive_BroadcastPatch_OnStateMutated_Fires()
     {
         // Verify OnStateMutated fires on client2 when patch broadcast is applied
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "AddReactive", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_AddReactive_v0, ExecutionMode.ServerPatch);
         try
         {
             var server = new InProcessServer(_fixture.CreateHandlerFactory());
@@ -526,7 +526,7 @@ public class ReactiveIntegrationTests
     {
         // Verify that applying a patch with reactive field fires ChangeTreeArgs notification
         // on the calling client (synchronous notification from PatchApplier → generated setter → tracker)
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "AddReactive", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_AddReactive_v0, ExecutionMode.ServerPatch);
         try
         {
             var server = new InProcessServer(_fixture.CreateHandlerFactory());
@@ -581,7 +581,7 @@ public class ReactiveIntegrationTests
     [Fact(Timeout = 60_000)]
     public async Task ServerPatch_AddReactive_LateJoiner_GetsCurrentState()
     {
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "AddReactive", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_AddReactive_v0, ExecutionMode.ServerPatch);
         try
         {
             var server = new InProcessServer(_fixture.CreateHandlerFactory());

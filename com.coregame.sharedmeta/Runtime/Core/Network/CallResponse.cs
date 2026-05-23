@@ -22,7 +22,7 @@ namespace SharedMeta.Core.Network
         /// <summary>
         /// Triggered operations executed after the main call (if any).
         /// </summary>
-        public List<OperationResult>? TriggerOperations { get; set; }
+        public List<MetaOperation>? TriggerOperations { get; set; }
 
         /// <summary>
         /// Cross-entity call results (for CrossOptimistic desync validation).
@@ -70,7 +70,7 @@ namespace SharedMeta.Core.Network
         /// <summary>
         /// Triggered operations executed after the main call (if any).
         /// </summary>
-        public List<OperationResult>? TriggerOperations { get; set; }
+        public List<MetaOperation>? TriggerOperations { get; set; }
 
         /// <summary>
         /// Cross-entity call results (for CrossOptimistic desync validation).
@@ -123,7 +123,7 @@ namespace SharedMeta.Core.Network
         /// <summary>
         /// Triggered operations executed after the main call (if any).
         /// </summary>
-        public List<OperationResult>? TriggerOperations { get; set; }
+        public List<MetaOperation>? TriggerOperations { get; set; }
 
         /// <summary>
         /// Cross-entity call results (for CrossOptimistic desync validation).

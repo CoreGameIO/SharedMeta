@@ -24,6 +24,16 @@ namespace SharedMeta.Debug.Mux
         Task<SubscribeResponse> Subscribe(int sessionTag, SubscribeRequest request);
         Task<UnsubscribeResponse> Unsubscribe(int sessionTag, UnsubscribeRequest request);
         Task<SessionResponse> RpcCall(int sessionTag, RpcCallRequest request);
+
+        /// <summary>
+        /// 0.23.0+: batched variant. Server dispatches every entry in parallel through
+        /// the per-tag MetaConnectionHandler and returns a matching response per entry.
+        /// One SignalR frame round-trip instead of N — eliminates per-frame SignalR
+        /// encode/decode overhead and the ThreadPool burst caused by N completion
+        /// continuations resolving in lock-step.
+        /// </summary>
+        Task<BatchRpcResponse> BatchRpcCall(BatchRpcRequest request);
+
         Task<QueryCallResponse> QueryCall(int sessionTag, QueryCallRequest request);
         Task SignalCall(int sessionTag, SignalCallRequest request);
         Task<AcknowledgeResponse> AcknowledgeSequence(int sessionTag, AcknowledgeRequest request);

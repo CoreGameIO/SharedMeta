@@ -1,0 +1,15 @@
+apiVersion: 1
+
+# Auto-add the Prometheus container as the default datasource. The "prometheus" hostname
+# resolves inside the docker-compose network (service name = DNS name).
+
+datasources:
+  - name: Prometheus
+    uid: prometheus-clanwars
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: "5s"
+      httpMethod: POST

@@ -59,6 +59,15 @@ namespace SharedMeta.Client
         /// transport constructor / options) is used instead.
         /// </summary>
         public string? ClientAppVersion { get; set; }
+
+        /// <summary>
+        /// 0.24.0+ Generated <c>MetaClientSignature</c> for compatibility negotiation. Pass
+        /// <c>GameServiceDiscoveryBase.ClientSignature</c> from the generated assembly to enable
+        /// signature-based handshake (phase-1 hash check + phase-2 registration). Default:
+        /// <c>null</c> — the client opts out of negotiation and the server treats it as legacy
+        /// (Hash=0). Required when the host configures the registry to reject Hash=0.
+        /// </summary>
+        public SharedMeta.Core.Transport.MetaClientSignature? ClientSignature { get; set; }
     }
 
     /// <summary>
@@ -127,7 +136,8 @@ namespace SharedMeta.Client
             _dispatcher = new ClientDispatcher(connection)
             {
                 SessionHealthListener = options.SessionHealth,
-                ConnectionHealthListener = options.ConnectionHealth
+                ConnectionHealthListener = options.ConnectionHealth,
+                ClientSignature = options.ClientSignature,
             };
             if (options.ConnectionHealthOptions != null)
                 _dispatcher.ConnectionHealthOptions = options.ConnectionHealthOptions;
@@ -175,14 +185,36 @@ namespace SharedMeta.Client
         /// </summary>
         public async Task ConnectAsync()
         {
-            await Connection.ConnectAsync();
-
-            _dispatcher.PlayerId = PlayerId;
-            var sessionResult = await _dispatcher.ConnectSessionAsync(Guid.NewGuid(), 0, ClientAppVersion);
-
-            if (!sessionResult.Success)
+            // 0.23.0+ Telemetry: state transition disconnected → connecting → connected/failed.
+            SharedMeta.Client.Telemetry.SharedMetaClientMeters.ConnectionStateTransition.Add(1,
+                new KeyValuePair<string, object?>("from", "disconnected"),
+                new KeyValuePair<string, object?>("to", "connecting"));
+            using var __connActivity = SharedMeta.Client.Telemetry.SharedMetaClientActivities.Source.StartActivity(
+                SharedMeta.Client.Telemetry.SharedMetaClientActivities.SpanClientConnect);
+            try
             {
-                throw new InvalidOperationException($"Failed to establish session: {sessionResult.Error}");
+                await Connection.ConnectAsync();
+
+                _dispatcher.PlayerId = PlayerId;
+                var sessionResult = await _dispatcher.ConnectSessionAsync(Guid.NewGuid(), 0, ClientAppVersion);
+
+                if (!sessionResult.Success)
+                {
+                    SharedMeta.Client.Telemetry.SharedMetaClientMeters.ConnectionStateTransition.Add(1,
+                        new KeyValuePair<string, object?>("from", "connecting"),
+                        new KeyValuePair<string, object?>("to", "failed"));
+                    throw new InvalidOperationException($"Failed to establish session: {sessionResult.Error}");
+                }
+                SharedMeta.Client.Telemetry.SharedMetaClientMeters.ConnectionStateTransition.Add(1,
+                    new KeyValuePair<string, object?>("from", "connecting"),
+                    new KeyValuePair<string, object?>("to", "connected"));
+            }
+            catch
+            {
+                SharedMeta.Client.Telemetry.SharedMetaClientMeters.ConnectionStateTransition.Add(1,
+                    new KeyValuePair<string, object?>("from", "connecting"),
+                    new KeyValuePair<string, object?>("to", "failed"));
+                throw;
             }
         }
 

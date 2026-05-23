@@ -3,7 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace SharedMeta.Server.Core.Session
 {
     /// <summary>
-    /// DI wiring for the 0.22.0 client-signature registry. Singleton per silo —
+    /// DI wiring for the client-signature registry. Singleton per silo —
     /// stateless aside from a per-silo lookup cache that fronts the Orleans-backed
     /// signature directory grains.
     ///

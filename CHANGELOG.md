@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.23.1] - 2026-05-22
+
+First actual release of the 0.23 content. The earlier `v0.23.0` tag was pushed against the v0.22.0 commit by mistake (release prep ran before the wire-refactoring branch was merged) and NuGet/UPM versions are immutable once published — bumped to 0.23.1 to ship the real changes.
+
+Allocation-pressure overhaul on the server hot path + `ushort MethodId`-only wire (service/method/version strings removed end-to-end) + refreshed compatibility negotiation. Wire-breaking on both axes: `byte[]?` → `ReadOnlyMemory<byte>` and the method-addressing string triple gone.
+
+Highlights:
+- **Pool-backed broadcast payloads** — `PooledPayload` + `PooledPayloadRegistry` (silo-scoped, ref-counted). DI-driven `PooledPayloadOptions` (default OFF). Cluster-singleton coordinator grain assigns unique `SiloId` per silo.
+- **`GrainScopedSerializer`** — per-grain scratch buffer; `IMetaSerializer.Pack<T>(T)` returns `ReadOnlyMemory<byte>` over pool-rented memory. Primitive-return cache (`DispatchResult.True/False/Int/Void`) skips serialization entirely.
+- **`ushort MethodId` dispatch** — flat `switch (methodId)` jump table replaces nested string/version switches. `GameMethodIds` const table per assembly. Force-patch refcounts indexed by `MethodId` (~200 B vs ~6 KB per entity at 100 methods).
+- **Compatibility negotiation** — `MetaClientOptions.ClientSignature`, `MetaTransportOptions.RequireClientSignature`, two-phase handshake. `MetaConnectionHandler` rejects un-negotiated clients on RPC/Query/Signal.
+- **Fixes** — cross-entity broadcast filter on outer-caller's client; CrossOptimistic broadcast race with third-party mutators; SessionManager pool-ref leak paths on transport drop; cluster-wide signature dedup under stress; Newtonsoft `RomByteJsonConverter` on Unity HTTP polling.
+
+References:
+- [docs/ARCHITECTURE.md §4.6](docs/ARCHITECTURE.md) — hot-path allocation strategy
+- [docs/ARCHITECTURE.md §4.7](docs/ARCHITECTURE.md) — wire method addressing
+- [docs/GUIDE.md](docs/GUIDE.md) — opt-in pool config, serializer contract
+- [com.coregame.sharedmeta/SharedMeta-AI.md](com.coregame.sharedmeta/SharedMeta-AI.md) — AI-assistant context
+
 ## [0.22.0] - 2026-05-16
 
 Backwards-compatible multi-version operation. Old clients keep working against newer servers; new clients keep working against entities pinned at older config branches. Plus `ExecutionMode.Notification` for entity → entity fire-and-forget, and `SharedMeta.Debug.Mux` for stress tests that need many simulated players on few sockets.

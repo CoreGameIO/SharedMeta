@@ -1,4 +1,6 @@
 using System;
+using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using MemoryPack;
@@ -7,40 +9,109 @@ using SharedMeta.Core;
 namespace SharedMeta.Serialization.MemoryPack
 {
     /// <summary>
-    /// Writes multiple values into a MemoryPack payload.
-    /// Each value is prefixed with its length for sequential reading.
+    /// Writes multiple values into a MemoryPack payload, length-prefixed for sequential reading.
+    /// <para>
+    /// Doubles as <see cref="IBufferWriter{T}"/> so MemoryPack writes directly into our
+    /// pooled buffer. Older shape went through <c>MemoryPackSerializer.Serialize&lt;T&gt;(value)</c>
+    /// (allocates a fresh <c>byte[]</c> via the internal <c>ReusableLinkedArrayBufferWriter</c>)
+    /// then copied those bytes into a <c>MemoryStream</c> — two transient buffer allocations per
+    /// value plus stream-growth churn. Now we rent one buffer from <see cref="ArrayPool{T}"/>,
+    /// expand in place if needed, and snapshot once at <see cref="Complete"/>.
+    /// </para>
+    /// <para>
+    /// Caller MUST <see cref="Dispose"/> after <see cref="Complete"/> so the pool buffer is
+    /// returned. <c>ServerMetaContext.EndOperation</c> / <c>PopNestedOperation</c> own this.
+    /// </para>
     /// </summary>
-    public class MemoryPackPayloadWriter : IPayloadWriter
+    public sealed class MemoryPackPayloadWriter : IPayloadWriter, IBufferWriter<byte>
     {
-        private readonly MemoryStream _stream = new();
-        private readonly BinaryWriter _writer;
+        private byte[]? _buffer;
+        private int _index;
         private bool _completed;
 
-        public MemoryPackPayloadWriter()
+        public MemoryPackPayloadWriter(int initialCapacity = 256)
         {
-            _writer = new BinaryWriter(_stream);
+            _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
+            _index = 0;
         }
 
+        // ── IBufferWriter<byte> — MemoryPack calls these directly ──
+        public void Advance(int count) => _index += count;
+
+        public Memory<byte> GetMemory(int sizeHint = 0)
+        {
+            EnsureCapacity(sizeHint);
+            return _buffer!.AsMemory(_index);
+        }
+
+        public Span<byte> GetSpan(int sizeHint = 0)
+        {
+            EnsureCapacity(sizeHint);
+            return _buffer!.AsSpan(_index);
+        }
+
+        private void EnsureCapacity(int sizeHint)
+        {
+            if (sizeHint <= 0) sizeHint = 1;
+            var available = _buffer!.Length - _index;
+            if (sizeHint <= available) return;
+
+            var newSize = Math.Max(_buffer.Length * 2, _index + sizeHint);
+            var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
+            _buffer.AsSpan(0, _index).CopyTo(newBuffer);
+            ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
+            _buffer = newBuffer;
+        }
+
+        // ── IPayloadWriter ──
         public void Write<T>(T value)
         {
             if (_completed) throw new InvalidOperationException("Writer already completed.");
 
-            var bytes = MemoryPackSerializer.Serialize(value);
-            _writer.Write(bytes.Length);  // Length prefix
-            _writer.Write(bytes);          // Data
+            // Reserve 4 bytes for the length prefix; backfill after MemoryPack writes the value.
+            var lengthStart = _index;
+            _index += 4;
+            // Ensure the prefix bytes exist (will be needed even if Serialize writes zero bytes).
+            EnsureCapacity(0);
+            var contentStart = _index;
+
+            MemoryPackSerializer.Serialize<T, MemoryPackPayloadWriter>(this, value);
+
+            var bytesWritten = _index - contentStart;
+            BinaryPrimitives.WriteInt32LittleEndian(_buffer.AsSpan(lengthStart, 4), bytesWritten);
         }
 
         public byte[] Complete()
         {
             _completed = true;
-            _writer.Flush();
-            return _stream.ToArray();
+            // Snapshot to a right-sized byte[] for downstream DTO storage (legacy callers that
+            // still hold byte[] fields). The pool buffer stays owned by this writer and goes
+            // back to ArrayPool on Dispose.
+            return _buffer.AsSpan(0, _index).ToArray();
+        }
+
+        public bool SupportsRentedComplete => true;
+
+        public void CompleteAsRented(out byte[] buffer, out int length)
+        {
+            if (_completed) throw new InvalidOperationException("Writer already completed.");
+            _completed = true;
+            // Hand off the ArrayPool-rented buffer to the caller. Dispose becomes a no-op
+            // since _buffer is now null — the caller (typically via
+            // PooledPayloadRegistry.AcquireExisting) is responsible for returning it to
+            // ArrayPool when the resulting PooledPayload's refcount hits zero.
+            buffer = _buffer!;
+            length = _index;
+            _buffer = null;
         }
 
         public void Dispose()
         {
-            _writer.Dispose();
-            _stream.Dispose();
+            if (_buffer != null)
+            {
+                ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
+                _buffer = null;
+            }
         }
     }
 
@@ -89,8 +160,12 @@ namespace SharedMeta.Serialization.MemoryPack
         public IPayloadWriter CreateWriter() => new MemoryPackPayloadWriter();
 
         public IPayloadReader CreateReader(byte[] data) => new MemoryPackPayloadReader(data);
+        public IPayloadReader CreateReader(ReadOnlyMemory<byte> data) =>
+            // Multi-value reader path is non-MemoryPack-fast-path; copy once for the underlying
+            // MemoryStream. MemoryPack zero-alloc dispatch goes through Deserialize(span) directly.
+            new MemoryPackPayloadReader(data.ToArray());
 
-        public byte[] Pack<T>(T value)
+        public ReadOnlyMemory<byte> Pack<T>(T value)
         {
             return MemoryPackSerializer.Serialize(value);
         }
@@ -100,7 +175,19 @@ namespace SharedMeta.Serialization.MemoryPack
             return MemoryPackSerializer.Deserialize<T>(data)!;
         }
 
-        public byte[] Pack(Type type, object value)
+        // Zero-alloc on the data path: MemoryPack writes directly into the caller's
+        // IBufferWriter<byte> via the generic Serialize<T, TBufferWriter> overload.
+        public void Pack<T>(T value, IBufferWriter<byte> writer)
+        {
+            MemoryPackSerializer.Serialize(in writer, value);
+        }
+
+        public T Unpack<T>(ReadOnlyMemory<byte> data)
+        {
+            return MemoryPackSerializer.Deserialize<T>(data.Span)!;
+        }
+
+        public ReadOnlyMemory<byte> Pack(Type type, object value)
         {
             return MemoryPackSerializer.Serialize(type, value);
         }

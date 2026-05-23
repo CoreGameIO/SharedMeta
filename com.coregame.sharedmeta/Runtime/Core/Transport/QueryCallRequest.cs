@@ -15,21 +15,15 @@ namespace SharedMeta.Core.Transport
         /// <summary>Entity to query.</summary>
         [Id(0), Key(0)] public string EntityId { get; set; } = "";
 
-        /// <summary>Service containing the query method.</summary>
-        [Id(1), Key(1)] public string ServiceName { get; set; } = "";
-
-        /// <summary>Query method name to execute.</summary>
-        [Id(2), Key(2)] public string MethodName { get; set; } = "";
-
         /// <summary>Serialized method arguments.</summary>
-        [Id(3), Key(3)] public byte[] Payload { get; set; } = Array.Empty<byte>();
+        [Id(3), Key(3), MemoryPackAllowSerialize] public ReadOnlyMemory<byte> Payload { get; set; }
 
         /// <summary>
-        /// Method version (0.22.0+). Mirrors <c>RpcCall.MethodVersion</c> — stamped by the
-        /// generated query proxy from <c>[MetaMethod(Version = N)]</c>. The server query
-        /// dispatcher routes <c>(MethodName, MethodVersion)</c> to the matching declared body;
-        /// legacy callers (MethodVersion = 0) resolve to the lowest-versioned method.
+        /// 0.24.0+ Client's global method index from <c>GameMethodIds</c>. The server
+        /// translates to its own server-side index via the per-signature clientToServer map.
+        /// (ServiceName, MethodName, MethodVersion) string triple was removed in 0.24.0 —
+        /// version is encoded into the index, (service, method) resolved server-side.
         /// </summary>
-        [Id(4), Key(4)] public int MethodVersion { get; set; }
+        [Id(5), Key(5)] public ushort MethodId { get; set; }
     }
 }

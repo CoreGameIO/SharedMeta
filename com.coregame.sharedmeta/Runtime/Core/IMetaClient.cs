@@ -5,8 +5,11 @@ namespace SharedMeta.Core
 {
     /// <summary>
     /// Delegate for invoking a method locally during replay (void methods).
+    /// 0.24.0+ dispatches by <c>ushort methodId</c>. Framework subscriber methods (lobby /
+    /// matchmaking events) use the high-range id space defined in
+    /// <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/>.
     /// </summary>
-    public delegate void LocalMethodInvoker(string serviceName, string methodName, byte[] argsBytes, IMetaSerializer serializer);
+    public delegate void LocalMethodInvoker(ushort methodId, byte[] argsBytes, IMetaSerializer serializer);
 
     /// <summary>
     /// Delegate for invoking a method locally with result (for optimistic execution).
@@ -137,19 +140,20 @@ namespace SharedMeta.Core
         void Subscribe<TArgs>(string methodName, Action<TArgs> beforeCallback, Action<TArgs>? afterCallback = null);
 
         /// <summary>
-        /// Subscribe to a method being replayed from server broadcast.
-        /// This fires when another client's action is replayed locally.
-        /// Returns a subscription handle that can be disposed to unsubscribe.
+        /// Subscribe to a method being replayed from server broadcast. 0.24.0+ keyed by
+        /// client-local <c>MethodId</c> from <c>GameMethodIds</c> /
+        /// <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/> — the wire no longer
+        /// carries service/method names. Fires when another client's action is replayed
+        /// locally. Returns a subscription handle that can be disposed to unsubscribe.
         /// </summary>
-        /// <param name="serviceName">Service interface name (e.g., "ICardGameService", "ILobbySubscriber")</param>
-        /// <param name="methodName">Method name (e.g., "OnMatchFound")</param>
+        /// <param name="methodId">Client-local method id from GameMethodIds / FrameworkMethodIds</param>
         /// <param name="handler">Handler to invoke when the method is replayed</param>
-        IMethodSubscription OnMethodReplayed(string serviceName, string methodName, Action<MethodReplayedContext> handler);
+        IMethodSubscription OnMethodReplayed(ushort methodId, Action<MethodReplayedContext> handler);
 
         /// <summary>
         /// Subscribe to a method being replayed with strongly-typed arguments.
         /// </summary>
-        IMethodSubscription OnMethodReplayed<TArgs>(string serviceName, string methodName, Action<TArgs> handler);
+        IMethodSubscription OnMethodReplayed<TArgs>(ushort methodId, Action<TArgs> handler);
     }
 
     /// <summary>
@@ -162,8 +166,9 @@ namespace SharedMeta.Core
     /// </summary>
     public class MethodReplayedContext
     {
-        public string ServiceName { get; init; } = "";
-        public string MethodName { get; init; } = "";
+        /// <summary>0.24.0+ Client-local method id from <c>GameMethodIds</c> /
+        /// <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/>.</summary>
+        public ushort MethodId { get; init; }
         public string? CallerId { get; init; }
         public byte[] ArgsBytes { get; init; } = Array.Empty<byte>();
 

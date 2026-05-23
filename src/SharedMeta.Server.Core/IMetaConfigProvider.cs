@@ -13,10 +13,10 @@ namespace SharedMeta.Server.Core
     /// <see cref="GetConfig"/> / <see cref="GetConfigAsync"/> for the bytes.
     ///
     /// <para>
-    /// <b>0.21.0:</b> The pre-0.21.0 <c>CurrentVersion</c> property has been removed. Per-call
-    /// resolution is always driven by the caller's client app version (or, for server-internal
-    /// callers, by <see cref="IConfigVersionResolver.CurrentClientVersion"/>). There is no
-    /// implicit "latest known" fallback — calls without a resolvable client version throw.
+    /// Per-call resolution is always driven by the caller's client app version (or, for
+    /// server-internal callers, by <see cref="IConfigVersionResolver.CurrentClientVersion"/>).
+    /// There is no implicit "latest known" fallback — calls without a resolvable client
+    /// version throw.
     /// </para>
     /// </summary>
     /// <typeparam name="TConfig">The config type (marked with [MetaConfig]).</typeparam>
@@ -35,8 +35,8 @@ namespace SharedMeta.Server.Core
         /// <see cref="GetConfig"/> for backward compatibility — overrides may perform real
         /// I/O (database, blob storage, remote service) without blocking the entity grain.
         /// <para>
-        /// Used by the generated sibling-service infrastructure (0.20.0+) to resolve a
-        /// callee's typed <c>Config</c> for the current <c>CallerClientVersion</c> before
+        /// Used by the generated sibling-service infrastructure to resolve a callee's typed
+        /// <c>Config</c> for the current <c>CallerClientVersion</c> before
         /// dispatch — see <see cref="MetaServiceImplAttribute"/>-generated
         /// <c>Get{Iface}SiblingAsync</c> accessors and the self-detect branch of
         /// <c>Get{Iface}(entityId)</c>. Result caching is handled by the generator (per
@@ -67,7 +67,7 @@ namespace SharedMeta.Server.Core
         /// the <see cref="MetaConfigVersionAttribute"/> rules on the config class.
         ///
         /// <para>
-        /// <b>Strict contract (0.21.0+):</b> <paramref name="clientAppVersion"/> must be
+        /// <b>Strict contract:</b> <paramref name="clientAppVersion"/> must be
         /// non-empty. Null/empty throws — every code path that reaches here is expected to
         /// know which client version it's resolving for. Server-internal callers (timers,
         /// triggers, background jobs, server-only services) must substitute

@@ -121,7 +121,9 @@ namespace SharedMeta.Debug.Mux
         }
 
         public Task<SessionResponse> RpcCallAsync(RpcCallRequest request)
-            => _hub.RpcCall(_sessionTag, request);
+            => _channel.BatchingEnabled
+                ? _channel.SubmitBatchedRpcCall(_sessionTag, request)
+                : _hub.RpcCall(_sessionTag, request);
 
         public Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request)
             => _hub.QueryCall(_sessionTag, request);

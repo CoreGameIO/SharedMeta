@@ -105,7 +105,7 @@ namespace SharedMeta.Orleans.Grains
             _logger.PlayerLeftQueue(player.PlayerId, gameMode);
 
             // Notify the player that matchmaking was cancelled
-            await NotifyPlayerAsync(profileEntityId, player.StateTypeName, nameof(ILobbySubscriber.OnMatchCancelled), new MatchCancelledEvent
+            await NotifyPlayerAsync(profileEntityId, player.StateTypeName, SharedMeta.Core.Framework.FrameworkMethodIds.ILobbySubscriber_OnMatchCancelled, new MatchCancelledEvent
             {
                 Reason = MatchCancelReason.PlayerCancelled
             });
@@ -162,7 +162,7 @@ namespace SharedMeta.Orleans.Grains
                         await NotifyPlayerAsync(
                             player.ProfileEntityId,
                             player.StateTypeName,
-                            nameof(ILobbySubscriber.OnMatchFound),
+                            SharedMeta.Core.Framework.FrameworkMethodIds.ILobbySubscriber_OnMatchFound,
                             new MatchFoundEvent
                             {
                                 MatchId = matchId,
@@ -175,12 +175,12 @@ namespace SharedMeta.Orleans.Grains
             }
         }
 
-        private async Task NotifyPlayerAsync<TEvent>(string profileEntityId, string stateTypeName, string methodName, TEvent @event)
+        private async Task NotifyPlayerAsync<TEvent>(string profileEntityId, string stateTypeName, ushort methodId, TEvent @event)
         {
             try
             {
                 // Serialize the event
-                var eventBytes = _serializer.Pack(@event);
+                var eventBytes = _serializer.Pack(@event).ToArray();
 
                 // Resolve entity grain via generated switch (no reflection)
                 var grain = _entityGrainResolver.GetEntityGrain(_grainFactory, stateTypeName, profileEntityId);
@@ -190,18 +190,16 @@ namespace SharedMeta.Orleans.Grains
                     return;
                 }
 
-                // Call HandleExternalEventAsync directly on the base interface
-                await grain.HandleExternalEventAsync(
-                    nameof(ILobbySubscriber),
-                    methodName,
-                    eventBytes,
-                    null);
+                // Call HandleExternalEventAsync — 0.24.0+ identifies the subscriber method
+                // by framework methodId (e.g. FrameworkMethodIds.ILobbySubscriber_OnMatchFound)
+                // rather than the legacy (subscriberInterface, methodName) string pair.
+                await grain.HandleExternalEventAsync(methodId, eventBytes, null);
 
-                _logger.PlayerNotified(profileEntityId, methodName);
+                _logger.PlayerNotified(profileEntityId, "methodId=" + methodId);
             }
             catch (Exception ex)
             {
-                _logger.ErrorNotifyingPlayer(ex, profileEntityId, methodName);
+                _logger.ErrorNotifyingPlayer(ex, profileEntityId, "methodId=" + methodId);
             }
         }
 

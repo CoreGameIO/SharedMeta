@@ -36,6 +36,16 @@ namespace SharedMeta.Serialization.MessagePack
             return _stream.ToArray();
         }
 
+        // MessagePack writer is MemoryStream-backed (not ArrayPool); zero-copy ownership
+        // transfer would require a separate buffer pool. The plan accepts the byte[] alloc
+        // on the MessagePack path — surfaced via the standard Complete() fallback.
+        public bool SupportsRentedComplete => false;
+        public void CompleteAsRented(out byte[] buffer, out int length)
+        {
+            buffer = Complete();
+            length = buffer.Length;
+        }
+
         public void Dispose()
         {
             _writer.Dispose();

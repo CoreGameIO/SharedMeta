@@ -60,7 +60,7 @@ namespace SharedMeta.Core.Patch
             {
                 Kind = PatchListOpKind.Insert,
                 Index = index,
-                ElementBytes = _serializer!.Pack(item),
+                ElementBytes = _serializer!.Pack(item).ToArray(),
             });
         }
 
@@ -81,7 +81,7 @@ namespace SharedMeta.Core.Patch
             {
                 Kind = PatchListOpKind.Set,
                 Index = index,
-                ElementBytes = _serializer!.Pack(item),
+                ElementBytes = _serializer!.Pack(item).ToArray(),
             });
         }
 
@@ -99,7 +99,7 @@ namespace SharedMeta.Core.Patch
             _collectionNode.AddStructuralOp(new PatchListOp
             {
                 Kind = PatchListOpKind.FullReplace,
-                ElementBytes = _serializer!.Pack(_list),
+                ElementBytes = _serializer!.Pack(_list).ToArray(),
             });
         }
 

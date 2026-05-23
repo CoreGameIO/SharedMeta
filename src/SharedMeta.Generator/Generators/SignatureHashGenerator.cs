@@ -150,5 +150,22 @@ namespace SharedMeta.Generator.Generators
         {
             return $"0x{hash:X16}UL";
         }
+
+        /// <summary>
+        /// Build a valid C# identifier from a <c>(ServiceName, MethodAlias, Version)</c> tuple.
+        /// Used as the const name in <c>GameMethodIds</c> emitted by
+        /// <c>GameServiceDiscoveryGenerator</c> and consumed by client / dispatcher generators.
+        /// Replaces any non-identifier characters with '_' so service / alias names that
+        /// contain dots or other punctuation still produce valid C#.
+        /// </summary>
+        public static string MakeMethodIdConstName(string serviceName, string methodAlias, int version)
+        {
+            var sb = new System.Text.StringBuilder(serviceName.Length + methodAlias.Length + 8);
+            foreach (var ch in serviceName) sb.Append(char.IsLetterOrDigit(ch) ? ch : '_');
+            sb.Append('_');
+            foreach (var ch in methodAlias) sb.Append(char.IsLetterOrDigit(ch) ? ch : '_');
+            sb.Append("_v").Append(version);
+            return sb.ToString();
+        }
     }
 }

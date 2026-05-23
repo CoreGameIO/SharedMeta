@@ -7,7 +7,7 @@ namespace SharedMeta.Server.Core.Session
     /// <summary>
     /// Result of a connection attempt to SessionManager.
     /// </summary>
-    [GenerateSerializer]
+    [GenerateSerializer, Immutable]
     public class SessionConnectionResult
     {
         /// <summary>Whether the connection was accepted.</summary>
@@ -42,7 +42,7 @@ namespace SharedMeta.Server.Core.Session
     public class ResubscribedEntity
     {
         [Id(0)] public string EntityId { get; set; } = "";
-        [Id(1)] public byte[] StateBytes { get; set; } = Array.Empty<byte>();
+        [Id(1)] public ReadOnlyMemory<byte> StateBytes { get; set; }
         [Id(2)] public long EntitySequenceNumber { get; set; }
         [Id(3)] public byte[]? OptimisticRandomBytes { get; set; }
         [Id(4)] public MetaConfigVersion ConfigVersion { get; set; }

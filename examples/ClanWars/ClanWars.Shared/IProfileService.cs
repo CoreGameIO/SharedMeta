@@ -41,5 +41,26 @@ namespace ClanWars.Shared
         /// <summary>Read profile summary without modifying state.</summary>
         [MetaMethod(Mode = ExecutionMode.Query)]
         ProfileSummary GetSummary();
+
+        /// <summary>
+        /// Cross-entity Notification from <see cref="IClanService.AcceptApplication"/>. Tells
+        /// the player that the clan accepted their application. If the player is free, profile
+        /// joins immediately and confirms back to the clan; if already in another clan, the
+        /// offer is parked in <see cref="ProfileState.ApprovedInvitations"/> for a later
+        /// <see cref="AcceptInvitation"/> decision.
+        /// </summary>
+        [MetaMethod(Mode = ExecutionMode.Notification, GenerateClientApi = false)]
+        Task OfferMembership(string clanId);
+
+        /// <summary>
+        /// Client-callable: switch to a previously-approved invitation. Leaves the current clan
+        /// (if any) and joins the target clan. Returns false if the invitation is unknown.
+        /// </summary>
+        [MetaMethod(Mode = ExecutionMode.Server)]
+        Task<bool> AcceptInvitation(string clanId);
+
+        /// <summary>Drop a parked invitation without switching.</summary>
+        [MetaMethod(Mode = ExecutionMode.Server)]
+        Task<bool> DeclineInvitation(string clanId);
     }
 }

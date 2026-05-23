@@ -10,6 +10,10 @@
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\SharedMeta.Client\SharedMeta.Client.csproj" />
     <ProjectReference Include="..\..\..\src\SharedMeta.Transport.SignalR.Client\SharedMeta.Transport.SignalR.Client.csproj" />
+    <!-- MessagePack SignalR protocol for the Mux client. Pre-0.23: client defaulted to JSON
+         protocol (System.Text.Json ate ~8.5% of allocations). Now we negotiate MessagePack
+         so the server-side AddMetaMessagePackProtocol() actually gets used end-to-end. -->
+    <ProjectReference Include="..\..\..\src\SharedMeta.Transport.SignalR.MessagePack\SharedMeta.Transport.SignalR.MessagePack.csproj" />
     <ProjectReference Include="..\..\..\src\SharedMeta.Serialization.MemoryPack\SharedMeta.Serialization.MemoryPack.csproj" />
     <!-- Mux transport (debug/load-test only — shares one SignalR socket across many simulators) -->
     <ProjectReference Include="..\..\..\src\SharedMeta.Debug\SharedMeta.Debug.csproj" />

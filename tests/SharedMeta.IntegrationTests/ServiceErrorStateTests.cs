@@ -180,10 +180,11 @@ public class ServiceErrorStateTests
             await Assert.ThrowsAsync<InvalidOperationException>(
                 () => api.ThrowIfNegativeAsync(-1));
 
-            // Assert — MetaLog.Error was called
+            // Assert — MetaLog.Error was called. 0.24.0+ the error log carries (ServiceName,
+            // methodId) instead of (ServiceName, MethodName) — the wire dropped string names.
             Assert.True(testLogger.ErrorCount > 0, "MetaLog.Error should have been called");
             Assert.Contains("ICounterService", testLogger.LastErrorMessage!);
-            Assert.Contains("ThrowIfNegative", testLogger.LastErrorMessage!);
+            Assert.Contains("methodId=", testLogger.LastErrorMessage!);
             Assert.NotNull(testLogger.LastException);
         }
         finally

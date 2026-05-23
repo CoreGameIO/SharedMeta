@@ -5,7 +5,7 @@ using SharedMeta.Core.Transport;
 namespace SharedMeta.Server.Core.Session
 {
     /// <summary>
-    /// 0.22.0+ Pure compute helpers for <c>[MetaConfigStructureBoundary]</c> evaluation.
+    /// Pure compute helpers for <c>[MetaConfigStructureBoundary]</c> evaluation.
     /// Stateless and side-effect-free so the logic is unit-testable independently of any
     /// Orleans grain, DI container, or live entity state.
     /// </summary>

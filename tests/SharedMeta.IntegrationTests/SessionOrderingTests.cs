@@ -169,8 +169,7 @@ public class SessionOrderingTests
         var bytes = writer.Complete();
         return new RpcCall
         {
-            ServiceName = "ICounterService",
-            MethodName = "Add",
+            MethodId = global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_Add_v0,
             Payload = bytes,
             CallerId = "test",
             // 0.21.0: ResolveForClient strict — pass a real version. "1.0.0" matches the

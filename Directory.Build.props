@@ -1,4 +1,11 @@
 <Project>
+  <!-- .NET 11 runtime-async: JIT generates async state machines instead of the C# compiler,
+       reducing per-await allocations. Applies automatically to all async Task / async ValueTask
+       methods in the project. Scoped to net11.0 only — net8/10 targets keep the compiler-generated
+       async path. https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-11/runtime -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net11.0'">
+    <Features>runtime-async=on</Features>
+  </PropertyGroup>
   <PropertyGroup>
     <Authors>CoreGame.IO</Authors>
     <Company>CoreGame.IO</Company>

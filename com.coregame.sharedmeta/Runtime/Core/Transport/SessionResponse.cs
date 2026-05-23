@@ -16,7 +16,7 @@ namespace SharedMeta.Core.Transport
     /// Each SessionOp in Operations is either a broadcast (RequestId == 0) or an RPC response
     /// (RequestId > 0). Client processes all operations identically.
     /// </summary>
-    [MemoryPackable, MessagePackObject, GenerateSerializer]
+    [MemoryPackable, MessagePackObject, GenerateSerializer, Immutable]
     public partial class SessionResponse
     {
         /// <summary>

@@ -21,6 +21,11 @@ namespace ClanWars.Shared
         [MemoryPackOrder(1), Id(1)] public int Money { get; set; } = 1000;
         [MemoryPackOrder(2), Id(2)] public string? ClanId { get; set; }
         [MemoryPackOrder(3), Id(3)] public List<string> PendingApplications { get; set; } = new();
+        // Clans that accepted this player's application while the player was already in another
+        // clan. Filled by ProfileService.OfferMembership (cross-entity Notification from
+        // ClanService.AcceptApplication). The player decides later whether to switch to one of
+        // these via AcceptInvitation (LeaveClan + ConfirmJoin under the hood).
+        [MemoryPackOrder(4), Id(4)] public List<string> ApprovedInvitations { get; set; } = new();
     }
 
     /// <summary>Wire-safe profile summary returned by a Query method.</summary>
@@ -31,5 +36,6 @@ namespace ClanWars.Shared
         [MemoryPackOrder(0), Id(0)] public int Score { get; set; }
         [MemoryPackOrder(1), Id(1)] public int Money { get; set; }
         [MemoryPackOrder(2), Id(2)] public string? ClanId { get; set; }
+        [MemoryPackOrder(3), Id(3)] public List<string>? ApprovedInvitations { get; set; }
     }
 }

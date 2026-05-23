@@ -1,9 +1,14 @@
-using System.Threading.Tasks;
+    using System.Threading.Tasks;
 using SharedMeta.Core;
 
 namespace ClanWars.Shared
 {
-    [MetaService(StateType = typeof(ClanState), ConfigType = typeof(ClanConfig))]
+    // Authorized: only clan members may subscribe (driven by IsAuthorized on ClanService).
+    // Non-members can still call methods marked [MetaMethod(OpenAccess = true)] like
+    // GetSummary — that's the preview-without-subscription path. Cross-entity entry points
+    // (Initialize / SubmitApplication / AddPower) bypass subscription gating entirely.
+    [MetaService(StateType = typeof(ClanState), ConfigType = typeof(ClanConfig),
+                 AccessPolicy = EntityAccessPolicy.Authorized)]
     public interface IClanService : IMetaService
     {
         // ── Bootstrap / cross-entity API (not client-callable) ───────────────────
@@ -28,6 +33,19 @@ namespace ClanWars.Shared
 
         [MetaMethod(Mode = ExecutionMode.Server, GenerateClientApi = false)]
         Task<bool> RemoveMember(string playerId, int playerScore);
+
+        /// <summary>
+        /// Cross-entity call from <see cref="IProfileService.OfferMembership"/>'s in-process
+        /// accept path (or from <see cref="IProfileService.AcceptInvitation"/>). Player has
+        /// decided to join — clan officially adds them to Members and bumps Power. Returns true
+        /// when the player is in Members after the call (already-member or freshly added); false
+        /// only when the roster is full. Server-mode (not Notification) so profile can await and
+        /// only commit S.ClanId on confirmed success — otherwise a ResolveClan during the
+        /// fire-and-forget window would trip IsAuthorized (player not yet in Members) and fail
+        /// the subscribe.
+        /// </summary>
+        [MetaMethod(Mode = ExecutionMode.Server, GenerateClientApi = false)]
+        Task<bool> ConfirmJoin(string playerId, int playerScore);
 
         // ── Leader / member actions (client-callable) ────────────────────────────
 
@@ -60,7 +78,9 @@ namespace ClanWars.Shared
         [MetaMethod(Mode = ExecutionMode.Server)]
         Task<bool> RevokeFriendship(string otherClanId);
 
-        [MetaMethod(Mode = ExecutionMode.Query)]
+        // OpenAccess: read-only preview that bypasses Authorized subscription gate.
+        // Lets non-members window-shop clans without acquiring a subscription.
+        [MetaMethod(Mode = ExecutionMode.Query, OpenAccess = true)]
         ClanSummary GetSummary();
     }
 }

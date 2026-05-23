@@ -40,7 +40,8 @@ namespace CardGame.Client
                 new MetaClientOptions
                 {
                     PlayerId = playerId,
-                    Diagnostics = new ConsoleDesyncDiagnostics()
+                    Diagnostics = new ConsoleDesyncDiagnostics(),
+                    ClientSignature = CardGame.Shared.GameServiceDiscoveryBase.ClientSignature,
                 }
             );
 
@@ -72,9 +73,9 @@ namespace CardGame.Client
                 Console.Error.WriteLine($"[DESYNC] {serviceName}.{methodName}: server={serverResult}, local={localResult}");
             }
 
-            public void OnCrossEntityResult(string entityId, string serviceName, string methodName, byte[]? resultBytes)
+            public void OnCrossEntityResult(string entityId, ushort methodId, byte[]? resultBytes)
             {
-                Console.Error.WriteLine($"[CROSS-ENTITY] {entityId}.{serviceName}.{methodName}: {resultBytes?.Length ?? 0} bytes");
+                Console.Error.WriteLine($"[CROSS-ENTITY] {entityId} methodId={methodId}: {resultBytes?.Length ?? 0} bytes");
             }
 
             public void OnRandomDesync(string serviceName, string methodName, long serverDelta, long localDelta)

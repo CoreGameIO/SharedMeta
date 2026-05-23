@@ -84,6 +84,17 @@ namespace SharedMeta.Core.Transport
         /// alias/version pair is unchanged.
         /// </summary>
         [Id(3), Key(3), MemoryPackOrder(3)] public ulong ArgHash { get; set; }
+
+        /// <summary>
+        /// Client-side global method index. Stable per client build — assigned by the
+        /// client signature codegen in canonical order over all <c>[MetaMethod]</c>
+        /// declarations the client knows about. Used as the dispatch key client-side
+        /// and as the wire identifier sent in <c>RpcCall.MethodId</c>. The server
+        /// translates incoming client ids to its own indices via the per-signature
+        /// <c>clientToServer</c> map built in <c>IClientSignatureRegistry.RegisterAsync</c>.
+        /// Each <c>(Service, Alias, Version)</c> tuple gets its own index.
+        /// </summary>
+        [Id(4), Key(4), MemoryPackOrder(4)] public ushort GlobalIndex { get; set; }
     }
 
     /// <summary>
@@ -114,7 +125,7 @@ namespace SharedMeta.Core.Transport
     /// </list>
     /// Empty lists = no restrictions (the common case for an up-to-date client).
     /// </summary>
-    [MemoryPackable, MessagePackObject, GenerateSerializer]
+    [MemoryPackable, MessagePackObject, GenerateSerializer, Immutable]
     public partial class ClientCapabilities
     {
         /// <summary>
@@ -139,6 +150,17 @@ namespace SharedMeta.Core.Transport
         /// the granularity is one whole service, not per-method.
         /// </summary>
         [Id(2), Key(2), MemoryPackOrder(2)] public List<string> ForceServerPatchServices { get; set; } = new();
+
+        /// <summary>
+        /// Per-signature method-id mapping from server-side global index → client-side
+        /// global index. Length = server's <c>Methods.Count</c>; value <c>ushort.MaxValue</c>
+        /// = sentinel "client does not know this method" (used for server-only methods or
+        /// methods removed in the client's build — client ignores broadcasts/triggers
+        /// referencing such ids). Built once on phase-2 <c>RegisterClientSignature</c>
+        /// by the server, cached per signatureHash, shipped to client unchanged so the
+        /// client can translate incoming wire ids into its local dispatch table.
+        /// </summary>
+        [Id(3), Key(3), MemoryPackOrder(3)] public ushort[] ServerToClientMethodIds { get; set; } = System.Array.Empty<ushort>();
     }
 
     /// <summary>

@@ -14,17 +14,16 @@ namespace SharedMeta.Server.Core.Grains
     public interface IEntityGrainBase : IGrainWithStringKey
     {
         /// <summary>
-        /// Subscribe to this entity. Returns current state.
+        /// Subscribes to this entity. Returns the current snapshot.
         /// <para>
-        /// 0.22.0+ <paramref name="forceServerPatchMethods"/> — caller passes the subset of
-        /// <see cref="ClientCapabilities.ForceServerPatchMethods"/> applicable to this entity.
-        /// The grain refcounts these into <c>_forcePatchMethodRefs</c>; subsequent
-        /// <c>HandleCallAsync</c> calls activate patch tracking when the dispatched method is
-        /// present in the set so the broadcast carries both replay payload and patch bytes.
-        /// Null = pass-through (no force-patch tracking added).
+        /// <paramref name="clientSignatureHash"/> = caller's negotiated signature hash (0 =
+        /// no negotiation, no caps). The grain resolves <see cref="ClientCapabilities"/>
+        /// locally via <see cref="IClientSignatureRegistry.TryGetCapabilitiesAsync"/> and
+        /// refcounts force-patch contributions so subsequent dispatches activate patch
+        /// tracking when needed.
         /// </para>
         /// </summary>
-        Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null, IReadOnlyList<MethodIdentity>? forceServerPatchMethods = null);
+        Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null, ulong clientSignatureHash = 0);
 
         /// <summary>
         /// Unsubscribe from this entity.
@@ -35,33 +34,33 @@ namespace SharedMeta.Server.Core.Grains
         /// Handle an RPC call from a player.
         /// Broadcasts to ALL EXCEPT caller (caller receives direct response).
         /// </summary>
-        Task<EntityCallResult> HandleCallAsync(RpcCall call);
+        ValueTask<EntityCallResult> HandleCallAsync(RpcCall call);
 
         /// <summary>
         /// Handle a call from another entity (cross-entity call).
         /// Broadcasts to ALL (including caller entity's subscribers).
-        /// Used when one entity needs to call another entity's service.
+        /// Returns a slim <see cref="CrossEntityCallReturn"/> — source grain only needs
+        /// ResultBytes / EntitySequenceNumber / Error, not the full pre-serialized
+        /// MetaOperation that <c>HandleCallAsync</c> sends to SessionManager.
         /// </summary>
-        Task<EntityCallResult> HandleCallFromEntityAsync(RpcCall call);
+        ValueTask<CrossEntityCallReturn> HandleCallFromEntityAsync(RpcCall call);
 
         /// <summary>
-        /// 0.22.0+: Fire-and-forget cross-entity call entry point. Marked <c>[OneWay]</c> so the
-        /// source grain dispatches and continues without waiting for the target to finish.
-        /// Target executes the same body as <see cref="HandleCallFromEntityAsync"/>; the result
-        /// is computed but ignored (no reply envelope, no result recording). Errors are logged
-        /// inside the target and never surfaced to the source. Used for methods declared with
-        /// <c>[MetaMethod(OneWay = true)]</c>.
+        /// Fire-and-forget cross-entity call entry. <c>[OneWay]</c> suppresses the reply
+        /// envelope so the source grain dispatches and continues. Target executes the same
+        /// body as <see cref="HandleCallFromEntityAsync"/>; result discarded, errors logged
+        /// on target. Used for <c>[MetaMethod(Mode = ExecutionMode.Notification)]</c>.
         /// </summary>
         [OneWay]
         Task HandleCallFromEntityOneWayAsync(RpcCall call);
 
         /// <summary>
         /// Handle an external event (from framework services like Lobby).
-        /// Broadcasts to ALL subscribers.
+        /// Broadcasts to ALL subscribers. 0.24.0+ identifies the subscriber method by
+        /// <c>ushort</c> id from <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/>.
         /// </summary>
-        Task<EntityCallResult> HandleExternalEventAsync(
-            string subscriberInterface,
-            string methodName,
+        ValueTask<EntityCallResult> HandleExternalEventAsync(
+            ushort methodId,
             byte[] eventData,
             string? callerId = null);
 
@@ -69,7 +68,7 @@ namespace SharedMeta.Server.Core.Grains
         /// Execute a query call (no subscription required).
         /// Read-only: no state sync, no broadcasts, no replay, no sequence number changes.
         /// </summary>
-        Task<QueryCallResponse> HandleQueryAsync(RpcCall call);
+        ValueTask<QueryCallResponse> HandleQueryAsync(RpcCall call);
 
         /// <summary>
         /// Execute a signal call (fire-and-forget, void return).
@@ -90,19 +89,11 @@ namespace SharedMeta.Server.Core.Grains
         Task<byte[]?> GetEntityStateAsync();
 
         /// <summary>
-        /// 0.21.0 — admin force-migrate. Drives this entity's state schema up to whatever
-        /// schema floor is required by <paramref name="floorClientVersion"/> (resolved via
-        /// the config class's <c>[MetaConfigVersion]</c> rules), running each
-        /// <c>[MetaStateVersion]</c> step in order with its configured transition config.
-        /// Returns <c>true</c> if migration ran and state was persisted; <c>false</c> when
-        /// the entity was already at-or-above the floor (no-op).
-        /// <para>
-        /// Use case: dropping support for an old config branch. Iterate entity IDs of a
-        /// given state type from your project's player DB / storage and call this on each.
-        /// No subscriber required — works on cold or active entities. Existing active
-        /// pins are NOT overwritten (Private/Shared keep their first-subscriber version);
-        /// the force-migrate only advances <c>state.Version</c>.
-        /// </para>
+        /// Admin force-migrate: drives state schema up to the floor required by
+        /// <paramref name="floorClientVersion"/>. No subscriber required — works on cold or
+        /// active entities. Use case: dropping support for an old config branch — iterate
+        /// known entity IDs and call on each. Active pins are not overwritten; only
+        /// <c>state.Version</c> advances.
         /// </summary>
         Task<bool> ForceMigrateToFloorAsync(string floorClientVersion);
     }

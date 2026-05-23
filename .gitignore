@@ -20,3 +20,11 @@ nul
 CLAUDE.md
 /CLAUDE.md.meta
 *.code-workspace
+/traces/
+
+# Local-only decision base and review notes — consulted by Claude before
+# editing; not part of the repo's public history. Long-form rationale lives
+# here so code comments can stay terse and self-contained.
+/docs/adr/
+/docs/reviews/
+/logs/

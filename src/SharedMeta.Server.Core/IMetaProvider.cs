@@ -1,10 +1,15 @@
+using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Orleans;
 using SharedMeta.Core;
+using SharedMeta.Core.Memory;
+using SharedMeta.Core.Packets;
 using SharedMeta.Core.Transport;
 using SharedMeta.Server;
 using SharedMeta.Server.Core.Grains;
+using SharedMeta.Server.Core.Memory;
 
 namespace SharedMeta.Server.Core
 {
@@ -30,39 +35,68 @@ namespace SharedMeta.Server.Core
         /// Packed list of MetaRandom in attribute declaration order. Null = no named randoms persisted yet.
         /// </summary>
         byte[]? NamedRandomsBytes => null;
+
+        /// <summary>
+        /// Per-silo pool that backs broadcast payloads produced by this provider. Callers that
+        /// receive a <see cref="HandleCallResult"/> or <see cref="HandleEventResult"/> with a
+        /// non-default <c>Owned*</c> token are responsible for invoking <c>Release</c> here once
+        /// the corresponding bytes have crossed any grain boundary (Orleans deep-copies on the
+        /// hop). Null when the host has not wired the registry — providers fall back to the
+        /// pre-pool serializer path.
+        /// </summary>
+        PooledPayloadRegistry? Registry => null;
     }
 
     /// <summary>
-    /// Result of handling an RPC call.
+    /// Result of handling an RPC call. All payload fields are <see cref="ReadOnlyMemory{T}"/>
+    /// slices into pool-rented buffers owned by the provider; the underlying pool slots stay
+    /// alive across the provider→grain boundary. EntityGrain wraps the outgoing payloads into
+    /// <see cref="PooledPayload"/>-typed wire fields by calling
+    /// <c>TakeOutgoing*</c> on <see cref="MetaProviderBase{TState}"/> — that transfer hands
+    /// ownership off to whoever ships the bytes (receiver releases when done).
     /// </summary>
-    public class HandleCallResult
+    public readonly struct HandleCallResult
     {
-        /// <summary>The RPC response.</summary>
-        public RpcResponse Response { get; set; } = new();
+        /// <summary>Pre-serialized MetaOperation for the originating caller's RPC response.</summary>
+        public ReadOnlyMemory<byte> ResponseBytes { get; init; }
 
-        /// <summary>Broadcasts to distribute to subscribers.</summary>
-        public List<EntityBroadcast> Broadcasts { get; set; } = new();
+        /// <summary>Method return value (shortcut so cross-entity callers can read it without
+        /// deserializing <see cref="ResponseBytes"/>). Same bytes appear inside ResponseBytes.</summary>
+        public ReadOnlyMemory<byte> ResultBytes { get; init; }
+
+        /// <summary>Pre-serialized broadcast for modern (replay-eligible) subscribers. Default
+        /// (uninitialized) when no broadcast is produced.</summary>
+        public ReadOnlyMemory<byte> BroadcastReplayBytes { get; init; }
+
+        /// <summary>Pre-serialized broadcast for legacy (force-patch) subscribers. Default when
+        /// no force-patch tailoring was required for this call.</summary>
+        public ReadOnlyMemory<byte> BroadcastPatchBytes { get; init; }
 
         /// <summary>
-        /// Cross-entity calls made during this operation.
-        /// Used by EntityGrain/SessionManager for broadcast suppression and desync validation.
+        /// Cross-entity calls made during this operation. Used by EntityGrain and replay clients
+        /// for broadcast suppression / desync validation.
         /// </summary>
-        public List<CrossEntityCallInfo>? CrossEntityCalls { get; set; }
+        public List<CrossEntityOperationInfo>? CrossEntityCalls { get; init; }
 
         /// <summary>
         /// If true, EntityGrain must persist state immediately regardless of PersistencePolicy.
-        /// Propagated from DispatchResult.ForcePersist (set by [MetaMethod(ForcePersist = true)]).
+        /// Propagated from <c>DispatchResult.ForcePersist</c> (set by <c>[MetaMethod(ForcePersist = true)]</c>).
         /// </summary>
-        public bool ForcePersist { get; set; }
+        public bool ForcePersist { get; init; }
+
+        /// <summary>Top-level error (provider could not dispatch). Method-body errors are
+        /// embedded in the serialized ResponseBytes via <c>MetaOperation.Error</c>.</summary>
+        public string? Error { get; init; }
     }
 
     /// <summary>
-    /// Result of handling an external event.
+    /// Result of handling an external event. Single pre-serialized broadcast — external events
+    /// don't go through force-patch tailoring so one variant suffices. Pool ownership for the
+    /// outgoing bytes is exposed via <c>MetaProviderBase.TakeOutgoingEventBroadcast</c>.
     /// </summary>
-    public class HandleEventResult
+    public readonly struct HandleEventResult
     {
-        /// <summary>Broadcasts to distribute to subscribers.</summary>
-        public List<EntityBroadcast> Broadcasts { get; set; } = new();
+        public ReadOnlyMemory<byte> BroadcastBytes { get; init; }
     }
 
     /// <summary>
@@ -97,27 +131,27 @@ namespace SharedMeta.Server.Core
         /// dispatches in-process and never reaches this method.
         /// </param>
         /// <param name="requirePatchForFanOut">
-        /// 0.22.0+ When <c>true</c>, the provider activates patch tracking even for non-ServerPatch
-        /// execution modes — the resulting broadcast carries both <c>ReplayPayload</c> and
-        /// <c>PatchBytes</c>, and <c>SessionManagerGrain</c> tailors per-subscriber on fan-out
-        /// (modern keeps replay, legacy keeps patch). EntityGrain sets this when its aggregated
-        /// force-patch refcount contains the call's <c>(Service, Alias, MethodVersion)</c> tuple.
+        /// When true, activates patch tracking even for non-ServerPatch execution modes —
+        /// the resulting broadcast carries both <c>ReplayPayload</c> and <c>PatchBytes</c>,
+        /// and the per-subscriber tailor strips one on fan-out (modern keeps replay, legacy
+        /// keeps patch). Set by EntityGrain when its force-patch refcount contains the call.
         /// </param>
         /// <returns>Response and broadcasts to distribute.</returns>
-        Task<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true, bool requirePatchForFanOut = false);
+        ValueTask<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true, bool requirePatchForFanOut = false);
 
         /// <summary>
         /// Handle an external event from a framework service asynchronously.
+        /// 0.24.0+ ushort identifier (from <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/>
+        /// for framework subscribers) replaces the legacy <c>(subscriberInterface, methodName)</c>
+        /// string pair on the wire and at the dispatch site.
         /// </summary>
-        /// <param name="subscriberInterface">The subscriber interface (e.g., "ILobbySubscriber").</param>
-        /// <param name="methodName">The method name (e.g., "OnMatchFound").</param>
+        /// <param name="methodId">Framework subscriber method id (see <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/>).</param>
         /// <param name="eventData">The serialized event data.</param>
         /// <param name="callerId">Optional caller ID.</param>
         /// <returns>Broadcasts to distribute.</returns>
-        Task<HandleEventResult> HandleExternalEventAsync(
-            string subscriberInterface,
-            string methodName,
-            byte[] eventData,
+        ValueTask<HandleEventResult> HandleExternalEventAsync(
+            ushort methodId,
+            ReadOnlyMemory<byte> eventData,
             string? callerId = null);
 
         /// <summary>
@@ -171,7 +205,7 @@ namespace SharedMeta.Server.Core
         /// Handle a query call. Read-only: dispatches the method but skips
         /// replay recording, broadcast creation, random state, and persistence.
         /// </summary>
-        Task<QueryCallResponse> HandleQueryAsync(RpcCall call);
+        ValueTask<QueryCallResponse> HandleQueryAsync(RpcCall call);
 
         /// <summary>
         /// Handle a signal call — fire-and-forget, void return, read-only state.
@@ -184,7 +218,7 @@ namespace SharedMeta.Server.Core
         /// recording is a no-op.
         /// </para>
         /// </summary>
-        Task HandleSignalAsync(RpcCall call) => Task.CompletedTask;
+        ValueTask HandleSignalAsync(RpcCall call) => default;
 
         // Method-level classification hooks (IsQueryMethod / IsSignalMethod / IsOpenAccessQuery /
         // IsClientCallable) intentionally live as `protected virtual` on MetaProviderBase rather

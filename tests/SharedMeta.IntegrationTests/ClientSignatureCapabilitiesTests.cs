@@ -16,17 +16,19 @@ namespace SharedMeta.IntegrationTests;
 public class ClientSignatureCapabilitiesTests
 {
     /// <summary>
-    /// Exposes the protected <see cref="ClientSignatureRegistry.ComputeCapabilities"/>
-    /// for direct invocation. Production code path goes via
-    /// <see cref="ClientSignatureRegistry.RegisterAsync"/>, which also writes to grains —
-    /// here we want the pure compute output without the Orleans round trip.
+    /// Exposes the protected <c>ComputeCapabilitiesAndMaps</c> for direct invocation.
+    /// Production code path goes via <c>ClientSignatureRegistry.RegisterAsync</c>, which
+    /// also writes to grains — here we want the pure compute output without the Orleans
+    /// round trip. Compute returns only the capabilities (the method-id map is verified
+    /// indirectly via <see cref="ClientCapabilities.ServerToClientMethodIds"/>).
     /// </summary>
     private class TestableRegistry : ClientSignatureRegistry
     {
         public TestableRegistry(MetaServerSignature serverSig)
             : base(grainFactory: null!, serverSignature: serverSig) { }
 
-        public ClientCapabilities Compute(MetaClientSignature sig) => ComputeCapabilities(sig);
+        public ClientCapabilities Compute(MetaClientSignature sig)
+            => ComputeCapabilitiesAndMaps(sig).Item1;
     }
 
     private static MetaServerSignature ServerSig(params ServerMethodEntry[] methods)
@@ -290,10 +292,10 @@ public class ClientSignatureCapabilitiesTests
     private static SharedMeta.Core.MetaConfigVersion V(int major, int minor)
         => new(major, minor, 0);
 
-    private static SharedMeta.Server.Core.Session.ConfigBoundaryEntry Boundary(string configType, string minVer)
+    private static SharedMeta.Core.Transport.ConfigBoundaryEntry Boundary(string configType, string minVer)
         => new() { ConfigTypeFullName = configType, MinConfigVersion = minVer };
 
-    private static SharedMeta.Server.Core.Session.ServerMethodEntry ServerMethod(string service, string configType)
+    private static SharedMeta.Core.Transport.ServerMethodEntry ServerMethod(string service, string configType)
         => new() { ServiceName = service, Alias = "X", Version = 0, ConfigTypeFullName = configType };
 
     [Fact]
@@ -417,91 +419,8 @@ public class ClientSignatureCapabilitiesTests
         Assert.Null(patch);
     }
 
-    // ── 0.22.0 EntityGrain per-subscriber fan-out tailoring (Stage 16, point 1) ───
-    // BroadcastTailor.TailorForSubscriber is the pure-logic core of
-    // EntityGrain.DistributeBroadcasts → TailorBroadcastForSubscriber. An earlier draft kept
-    // tailoring in SessionManagerGrain.BroadcastToSessionOp; that's correct but inefficient
-    // (broadcast carries both payloads on the wire to every subscriber, then SessionManager
-    // strips). New architecture: EntityGrain decides per-subscriber at fan-out time and ships
-    // only the variant the subscriber actually needs.
-
-    private static SharedMeta.Server.Core.Grains.EntityBroadcast Broadcast(
-        string service, string method, int version, byte[]? replay, byte[]? patch)
-        => new()
-        {
-            ServiceName = service,
-            MethodName = method,
-            MethodVersion = version,
-            ReplayPayload = replay,
-            PatchBytes = patch,
-            StateBytes = null,
-        };
-
-    [Fact]
-    public void TailorForSubscriber_NoContributions_ReturnsOriginalUnchanged()
-    {
-        // Modern subscriber: no method-level or service-level force-patch contributions.
-        // Tailor returns the original broadcast reference (zero alloc), keeping both payloads
-        // intact for whatever downstream chooses to do.
-        var b = Broadcast("IService", "Do", 1, Replay, Patch);
-        var result = SharedMeta.Server.Core.Grains.BroadcastTailor.TailorForSubscriber(
-            b, subscriberMethodContributions: null, subscriberServiceContributions: null);
-        Assert.Same(b, result);
-    }
-
-    [Fact]
-    public void TailorForSubscriber_MethodForcePatched_StripsReplay()
-    {
-        // Subscriber contributed (IService, Do, 1) to session-level force-patch (their
-        // ClientCapabilities.ForceServerPatchMethods had this entry). Tailor → patch only.
-        var b = Broadcast("IService", "Do", 1, Replay, Patch);
-        var methodContribs = new List<(string, string, int)> { ("IService", "Do", 1) };
-        var result = SharedMeta.Server.Core.Grains.BroadcastTailor.TailorForSubscriber(
-            b, methodContribs, subscriberServiceContributions: null);
-        Assert.NotSame(b, result);
-        Assert.Null(result.ReplayPayload);
-        Assert.Same(Patch, result.PatchBytes);
-    }
-
-    [Fact]
-    public void TailorForSubscriber_ServiceForcePatched_StripsReplay()
-    {
-        // Subscriber contributed "IService" to per-entity force-patch (config-boundary
-        // triggered on this entity). Any method on the service force-patches for them.
-        var b = Broadcast("IService", "DoOther", 5, Replay, Patch);
-        var serviceContribs = new List<string> { "IService" };
-        var result = SharedMeta.Server.Core.Grains.BroadcastTailor.TailorForSubscriber(
-            b, subscriberMethodContributions: null, serviceContribs);
-        Assert.NotSame(b, result);
-        Assert.Null(result.ReplayPayload);
-        Assert.Same(Patch, result.PatchBytes);
-    }
-
-    [Fact]
-    public void TailorForSubscriber_DifferentMethod_PassesThroughUnchanged()
-    {
-        // Force-patch contribution is for (IService, Do, 1) — current broadcast is for
-        // (IService, OtherMethod, 1). Different identity → no force-patch → original.
-        var b = Broadcast("IService", "OtherMethod", 1, Replay, Patch);
-        var methodContribs = new List<(string, string, int)> { ("IService", "Do", 1) };
-        var result = SharedMeta.Server.Core.Grains.BroadcastTailor.TailorForSubscriber(
-            b, methodContribs, subscriberServiceContributions: null);
-        Assert.Same(b, result);
-    }
-
-    [Fact]
-    public void TailorForSubscriber_StateBytesAlwaysPreserved()
-    {
-        // ServerReplace path: StateBytes always preserved regardless of force-patch verdict.
-        var stateBytes = new byte[] { 0xEE };
-        var b = new SharedMeta.Server.Core.Grains.EntityBroadcast
-        {
-            ServiceName = "IService", MethodName = "Do", MethodVersion = 1,
-            ReplayPayload = Replay, PatchBytes = Patch, StateBytes = stateBytes,
-        };
-        var methodContribs = new List<(string, string, int)> { ("IService", "Do", 1) };
-        var result = SharedMeta.Server.Core.Grains.BroadcastTailor.TailorForSubscriber(
-            b, methodContribs, subscriberServiceContributions: null);
-        Assert.Same(stateBytes, result.StateBytes);
-    }
+    // EntityGrain per-subscriber tailoring lives in EntityGrain.SubscriberNeedsPatch (private)
+    // and EntityGrain.DistributeBroadcasts — no longer a pure helper. The old BroadcastTailor
+    // helper and its tests were removed when MetaOperation stopped crossing EntityGrain's
+    // boundary (provider now pre-serializes replay/patch variants directly).
 }

@@ -8,13 +8,13 @@ namespace SharedMeta.Orleans.Serialization
     /// <summary>
     /// Orleans-serializable surrogate for RpcCall.
     /// Used for streaming broadcasts through Orleans.
+    /// 0.24.0+ ServiceName/MethodName/MethodVersion were removed from <see cref="RpcCall"/>;
+    /// MethodId is the only dispatch identifier on the wire.
     /// </summary>
     [GenerateSerializer]
     public struct RpcCallSurrogate
     {
-        [Id(0)] public string ServiceName;
-        [Id(1)] public string MethodName;
-        [Id(2)] public int MethodVersion;
+        [Id(0)] public ushort MethodId;
         [Id(3)] public byte[] PayloadBytes;
         [Id(4)] public string? CallerId;
         [Id(5)] public List<string>? DebugInfo;
@@ -30,9 +30,7 @@ namespace SharedMeta.Orleans.Serialization
         {
             return new RpcCall
             {
-                ServiceName = surrogate.ServiceName ?? "",
-                MethodName = surrogate.MethodName ?? "",
-                MethodVersion = surrogate.MethodVersion,
+                MethodId = surrogate.MethodId,
                 Payload = surrogate.PayloadBytes ?? [],
                 CallerId = surrogate.CallerId,
                 Debug = surrogate.DebugInfo != null ? new PayloadDebug { PayloadItemInfo = surrogate.DebugInfo } : null
@@ -43,54 +41,13 @@ namespace SharedMeta.Orleans.Serialization
         {
             return new RpcCallSurrogate
             {
-                ServiceName = value.ServiceName,
-                MethodName = value.MethodName,
-                MethodVersion = value.MethodVersion,
-                PayloadBytes = value.Payload ?? [],
+                MethodId = value.MethodId,
+                // RpcCall.Payload is ROM (0.25.x); surrogate carries byte[] for the cross-silo
+                // Orleans wire shape. Materialise here — Orleans wire path is rare relative to
+                // in-silo dispatch, the materialisation is bounded by silo membership churn.
+                PayloadBytes = value.Payload.IsEmpty ? System.Array.Empty<byte>() : value.Payload.ToArray(),
                 CallerId = value.CallerId,
                 DebugInfo = value.Debug?.PayloadItemInfo
-            };
-        }
-    }
-
-    /// <summary>
-    /// Orleans-serializable surrogate for RpcResponse.
-    /// Used for RPC responses through Orleans grains.
-    /// </summary>
-    [GenerateSerializer]
-    public struct RpcResponseSurrogate
-    {
-        [Id(0)] public byte[]? ResultBytes;
-        [Id(1)] public byte[]? ReplayPayload;
-        [Id(2)] public string? Debug;
-        [Id(3)] public string? Error;
-    }
-
-    /// <summary>
-    /// Converter between RpcResponse and RpcResponseSurrogate.
-    /// </summary>
-    [RegisterConverter]
-    public sealed class RpcResponseSurrogateConverter : IConverter<RpcResponse, RpcResponseSurrogate>
-    {
-        public RpcResponse ConvertFromSurrogate(in RpcResponseSurrogate surrogate)
-        {
-            return new RpcResponse
-            {
-                ResultBytes = surrogate.ResultBytes,
-                ReplayPayload = surrogate.ReplayPayload,
-                Debug = surrogate.Debug,
-                Error = surrogate.Error
-            };
-        }
-
-        public RpcResponseSurrogate ConvertToSurrogate(in RpcResponse value)
-        {
-            return new RpcResponseSurrogate
-            {
-                ResultBytes = value.ResultBytes,
-                ReplayPayload = value.ReplayPayload,
-                Debug = value.Debug,
-                Error = value.Error
             };
         }
     }

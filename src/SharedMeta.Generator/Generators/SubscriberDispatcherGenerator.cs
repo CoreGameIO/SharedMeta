@@ -126,35 +126,35 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"    /// </summary>");
             sb.AppendLine($"    public static class {className}SubscriberDispatcher");
             sb.AppendLine("    {");
+            // 0.24.0+ Dispatch by ushort methodId (from FrameworkMethodIds) instead of the
+            // legacy (subscriberInterface, methodName) string pair. Each subscriber method
+            // gets its own framework id baked in via FrameworkMethodIds constants.
             sb.AppendLine($"        public static List<(string serviceName, string methodName, byte[]? resultBytes)>? Dispatch(");
             sb.AppendLine($"            object serviceObj,");
-            sb.AppendLine($"            string subscriberInterface,");
-            sb.AppendLine($"            string methodName,");
-            sb.AppendLine($"            byte[] eventData,");
+            sb.AppendLine($"            ushort methodId,");
+            sb.AppendLine($"            System.ReadOnlyMemory<byte> eventData,");
             sb.AppendLine($"            IMetaSerializer serializer)");
             sb.AppendLine("        {");
             sb.AppendLine($"            var service = ({className})serviceObj;");
             sb.AppendLine("            var triggeredMethods = new List<(string, string, byte[]?)>();");
             sb.AppendLine();
-            sb.AppendLine("            switch (subscriberInterface)");
+            sb.AppendLine("            switch (methodId)");
             sb.AppendLine("            {");
 
             foreach (var subscriber in subscribers)
             {
-                sb.AppendLine($"                case \"{subscriber.InterfaceName}\":");
-                sb.AppendLine("                {");
-                sb.AppendLine("                    switch (methodName)");
-                sb.AppendLine("                    {");
-
                 foreach (var method in subscriber.Methods)
                 {
-                    sb.AppendLine($"                        case \"{method.MethodName}\":");
-                    sb.AppendLine("                        {");
-                    sb.AppendLine($"                            var @event = serializer.Unpack<{method.EventTypeName}>(eventData);");
-                    sb.AppendLine($"                            service.{method.MethodName}(@event);");
+                    sb.AppendLine($"                case global::SharedMeta.Core.Framework.FrameworkMethodIds.{subscriber.InterfaceName}_{method.MethodName}:");
+                    sb.AppendLine("                {");
+                    sb.AppendLine($"                    var @event = serializer.Unpack<{method.EventTypeName}>(eventData);");
+                    sb.AppendLine($"                    service.{method.MethodName}(@event);");
                     sb.AppendLine();
-                    sb.AppendLine($"                            // Broadcast subscriber method to clients for state sync");
-                    sb.AppendLine($"                            triggeredMethods.Add((\"{subscriber.InterfaceName}\", \"{method.MethodName}\", eventData));");
+                    sb.AppendLine($"                    // Broadcast subscriber method to clients for state sync");
+                    // triggeredMethods stores byte[]? for backward compat with broadcast emitters
+                    // that don't yet consume ROM. eventData is ROM (0.25.x wire change) — copy at
+                    // this boundary; subscriber-event dispatch is comparatively cold.
+                    sb.AppendLine($"                    triggeredMethods.Add((\"{subscriber.InterfaceName}\", \"{method.MethodName}\", eventData.IsEmpty ? null : eventData.ToArray()));");
 
                     // Check for ServiceTriggers
                     var triggers = serviceTriggers.Where(t =>
@@ -165,34 +165,30 @@ namespace SharedMeta.Generator.Generators
                     {
                         if (!string.IsNullOrEmpty(trigger.Condition))
                         {
-                            sb.AppendLine($"                            // ServiceTrigger with condition");
-                            sb.AppendLine($"                            if (service.{trigger.Condition}())");
-                            sb.AppendLine("                            {");
-                            sb.AppendLine($"                                service.{trigger.TriggerMethodName}();");
+                            sb.AppendLine($"                    // ServiceTrigger with condition");
+                            sb.AppendLine($"                    if (service.{trigger.Condition}())");
+                            sb.AppendLine("                    {");
+                            sb.AppendLine($"                        service.{trigger.TriggerMethodName}();");
                             if (trigger.IsMetaMethod)
                             {
-                                sb.AppendLine($"                                triggeredMethods.Add((\"{serviceInterfaceName}\", \"{trigger.TriggerMethodName}\", null));");
+                                sb.AppendLine($"                        triggeredMethods.Add((\"{serviceInterfaceName}\", \"{trigger.TriggerMethodName}\", null));");
                             }
-                            sb.AppendLine("                            }");
+                            sb.AppendLine("                    }");
                         }
                         else
                         {
-                            sb.AppendLine($"                            // ServiceTrigger (unconditional)");
-                            sb.AppendLine($"                            service.{trigger.TriggerMethodName}();");
+                            sb.AppendLine($"                    // ServiceTrigger (unconditional)");
+                            sb.AppendLine($"                    service.{trigger.TriggerMethodName}();");
                             if (trigger.IsMetaMethod)
                             {
-                                sb.AppendLine($"                            triggeredMethods.Add((\"{serviceInterfaceName}\", \"{trigger.TriggerMethodName}\", null));");
+                                sb.AppendLine($"                    triggeredMethods.Add((\"{serviceInterfaceName}\", \"{trigger.TriggerMethodName}\", null));");
                             }
                         }
                     }
 
-                    sb.AppendLine("                            break;");
-                    sb.AppendLine("                        }");
+                    sb.AppendLine("                    break;");
+                    sb.AppendLine("                }");
                 }
-
-                sb.AppendLine("                    }");
-                sb.AppendLine("                    break;");
-                sb.AppendLine("                }");
             }
 
             sb.AppendLine("            }");
@@ -230,21 +226,20 @@ namespace SharedMeta.Generator.Generators
             {
                 sb.AppendLine($"        /// <summary>");
                 sb.AppendLine($"        /// Create LocalInvoker for {subscriber.InterfaceName}.");
+                sb.AppendLine($"        /// 0.24.0+: dispatches by framework subscriber methodId (see FrameworkMethodIds).");
                 sb.AppendLine($"        /// </summary>");
                 sb.AppendLine($"        public static LocalMethodInvoker Create{subscriber.InterfaceName}Invoker(Func<{subscriber.InterfaceName}> serviceFactory)");
                 sb.AppendLine("        {");
-                sb.AppendLine("            return (serviceName, methodName, argsBytes, serializer) =>");
+                sb.AppendLine("            return (methodId, argsBytes, serializer) =>");
                 sb.AppendLine("            {");
-                sb.AppendLine($"                if (serviceName != \"{subscriber.InterfaceName}\") return;");
-                sb.AppendLine();
                 sb.AppendLine("                var service = serviceFactory();");
                 sb.AppendLine();
-                sb.AppendLine("                switch (methodName)");
+                sb.AppendLine("                switch (methodId)");
                 sb.AppendLine("                {");
 
                 foreach (var method in subscriber.Methods)
                 {
-                    sb.AppendLine($"                    case \"{method.MethodName}\":");
+                    sb.AppendLine($"                    case global::SharedMeta.Core.Framework.FrameworkMethodIds.{subscriber.InterfaceName}_{method.MethodName}:");
                     sb.AppendLine("                    {");
                     sb.AppendLine($"                        var @event = serializer.Unpack<{method.EventTypeName}>(argsBytes);");
                     sb.AppendLine($"                        service.{method.MethodName}(@event);");
@@ -302,7 +297,7 @@ namespace SharedMeta.Generator.Generators
                 foreach (var method in subscriber.Methods)
                 {
                     var eventName = GetEventName(method.MethodName);
-                    sb.AppendLine($"            _client.OnMethodReplayed(\"{subscriber.InterfaceName}\", \"{method.MethodName}\", ctx =>");
+                    sb.AppendLine($"            _client.OnMethodReplayed(global::SharedMeta.Core.Framework.FrameworkMethodIds.{subscriber.InterfaceName}_{method.MethodName}, ctx =>");
                     sb.AppendLine("            {");
                     sb.AppendLine($"                var @event = _serializer.Unpack<{method.EventTypeName}>(ctx.ArgsBytes);");
                     sb.AppendLine($"                {eventName}?.Invoke(@event);");

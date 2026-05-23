@@ -755,7 +755,7 @@ No server communication. Instant. State changes are client-only.
 
 ### CrossOptimistic Mode
 
-Client executes locally including cross-entity calls on cached local state. Server validates. Used for interactive cross-entity gameplay.
+Optimistic execution across **multiple states owned by the same player** — the split-profile pattern. When one player's data has grown large enough to be split across several `ISharedState` entities (e.g. `ProfileState` + `InventoryState` + `QuestState`, all keyed by the player's id), `CrossOptimistic` lets the client execute methods that touch more than one of those states locally without waiting for a round-trip.
 
 ```
 Client                                    Server
@@ -771,25 +771,26 @@ Client                                    Server
   │  Mismatch: desync callback               │
 ```
 
+**Intended use:** split-profile mechanics. The cross-call target must be an entity that **the caller owns** — i.e. no other client and no server-side process writes to it independently of this caller. The framework relies on this invariant in two places:
+
+1. **Broadcast suppression** — when `IsCrossOptimistic` is set on the outer call, the target's `HandleCallFromEntityAsync` excludes the originating caller from `DistributeBroadcasts` (the effect is already inlined in the outer call's replay payload; a duplicate broadcast would double-apply on the caller's client). Other subscribers of the target — typically none in the split-profile case — still receive the broadcast.
+2. **Sequence-slot reservation** — `SessionManagerGrain` reserves the target entity's seq slot for the cross-call via a marker in `HeldBroadcasts`. If a concurrent third-party writer (server-side timer, background job, admin tool) increments the target between our last-known sequence and the cross-call's sequence, the marker waits in the gap so the intermediate broadcast(s) can drain through without being mis-classified as "old/duplicate". This guards the split-profile pattern even when a server-side scheduler also writes to one of the player's split states.
+
+**Do not** use `CrossOptimistic` against entities that are concurrently mutated by other clients (clan-level state, lobby, market, two-player trade). Those need `Server` mode so the caller's client learns the target's state change through the normal broadcast path.
+
 ### Runtime Execution Mode Override
 
 The execution mode defined in `[MetaMethod(Mode = ...)]` is the default. You can override it at runtime using `IExecutionModeProvider` — without recompilation or redeployment.
 
-**Override a specific method:**
+**Override a specific method** (0.23.0+ — keyed by `ushort MethodId` from the generator-emitted `GameMethodIds` const table):
 ```csharp
 var modeProvider = client.ModeProvider as ExecutionModeProvider;
 
 // Force "SetName" to always go through the server
-modeProvider.SetMode("IProfileService", "SetName", ExecutionMode.Server);
+modeProvider.SetMode(GameMethodIds.IProfileService_SetName_v0, ExecutionMode.Server);
 
 // Force "PlayCard" to local-only (e.g., during offline mode)
-modeProvider.SetMode("ICardGameService", "PlayCard", ExecutionMode.Local);
-```
-
-**Override all methods in a service:**
-```csharp
-// All profile methods become server-authoritative
-modeProvider.SetServiceMode("IProfileService", ExecutionMode.Server);
+modeProvider.SetMode(GameMethodIds.ICardGameService_PlayCard_v0, ExecutionMode.Local);
 ```
 
 **Reset overrides:**
@@ -798,9 +799,10 @@ modeProvider.Clear();  // Revert to [MetaMethod] defaults
 ```
 
 **Priority order:**
-1. Specific method override (`SetMode("IService", "Method", ...)`)
-2. Service-wide override (`SetServiceMode("IService", ...)`)
-3. Attribute default (`[MetaMethod(Mode = ...)]`)
+1. Specific method override via `SetMode(GameMethodIds.X, mode)`
+2. Attribute default (`[MetaMethod(Mode = ...)]`)
+
+> **0.23.0 breaking change** — the previous `SetMode(string serviceName, string methodName, mode)` / `SetServiceMode(string, mode)` / `LoadManifest(json)` overloads were removed when the wire-level method addressing switched to `ushort MethodId`. To configure overrides from a JSON manifest in your own code, resolve `"IService.Method"` → `GameMethodIds.X` constant at config-load time (the constants are public `const ushort` fields, accessible via reflection on the `{RootNamespace}.Generated.GameMethodIds` type) and feed the result into `SetMode(ushort, mode)`.
 
 **Use cases:**
 - Force `Server` mode during tournaments for maximum authority
@@ -808,7 +810,7 @@ modeProvider.Clear();  // Revert to [MetaMethod] defaults
 - A/B testing different execution strategies without code changes
 - Debugging desyncs by switching suspected methods to `Server` mode
 
-Generated API client code calls `_modeProvider.GetMode(serviceName, methodAlias, defaultMode)` before every RPC to determine the execution path.
+Generated API client code calls `_modeProvider.GetMode(GameMethodIds.X, defaultMode)` before every RPC to determine the execution path. The lookup is a single dictionary read on a `ushort` — no string allocation per call.
 
 ### ServerPatch Mode
 
@@ -2081,17 +2083,28 @@ server.FailureSimulation = new FailureSimulationSettings
 ```csharp
 public interface IMetaSerializer
 {
-    byte[] Pack<T>(T value);
+    // Single-value: returns ROM<byte> (0.23.0+). Stock codec wraps a fresh byte[];
+    // GrainScopedSerializer writes into per-grain scratch and returns a slice (ephemeral —
+    // valid until the next Handle*Async entry resets the pool). Use .ToArray() at the
+    // boundary where ownership matters (persistence, cross-grain hop without a pooled payload).
+    ReadOnlyMemory<byte> Pack<T>(T value);
+    void Pack<T>(T value, IBufferWriter<byte> writer);                    // zero-alloc writer overload
     T Unpack<T>(byte[] bytes);
-    byte[] Pack(Type type, object value);
+    T Unpack<T>(ReadOnlyMemory<byte> bytes);
+
+    ReadOnlyMemory<byte> Pack(Type type, object value);
     object Unpack(Type type, byte[] bytes);
     T Clone<T>(T value);
+
     IPayloadWriter CreateWriter();
     IPayloadReader CreateReader(byte[] bytes);
+    IPayloadReader CreateReader(ReadOnlyMemory<byte> bytes);
     byte[] SerializeRpcCall(RpcCall call);
     RpcCall DeserializeRpcCall(byte[] bytes);
 }
 ```
+
+> **Wire-DTO shape (0.23.0+).** Hot-path packets carry payloads as `ReadOnlyMemory<byte>` instead of `byte[]?` — `MetaOperation`, `RpcCall`, `SessionOp`, `EntityBroadcast.OpBytes`, etc. MemoryPack wire-bytes are identical to the prior shape (`bin` length-prefix + bytes); MessagePack uses a custom formatter for ROM round-trip. JSON-based clients on Newtonsoft.Json (Unity HTTP polling) need `RomByteJsonConverter` registered in `JsonSettings.Converters` — System.Text.Json's built-in converter already uses base64 strings matching the wire. Persistence fields (`EntityGrainState.*Bytes`) stay `byte[]`.
 
 ### MemoryPack (default)
 
@@ -3758,6 +3771,94 @@ for (int player = 0; player < 1000; player++)
 
 **When to use:** load-testing the server's throughput and broadcast fan-out machinery without paying the socket cost of "one WebSocket per simulator." Reference: `examples/ClanWars/ClanWars.Client.Common/StressTestRunner.cs` — pass `--mux-channels 10` to fan 1000 players across 10 sockets.
 
+### Observability (0.23.0+)
+
+SharedMeta instruments the server-side hot paths with built-in `System.Diagnostics.Metrics` meters and `ActivitySource` traces. **No OpenTelemetry NuGet dependency in the framework packages** — hosts opt-in by subscribing to the static `Meter` and `ActivitySource` instances:
+
+| Source | Where defined | What it produces |
+|---|---|---|
+| `SharedMeta` (Meter + ActivitySource) | `SharedMeta.Server.Core.Telemetry.SharedMetaMeters` / `.SharedMetaActivities` | Server-side instruments: RPC duration, broadcast fan-out, persistence, cross-entity, grain lifecycle, force-patch, sessions |
+| `SharedMeta.Client` (Meter + ActivitySource) | `SharedMeta.Client.Telemetry.SharedMetaClientMeters` / `.SharedMetaClientActivities` | Client-side instruments: RPC round-trip, replay duration, connection state transitions, desync detection, config cache |
+
+#### Server-side wire-up (host)
+
+```csharp
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
+using OpenTelemetry.Resources;
+
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService(serviceName: "MyGame.Server", serviceVersion: "1.0.0"))
+    .WithMetrics(m => m
+        .AddMeter(SharedMeta.Server.Core.Telemetry.SharedMetaMeters.MeterName)
+        .AddRuntimeInstrumentation()        // .NET GC, ThreadPool, JIT, exceptions
+        .AddPrometheusExporter())           // scrape endpoint at /metrics
+    .WithTracing(t => t
+        .AddSource(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SourceName)
+        .AddOtlpExporter());                 // or AddJaegerExporter, AddConsoleExporter, etc.
+
+var app = builder.Build();
+app.MapPrometheusScrapingEndpoint();        // GET http://server/metrics
+```
+
+NuGets required (host project only, NOT the SharedMeta packages): `OpenTelemetry.Extensions.Hosting`, `OpenTelemetry.Instrumentation.Runtime`, `OpenTelemetry.Exporter.Prometheus.AspNetCore` (or `OpenTelemetry.Exporter.OpenTelemetryProtocol`).
+
+Reference: `examples/ClanWars/ClanWars.Server/Program.cs`.
+
+#### Client-side wire-up (.NET client host)
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(m => m
+        .AddMeter(SharedMeta.Client.Telemetry.SharedMetaClientMeters.MeterName)
+        .AddRuntimeInstrumentation()
+        .AddOtlpExporter());
+```
+
+On Unity hosts the same `Meter` / `ActivitySource` is reachable via `MeterListener` / `ActivityListener` directly — OpenTelemetry SDK is optional. If you don't subscribe at all, every instrumented call is a single volatile-flag check with no allocation.
+
+#### Metric catalog (server-side `SharedMeta` meter)
+
+| Metric | Type | Tags | Notes |
+|---|---|---|---|
+| `sharedmeta.session.connect.duration` | Histogram (ms) | `result` | Handshake including version-gate + signature lookup |
+| `sharedmeta.session.active` | UpDownCounter | — | Currently connected sessions |
+| `sharedmeta.session.terminated.count` | Counter | `reason` | Disconnects grouped by reason |
+| `sharedmeta.entity.subscribe.duration` | Histogram (ms) | `state_type`, `result` | Includes grain activation when cold |
+| `sharedmeta.entity.subscribe.count` | Counter | `state_type` | Subscribe events |
+| `sharedmeta.entity.subscribers.active` | UpDownCounter | `state_type` | Currently subscribed player-entity pairs |
+| `sharedmeta.entity.rpc.duration` | Histogram (ms) | `service`, `method`, `result` | Per-method server processing |
+| `sharedmeta.entity.rpc.request_bytes` | Histogram (bytes) | `service`, `method` | Incoming payload size |
+| `sharedmeta.cross_entity.call.duration` | Histogram (ms) | `to_service`, `kind`, `result` | Cross-entity hops |
+| `sharedmeta.cross_entity.call.count` | Counter | `to_service`, `kind` | `kind = normal | notification` |
+| `sharedmeta.broadcast.fan_out_size` | Histogram | `state_type` | Subscribers per broadcast |
+| `sharedmeta.broadcast.payload_bytes` | Histogram (bytes) | `state_type`, `kind` | `kind = replay | patch | state` |
+| `sharedmeta.broadcast.tailored.count` | Counter | `state_type`, `path` | `path = patch | replay` — per-subscriber routing |
+| `sharedmeta.persistence.write.duration` | Histogram (ms) | `state_type` | `WriteStateAsync` |
+| `sharedmeta.compat.force_patch.applied` | Counter | `service`, `method`, `kind` | Force-patch decisions on RPC |
+| `sharedmeta.grain.activation.count` | Counter | `state_type` | Cold starts |
+| `sharedmeta.grain.active` | UpDownCounter | `state_type` | Currently active entity grains |
+
+Plus the standard runtime instrumentation (GC, ThreadPool, JIT) provided by `OpenTelemetry.Instrumentation.Runtime`.
+
+#### Cardinality budget
+
+`service`, `method`, `state_type`, `kind`, `result`, `reason` are all schema-bounded. Typical project: 5–20 services × 5–30 methods + a handful of state types = 100–600 unique series total. Entity IDs are NOT used as metric tags — they go on `Activity` tags instead (no aggregation cost there).
+
+#### Distributed tracing
+
+Server-side spans nest naturally via in-process `Activity.Current` propagation through Orleans grain calls:
+
+```
+sharedmeta.session.connect
+sharedmeta.entity.subscribe   [state_type=ProfileState, player=p1]
+sharedmeta.entity.rpc         [service=IProfileService, method=GainPoints]
+└─ sharedmeta.cross_entity.call [to=IClanService, kind=normal]
+sharedmeta.persistence.write
+```
+
+Client → server wire-level W3C trace propagation (i.e., `traceparent` on `RpcCallRequest`) is **not yet implemented** — client and server traces are independent for now. Planned follow-up.
+
 ---
 
 ## 23. Capability Overview
@@ -3873,6 +3974,29 @@ var app = builder.Build();
 app.MapMetaHub("/meta");  // SignalR endpoint
 app.Run();
 ```
+
+#### Optional: Outgoing-payload pool (0.23.0+)
+
+`PooledPayloadRegistry` is a silo-scoped ref-counted byte-buffer pool. When enabled, broadcast and response payloads serialize into pool slots instead of fresh `byte[]` per call — fan-out reuses one buffer across N receivers. Default OFF; opt in once profiling shows the pool pays off for your workload (it favours high-fan-out broadcasts; single-receiver paths see no win).
+
+```csharp
+silo.AddStartupTask<PooledPayloadRegistryStartupTask>()   // assigns unique SiloId via cluster-singleton coordinator grain
+    .ConfigureServices(services =>
+    {
+        services.AddSingleton<IMetaSerializer>(new MemoryPackMetaSerializer());
+        services.Configure<PooledPayloadOptions>(o =>
+        {
+            o.UsePoolPath   = true;   // route broadcast/response through ref-counted slots
+            o.EnableHistory = false;  // per-slot Acquire/IncrementRef/Release stack capture (debug only)
+        });
+        services.AddSingleton<PooledPayloadRegistry>();
+        services.ConfigureMeta();
+    });
+```
+
+When OFF, `MetaProviderBase.PackBroadcastVariant` falls back to a fresh `byte[]` wrapped as `PooledPayload(bytes, 0)` — GC-managed, no pool plumbing involved at runtime. The wire shape is identical either way; the difference is just where the bytes live.
+
+> **Note.** Intermediate serializations (dispatcher result, patch tree, state pack) always route through the per-grain `GrainScopedSerializer` scratch buffer, regardless of `UsePoolPath`. The pool toggle only affects the outgoing wire payload. ADR: [docs/adr/0.23.0-meta-operation-unification.md](adr/0.23.0-meta-operation-unification.md).
 
 ### Step 5: Client Configuration
 

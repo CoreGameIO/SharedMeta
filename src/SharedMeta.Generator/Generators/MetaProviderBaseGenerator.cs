@@ -196,7 +196,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        public byte[] GetStateBytes()");
             sb.AppendLine("        {");
             sb.AppendLine("            if (Context == null) return Array.Empty<byte>();");
-            sb.AppendLine("            return Context.Serializer.Pack(State);");
+            sb.AppendLine("            return Context.Serializer.Pack(State).ToArray();");
             sb.AppendLine("        }");
             sb.AppendLine();
 
@@ -251,7 +251,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            {");
             sb.AppendLine("                return new HandleCallResult");
             sb.AppendLine("                {");
-            sb.AppendLine("                    Response = new RpcResponse { Error = \"Provider not initialized\" }");
+            sb.AppendLine("                    Response = new MetaOperation { Error = \"Provider not initialized\" }");
             sb.AppendLine("                };");
             sb.AppendLine("            }");
             sb.AppendLine();
@@ -289,11 +289,14 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                var broadcasts = new List<EntityBroadcast>();");
             sb.AppendLine("                broadcasts.Add(new EntityBroadcast");
             sb.AppendLine("                {");
-            sb.AppendLine("                    ServiceName = serviceName,");
-            sb.AppendLine("                    MethodName = methodName,");
-            sb.AppendLine("                    Payload = payloadBytes,");
-            sb.AppendLine("                    ReplayPayload = replayBytes,");
-            sb.AppendLine("                    ExcludePlayerId = call.CallerId");
+            sb.AppendLine("                    ExcludePlayerId = call.CallerId,");
+            sb.AppendLine("                    Op = new MetaOperation");
+            sb.AppendLine("                    {");
+            sb.AppendLine("                        ServiceName = serviceName,");
+            sb.AppendLine("                        MethodName = methodName,");
+            sb.AppendLine("                        Payload = payloadBytes,");
+            sb.AppendLine("                        ReplayPayload = replayBytes");
+            sb.AppendLine("                    }");
             sb.AppendLine("                });");
             sb.AppendLine();
             sb.AppendLine("                // Execute triggers if any");
@@ -304,8 +307,10 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
             sb.AppendLine("                return new HandleCallResult");
             sb.AppendLine("                {");
-            sb.AppendLine("                    Response = new RpcResponse");
+            sb.AppendLine("                    Response = new MetaOperation");
             sb.AppendLine("                    {");
+            sb.AppendLine("                        ServiceName = serviceName,");
+            sb.AppendLine("                        MethodName = methodName,");
             sb.AppendLine("                        ResultBytes = result.ResultBytes,");
             sb.AppendLine("                        ReplayPayload = replayBytes");
             sb.AppendLine("                    },");
@@ -317,7 +322,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                Console.Error.WriteLine($\"[MetaProviderBase] Error handling call {call.ServiceName}.{call.MethodName}: {ex.Message}\");");
             sb.AppendLine("                return new HandleCallResult");
             sb.AppendLine("                {");
-            sb.AppendLine("                    Response = new RpcResponse { Error = ex.Message }");
+            sb.AppendLine("                    Response = new MetaOperation { Error = ex.Message }");
             sb.AppendLine("                };");
             sb.AppendLine("            }");
             sb.AppendLine("        }");

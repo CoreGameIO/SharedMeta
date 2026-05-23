@@ -58,13 +58,25 @@ public class TestClusterFixture : IAsyncLifetime
     /// </summary>
     public IMetaConnectionHandlerFactory CreateHandlerFactory(MetaTransportOptions? transportOptions = null)
     {
+        // 0.24.0+ Construct IClientSignatureRegistry + MetaServerSignature outside the silo
+        // DI graph so MetaConnectionHandler can translate client→server MethodId on every RPC.
+        // (TestCluster's SiloHandle does not expose ServiceProvider in Orleans 8, so we recreate
+        // the same wiring ConfigureMeta would have done.) The shared GameServiceDiscoveryBase
+        // is the codegen singleton for the SharedMeta.Test.Meta1 assembly.
+        var serverSignature = SharedMeta.Test.Meta1.GameServiceDiscoveryBase.ServerSignature;
+        var sigRegistry = new SharedMeta.Server.Core.Session.ClientSignatureRegistry(GrainFactory, serverSignature);
+
         return new MetaConnectionHandlerFactory(
             GrainFactory,
             new GeneratedEntityGrainResolver(),
             NullLoggerFactory.Instance,
             MetaMethodSignatureValidator.ValidateClientSignatures,
             transportOptions,
-            transportOptions != null ? Serializer : null);
+            transportOptions != null ? Serializer : null,
+            schemaRegistry: null,
+            versionPolicy: null,
+            signatureRegistry: sigRegistry,
+            serverSignature: serverSignature);
     }
 
     /// <summary>
@@ -82,6 +94,7 @@ public class TestClusterFixture : IAsyncLifetime
         {
             siloBuilder
                 .AddMemoryGrainStorage("Default")
+                .AddStartupTask<SharedMeta.Server.Core.Memory.PooledPayloadRegistryStartupTask>()
                 .ConfigureServices(services =>
                 {
                     // Register serializer
@@ -114,6 +127,19 @@ public class TestClusterFixture : IAsyncLifetime
 
                     // Register execution mode provider (shared with tests)
                     services.AddSingleton<IExecutionModeProvider>(SharedModeProvider);
+
+                    // Per-silo pool that backs broadcast payload buffers. Constructed with an
+                    // unbound SiloId; PooledPayloadRegistryStartupTask (registered above) calls
+                    // the cluster-singleton coordinator grain on silo startup and pins a unique
+                    // id, so multi-silo Ref encodings cannot collide on slot-index interpretation.
+                    // Tests opt into the pool path AND per-slot history so double-release / leak
+                    // failures dump the full Acquire/IncrementRef/Release chain.
+                    services.Configure<SharedMeta.Server.Core.Memory.PooledPayloadOptions>(o =>
+                    {
+                        o.UsePoolPath   = true;
+                        o.EnableHistory = true;
+                    });
+                    services.AddSingleton<SharedMeta.Server.Core.Memory.PooledPayloadRegistry>();
 
                     // Configure test meta services
                     services.ConfigureTestMeta();

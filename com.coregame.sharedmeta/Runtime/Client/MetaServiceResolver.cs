@@ -24,6 +24,11 @@ namespace SharedMeta.Client
         // Indexed by ServiceName ("ICounterService" etc.) so the entity-level broadcast handler
         // can look up a foreign service's EntityReplayDispatcher when no state-data was sent.
         private readonly Dictionary<string, MetaServiceConfig> _configsByServiceName = new();
+        // 0.24.0+ Indexed by client-local MethodId — populated from each registered
+        // MetaServiceConfig's MethodIds set. The entity-level broadcast handler routes
+        // a foreign-service broadcast by looking up the owning service via this map.
+        // Replaces the legacy ServiceName-string lookup on the wire.
+        private readonly Dictionary<ushort, MetaServiceConfig> _configsByMethodId = new();
         // Per-state-type callbacks. Multiple services on the same state generate functionally
         // equivalent factories; we keep the first non-null one we see, so a hand-rolled config
         // that drops these fields doesn't clobber the generator-emitted ones registered earlier.
@@ -69,6 +74,12 @@ namespace SharedMeta.Client
             _configsByStateTypeName[stateTypeName] = config;
             if (!string.IsNullOrEmpty(config.ServiceName))
                 _configsByServiceName[config.ServiceName] = config;
+            // 0.24.0+ Populate the per-MethodId reverse index used by foreign-service
+            // broadcast routing. Method ids are assembly-local and unique within an assembly
+            // (canonical sort of [MetaMethod] declarations); collisions across services
+            // inside one assembly are a generator invariant violation.
+            foreach (var methodId in config.MethodIds)
+                _configsByMethodId[methodId] = config;
 
             // Cache per-state-type callbacks. First non-null wins so a later hand-rolled
             // config with these fields dropped doesn't override an earlier generator-emitted one.
@@ -101,6 +112,11 @@ namespace SharedMeta.Client
         private MetaServiceConfig? LookupConfigByServiceName(string serviceName)
         {
             return _configsByServiceName.TryGetValue(serviceName, out var c) ? c : null;
+        }
+
+        private MetaServiceConfig? LookupConfigByMethodId(ushort methodId)
+        {
+            return _configsByMethodId.TryGetValue(methodId, out var c) ? c : null;
         }
 
         /// <summary>
@@ -238,7 +254,7 @@ namespace SharedMeta.Client
                 // shared container regardless of which service the broadcast came from. This is what
                 // lets a client that subscribed to only one of several services on the entity still
                 // receive every state update.
-                newConnection.SubscribeBroadcasts(_serializer, ResolvePatchApplier(config), LookupConfigByServiceName, this);
+                newConnection.SubscribeBroadcasts(_serializer, ResolvePatchApplier(config), LookupConfigByMethodId, this);
             }
 
             // Create API client using factory — pass the container as the third positional arg.
@@ -282,6 +298,8 @@ namespace SharedMeta.Client
                 connection.ApiClients[typeof(TApiClient)] = apiClient;
                 if (!string.IsNullOrEmpty(config.ServiceName))
                     connection.LocalServiceNames.Add(config.ServiceName);
+                foreach (var methodId in config.MethodIds)
+                    connection.LocalMethodIds.Add(methodId);
             }
 
             return apiClient;
@@ -426,7 +444,7 @@ namespace SharedMeta.Client
         /// <summary>
         /// Subscribe to a method being replayed from server broadcast.
         /// </summary>
-        public IMethodSubscription OnMethodReplayed(string entityId, string serviceName, string methodName, Action<MethodReplayedContext> handler)
+        public IMethodSubscription OnMethodReplayed(string entityId, ushort methodId, Action<MethodReplayedContext> handler)
         {
             // For INetwork-based architecture, subscriptions are handled via OnBroadcast event
             // Return a subscription that wraps the event handler
@@ -434,7 +452,7 @@ namespace SharedMeta.Client
             {
                 if (_connections.TryGetValue(entityId, out var connection))
                 {
-                    return new NetworkMethodSubscription(connection.Network, serviceName, methodName, handler);
+                    return new NetworkMethodSubscription(connection.Network, methodId, handler);
                 }
             }
 
@@ -444,13 +462,13 @@ namespace SharedMeta.Client
         /// <summary>
         /// Subscribe to a method being replayed with strongly-typed arguments.
         /// </summary>
-        public IMethodSubscription OnMethodReplayed<TArgs>(string entityId, string serviceName, string methodName, Action<TArgs> handler)
+        public IMethodSubscription OnMethodReplayed<TArgs>(string entityId, ushort methodId, Action<TArgs> handler)
         {
             lock (_lock)
             {
                 if (_connections.TryGetValue(entityId, out var connection))
                 {
-                    return new NetworkMethodSubscription<TArgs>(connection.Network, serviceName, methodName, handler, _serializer);
+                    return new NetworkMethodSubscription<TArgs>(connection.Network, methodId, handler, _serializer);
                 }
             }
 
@@ -548,7 +566,11 @@ namespace SharedMeta.Client
                 ConfigType = config.ConfigType,
                 ConfigVersion = subResult.ConfigVersion,
             };
-            newConnection.SubscribeBroadcasts(_serializer, config.PatchApplier, LookupConfigByServiceName, this);
+            newConnection.SubscribeBroadcasts(_serializer, config.PatchApplier, LookupConfigByMethodId, this);
+            if (!string.IsNullOrEmpty(config.ServiceName))
+                newConnection.LocalServiceNames.Add(config.ServiceName);
+            foreach (var methodId in config.MethodIds)
+                newConnection.LocalMethodIds.Add(methodId);
 
             lock (_lock)
             {
@@ -806,15 +828,19 @@ namespace SharedMeta.Client
                 return Config;
             }
             public Dictionary<Type, object> ApiClients { get; } = new();
-            // ServiceNames that have an ApiClient registered locally — entity handler skips
-            // EntityReplayDispatcher for these to avoid double-application (the matching
-            // ApiClient's own DispatchServiceBroadcast already replays the method).
+            // 0.24.0+ Client-local method ids whose owning ApiClient is registered locally —
+            // entity handler skips EntityReplayDispatcher for these to avoid double-application
+            // (the matching ApiClient's own DispatchServiceBroadcast already replays the method).
+            // Populated from each registered MetaServiceConfig's MethodIds set.
+            public HashSet<ushort> LocalMethodIds { get; } = new();
+            // 0.24.0+ Service names retained for the debug/snapshot surface (GetSubscribedEntities).
+            // Not used for routing — that's MethodId-based now.
             public HashSet<string> LocalServiceNames { get; } = new();
 
             private Action<NetworkBroadcast>? _broadcastHandler;
             private IMetaSerializer? _serializer;
             private Action<object, byte[], IMetaSerializer>? _patchApplier;
-            private Func<string, MetaServiceConfig?>? _configByServiceName;
+            private Func<ushort, MetaServiceConfig?>? _configByMethodId;
             private ICrossEntityResolver? _crossEntityResolver;
 
             /// <summary>
@@ -835,12 +861,12 @@ namespace SharedMeta.Client
             public void SubscribeBroadcasts(
                 IMetaSerializer serializer,
                 Action<object, byte[], IMetaSerializer>? patchApplier,
-                Func<string, MetaServiceConfig?> configByServiceName,
+                Func<ushort, MetaServiceConfig?> configByMethodId,
                 ICrossEntityResolver? crossEntityResolver)
             {
                 _serializer = serializer;
                 _patchApplier = patchApplier;
-                _configByServiceName = configByServiceName;
+                _configByMethodId = configByMethodId;
                 _crossEntityResolver = crossEntityResolver;
                 _broadcastHandler = HandleEntityBroadcast;
                 Network.OnBroadcast += _broadcastHandler;
@@ -884,16 +910,18 @@ namespace SharedMeta.Client
                 }
 
                 // No state-data — pure replay broadcast (Optimistic / Server / CrossOptimistic).
-                // If the broadcast's service has an ApiClient registered locally, that client's
-                // own DispatchServiceBroadcast will replay the method (per-method events fire,
+                // 0.24.0+ Routing is MethodId-based: if the broadcast's MethodId belongs to a
+                // service whose ApiClient is registered locally, that client's own
+                // DispatchServiceBroadcast will replay the method (per-method events fire,
                 // _service field is reused). Skip here to avoid double-application.
-                if (LocalServiceNames.Contains(broadcast.ServiceName)) return;
+                if (LocalMethodIds.Contains(broadcast.MethodId)) return;
 
-                // Foreign service — look up its config and use the EntityReplayDispatcher to
-                // instantiate the impl class on the fly and invoke the method against our state.
-                // Closes the gap pre-0.14.0 where foreign-service Optimistic / Server broadcasts
-                // were silently dropped by the per-ApiClient ServiceName filter.
-                var foreignConfig = _configByServiceName?.Invoke(broadcast.ServiceName);
+                // Foreign service — look up its config by MethodId and use the
+                // EntityReplayDispatcher to instantiate the impl class on the fly and
+                // invoke the method against our state. Closes the gap pre-0.14.0 where
+                // foreign-service Optimistic / Server broadcasts were silently dropped
+                // by the per-ApiClient filter.
+                var foreignConfig = _configByMethodId?.Invoke(broadcast.MethodId);
                 if (foreignConfig?.EntityReplayDispatcher == null) return;
                 if (foreignConfig.StateType != StateType) return; // service targets different state type
 
@@ -906,7 +934,7 @@ namespace SharedMeta.Client
                     var replayConfig = ResolveConfigForBroadcast(broadcast.ExecutedConfigVersion);
                     foreignConfig.EntityReplayDispatcher(
                         StateContainer.State,
-                        broadcast.MethodName,
+                        broadcast.MethodId,
                         broadcast.ArgsBytes ?? Array.Empty<byte>(),
                         broadcast.ReplayContext ?? Array.Empty<byte>(),
                         broadcast.CallerId,
@@ -921,7 +949,7 @@ namespace SharedMeta.Client
                 catch (Exception ex)
                 {
                     Core.Logging.MetaLog.Error(
-                        $"[EntityReplay] {broadcast.ServiceName}.{broadcast.MethodName} on entity '{EntityId}' failed: {ex.Message}",
+                        $"[EntityReplay] methodId={broadcast.MethodId} on entity '{EntityId}' failed: {ex.Message}",
                         ex);
                 }
             }
@@ -949,25 +977,23 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
-        /// Subscription wrapper for INetwork.OnBroadcast events.
+        /// Subscription wrapper for INetwork.OnBroadcast events. 0.24.0+ filters by
+        /// client-local <c>MethodId</c> — the wire no longer carries service/method names.
         /// </summary>
         private class NetworkMethodSubscription : IMethodSubscription
         {
             private readonly INetwork _network;
-            private readonly string _serviceName;
-            private readonly string _methodName;
+            private readonly ushort _methodId;
             private readonly Action<MethodReplayedContext> _handler;
             private bool _disposed;
 
             public NetworkMethodSubscription(
                 INetwork network,
-                string serviceName,
-                string methodName,
+                ushort methodId,
                 Action<MethodReplayedContext> handler)
             {
                 _network = network;
-                _serviceName = serviceName;
-                _methodName = methodName;
+                _methodId = methodId;
                 _handler = handler;
                 _network.OnBroadcast += HandleBroadcast;
             }
@@ -975,11 +1001,11 @@ namespace SharedMeta.Client
             private void HandleBroadcast(NetworkBroadcast broadcast)
             {
                 if (_disposed) return;
-                if (broadcast.ServiceName != _serviceName || broadcast.MethodName != _methodName) return;
+                if (broadcast.MethodId != _methodId) return;
 
                 var context = new MethodReplayedContext
                 {
-                    MethodName = broadcast.MethodName,
+                    MethodId = broadcast.MethodId,
                     CallerId = broadcast.CallerId,
                     ArgsBytes = broadcast.ArgsBytes
                 };
@@ -995,27 +1021,24 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
-        /// Typed subscription wrapper.
+        /// Typed subscription wrapper. 0.24.0+ filters by client-local <c>MethodId</c>.
         /// </summary>
         private class NetworkMethodSubscription<TArgs> : IMethodSubscription
         {
             private readonly INetwork _network;
-            private readonly string _serviceName;
-            private readonly string _methodName;
+            private readonly ushort _methodId;
             private readonly Action<TArgs> _handler;
             private readonly IMetaSerializer _serializer;
             private bool _disposed;
 
             public NetworkMethodSubscription(
                 INetwork network,
-                string serviceName,
-                string methodName,
+                ushort methodId,
                 Action<TArgs> handler,
                 IMetaSerializer serializer)
             {
                 _network = network;
-                _serviceName = serviceName;
-                _methodName = methodName;
+                _methodId = methodId;
                 _handler = handler;
                 _serializer = serializer;
                 _network.OnBroadcast += HandleBroadcast;
@@ -1024,7 +1047,7 @@ namespace SharedMeta.Client
             private void HandleBroadcast(NetworkBroadcast broadcast)
             {
                 if (_disposed) return;
-                if (broadcast.ServiceName != _serviceName || broadcast.MethodName != _methodName) return;
+                if (broadcast.MethodId != _methodId) return;
 
                 var args = _serializer.Unpack<TArgs>(broadcast.ArgsBytes);
                 if (args != null)

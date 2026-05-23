@@ -45,10 +45,27 @@ namespace SharedMeta.Server.Core.Grains
 
         public async Task SetAsync(MetaClientSignature signature, ClientCapabilities capabilities)
         {
+            // Idempotent: if the grain already holds the same signature hash, skip the
+            // WriteStateAsync hop entirely. Many stress-test connects hit the same hash
+            // grain in quick succession — without this fast-return, the non-reentrant grain
+            // queue grew to thousands of identical SetAsync calls and Orleans logged
+            // "request enqueued for 25s" diagnostics. Hash equality is sufficient: the
+            // SignatureHash is what keys this grain, so two equal hashes mean the client
+            // has the same method table; differing payloads with the same hash would imply
+            // a hash collision (defended against by the 64-bit signature space).
+            if (_state.State.Populated
+                && _state.State.Signature != null
+                && _state.State.Signature.SignatureHash == signature.SignatureHash)
+            {
+                return;
+            }
             _state.State.Populated = true;
             _state.State.Signature = signature;
             _state.State.Capabilities = capabilities;
             await _state.WriteStateAsync();
         }
+
+        public Task<MetaClientSignature?> GetSignatureAsync()
+            => Task.FromResult(_state.State.Populated ? _state.State.Signature : null);
     }
 }

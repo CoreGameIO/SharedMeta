@@ -80,13 +80,24 @@ namespace SharedMeta.Debug.InProcess
                 ClientSignatureHash = clientSignatureHash
             });
 
+            // Missed packets carry pool-backed payloads that the server retains in
+            // _pendingPackets — deep-copy them so the client sees a wire-equivalent
+            // independent view (server still holds the originals for further retries).
+            List<SessionResponse>? missedCopies = null;
+            if (response.MissedPackets != null)
+            {
+                missedCopies = new List<SessionResponse>(response.MissedPackets.Count);
+                foreach (var packet in response.MissedPackets)
+                    missedCopies.Add(CopyPooledBytesForWire(packet));
+            }
+
             return new ConnectionSessionConnectResult
             {
                 Success = response.Success,
                 Error = response.Error,
                 SessionId = response.SessionId,
                 IsNewSession = response.IsNewSession,
-                MissedPackets = response.MissedPackets,
+                MissedPackets = missedCopies,
                 ServerTimeTicks = response.ServerTimeTicks,
                 ResubscribedEntities = response.ResubscribedEntities,
                 NeedsSignatureRegistration = response.NeedsSignatureRegistration,
@@ -132,7 +143,18 @@ namespace SharedMeta.Debug.InProcess
         public async Task<SessionResponse> RpcCallAsync(RpcCallRequest request)
         {
             EnsureConnected();
-            return await _server.RpcCallAsync(_connectionId, request).ConfigureAwait(false);
+            var response = await _server.RpcCallAsync(_connectionId, request).ConfigureAwait(false);
+            return CopyPooledBytesForWire(response);
+        }
+
+        public async Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(Guid sessionId, MetaClientSignature signature)
+        {
+            EnsureConnected();
+            return await _server.RegisterClientSignatureAsync(_connectionId, new RegisterClientSignatureRequest
+            {
+                SessionId = sessionId,
+                Signature = signature,
+            }).ConfigureAwait(false);
         }
 
         public async Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request)
@@ -186,8 +208,47 @@ namespace SharedMeta.Debug.InProcess
 
             if (message.Operations != null && message.Operations.Count > 0)
             {
-                OnBatch?.Invoke(message);
+                var copy = CopyPooledBytesForWire(message);
+                OnBatch?.Invoke(copy);
             }
+        }
+
+        // InProcess transport emulates a wire boundary: the client must receive an INDEPENDENT
+        // byte[]-backed copy of the SessionOp payloads, not a slice into the server's pool
+        // slots (the server will eventually Release those slots when the SessionResponse is
+        // acked / evicted, after which a slice-based ROM would point at recycled memory).
+        // Real network transports do this implicitly via wire serialization; in-process needs
+        // an explicit copy.
+        // We deep-copy the SessionResponse (new Operations list, new SessionOps, byte[]-backed
+        // OpBytes) instead of mutating the server's shared instance — the server still holds
+        // the original (pool-backed) packet in its _pendingPackets and releases pool slots on
+        // ack / eviction; the client gets its own independent view.
+        private static SessionResponse CopyPooledBytesForWire(SessionResponse src)
+        {
+            if (src == null) return src!;
+            var srcOps = src.Operations;
+            List<SessionOp>? newOps = null;
+            if (srcOps != null)
+            {
+                newOps = new List<SessionOp>(srcOps.Count);
+                for (int i = 0; i < srcOps.Count; i++)
+                {
+                    var op = srcOps[i];
+                    if (op.OpBytes.Ref != 0 && !op.OpBytes.Memory.IsEmpty)
+                    {
+                        var copy = op.OpBytes.Memory.ToArray();
+                        op.OpBytes = new SharedMeta.Core.Memory.PooledPayload(copy, 0);
+                    }
+                    newOps.Add(op);
+                }
+            }
+            return new SessionResponse
+            {
+                SequenceNumber = src.SequenceNumber,
+                Operations = newOps,
+                ServerTimeTicks = src.ServerTimeTicks,
+                Error = src.Error,
+            };
         }
 
         /// <summary>

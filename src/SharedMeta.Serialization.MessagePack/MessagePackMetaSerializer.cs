@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using MessagePack;
 using SharedMeta.Core;
 
@@ -16,14 +17,30 @@ namespace SharedMeta.Serialization.MessagePack
         public IPayloadWriter CreateWriter() => new MessagePackPayloadWriter();
 
         public IPayloadReader CreateReader(byte[] data) => new MessagePackPayloadReader(data);
+        public IPayloadReader CreateReader(ReadOnlyMemory<byte> data) => new MessagePackPayloadReader(data.ToArray());
 
-        public byte[] Pack<T>(T value)
+        public ReadOnlyMemory<byte> Pack<T>(T value)
             => MessagePackSerializer.Serialize(value, Options);
 
         public T Unpack<T>(byte[] data)
             => MessagePackSerializer.Deserialize<T>(data, Options)!;
 
-        public byte[] Pack(Type type, object value)
+        // MessagePack-CSharp supports IBufferWriter<byte> natively, but we go through
+        // a transient byte[] copy here because the wider plan accepts a single alloc on
+        // the MessagePack path (see plan §"Wire breaking" — agreed trade-off vs. wiring
+        // custom MessagePackWriter into Unity-side stubs).
+        public void Pack<T>(T value, IBufferWriter<byte> writer)
+        {
+            var bytes = MessagePackSerializer.Serialize(value, Options);
+            var span = writer.GetSpan(bytes.Length);
+            bytes.AsSpan().CopyTo(span);
+            writer.Advance(bytes.Length);
+        }
+
+        public T Unpack<T>(ReadOnlyMemory<byte> data)
+            => MessagePackSerializer.Deserialize<T>(data, Options)!;
+
+        public ReadOnlyMemory<byte> Pack(Type type, object value)
             => MessagePackSerializer.Serialize(type, value, Options);
 
         public object? Unpack(Type type, byte[] data)

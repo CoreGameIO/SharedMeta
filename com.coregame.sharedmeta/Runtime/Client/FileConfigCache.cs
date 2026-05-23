@@ -53,7 +53,7 @@ namespace SharedMeta.Client
             try
             {
                 var path = GetFilePath(version);
-                var bytes = _serializer.Pack(config);
+                var bytes = _serializer.Pack(config).ToArray();
                 File.WriteAllBytes(path, bytes);
                 MetaLog.Debug($"[FileConfigCache<{typeof(TConfig).Name}>] Stored v{version.Major}.{version.Minor} ({bytes.Length} bytes)");
                 CleanOldVersions(path);

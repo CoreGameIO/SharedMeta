@@ -87,7 +87,7 @@ public class ResultComparerTests
         public void OnResultMismatch<T>(string serviceName, string methodName, T serverResult, T localResult)
             => Mismatches.Add((serviceName, methodName));
 
-        public void OnCrossEntityResult(string entityId, string serviceName, string methodName, byte[]? resultBytes) { }
+        public void OnCrossEntityResult(string entityId, ushort methodId, byte[]? resultBytes) { }
         public void OnRandomDesync(string serviceName, string methodName, long serverDelta, long localDelta) { }
         public void OnPatchDesync(string serviceName, string methodName, uint serverCrc, uint localCrc) { }
         public Task<StateComparisonResult> CompareFullStateAsync(string entityId)

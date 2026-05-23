@@ -64,7 +64,7 @@ public class MultiServiceOnEntityTests
     [Fact(Timeout = 30_000)]
     public async Task ForeignServiceBroadcast_UpdatesStateForAllApiClients()
     {
-        _fixture.ExecutionModeProvider.SetMode("ICounterAuxService", "AuxAdd", ExecutionMode.Server);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterAuxService_AuxAdd_v0, ExecutionMode.Server);
         try
         {
             var entityId = $"foreign_bcast_{Guid.NewGuid():N}";
@@ -101,7 +101,7 @@ public class MultiServiceOnEntityTests
     [Fact(Timeout = 30_000)]
     public async Task MutationCount_IsSharedAcrossApiClientsOnSameEntity()
     {
-        _fixture.ExecutionModeProvider.SetMode("ICounterAuxService", "AuxAdd", ExecutionMode.ServerReplace);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterAuxService_AuxAdd_v0, ExecutionMode.ServerReplace);
         try
         {
             var entityId = $"mc_shared_{Guid.NewGuid():N}";
@@ -138,7 +138,7 @@ public class MultiServiceOnEntityTests
     [Fact(Timeout = 30_000)]
     public async Task OnStateMutated_FiresOnAllApiClientsForSameEntity()
     {
-        _fixture.ExecutionModeProvider.SetMode("ICounterAuxService", "AuxAdd", ExecutionMode.ServerReplace);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterAuxService_AuxAdd_v0, ExecutionMode.ServerReplace);
         try
         {
             var entityId = $"on_mutated_{Guid.NewGuid():N}";

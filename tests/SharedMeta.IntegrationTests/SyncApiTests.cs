@@ -66,7 +66,7 @@ public class SyncApiTests
         // Simulate a downloaded config promoting AwardExp to Server mode at runtime.
         // SyncPolicy defaults to Throw → the sync overload must refuse to execute.
         var modeProvider = new ExecutionModeProvider()
-            .SetMode("IPartyService", "AwardExp", ExecutionMode.Server);
+            .SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.IPartyService_AwardExp_v0, ExecutionMode.Server);
 
         var playerId = "party-sync-throw-" + Guid.NewGuid().ToString("N")[..8];
         await using var client = new TestClientSetup(server, playerId, diagnostics: diagnostics, modeProvider: modeProvider);
@@ -93,7 +93,7 @@ public class SyncApiTests
         public List<(string Service, string Method, uint ServerCrc, uint LocalCrc)> PatchDesyncs { get; } = new();
 
         public void OnResultMismatch<T>(string serviceName, string methodName, T serverResult, T localResult) { }
-        public void OnCrossEntityResult(string entityId, string serviceName, string methodName, byte[]? resultBytes) { }
+        public void OnCrossEntityResult(string entityId, ushort methodId, byte[]? resultBytes) { }
         public void OnRandomDesync(string serviceName, string methodName, long serverDelta, long localDelta) { }
         public void OnPatchDesync(string serviceName, string methodName, uint serverCrc, uint localCrc)
             => PatchDesyncs.Add((serviceName, methodName, serverCrc, localCrc));

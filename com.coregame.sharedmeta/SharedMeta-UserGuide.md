@@ -494,7 +494,7 @@ var config = client.GetEntityConfig<GameConfig>(entityId);
 | **Optimistic** | Client executes immediately, server validates. Rollback on mismatch. | UI-responsive actions (move, play card, buy item) |
 | **Server** | Client waits for server response. | Loot drops, matchmaking, hidden state, ServerRandom |
 | **Local** | Client-only, no RPC sent. | UI state, local previews, client-side filtering |
-| **CrossOptimistic** | Like Optimistic but targets a different entity. | Cross-entity interactions (trading, attacking) |
+| **CrossOptimistic** | Like Optimistic, but the method also touches other `ISharedState` entities owned by the same player. | Split-profile patterns where one player's data spans multiple states (Profile + Inventory + Quest, etc.). Do not use against entities mutated by other clients. |
 | **ServerPatch** | Server sends state diffs instead of full state. | Large state optimization, bandwidth savings |
 | **ServerReplace** | Server sends full serialized state. Client replaces state wholesale. | Full state regeneration (map gen, full reset) |
 

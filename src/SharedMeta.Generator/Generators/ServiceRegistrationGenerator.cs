@@ -150,6 +150,7 @@ namespace SharedMeta.Generator.Generators
             {
                 sb.AppendLine($"                ConfigType = typeof({configTypeFullName}),");
             }
+            EmitMethodIds(sb, node, interfaceName, namespaceName);
             sb.AppendLine($"                ApiClientFactory = (network, serializer, stateContainer, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms, configResolver) =>");
             sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, (EntityStateContainer<{stateTypeFullName}>)stateContainer, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms, configResolver),");
             sb.AppendLine($"                StateContainerFactory = state => new EntityStateContainer<{stateTypeFullName}>(({stateTypeFullName})state),");
@@ -158,7 +159,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                    var patch = ser.Unpack<PatchNode>(patchBytes);");
             sb.AppendLine($"                    {stateTypeFullName}PatchApplier.Apply(({stateTypeFullName})state, patch, ser);");
             sb.AppendLine($"                }},");
-            EmitEntityReplayDispatcher(sb, node, baseName, stateTypeFullName, namespaceName);
+            EmitEntityReplayDispatcher(sb, node, baseName, interfaceName, stateTypeFullName, namespaceName);
             // 0.20.0: Client-side sibling factory. When user code calls Get{Iface}SiblingAsync()
             // or GetI{Iface}(self) on the client, the framework asks the resolver to produce
             // a transient impl bound to the calling client-side MetaContext. Typed cast — no
@@ -183,10 +184,11 @@ namespace SharedMeta.Generator.Generators
             StringBuilder sb,
             InterfaceDeclarationSyntax node,
             string baseName,
+            string interfaceName,
             string stateTypeFullName,
             string namespaceName)
         {
-            sb.AppendLine($"                EntityReplayDispatcher = (state, methodName, argsBytes, replayContext, callerId, serverTimeTicks, ser, optRandom, namedRandoms, cfg, crossResolver) =>");
+            sb.AppendLine($"                EntityReplayDispatcher = (state, methodId, argsBytes, replayContext, callerId, serverTimeTicks, ser, optRandom, namedRandoms, cfg, crossResolver) =>");
             sb.AppendLine($"                {{");
             sb.AppendLine($"                    var ctx = new SharedMeta.Client.ClientMetaContext<{stateTypeFullName}>(({stateTypeFullName})state, ser);");
             sb.AppendLine($"                    ctx.CallerId = callerId;");
@@ -210,7 +212,7 @@ namespace SharedMeta.Generator.Generators
             // remains set for framework internals (signal/trigger dispatchers and the like).
             sb.AppendLine($"                        var svc = new {baseName}() {{ Context = ctx }};");
             sb.AppendLine($"#pragma warning disable CS1522 // empty switch block when all methods are Query/Signal");
-            sb.AppendLine($"                        switch (methodName)");
+            sb.AppendLine($"                        switch (methodId)");
             sb.AppendLine($"                        {{");
 
             // 0.22.0+: dedup by alias for multi-version coexistence. Lowest-versioned method
@@ -233,14 +235,17 @@ namespace SharedMeta.Generator.Generators
                 var returnType = method.ReturnType.ToString();
                 bool isAsync = returnType.StartsWith("Task");
                 bool isVoid = returnType == "void" || returnType == "Task";
+                var methodVersion = SimplifiedApiClientGenerator.GetMethodVersion(method);
 
                 if (group.Count > 1)
                 {
                     var higherVersions = string.Join(", ", group.Skip(1).Select(m => $"v{SimplifiedApiClientGenerator.GetMethodVersion(m)}"));
-                    sb.AppendLine($"#warning SharedMeta 0.22.0 limitation: alias \"{alias}\" has multiple versions ({higherVersions} besides v{SimplifiedApiClientGenerator.GetMethodVersion(method)}). Sibling/replay invocation routes to v{SimplifiedApiClientGenerator.GetMethodVersion(method)} only; per-version routing is a follow-up.");
+                    sb.AppendLine($"#warning SharedMeta 0.22.0 limitation: alias \"{alias}\" has multiple versions ({higherVersions} besides v{methodVersion}). Sibling/replay invocation routes to v{methodVersion} only; per-version routing is a follow-up.");
                 }
 
-                sb.AppendLine($"                            case \"{alias}\":");
+                var idConst = "global::" + namespaceName + ".Generated.GameMethodIds." +
+                    SignatureHashGenerator.MakeMethodIdConstName(interfaceName, alias, methodVersion);
+                sb.AppendLine($"                            case {idConst}:");
                 sb.AppendLine($"                            {{");
 
                 string callArgs;
@@ -298,6 +303,43 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                        SharedMeta.Core.MetaContextAccessor.Current = prev;");
             sb.AppendLine($"                    }}");
             sb.AppendLine($"                }},");
+        }
+
+        /// <summary>
+        /// Emits the MetaServiceConfig.MethodIds set — the client-local ids that this service
+        /// owns. MetaServiceResolver uses this set to route inbound broadcasts: a broadcast
+        /// whose MethodId is in some service's set is delivered to that service's ApiClient
+        /// (or, for foreign services not subscribed locally, to its EntityReplayDispatcher).
+        /// Query and Signal methods are excluded — they don't produce broadcasts.
+        /// Multi-version groups list every version's id (alias collisions still apply at
+        /// replay routing, but the set itself must be exhaustive for the broadcast filter).
+        /// </summary>
+        private static void EmitMethodIds(
+            StringBuilder sb,
+            InterfaceDeclarationSyntax node,
+            string interfaceName,
+            string namespaceName)
+        {
+            var methods = node.Members.OfType<MethodDeclarationSyntax>()
+                .Where(m => !IsQueryOrSignalMethod(m))
+                .ToList();
+
+            if (methods.Count == 0)
+            {
+                return;
+            }
+
+            sb.AppendLine("                MethodIds = new ushort[]");
+            sb.AppendLine("                {");
+            foreach (var method in methods)
+            {
+                var alias = GetMethodAlias(method, method.Identifier.Text);
+                var version = SimplifiedApiClientGenerator.GetMethodVersion(method);
+                var idConst = "global::" + namespaceName + ".Generated.GameMethodIds." +
+                    SignatureHashGenerator.MakeMethodIdConstName(interfaceName, alias, version);
+                sb.AppendLine($"                    {idConst},");
+            }
+            sb.AppendLine("                },");
         }
 
         private static bool IsQueryOrSignalMethod(MethodDeclarationSyntax method)

@@ -85,12 +85,18 @@ namespace ClanWars.Client.Common
                 // The regular ApiClient's local wrapper would return an empty list (server-only
                 // DI is unreachable client-side); this one hits the silo and returns real data.
                 var profileQuery = new ProfileServiceQueryApi(connection, new MemoryPackMetaSerializer()).EntityApi(_playerId);
+                // Query-mode client for the clan preview path. EntityApi(clanId) is created
+                // per-candidate inside the step loop (cheap value-/struct-like binding). Using
+                // Query instead of GetServiceAsync<ClanServiceApiClient> means the player does
+                // NOT subscribe to every candidate they look at — subscriptions are reserved
+                // for actual members, enforced server-side by IClanService.AccessPolicy = Authorized.
+                var clanQuery = new ClanServiceQueryApi(connection, new MemoryPackMetaSerializer());
 
                 while (!ct.IsCancellationRequested)
                 {
                     try
                     {
-                        await StepAsync(client, profileApi, profileQuery, ct);
+                        await StepAsync(client, profileApi, profileQuery, clanQuery, ct);
                     }
                     catch (OperationCanceledException) { break; }
                     catch (Exception ex)
@@ -109,7 +115,7 @@ namespace ClanWars.Client.Common
             }
         }
 
-        private async Task StepAsync(MetaClient client, ProfileServiceApiClient profileApi, ProfileServiceEntityQueryApi profileQuery, CancellationToken ct)
+        private async Task StepAsync(MetaClient client, ProfileServiceApiClient profileApi, ProfileServiceEntityQueryApi profileQuery, ClanServiceQueryApi clanQuery, CancellationToken ct)
         {
             // Weighted action picker. GainPoints dominates so we get a steady stream of clan-
             // power broadcasts; clan management actions are rarer but produce the version-
@@ -121,8 +127,24 @@ namespace ClanWars.Client.Common
                 return;
             }
 
-            // Cached summary so we know whether we're in a clan.
+            // Cached summary so we know whether we're in a clan + what invitations are parked.
             var summary = profileApi.GetSummary();
+
+            // Approved-invitation decision branch — independent of in-clan / not-in-clan.
+            // Free player: accept first parked invitation (single-shot join). In-clan player:
+            // 20% chance to switch to a parked invitation, 80% stay. Both paths converge on
+            // AcceptInvitation which handles LeaveClan + ConfirmJoin internally.
+            if (summary.ApprovedInvitations is { Count: > 0 } invs)
+            {
+                var freePlayer = string.IsNullOrEmpty(summary.ClanId);
+                if (freePlayer || _rng.NextDouble() < 0.20)
+                {
+                    var target = invs[_rng.Next(invs.Count)];
+                    await TimedAsync("AcceptInvitation",
+                        async () => await profileApi.AcceptInvitationAsync(target));
+                    return;
+                }
+            }
 
             if (string.IsNullOrEmpty(summary.ClanId))
             {
@@ -139,39 +161,40 @@ namespace ClanWars.Client.Common
                     if (rec != null) _sharedClans.MergeRecommendations(rec);
                 }
 
-                // Try create or apply. Threshold is on OWN creations per process — if it
-                // used KnownCount, recommendations from the peer (v2 vs v1) process could
-                // suppress own creates and the run becomes one-sided.
-                if (_sharedClans.OwnCreatedCount < _options.MaxClans && roll < 0.75)
+                // Try create or apply. Cap is reservation-based via TryReserveCreate — atomic
+                // Interlocked.Increment closes the read-then-check race that previously let
+                // hundreds of concurrent players blow past MaxClans (148 created with cap=20
+                // on a 500-player run was the symptom). On CreateClan failure we explicitly
+                // release the slot back to the pool.
+                if (roll < 0.75 && _sharedClans.TryReserveCreate(_options.MaxClans))
                 {
                     var name = $"clan-{_playerId}-{_rng.Next(1000)}";
                     var clanId = await TimedAsync("CreateClan",
                         async () => await profileApi.CreateClanAsync(name));
                     if (!string.IsNullOrEmpty(clanId))
                         _sharedClans.AddOwn(clanId);
+                    else
+                        _sharedClans.ReleaseReservation();
                 }
                 else
                 {
                     var candidate = _sharedClans.PickRandom(_rng);
                     if (candidate != null)
                     {
-                        // Preview-then-apply: subscribe to the candidate clan before submitting
-                        // the application. This is what manufactures cross-version subscriptions —
-                        // a v1 player previewing a v2-pinned candidate triggers the server-side
-                        // ConfigBoundary check, which writes ForceServerPatchServices=[IClanService]
-                        // into the EntityAugmentedCapabilities for THIS subscriber. All subsequent
-                        // ClanService broadcasts to this v1 subscriber will be tailored to PatchBytes
-                        // by BroadcastTailor; broadcasts to v2 subscribers of the same clan keep
-                        // native replay payloads.
-                        var clanPreview = await TimedAsync("PreviewClan",
-                            async () => await client.Resolver.GetServiceAsync<ClanServiceApiClient>(candidate));
-                        if (clanPreview != null)
-                        {
-                            // Touch the cached clan state via Query — exercises the per-subscriber
-                            // capability path without needing the leader to AcceptApplication.
-                            await TimedVoid("PreviewClanSummary",
-                                () => { _ = clanPreview.GetSummary(); return Task.CompletedTask; });
-                        }
+                        // Preview via Query — no subscription. Earlier draft acquired a full
+                        // ClanServiceApiClient (which subscribes the player to the clan entity)
+                        // just to peek at the summary; that turned every "window shopper" into a
+                        // permanent broadcast recipient and inflated avg fan-out per clan to 200+.
+                        // Now we hit the OpenAccess-flagged GetSummary Query directly — single
+                        // RPC, zero subscriber-list mutation. Subscriptions are reserved for
+                        // actual members (gated server-side by IClanService.IsAuthorized).
+                        //
+                        // Cross-version subscriptions for the force-patch demo are still
+                        // manufactured later: when AcceptApplication runs and the v1 player
+                        // becomes a member of a v2-pinned clan, the resulting subscribe path
+                        // triggers the ConfigBoundary check.
+                        await TimedAsync("PreviewClan",
+                            async () => await clanQuery.EntityApi(candidate).GetSummaryAsync());
                         await TimedVoid("ApplyToClan", () => profileApi.ApplyToClanAsync(candidate));
                     }
                 }
@@ -192,6 +215,34 @@ namespace ClanWars.Client.Common
                     var clanApi = await TimedAsync("ResolveClan",
                         async () => await client.Resolver.GetServiceAsync<ClanServiceApiClient>(summary.ClanId!));
                     if (clanApi == null) return;
+
+                    // Leader review: if this player is the leader of THIS clan, periodically
+                    // process pending applications. Read the local cached ClanState (the subscribe
+                    // populated it on resolve) and decide 50/50 accept/reject for each. Limit per
+                    // step to a small batch so we don't monopolize a single step on busy clans.
+                    var clanState = client.Resolver.GetState<ClanState>(summary.ClanId!);
+                    if (clanState != null && clanState.LeaderId == _playerId
+                        && clanState.Applications.Count > 0)
+                    {
+                        const int MaxReviewsPerStep = 4;
+                        var apps = clanState.Applications;
+                        var reviewCount = System.Math.Min(MaxReviewsPerStep, apps.Count);
+                        for (int i = 0; i < reviewCount; i++)
+                        {
+                            // Snapshot pick — apps list may shift after each call as the
+                            // accepted/rejected entry is removed server-side and the local cache
+                            // catches up via broadcast. Re-pick from the snapshot index 0.
+                            var applicantId = apps.Count > 0 ? apps[0] : null;
+                            if (applicantId == null) break;
+                            if (_rng.NextDouble() < 0.50)
+                                await TimedAsync("AcceptApplication",
+                                    async () => await clanApi.AcceptApplicationAsync(applicantId));
+                            else
+                                await TimedAsync("RejectApplication",
+                                    async () => await clanApi.RejectApplicationAsync(applicantId));
+                        }
+                    }
+
                     // Token query for the clan — exercises cap layer + (potentially) patch path.
                     // GetSummary is a sync Query method that reads cached state via the active
                     // MetaContext (AsyncLocal). Calling it inside Task.Run would break AsyncLocal
@@ -258,6 +309,10 @@ namespace ClanWars.Client.Common
     {
         private readonly List<string> _ids = new();
         private readonly object _lock = new();
+        // Reservation counter. Incremented by TryReserveCreate BEFORE the CreateClan RPC fires,
+        // so concurrent callers see each other's pending creates and stop early at the cap.
+        // Decremented by ReleaseReservation on RPC failure. AddOwn does NOT increment — the
+        // reservation already counted the slot at the gate.
         private int _ownCount;
         private DateTime _nextRefreshAt = DateTime.MinValue;
         private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(2);
@@ -265,19 +320,35 @@ namespace ClanWars.Client.Common
         /// <summary>Total clan IDs known to this process (own + recommendations).</summary>
         public int KnownCount { get { lock (_lock) return _ids.Count; } }
 
-        /// <summary>Count of clans CREATED by this process. The CreateClan-threshold
-        /// must read this instead of KnownCount — otherwise recommendations from the
-        /// peer process can suppress own-creates entirely (timing race) and the demo
-        /// degenerates to a one-sided run with no cross-version pinning mix.</summary>
-        public int OwnCreatedCount { get { lock (_lock) return _ownCount; } }
+        /// <summary>Count of clan-creation slots claimed by this process (successful + in-flight
+        /// reservations). Used by the soft-cap gate as the source of truth. Atomic increment in
+        /// <see cref="TryReserveCreate"/> closes the previous read-then-check race that let
+        /// hundreds of concurrent callers blow past <c>MaxClans</c>.</summary>
+        public int OwnCreatedCount => Interlocked.CompareExchange(ref _ownCount, 0, 0);
 
-        /// <summary>Register a clan THIS process just created — pinned at our version.</summary>
+        /// <summary>Atomically reserve a slot for one CreateClan attempt. Returns true if the
+        /// post-increment count is at or under <paramref name="maxClans"/>; otherwise rolls the
+        /// counter back and returns false. Caller must invoke either <see cref="AddOwn"/> on
+        /// success (no further increment) or <see cref="ReleaseReservation"/> on failure.</summary>
+        public bool TryReserveCreate(int maxClans)
+        {
+            if (Interlocked.Increment(ref _ownCount) <= maxClans) return true;
+            Interlocked.Decrement(ref _ownCount);
+            return false;
+        }
+
+        /// <summary>Release a slot reserved by <see cref="TryReserveCreate"/> when the
+        /// downstream CreateClan RPC fails or returns null.</summary>
+        public void ReleaseReservation() => Interlocked.Decrement(ref _ownCount);
+
+        /// <summary>Register a clan THIS process just created — pinned at our version.
+        /// Does NOT increment the reservation counter; the caller must have already reserved
+        /// via <see cref="TryReserveCreate"/>.</summary>
         public void AddOwn(string clanId)
         {
             lock (_lock)
             {
                 if (!_ids.Contains(clanId)) _ids.Add(clanId);
-                _ownCount++;
             }
         }
 

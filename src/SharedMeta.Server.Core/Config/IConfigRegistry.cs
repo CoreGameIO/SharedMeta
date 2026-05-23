@@ -86,6 +86,6 @@ namespace SharedMeta.Server.Core.Config
         public static Task PublishAsync<TConfig>(
             this IConfigRegistry registry, MetaConfigVersion version, TConfig config, IMetaSerializer serializer)
             where TConfig : class
-            => registry.PublishAsync(typeof(TConfig), version, serializer.Pack(config));
+            => registry.PublishAsync(typeof(TConfig), version, serializer.Pack(config).ToArray());
     }
 }

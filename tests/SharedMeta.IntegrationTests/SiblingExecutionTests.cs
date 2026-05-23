@@ -85,7 +85,7 @@ public class SiblingExecutionTests
     [Fact(Timeout = 30_000)]
     public async Task SiblingAuxAdd_ServerPatchOuter_PatchCoversInnerMutation()
     {
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "SiblingAuxAdd", ExecutionMode.ServerPatch);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_SiblingAuxAdd_v0, ExecutionMode.ServerPatch);
         try
         {
             var entityId = $"sibling_patch_{Guid.NewGuid():N}";
@@ -125,7 +125,7 @@ public class SiblingExecutionTests
     [Fact(Timeout = 30_000)]
     public async Task SiblingAuxAdd_ServerReplaceOuter_StateBytesCoverInnerMutation()
     {
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "SiblingAuxAdd", ExecutionMode.ServerReplace);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_SiblingAuxAdd_v0, ExecutionMode.ServerReplace);
         try
         {
             var entityId = $"sibling_replace_{Guid.NewGuid():N}";
@@ -162,7 +162,7 @@ public class SiblingExecutionTests
     [Fact(Timeout = 30_000)]
     public async Task SiblingAuxAdd_CrossOptimisticOuter_LocalMirrorMutates()
     {
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "SiblingAuxAdd", ExecutionMode.CrossOptimistic);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_SiblingAuxAdd_v0, ExecutionMode.CrossOptimistic);
         try
         {
             var entityId = $"sibling_crossopt_{Guid.NewGuid():N}";
@@ -311,7 +311,7 @@ public class SiblingExecutionTests
         // the client then falls back to local replay, which on multi-config siblings would
         // need DI access to IMetaConfigProvider<CounterAltConfig> (Server.Core type, not
         // referenceable from the shared Test.Meta1 assembly that compiles for both sides).
-        _fixture.ExecutionModeProvider.SetMode("ICounterService", "SiblingMultiConfig", ExecutionMode.ServerReplace);
+        _fixture.ExecutionModeProvider.SetMode(global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_SiblingMultiConfig_v0, ExecutionMode.ServerReplace);
         try
         {
             var entityId = $"sibling_multicfg_{Guid.NewGuid():N}";

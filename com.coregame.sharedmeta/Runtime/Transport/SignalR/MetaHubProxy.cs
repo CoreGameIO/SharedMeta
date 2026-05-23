@@ -20,6 +20,13 @@ namespace SharedMeta.Client.Network
         public Task<SessionConnectResponse> SessionConnect(SessionConnectRequest request)
             => _connection.InvokeAsync<SessionConnectResponse>(nameof(SessionConnect), request);
 
+        // 0.22.0+ phase-2 compatibility handshake. Without this override the IMetaHub DIM
+        // returns a synthetic "success + empty caps" result that NEVER reaches the server —
+        // the registry stays empty and every subsequent RPC fails server-side with
+        // "method id N is out of range for client signature."
+        public Task<RegisterClientSignatureResponse> RegisterClientSignature(RegisterClientSignatureRequest request)
+            => _connection.InvokeAsync<RegisterClientSignatureResponse>(nameof(RegisterClientSignature), request);
+
         public Task<SubscribeResponse> Subscribe(SubscribeRequest request)
             => _connection.InvokeAsync<SubscribeResponse>(nameof(Subscribe), request);
 

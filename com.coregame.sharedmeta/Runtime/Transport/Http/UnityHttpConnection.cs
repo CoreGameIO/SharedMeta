@@ -62,6 +62,10 @@ namespace SharedMeta.Client.Network
         {
             ContractResolver = new CamelCasePropertyNamesContractResolver(),
             NullValueHandling = NullValueHandling.Ignore,
+            // ROM<byte> ↔ base64 string. Wire DTOs use ReadOnlyMemory<byte> after 0.23.0;
+            // without this converter Newtonsoft serializes the struct's fields and the
+            // server's System.Text.Json deserializer (which expects base64) throws JsonException.
+            Converters = { new RomByteJsonConverter() },
         };
 
         private readonly UnityHttpConnectionOptions _options;
@@ -159,6 +163,13 @@ namespace SharedMeta.Client.Network
                 Capabilities = response.Capabilities,
             };
         }
+
+        // 0.22.0+ phase-2 of the compatibility-negotiation handshake is NOT YET wired on
+        // the HTTP polling endpoint surface (HttpPollingEndpoints.MapHttpPolling has no
+        // /register-client-signature route). Until both sides land, leave the default
+        // IConnection impl (which throws NotSupportedException). ClientDispatcher's
+        // fail-loud guard surfaces this at ConnectAsync with a clear message instead of
+        // letting the user hit "out of range for client signature" on the first RPC.
 
         public async Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, string stateTypeName)
         {
