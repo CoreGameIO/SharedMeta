@@ -46,8 +46,8 @@ IExecutionModeProvider? modeProvider = null;
 if (useServerPatch)
 {
     var provider = new ExecutionModeProvider();
-    provider.SetMode("IExpeditionService", "Move", ExecutionMode.ServerPatch);
-    provider.SetMode("IExpeditionService", "RemoveObstacle", ExecutionMode.ServerPatch);
+    provider.SetMode(global::Expedition.Shared.Generated.GameMethodIds.IExpeditionService_Move_v0, ExecutionMode.ServerPatch);
+    provider.SetMode(global::Expedition.Shared.Generated.GameMethodIds.IExpeditionService_RemoveObstacle_v0, ExecutionMode.ServerPatch);
     modeProvider = provider;
     Console.WriteLine("ServerPatch mode ENABLED for Move and RemoveObstacle");
 }

@@ -83,8 +83,8 @@ builder.Host.UseOrleans(siloBuilder =>
             if (useServerPatch)
             {
                 var modeProvider = new ExecutionModeProvider();
-                modeProvider.SetMode("IExpeditionService", "Move", ExecutionMode.ServerPatch);
-                modeProvider.SetMode("IExpeditionService", "RemoveObstacle", ExecutionMode.ServerPatch);
+                modeProvider.SetMode(global::Expedition.Shared.Generated.GameMethodIds.IExpeditionService_Move_v0, ExecutionMode.ServerPatch);
+                modeProvider.SetMode(global::Expedition.Shared.Generated.GameMethodIds.IExpeditionService_RemoveObstacle_v0, ExecutionMode.ServerPatch);
                 services.AddSingleton<IExecutionModeProvider>(modeProvider);
             }
 
