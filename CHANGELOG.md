@@ -17,7 +17,6 @@ References:
 - [docs/ARCHITECTURE.md §4.6](docs/ARCHITECTURE.md) — hot-path allocation strategy
 - [docs/ARCHITECTURE.md §4.7](docs/ARCHITECTURE.md) — wire method addressing
 - [docs/GUIDE.md](docs/GUIDE.md) — opt-in pool config, serializer contract
-- [docs/adr/0.23.0-*.md](docs/adr/) — meta-operation-unification, non-async-outer-fast-paths, refcount-safety-on-resubscribe, signature-hash-flow
 - [com.coregame.sharedmeta/SharedMeta-AI.md](com.coregame.sharedmeta/SharedMeta-AI.md) — AI-assistant context
 
 ## [0.22.0] - 2026-05-16
