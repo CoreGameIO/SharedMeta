@@ -1,6 +1,8 @@
 # Changelog
 
-## [0.23.0] - 2026-05-22
+## [0.23.1] - 2026-05-22
+
+First actual release of the 0.23 content. The earlier `v0.23.0` tag was pushed against the v0.22.0 commit by mistake (release prep ran before the wire-refactoring branch was merged) and NuGet/UPM versions are immutable once published — bumped to 0.23.1 to ship the real changes.
 
 Allocation-pressure overhaul on the server hot path + `ushort MethodId`-only wire (service/method/version strings removed end-to-end) + refreshed compatibility negotiation. Wire-breaking on both axes: `byte[]?` → `ReadOnlyMemory<byte>` and the method-addressing string triple gone.
 
