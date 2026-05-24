@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using Orleans;
 using MemoryPack;
 using MessagePack;
@@ -28,13 +27,6 @@ namespace SharedMeta.Core.Transport
         [Id(2), Key(2)] public long LastAcknowledgedSequence { get; set; }
 
         /// <summary>
-        /// Client's method signature hashes for validation.
-        /// Key: "ServiceName.MethodAlias", Value: FNV-1a hash of signature.
-        /// Use GameServiceDiscoveryBase.GetMethodSignatures() to populate.
-        /// </summary>
-        [Id(3), Key(3)] public Dictionary<string, ulong>? MethodSignatures { get; set; }
-
-        /// <summary>
         /// Client's application version in "major.minor.patch" format (e.g. "1.2.3").
         /// Used by the server to enforce minimum version compatibility.
         /// Null if the client does not send version information.
@@ -45,7 +37,7 @@ namespace SharedMeta.Core.Transport
         /// 0.22.0+: FNV-1a hash of the client's full <see cref="MetaClientSignature"/>
         /// (sorted KnownMethods + per-method ArgHash + Version). Phase-1 handshake key.
         /// <para>
-        /// When non-zero, the server looks up the matching <see cref="ClientCapabilities"/>
+        /// When non-zero, the server looks up the matching <see cref="ClientSignatureAnnotated"/>
         /// in its signature registry. If unknown, the server replies with
         /// <c>NeedsSignatureRegistration = true</c> and the client follows up with a
         /// <see cref="RegisterClientSignatureRequest"/> carrying the full signature.

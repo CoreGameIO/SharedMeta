@@ -15,59 +15,9 @@ namespace SharedMeta.Core.Transport
     public static class CapabilitiesGate
     {
         /// <summary>
-        /// Returns true when the given <c>(service, alias, version)</c> appears in
-        /// <see cref="ClientCapabilities.RejectedMethods"/>. Inlined in generated
-        /// <c>*ApiClient</c> methods immediately before serialization to short-circuit
-        /// rejected calls (no wire round trip, no local execution).
-        /// </summary>
-        public static bool IsRejected(ClientCapabilities? caps, string service, string alias, int version)
-        {
-            if (caps == null) return false;
-            var list = caps.RejectedMethods;
-            if (list == null || list.Count == 0) return false;
-            for (int i = 0; i < list.Count; i++)
-            {
-                var m = list[i];
-                if (m.Version == version && m.Alias == alias && m.ServiceName == service)
-                    return true;
-            }
-            return false;
-        }
-
-        /// <summary>
-        /// Returns true when the given <c>(service, alias, version)</c> must be force-downgraded
-        /// to ServerPatch execution — either the method is in
-        /// <see cref="ClientCapabilities.ForceServerPatchMethods"/>, or the entire service is in
-        /// <see cref="ClientCapabilities.ForceServerPatchServices"/>.
-        /// </summary>
-        public static bool IsForcedServerPatch(ClientCapabilities? caps, string service, string alias, int version)
-        {
-            if (caps == null) return false;
-
-            var services = caps.ForceServerPatchServices;
-            if (services != null && services.Count > 0)
-            {
-                for (int i = 0; i < services.Count; i++)
-                {
-                    if (services[i] == service) return true;
-                }
-            }
-
-            var methods = caps.ForceServerPatchMethods;
-            if (methods == null || methods.Count == 0) return false;
-            for (int i = 0; i < methods.Count; i++)
-            {
-                var m = methods[i];
-                if (m.Version == version && m.Alias == alias && m.ServiceName == service)
-                    return true;
-            }
-            return false;
-        }
-
-        /// <summary>
         /// 0.22.0+ Per-entity overlay variant: returns true when the service is in the
         /// per-entity <see cref="EntityAugmentedCapabilities.ForceServerPatchServices"/> list.
-        /// Used at the gate alongside session-level <see cref="IsForcedServerPatch"/>.
+        /// Used at the gate alongside the session-level annotation-based check.
         /// </summary>
         public static bool IsServiceForcedServerPatchByEntity(EntityAugmentedCapabilities? entityCaps, string service)
         {
@@ -98,6 +48,49 @@ namespace SharedMeta.Core.Transport
         }
 
         /// <summary>
+        /// 0.24.0+ O(1) status lookup against the annotated form. Returns true when
+        /// <see cref="ClientSignatureAnnotated.Statuses"/> at index <paramref name="methodId"/>
+        /// is <see cref="MethodStatus.Rejected"/>. Replaces the alias/version triple-compare
+        /// loop. Null <paramref name="annotated"/> or out-of-range <paramref name="methodId"/>
+        /// (legacy/no-negotiation path) returns false — pass-through.
+        /// </summary>
+        public static bool IsRejected(ClientSignatureAnnotated? annotated, ushort methodId)
+        {
+            if (annotated == null) return false;
+            var statuses = annotated.Statuses;
+            return methodId < statuses.Length && statuses[methodId] == MethodStatus.Rejected;
+        }
+
+        /// <summary>
+        /// 0.24.0+ O(1) status lookup against the annotated form. Returns true when
+        /// <see cref="ClientSignatureAnnotated.Statuses"/> at index <paramref name="methodId"/>
+        /// is <see cref="MethodStatus.ForceServerPatch"/>. Service-level force-patch is folded
+        /// into per-method statuses at server compute time — no separate service list to consult.
+        /// </summary>
+        public static bool IsForcedServerPatch(ClientSignatureAnnotated? annotated, ushort methodId)
+        {
+            if (annotated == null) return false;
+            var statuses = annotated.Statuses;
+            return methodId < statuses.Length && statuses[methodId] == MethodStatus.ForceServerPatch;
+        }
+
+        /// <summary>
+        /// 0.24.0+ Translate a server-side method id (received in inbound broadcast / op) to
+        /// the client-side id used by the local dispatcher. Returns <c>null</c> when the
+        /// client doesn't know this method (annotation sentinel
+        /// <see cref="ClientSignatureAnnotated.UnknownClientMethodId"/>) — caller should drop
+        /// the operation rather than dispatch a wrong handler.
+        /// </summary>
+        public static ushort? TranslateServerToClient(ClientSignatureAnnotated? annotated, ushort serverMethodId)
+        {
+            if (annotated == null) return serverMethodId;          // negotiation off — ids assumed identical
+            var map = annotated.ServerToClient;
+            if (serverMethodId >= map.Length) return null;
+            var clientId = map[serverMethodId];
+            return clientId == ClientSignatureAnnotated.UnknownClientMethodId ? (ushort?)null : clientId;
+        }
+
+        /// <summary>
         /// Helper used by generated code to build an <see cref="IncompatibleFeatureException"/>
         /// with a populated <see cref="FeatureRequirement"/> when a rejected call is detected
         /// at the gate. Keeps the generated emit a single line.
@@ -113,35 +106,10 @@ namespace SharedMeta.Core.Transport
             });
         }
 
-        /// <summary>
-        /// 0.22.0+ Per-subscriber broadcast tailoring. Decides whether the player receiving
-        /// this broadcast should see replay payload or patch bytes, based on whether the
-        /// dispatched method is force-patched at either the session level (caps) OR the
-        /// per-entity level (entityCaps).
-        /// <list type="bullet">
-        ///   <item>Legacy subscriber (force-patch hit at either level): replayOut = <c>null</c>, patchOut = original patch.</item>
-        ///   <item>Modern subscriber (no force-patch anywhere): replayOut = original replay, patchOut = <c>null</c>.</item>
-        ///   <item><c>caps == null</c> AND <c>entityCaps == null</c> (negotiation disabled): both pass through unchanged.</item>
-        /// </list>
-        /// <c>StateBytes</c> is preserved unconditionally by the caller — ServerReplace is
-        /// independent of the patch/replay axis and applies regardless of compatibility.
-        /// </summary>
-        public static (byte[]? replayOut, byte[]? patchOut) TailorBroadcastPayload(
-            ClientCapabilities? caps, EntityAugmentedCapabilities? entityCaps,
-            string service, string alias, int version,
-            byte[]? replayPayload, byte[]? patchBytes)
-        {
-            if (caps == null && entityCaps == null)
-            {
-                // Negotiation fully disabled (no session caps, no per-entity overlay) — pass through.
-                return (replayPayload, patchBytes);
-            }
-
-            var forcePatch = IsForcedServerPatch(caps, service, alias, version)
-                          || IsServiceForcedServerPatchByEntity(entityCaps, service);
-            return forcePatch
-                ? (null, patchBytes)       // Legacy: only the patch
-                : (replayPayload, null);   // Modern: only the replay
-        }
+        // 0.24.0+ TailorBroadcastPayload removed — broadcast variant selection now lives in
+        // EntityGrain.SubscriberNeedsPatch / DistributeBroadcasts (server-side fan-out
+        // pre-serializes replay/patch variants per subscriber), so the centralized helper has
+        // no production callers. Tests for it lived in ClientSignatureCapabilitiesTests and
+        // were dropped with the file in the 0.24.0 sweep.
     }
 }

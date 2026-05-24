@@ -136,13 +136,13 @@ namespace SharedMeta.Core.Transport
         MetaClientSignature? ClientSignature { get; set; }
 
         /// <summary>
-        /// 0.22.0+: Session-scoped capabilities returned by the server during
-        /// <c>ConnectSessionAsync</c> (phase-1) or <c>RegisterClientSignatureAsync</c>
-        /// (phase-2). Consumed by generated <c>*ApiClient</c> classes to short-circuit
-        /// rejected calls locally. Null until handshake resolves or when negotiation is
-        /// disabled.
+        /// 0.24.0+ Annotated client signature returned by the server (verdict + id mapping).
+        /// Set after <c>ConnectSessionAsync</c> (phase-1) or <c>RegisterClientSignatureAsync</c>
+        /// (phase-2). Consumed by generated <c>*ApiClient</c> through
+        /// <c>CapabilitiesGate.IsRejected(annotated, methodId)</c> — O(1) array index per call.
+        /// Null until handshake resolves or when negotiation is disabled.
         /// </summary>
-        ClientCapabilities? Capabilities { get; }
+        ClientSignatureAnnotated? Annotated { get; }
 
         /// <summary>
         /// True if session has been established with server.

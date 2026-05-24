@@ -347,8 +347,10 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
             sb.AppendLine();
 
-            // Generate method signatures dictionary
-            GenerateMethodSignatures(sb, serviceList, rootNamespace);
+            // 0.24.0+ Emit the per-service signatures consumed by the 0.22+ negotiation flow.
+            // Legacy "MethodSignatures dictionary + GetMethodSignatures()" emit was removed —
+            // SessionConnectRequest no longer carries that field; the validator path was dead.
+            EmitClientSignature(sb, serviceList.SelectMany(s => s.MethodSignatures).ToList(), serviceList, rootNamespace);
             sb.AppendLine();
 
             // Abstract method for getting dispatcher (to be implemented in server project)
@@ -392,44 +394,6 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("}");
 
             return sb.ToString();
-        }
-
-        /// <summary>
-        /// Generate method signatures dictionary for client-server validation.
-        /// </summary>
-        private static void GenerateMethodSignatures(StringBuilder sb, List<DiscoveredServiceInfo> services, string rootNamespace)
-        {
-            // Collect all method signatures
-            var allSignatures = services
-                .SelectMany(s => s.MethodSignatures)
-                .ToList();
-
-            if (allSignatures.Count == 0) return;
-
-            sb.AppendLine("        /// <summary>");
-            sb.AppendLine("        /// Method signature hashes for client-server compatibility validation.");
-            sb.AppendLine("        /// Key: \"ServiceName.MethodAlias\", Value: FNV-1a hash of signature.");
-            sb.AppendLine("        /// </summary>");
-            sb.AppendLine("        public static readonly Dictionary<string, ulong> MethodSignatures = new()");
-            sb.AppendLine("        {");
-            foreach (var sig in allSignatures)
-            {
-                sb.AppendLine($"            {{ \"{sig.ServiceName}.{sig.MethodAlias}\", {SignatureHashGenerator.FormatHashLiteral(sig.SignatureHash)} }}, // {sig.SignatureString}");
-            }
-            sb.AppendLine("        };");
-            sb.AppendLine();
-
-            // Generate GetMethodSignatures method for easy access
-            sb.AppendLine("        /// <summary>");
-            sb.AppendLine("        /// Get all method signatures for session connect validation.");
-            sb.AppendLine("        /// </summary>");
-            sb.AppendLine("        public static Dictionary<string, ulong> GetMethodSignatures() => new(MethodSignatures);");
-            sb.AppendLine();
-
-            // 0.22.0: emit MetaClientSignature static instance. Sorted canonical form so the
-            // hash is stable across builds with the same protocol surface; mutating the sort
-            // (e.g. by reordering interface members) does NOT change the hash.
-            EmitClientSignature(sb, allSignatures, services, rootNamespace);
         }
 
         /// <summary>
@@ -541,9 +505,38 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        /// <c>[MetaConfigStructureBoundary]</c> declarations harvested from every bound");
             sb.AppendLine("        /// config class. Consumed by the Stage 6 capabilities compute pipeline.");
             sb.AppendLine("        /// </summary>");
+            // 0.24.0+ Server signature hash: canonical string includes per-method server-only
+            // fields (MinCompatibleVersion, GenerateClientApi, ConfigTypeFullName) plus the
+            // config-boundary tuples. Any of these changing across server builds invalidates the
+            // client-side ClientSignatureAnnotated cache via SessionConnectResponse.ServerSignatureHash.
+            var serverCanonicalSb = new StringBuilder();
+            foreach (var s in sorted)
+            {
+                if (serverCanonicalSb.Length > 0) serverCanonicalSb.Append('|');
+                serverCanonicalSb.Append(s.ServiceName).Append('.').Append(s.MethodAlias)
+                    .Append('@').Append(s.Version)
+                    .Append('#').Append(s.ArgHash.ToString("X16"))
+                    .Append('!').Append(s.MinCompatibleVersion)
+                    .Append('?').Append(s.GenerateClientApi ? '1' : '0')
+                    .Append('~').Append(s.ConfigTypeFullName ?? "");
+            }
+            // Boundary tuples folded in after method list, sorted same as we emit them below.
+            var serverBoundariesForHash = services
+                .SelectMany(s => s.ConfigBoundaries)
+                .GroupBy(b => (b.ConfigTypeFullName, b.MinConfigVersion))
+                .Select(g => g.First())
+                .OrderBy(b => b.ConfigTypeFullName, System.StringComparer.Ordinal)
+                .ThenBy(b => b.MinConfigVersion, System.StringComparer.Ordinal)
+                .ToList();
+            serverCanonicalSb.Append("||boundaries=");
+            foreach (var b in serverBoundariesForHash)
+                serverCanonicalSb.Append(b.ConfigTypeFullName).Append('@').Append(b.MinConfigVersion).Append(';');
+            var serverSignatureHash = SignatureHashGenerator.ComputeFnv1aHash(serverCanonicalSb.ToString());
+
             sb.AppendLine("        public static readonly global::SharedMeta.Core.Transport.MetaServerSignature ServerSignature =");
             sb.AppendLine("            new global::SharedMeta.Core.Transport.MetaServerSignature");
             sb.AppendLine("            {");
+            sb.AppendLine($"                SignatureHash = {SignatureHashGenerator.FormatHashLiteral(serverSignatureHash)},");
             sb.AppendLine("                Methods = new System.Collections.Generic.List<global::SharedMeta.Core.Transport.ServerMethodEntry>");
             sb.AppendLine("                {");
             // Global index assigned in canonical sort order — stable per server build.

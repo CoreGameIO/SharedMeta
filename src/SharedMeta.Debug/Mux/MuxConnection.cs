@@ -83,7 +83,8 @@ namespace SharedMeta.Debug.Mux
                 MinClientVersion = resp.MinClientVersion,
                 MaxClientVersion = resp.MaxClientVersion,
                 NeedsSignatureRegistration = resp.NeedsSignatureRegistration,
-                Capabilities = resp.Capabilities,
+                ServerSignatureHash = resp.ServerSignatureHash,
+                Annotated = resp.Annotated,
             };
         }
 

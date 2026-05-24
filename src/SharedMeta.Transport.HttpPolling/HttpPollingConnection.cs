@@ -136,7 +136,8 @@ namespace SharedMeta.Transport.HttpPolling
                 MinClientVersion = response.MinClientVersion,
                 MaxClientVersion = response.MaxClientVersion,
                 NeedsSignatureRegistration = response.NeedsSignatureRegistration,
-                Capabilities = response.Capabilities,
+                ServerSignatureHash = response.ServerSignatureHash,
+                Annotated = response.Annotated,
             };
         }
 

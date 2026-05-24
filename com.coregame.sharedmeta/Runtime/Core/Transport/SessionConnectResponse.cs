@@ -31,12 +31,6 @@ namespace SharedMeta.Core.Transport
         [Id(4), Key(4)] public List<SessionResponse> MissedPackets { get; set; } = new();
 
         /// <summary>
-        /// List of method signature mismatches (null if all match).
-        /// Populated when client sends MethodSignatures in request.
-        /// </summary>
-        [Id(5), Key(5)] public List<string>? SignatureMismatches { get; set; }
-
-        /// <summary>
         /// Current server UTC ticks for initial clock synchronization.
         /// </summary>
         [Id(6), Key(6)] public long ServerTimeTicks { get; set; }
@@ -71,20 +65,28 @@ namespace SharedMeta.Core.Transport
         /// <see cref="SessionConnectRequest.ClientSignatureHash"/> in its registry and
         /// needs a phase-2 follow-up. The client MUST send a
         /// <see cref="RegisterClientSignatureRequest"/> with the full signature before
-        /// issuing any RPC. While this flag is set, <see cref="Capabilities"/> is null
-        /// (or an empty default) and the client should treat the session as "not yet
-        /// known to negotiate against."
+        /// issuing any RPC. While this flag is set, <see cref="Annotated"/> is null and the
+        /// client should treat the session as "not yet known to negotiate against."
         /// </summary>
         [Id(11), Key(11)] public bool NeedsSignatureRegistration { get; set; }
 
         /// <summary>
-        /// 0.22.0+: Server's compatibility verdict for the client's declared signature.
-        /// Null when negotiation is disabled or when
-        /// <see cref="NeedsSignatureRegistration"/> is true (capabilities will arrive in
-        /// the phase-2 <see cref="RegisterClientSignatureResponse"/>). Empty lists =
-        /// no restrictions (the common case for an up-to-date client).
+        /// 0.24.0+ Server signature hash, ALWAYS populated. Drives client cache
+        /// invalidation for <see cref="ClientSignatureAnnotated"/> — the client compares
+        /// to <c>cached[clientHash].ServerSignatureHash</c>; mismatch forces a phase-2
+        /// re-registration even when the server already knew this clientHash.
         /// </summary>
-        [Id(12), Key(12)] public ClientCapabilities? Capabilities { get; set; }
+        [Id(13), Key(13)] public ulong ServerSignatureHash { get; set; }
+
+        /// <summary>
+        /// 0.24.0+ Annotated client signature (verdict + id mapping) — supersedes
+        /// <see cref="Capabilities"/>. Populated when the server already knew this
+        /// <c>ClientSignatureHash</c> AND its cached annotations are current for the
+        /// reported <see cref="ServerSignatureHash"/>. Null when phase-2 is needed
+        /// (<see cref="NeedsSignatureRegistration"/> true) or when the client's cache
+        /// is stale (annotations will arrive in <see cref="RegisterClientSignatureResponse.Annotated"/>).
+        /// </summary>
+        [Id(14), Key(14)] public ClientSignatureAnnotated? Annotated { get; set; }
     }
 
     /// <summary>

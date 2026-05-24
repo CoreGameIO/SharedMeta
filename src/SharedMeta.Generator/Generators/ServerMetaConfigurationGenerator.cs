@@ -600,8 +600,8 @@ namespace SharedMeta.Generator.Generators
             GenerateConfigureMetaExtension(sb, byStateType, allServerDeps, rootNamespace);
             sb.AppendLine();
 
-            // 5. Generate method signature validation
-            GenerateSignatureValidation(sb, services);
+            // 0.24.0+ legacy MetaMethodSignatureValidator emit removed — replaced by
+            // ClientSignatureAnnotated handshake (per docs/adr/0.24.0-server-signature-handshake.md).
 
             sb.AppendLine("}");
             return sb.ToString();
@@ -695,8 +695,8 @@ namespace SharedMeta.Generator.Generators
             GenerateConfigureMetaExtension(sb, byStateType, allServerDeps, rootNamespace);
             sb.AppendLine();
 
-            // 5. Generate method signature validation
-            GenerateSignatureValidation(sb, services);
+            // 0.24.0+ legacy MetaMethodSignatureValidator emit removed — replaced by
+            // ClientSignatureAnnotated handshake (per docs/adr/0.24.0-server-signature-handshake.md).
 
             sb.AppendLine("}");
             sb.AppendLine("#endif // SHAREDMETA_SERVER");
@@ -1969,7 +1969,6 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                    sp.GetRequiredService<Orleans.IGrainFactory>(),");
             sb.AppendLine("                    sp.GetRequiredService<SharedMeta.Server.Core.Grains.IEntityGrainResolver>(),");
             sb.AppendLine("                    sp.GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>(),");
-            sb.AppendLine("                    MetaMethodSignatureValidator.ValidateClientSignatures,");
             sb.AppendLine("                    sp.GetService<SharedMeta.Server.Core.Transport.MetaTransportOptions>(),");
             sb.AppendLine("                    sp.GetService<SharedMeta.Core.IMetaSerializer>(),");
             sb.AppendLine("                    sp.GetService<SharedMeta.Core.Patch.IPatchSchemaRegistry>(),");
@@ -2128,77 +2127,5 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("    }");
         }
 
-        /// <summary>
-        /// Generate method signature validation class for server-side.
-        /// </summary>
-        private static void GenerateSignatureValidation(StringBuilder sb, List<ServiceImplInfo> services)
-        {
-            // Collect all method signatures
-            var allSignatures = services
-                .SelectMany(s => s.MethodSignatures)
-                .ToList();
-
-            if (allSignatures.Count == 0) return;
-
-            sb.AppendLine("    /// <summary>");
-            sb.AppendLine("    /// Server-side method signature validation.");
-            sb.AppendLine("    /// Validates that client and server have compatible method signatures.");
-            sb.AppendLine("    /// </summary>");
-            sb.AppendLine("    public static class MetaMethodSignatureValidator");
-            sb.AppendLine("    {");
-
-            // Generate server signatures dictionary
-            sb.AppendLine("        /// <summary>");
-            sb.AppendLine("        /// Server method signature hashes.");
-            sb.AppendLine("        /// Key: \"ServiceName.MethodAlias\", Value: FNV-1a hash of signature.");
-            sb.AppendLine("        /// </summary>");
-            sb.AppendLine("        public static readonly Dictionary<string, ulong> ServerSignatures = new()");
-            sb.AppendLine("        {");
-            foreach (var sig in allSignatures)
-            {
-                sb.AppendLine($"            {{ \"{sig.ServiceName}.{sig.MethodAlias}\", {SignatureHashGenerator.FormatHashLiteral(sig.SignatureHash)} }}, // {sig.SignatureString}");
-            }
-            sb.AppendLine("        };");
-            sb.AppendLine();
-
-            // Generate validation method
-            sb.AppendLine("        /// <summary>");
-            sb.AppendLine("        /// Validate client method signatures against server signatures.");
-            sb.AppendLine("        /// Returns null if all signatures match, or list of mismatches.");
-            sb.AppendLine("        /// </summary>");
-            sb.AppendLine("        /// <param name=\"clientSignatures\">Client's method signature hashes.</param>");
-            sb.AppendLine("        /// <returns>List of mismatches (null if all match).</returns>");
-            sb.AppendLine("        public static List<string>? ValidateClientSignatures(Dictionary<string, ulong> clientSignatures)");
-            sb.AppendLine("        {");
-            sb.AppendLine("            var mismatches = new List<string>();");
-            sb.AppendLine();
-            sb.AppendLine("            foreach (var (methodKey, clientHash) in clientSignatures)");
-            sb.AppendLine("            {");
-            sb.AppendLine("                if (ServerSignatures.TryGetValue(methodKey, out var serverHash))");
-            sb.AppendLine("                {");
-            sb.AppendLine("                    if (clientHash != serverHash)");
-            sb.AppendLine("                    {");
-            sb.AppendLine("                        mismatches.Add($\"{methodKey}: signature mismatch (client=0x{clientHash:X16}, server=0x{serverHash:X16})\");");
-            sb.AppendLine("                    }");
-            sb.AppendLine("                }");
-            sb.AppendLine("                else");
-            sb.AppendLine("                {");
-            sb.AppendLine("                    mismatches.Add($\"{methodKey}: method not found on server\");");
-            sb.AppendLine("                }");
-            sb.AppendLine("            }");
-            sb.AppendLine();
-            sb.AppendLine("            // Check for server methods not present on client");
-            sb.AppendLine("            foreach (var (methodKey, _) in ServerSignatures)");
-            sb.AppendLine("            {");
-            sb.AppendLine("                if (!clientSignatures.ContainsKey(methodKey))");
-            sb.AppendLine("                {");
-            sb.AppendLine("                    mismatches.Add($\"{methodKey}: method not found on client\");");
-            sb.AppendLine("                }");
-            sb.AppendLine("            }");
-            sb.AppendLine();
-            sb.AppendLine("            return mismatches.Count > 0 ? mismatches : null;");
-            sb.AppendLine("        }");
-            sb.AppendLine("    }");
-        }
     }
 }

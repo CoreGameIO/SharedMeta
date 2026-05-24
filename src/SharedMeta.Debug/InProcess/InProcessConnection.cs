@@ -101,7 +101,8 @@ namespace SharedMeta.Debug.InProcess
                 ServerTimeTicks = response.ServerTimeTicks,
                 ResubscribedEntities = response.ResubscribedEntities,
                 NeedsSignatureRegistration = response.NeedsSignatureRegistration,
-                Capabilities = response.Capabilities,
+                ServerSignatureHash = response.ServerSignatureHash,
+                Annotated = response.Annotated,
             };
         }
 

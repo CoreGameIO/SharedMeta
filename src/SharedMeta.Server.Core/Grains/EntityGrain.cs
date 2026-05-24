@@ -493,14 +493,17 @@ namespace SharedMeta.Server.Core.Grains
             };
             _subscriberRefs[playerId] = sessionManager;
 
-            // Resolve this subscriber's force-patch declarations from the signature registry.
-            // Accept everything — HandleCallAsync's dispatch-time check is keyed by
-            // (Service, Method, Version) so foreign entries can't false-trigger.
-            IReadOnlyList<MethodIdentity>? forceServerPatchMethods = null;
+            // 0.24.0+ Resolve this subscriber's force-patch declarations from the silo-local
+            // annotation cache. Walk Statuses[] for ForceServerPatch entries and translate
+            // each client method id to its server-side counterpart via the clientToServer map.
+            // Foreign entries can't false-trigger because the translation drops anything the
+            // server doesn't know (clientToServer[i] == ushort.MaxValue).
+            ClientSignatureAnnotated? annotated = null;
+            ushort[]? clientToServer = null;
             if (clientSignatureHash != 0 && _signatureRegistry != null)
             {
-                var caps = await _signatureRegistry.TryGetCapabilitiesAsync(clientSignatureHash);
-                forceServerPatchMethods = caps?.ForceServerPatchMethods;
+                annotated = await _signatureRegistry.TryGetAnnotatedAsync(clientSignatureHash);
+                clientToServer = await _signatureRegistry.TryGetClientToServerMapAsync(clientSignatureHash);
             }
 
             // Always drop prior contributions unconditionally — even when the new list is
@@ -511,16 +514,19 @@ namespace SharedMeta.Server.Core.Grains
                 foreach (var id in prior)
                     DecrementMethodRef(id);
             }
-            if (forceServerPatchMethods is { Count: > 0 } && _serverSignature != null)
+            if (annotated != null && clientToServer != null && _serverSignature != null)
             {
                 EnsureForcePatchRefs();
-                var contributions = new List<ushort>(forceServerPatchMethods.Count);
-                foreach (var m in forceServerPatchMethods)
+                var contributions = new List<ushort>();
+                var statuses = annotated.Statuses;
+                int max = statuses.Length < clientToServer.Length ? statuses.Length : clientToServer.Length;
+                for (ushort clientId = 0; clientId < max; clientId++)
                 {
-                    var id = _serverSignature.ResolveMethodId(m.ServiceName, m.Alias, m.Version);
-                    if (!id.HasValue) continue;  // signature drift — server doesn't know this method
-                    contributions.Add(id.Value);
-                    IncrementMethodRef(id.Value);
+                    if (statuses[clientId] != MethodStatus.ForceServerPatch) continue;
+                    var serverId = clientToServer[clientId];
+                    if (serverId == ushort.MaxValue) continue;  // signature drift — server doesn't know this method
+                    contributions.Add(serverId);
+                    IncrementMethodRef(serverId);
                 }
                 if (contributions.Count > 0)
                     _subscriberForcePatchContributions[playerId] = contributions;

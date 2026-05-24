@@ -24,7 +24,6 @@ namespace SharedMeta.Server.Core.Transport
         private readonly IGrainFactory _grainFactory;
         private readonly IEntityGrainResolver _entityGrainResolver;
         private readonly IBroadcastSender _broadcastSender;
-        private readonly SignatureValidator? _signatureValidator;
         private readonly ILogger _logger;
         private readonly MetaTransportOptions? _transportOptions;
         private readonly ClientVersionPolicy? _versionPolicy;
@@ -72,13 +71,13 @@ namespace SharedMeta.Server.Core.Transport
         private string? _clientVersion;
 
         /// <summary>
-        /// Session-scoped capabilities. Populated from
+        /// 0.24.0+ Session-scoped annotation. Populated from
         /// <see cref="Session.IClientSignatureRegistry"/> at SessionConnect (phase-1) or
         /// RegisterClientSignature (phase-2). Consulted on every RpcCall as a back-stop:
-        /// even forged clients that bypassed their local <c>CapabilitiesGate</c> get
-        /// rejected here.
+        /// even forged clients that bypassed their local <c>CapabilitiesGate</c> get rejected
+        /// here via O(1) <c>Statuses[methodId]</c> lookup.
         /// </summary>
-        private SharedMeta.Core.Transport.ClientCapabilities? _clientCapabilities;
+        private SharedMeta.Core.Transport.ClientSignatureAnnotated? _clientAnnotated;
 
         /// <summary>
         /// Negotiated signature hash for this connection. Captured from
@@ -103,7 +102,6 @@ namespace SharedMeta.Server.Core.Transport
             IEntityGrainResolver entityGrainResolver,
             IBroadcastSender broadcastSender,
             ILogger logger,
-            SignatureValidator? signatureValidator = null,
             MetaTransportOptions? transportOptions = null,
             IMetaSerializer? serializer = null,
             SharedMeta.Core.Patch.IPatchSchemaRegistry? schemaRegistry = null,
@@ -116,7 +114,6 @@ namespace SharedMeta.Server.Core.Transport
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
             _broadcastSender = broadcastSender ?? throw new ArgumentNullException(nameof(broadcastSender));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _signatureValidator = signatureValidator;
             _transportOptions = transportOptions;
             _serializer = serializer;
             _schemaRegistry = schemaRegistry;
@@ -259,32 +256,31 @@ namespace SharedMeta.Server.Core.Transport
 
                 _logger.HandlerSessionConnect(request.PlayerId, result.Success, result.IsNewSession);
 
-                // Validate method signatures if provided
-                List<string>? signatureMismatches = null;
-                if (request.MethodSignatures != null && _signatureValidator != null)
-                {
-                    signatureMismatches = _signatureValidator(request.MethodSignatures);
-                    if (signatureMismatches != null)
-                    {
-                        _logger.SignatureMismatches(request.PlayerId, string.Join("; ", signatureMismatches));
-                    }
-                }
-
                 // Compatibility negotiation: non-zero ClientSignatureHash means the client
                 // opted in. Registry lookup is silo-cache-first → cluster directory on miss.
                 // Unknown signature ships NeedsSignatureRegistration so the client follows up
                 // with phase-2 (RegisterClientSignature). Hash == 0 = legacy / opted-out =
                 // no capabilities attached (server treats client as fully compatible).
                 bool needsSignatureRegistration = false;
-                ClientCapabilities? capabilities = null;
+                ClientSignatureAnnotated? annotated = null;
+                var serverSignatureHash = _signatureRegistry?.ServerSignatureHash ?? 0UL;
                 if (request.ClientSignatureHash != 0 && _signatureRegistry != null && result.Success)
                 {
-                    capabilities = await _signatureRegistry.TryGetCapabilitiesAsync(request.ClientSignatureHash);
-                    needsSignatureRegistration = capabilities == null;
+                    annotated = await _signatureRegistry.TryGetAnnotatedAsync(request.ClientSignatureHash);
+                    needsSignatureRegistration = annotated == null;
+                    if (annotated != null)
+                    {
+                        var (rej, fp) = CountStatuses(annotated.Statuses);
+                        _logger.HandshakeAnnotationFromCache(request.PlayerId, request.ClientSignatureHash, serverSignatureHash, annotated.Statuses.Length, rej, fp);
+                    }
+                    else
+                    {
+                        _logger.HandshakeNeedsRegistration(request.PlayerId, request.ClientSignatureHash, serverSignatureHash);
+                    }
                 }
-                // Stash for the per-RPC back-stop. Null capabilities (negotiation disabled, or
+                // Stash for the per-RPC back-stop. Null annotation (negotiation disabled, or
                 // pending phase-2) means the back-stop runs in pass-through mode.
-                _clientCapabilities = capabilities;
+                _clientAnnotated = annotated;
 
                 // Stash the hash for forwarding through SubscribeToEntityAsync. EntityGrain
                 // resolves its own capabilities from IClientSignatureRegistry — no caps blob
@@ -298,11 +294,11 @@ namespace SharedMeta.Server.Core.Transport
                     SessionId = result.SessionId,
                     IsNewSession = result.IsNewSession,
                     MissedPackets = result.MissedPackets,
-                    SignatureMismatches = signatureMismatches,
                     ServerTimeTicks = result.ServerTimeTicks,
                     ServerVersion = _versionPolicy?.ServerVersion ?? _transportOptions?.ServerVersion,
                     NeedsSignatureRegistration = needsSignatureRegistration,
-                    Capabilities = capabilities,
+                    ServerSignatureHash = serverSignatureHash,
+                    Annotated = annotated,
                     ResubscribedEntities = result.ResubscribedEntities?.Select(e => new ResubscribedEntityInfo
                     {
                         EntityId = e.EntityId,
@@ -355,21 +351,26 @@ namespace SharedMeta.Server.Core.Transport
                 return new RegisterClientSignatureResponse
                 {
                     Success = true,
-                    Capabilities = new ClientCapabilities(),
+                    Annotated = null,
                 };
             }
 
             try
             {
-                var capabilities = await _signatureRegistry.RegisterAsync(request.Signature);
-                _clientCapabilities = capabilities;
+                var annotated = await _signatureRegistry.RegisterAsync(request.Signature);
+                _clientAnnotated = annotated;
                 // Update the cached signature hash so subsequent SubscribeToEntityAsync calls
                 // forward the freshly-registered hash to EntityGrain.
                 _clientSignatureHash = request.Signature.SignatureHash;
+                var (rej, fp) = CountStatuses(annotated.Statuses);
+                int serverOnly = CountServerOnly(annotated.ServerToClient);
+                _logger.HandshakeSignatureRegistered(PlayerId ?? "<unknown>",
+                    request.Signature.SignatureHash, request.Signature.KnownMethods.Count,
+                    annotated.ServerSignatureHash, rej, fp, serverOnly);
                 return new RegisterClientSignatureResponse
                 {
                     Success = true,
-                    Capabilities = capabilities,
+                    Annotated = annotated,
                 };
             }
             catch (Exception ex)
@@ -381,7 +382,7 @@ namespace SharedMeta.Server.Core.Transport
                 {
                     Success = false,
                     Error = ex.Message,
-                    Capabilities = new ClientCapabilities(),
+                    Annotated = null,
                 };
             }
         }
@@ -511,13 +512,12 @@ namespace SharedMeta.Server.Core.Transport
                 var (resolvedService, resolvedMethod, resolvedVersion) = ResolveServerMethodEntry(serverMethodId);
 
                 // Server-side back-stop: even if the client bypassed its local CapabilitiesGate,
-                // we enforce rejection here from the cached capabilities. Force-ServerPatch is
-                // intentionally NOT enforced server-side — the server executes whatever the client
-                // declared, since downgrading the mode mid-flight would change semantics for
-                // a well-behaved client that already complied at the gate.
-                if (_clientCapabilities != null && resolvedService != null && resolvedMethod != null
-                    && SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(
-                        _clientCapabilities, resolvedService, resolvedMethod, resolvedVersion))
+                // we enforce rejection here from the cached annotation. Lookup is O(1) — the
+                // wire's clientMethodId indexes directly into the Statuses array. Force-ServerPatch
+                // is intentionally NOT enforced server-side — the server executes whatever the
+                // client declared, since downgrading the mode mid-flight would change semantics
+                // for a well-behaved client that already complied at the gate.
+                if (SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(_clientAnnotated, request.MethodId))
                 {
                     __m.MarkRejected();
                     return SessionResponse.ForError(
@@ -999,6 +999,13 @@ namespace SharedMeta.Server.Core.Transport
         {
             if (!IsSessionConnected)
             {
+                // 0.24.0+ Side-channel the recovery prompt to the client before throwing.
+                // Typical cause: SignalR auto-reconnected (or fresh negotiate) onto a new
+                // server-side handler that never saw SessionConnect. Pushing the notification
+                // lets the client run a re-handshake (re-binds the session AND re-fetches
+                // the annotation if the server signature changed). The throw still bubbles
+                // to the transport layer for logging, but the client recovers asynchronously.
+                _broadcastSender.SendRequireSessionReconnect("Server-side session handler is unbound — re-run SessionConnect to recover.");
                 throw new InvalidOperationException("Session not connected. Call SessionConnect first.");
             }
         }
@@ -1008,6 +1015,28 @@ namespace SharedMeta.Server.Core.Transport
             _observerRenewalTimer?.Dispose();
             _observerRenewalTimer = null;
             // Remaining cleanup is handled by OnDisconnectedAsync which is called from MetaHub.OnDisconnectedAsync
+        }
+
+        // 0.24.0+ Handshake-tracing helpers: small status-array scans so the log
+        // messages can quote concrete numbers ("0 rejected, 3 force-patch") without
+        // each call site doing its own LINQ.
+        private static (int rejected, int forcePatch) CountStatuses(MethodStatus[] statuses)
+        {
+            int rej = 0, fp = 0;
+            for (int i = 0; i < statuses.Length; i++)
+            {
+                if (statuses[i] == MethodStatus.Rejected) rej++;
+                else if (statuses[i] == MethodStatus.ForceServerPatch) fp++;
+            }
+            return (rej, fp);
+        }
+
+        private static int CountServerOnly(ushort[] serverToClient)
+        {
+            int n = 0;
+            for (int i = 0; i < serverToClient.Length; i++)
+                if (serverToClient[i] == ClientSignatureAnnotated.UnknownClientMethodId) n++;
+            return n;
         }
     }
 
@@ -1019,7 +1048,6 @@ namespace SharedMeta.Server.Core.Transport
         private readonly IGrainFactory _grainFactory;
         private readonly IEntityGrainResolver _entityGrainResolver;
         private readonly ILoggerFactory _loggerFactory;
-        private readonly SignatureValidator? _signatureValidator;
         private readonly SharedMeta.Core.Transport.MetaServerSignature? _serverSignature;
         private readonly MetaTransportOptions? _transportOptions;
         private readonly IMetaSerializer? _serializer;
@@ -1031,7 +1059,6 @@ namespace SharedMeta.Server.Core.Transport
             IGrainFactory grainFactory,
             IEntityGrainResolver entityGrainResolver,
             ILoggerFactory loggerFactory,
-            SignatureValidator? signatureValidator = null,
             MetaTransportOptions? transportOptions = null,
             IMetaSerializer? serializer = null,
             SharedMeta.Core.Patch.IPatchSchemaRegistry? schemaRegistry = null,
@@ -1042,7 +1069,6 @@ namespace SharedMeta.Server.Core.Transport
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
             _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
-            _signatureValidator = signatureValidator;
             _transportOptions = transportOptions;
             _serializer = serializer;
             _schemaRegistry = schemaRegistry;
@@ -1055,7 +1081,7 @@ namespace SharedMeta.Server.Core.Transport
         {
             var logger = _loggerFactory.CreateLogger<MetaConnectionHandler>();
             return new MetaConnectionHandler(connectionId, _grainFactory, _entityGrainResolver, broadcastSender, logger,
-                _signatureValidator, _transportOptions, _serializer, _schemaRegistry, _versionPolicy, _signatureRegistry, _serverSignature);
+                _transportOptions, _serializer, _schemaRegistry, _versionPolicy, _signatureRegistry, _serverSignature);
         }
     }
 }

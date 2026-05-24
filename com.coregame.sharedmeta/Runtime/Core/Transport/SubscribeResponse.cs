@@ -54,7 +54,7 @@ namespace SharedMeta.Core.Transport
         /// <summary>
         /// 0.22.0+ Per-entity capability deltas, computed by <c>EntityGrain</c> from this entity's
         /// resolved config version + <c>[MetaConfigStructureBoundary]</c> declarations. Stacks on
-        /// top of session-level <see cref="ClientCapabilities"/> at the gate / dispatch / broadcast
+        /// top of session-level <see cref="ClientSignatureAnnotated"/> at the gate / dispatch / broadcast
         /// fan-out layer. Null when negotiation is disabled / no per-entity deltas apply.
         /// </summary>
         [Id(10), Key(10)] public EntityAugmentedCapabilities? AugmentedCapabilities { get; set; }

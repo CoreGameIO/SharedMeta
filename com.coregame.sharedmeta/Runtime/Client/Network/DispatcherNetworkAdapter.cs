@@ -36,12 +36,17 @@ namespace SharedMeta.Client.Network
         /// object directly on the adapter) but in production the value flows from the dispatcher.
         /// </para>
         /// </summary>
-        public ClientCapabilities? Capabilities
+        /// <summary>
+        /// 0.24.0+ Annotated signature view of the session capabilities. Setter-override pattern
+        /// so unit tests can inject directly while production flow inherits from the parent
+        /// dispatcher.
+        /// </summary>
+        public ClientSignatureAnnotated? Annotated
         {
-            get => _capabilitiesOverride ?? _dispatcher.Capabilities;
-            set => _capabilitiesOverride = value;
+            get => _annotatedOverride ?? _dispatcher.Annotated;
+            set => _annotatedOverride = value;
         }
-        private ClientCapabilities? _capabilitiesOverride;
+        private ClientSignatureAnnotated? _annotatedOverride;
 
         /// <summary>
         /// 0.22.0+ Per-entity capability overlay. Stored on the per-entity adapter so generated
@@ -84,16 +89,16 @@ namespace SharedMeta.Client.Network
             => sessionOp.OpBytes.Length > 0 ? _serializer.Unpack<MetaOperation>(sessionOp.OpBytes.Memory) : new MetaOperation();
 
         // 0.24.0+ Translate server's global method index → client's local index using the
-        // per-signature map shipped in ClientCapabilities.ServerToClientMethodIds. When the
-        // map isn't available (signature negotiation disabled / not yet completed) we fall
-        // back to identity — client and server built from the same protocol surface produce
+        // per-signature map shipped in ClientSignatureAnnotated.ServerToClient. When the map
+        // isn't available (signature negotiation disabled / not yet completed) we fall back
+        // to identity — client and server built from the same protocol surface produce
         // identical sort orders, so server's id equals client's id in that case. Returns
-        // ushort.MaxValue (sentinel) only when the explicit map says "client doesn't know".
+        // UnknownClientMethodId (sentinel) only when the explicit map says "client doesn't know".
         private ushort TranslateIncomingMethodId(ushort serverMethodId)
         {
-            var caps = Capabilities;
-            if (caps == null) return serverMethodId;
-            var map = caps.ServerToClientMethodIds;
+            var annotated = Annotated;
+            if (annotated == null) return serverMethodId;
+            var map = annotated.ServerToClient;
             if (map == null || serverMethodId >= map.Length) return serverMethodId;
             return map[serverMethodId];
         }

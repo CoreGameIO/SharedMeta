@@ -166,6 +166,7 @@ namespace SharedMeta.Client
             _connection.OnBatch += HandleBatch;
             _connection.OnDisconnected += HandleDisconnected;
             _connection.OnSessionTerminated += HandleSessionTerminated;
+            _connection.OnRequireSessionReconnect += HandleRequireSessionReconnect;
             _connection.OnReconnecting += HandleReconnecting;
             _connection.OnReconnected += HandleTransportReconnected;
 
@@ -338,7 +339,7 @@ namespace SharedMeta.Client
         public MetaClientSignature? ClientSignature { get; set; }
 
         /// <inheritdoc />
-        public ClientCapabilities? Capabilities { get; private set; }
+        public ClientSignatureAnnotated? Annotated { get; private set; }
 
         /// <summary>
         /// True if session has been established with server.
@@ -378,10 +379,30 @@ namespace SharedMeta.Client
                 };
             }
 
-            // 0.22.0: pick up server-supplied capabilities OR fall through to phase-2 if the
+            // 0.24.0+ pick up server-supplied annotation OR fall through to phase-2 if the
             // server didn't recognize our signature hash. Phase-2 is only performed when the
-            // consumer wired a ClientSignature — opted-out clients stay capability-less.
-            Capabilities = result.Capabilities;
+            // consumer wired a ClientSignature — opted-out clients stay annotation-less.
+            Annotated = result.Annotated;
+
+            // 0.24.0+ Mirror the server-side handshake trace so a developer running
+            // client + server can verify they understood each other from each side's logs.
+            if (signatureHash != 0)
+            {
+                if (result.Annotated != null)
+                {
+                    var (rej, fp) = CountStatuses(result.Annotated.Statuses);
+                    MetaLog.Info($"[ClientDispatcher] Handshake phase-1 HIT: clientHash=0x{signatureHash:X16}, serverHash=0x{result.ServerSignatureHash:X16}, annotation: {result.Annotated.Statuses.Length} methods ({rej} rejected, {fp} force-patch)");
+                }
+                else if (result.NeedsSignatureRegistration)
+                {
+                    MetaLog.Info($"[ClientDispatcher] Handshake phase-1 MISS: clientHash=0x{signatureHash:X16}, serverHash=0x{result.ServerSignatureHash:X16}; sending phase-2 RegisterClientSignature");
+                }
+                else
+                {
+                    MetaLog.Info($"[ClientDispatcher] Handshake: no annotation returned and no registration needed — negotiation likely disabled server-side (clientHash=0x{signatureHash:X16}, serverHash=0x{result.ServerSignatureHash:X16})");
+                }
+            }
+
             if (result.NeedsSignatureRegistration && ClientSignature != null)
             {
                 // Fail-loud: if phase-2 errors out, the server has NO signature for this
@@ -417,7 +438,16 @@ namespace SharedMeta.Client
                         $"Phase-2 signature registration was rejected by the server: " +
                         $"{phase2.Error ?? "<no error message>"}");
                 }
-                Capabilities = phase2.Capabilities;
+                Annotated = phase2.Annotated;
+                if (phase2.Annotated != null)
+                {
+                    var (rej, fp) = CountStatuses(phase2.Annotated.Statuses);
+                    MetaLog.Info($"[ClientDispatcher] Handshake phase-2 REGISTERED: clientHash=0x{signatureHash:X16} ({ClientSignature!.KnownMethods.Count} methods) -> serverHash=0x{phase2.Annotated.ServerSignatureHash:X16}, annotation: {rej} rejected, {fp} force-patch");
+                }
+                else
+                {
+                    MetaLog.Warning($"[ClientDispatcher] Handshake phase-2 returned success but null annotation — server may have negotiation disabled (clientHash=0x{signatureHash:X16})");
+                }
             }
 
             lock (_lock)
@@ -845,6 +875,36 @@ namespace SharedMeta.Client
             _ = ReconnectAsync();
         }
 
+        // 0.24.0+ Debounce flag so a burst of failing calls in a tight window doesn't
+        // queue multiple parallel ReconnectAsync runs. ConnectSessionAsync itself is
+        // idempotent (the server will happily re-bind the session on each call) but
+        // multiple concurrent runs would step on each other's pending-request drain.
+        private int _recoverInFlight;
+
+        private void HandleRequireSessionReconnect(string reason)
+        {
+            // Server pushed a "session lost on server, please re-handshake" notification —
+            // typical cause: SignalR auto-reconnected onto a brand-new server-side handler
+            // (after server restart) that never saw SessionConnect. Run the same recovery
+            // flow as a normal transport reconnect; ConnectSessionAsync re-binds the session
+            // AND re-fetches the annotation if the server signature changed in the interim.
+            if (System.Threading.Interlocked.Exchange(ref _recoverInFlight, 1) == 1)
+            {
+                MetaLog.Info($"[ClientDispatcher] RequireSessionReconnect ({reason}) — recovery already in flight, ignoring");
+                return;
+            }
+            MetaLog.Info($"[ClientDispatcher] RequireSessionReconnect from server: {reason}; triggering ConnectSessionAsync");
+            IsSessionConnected = false;
+            OnConnectionStatusChanged?.Invoke(ConnectionStatus.Reconnecting, reason);
+            _ = ReconnectAndClearFlagAsync();
+
+            async Task ReconnectAndClearFlagAsync()
+            {
+                try { await ReconnectAsync(); }
+                finally { System.Threading.Interlocked.Exchange(ref _recoverInFlight, 0); }
+            }
+        }
+
         /// <summary>
         /// Re-establish session and re-subscribe to all entities after transport reconnect.
         /// </summary>
@@ -1072,6 +1132,19 @@ namespace SharedMeta.Client
                     _dispatcher.RemoveBroadcastHandler(_entityId, _handler);
                 }
             }
+        }
+
+        // 0.24.0+ Handshake-tracing helper: scan the Statuses array once and report
+        // (rejected, force-patch) counts for the connect-time log lines.
+        private static (int rejected, int forcePatch) CountStatuses(MethodStatus[] statuses)
+        {
+            int rej = 0, fp = 0;
+            for (int i = 0; i < statuses.Length; i++)
+            {
+                if (statuses[i] == MethodStatus.Rejected) rej++;
+                else if (statuses[i] == MethodStatus.ForceServerPatch) fp++;
+            }
+            return (rej, fp);
         }
     }
 }

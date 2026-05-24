@@ -96,6 +96,7 @@ namespace SharedMeta.Transport.BestHttp
 
         public event Action<SessionResponse>? OnBatch;
         public event Action<string>? OnSessionTerminated;
+        public event Action<string>? OnRequireSessionReconnect;
         public event Action<TransportDisconnectReason>? OnDisconnected;
         public event Action? OnReconnecting;
         public event Action? OnReconnected;
@@ -139,6 +140,7 @@ namespace SharedMeta.Transport.BestHttp
             _hub.On<SessionResponse>(nameof(IMetaHubClient.ReceiveBroadcast), OnReceiveBroadcast);
             _hub.On<string>(nameof(IMetaHubClient.SessionTerminated), msg => OnSessionTerminated?.Invoke(msg));
             _hub.On<string>(nameof(IMetaHubClient.EntityDeactivating), OnEntityDeactivating);
+            _hub.On<string>(nameof(IMetaHubClient.RequireSessionReconnect), msg => OnRequireSessionReconnect?.Invoke(msg));
 
             // Lifecycle events
             _hub.OnConnected += hub =>
@@ -240,7 +242,8 @@ namespace SharedMeta.Transport.BestHttp
                 MinClientVersion = response.MinClientVersion,
                 MaxClientVersion = response.MaxClientVersion,
                 NeedsSignatureRegistration = response.NeedsSignatureRegistration,
-                Capabilities = response.Capabilities,
+                ServerSignatureHash = response.ServerSignatureHash,
+                Annotated = response.Annotated,
             };
         }
 

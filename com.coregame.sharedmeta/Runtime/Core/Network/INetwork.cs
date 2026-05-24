@@ -28,14 +28,17 @@ namespace SharedMeta.Core.Network
         string? EntityId { get; }
 
         /// <summary>
-        /// 0.22.0+: Server-supplied capabilities for this session. Set by the higher-level
-        /// client (<c>ClientDispatcher</c>) after <c>SessionConnect</c> (or phase-2
-        /// <c>RegisterClientSignature</c>) completes. Consumed by generated <c>*ApiClient</c>
-        /// classes to short-circuit calls the server has flagged as rejected, and to force
-        /// ServerPatch execution mode on calls the server has flagged as incompatible with
-        /// optimistic local execution. Null when negotiation is disabled / not yet completed.
+        /// 0.24.0+ Annotated client signature returned by the server (verdict + id mapping).
+        /// Set by <c>ClientDispatcher</c> after <c>SessionConnect</c> / phase-2
+        /// <c>RegisterClientSignature</c>, or restored from <see cref="IServerAnnotationCache"/>
+        /// when the cached <c>ServerSignatureHash</c> matches the server's reported one.
+        /// Consumed by generated <c>*ApiClient</c> through
+        /// <c>CapabilitiesGate.IsRejected(annotated, methodId)</c> /
+        /// <c>CapabilitiesGate.IsForcedServerPatch(annotated, methodId)</c> — O(1) array lookup
+        /// per call. Replaces <see cref="Capabilities"/>; both populated during the
+        /// 0.24.0 migration window, the legacy one removed in the next minor.
         /// </summary>
-        SharedMeta.Core.Transport.ClientCapabilities? Capabilities { get; set; }
+        SharedMeta.Core.Transport.ClientSignatureAnnotated? Annotated { get; set; }
 
         /// <summary>
         /// 0.22.0+: Per-entity capability overlay supplied by the server's
@@ -127,7 +130,7 @@ namespace SharedMeta.Core.Network
     {
         /// <summary>
         /// 0.24.0+ Client's local global method index (already translated from server's id
-        /// via <c>ClientCapabilities.ServerToClientMethodIds</c>). Generated broadcast handlers
+        /// via <c>ClientSignatureAnnotated.ServerToClient</c>). Generated broadcast handlers
         /// dispatch on this against <c>GameMethodIds</c> / <c>FrameworkMethodIds</c> constants
         /// — a jump table on <c>ushort</c> instead of string-pair matching. <c>ushort.MaxValue</c>
         /// when the server emitted a method the client doesn't know — handler ignores.

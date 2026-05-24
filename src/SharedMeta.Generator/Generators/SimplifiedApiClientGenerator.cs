@@ -621,19 +621,18 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
                 if (capabilitiesEnabled)
                 {
-                    // 0.22.0 capabilities gate. Short-circuits server-rejected methods before any
-                    // local work or wire round trip. Two layers checked:
-                    //   * session-level _network.Capabilities (signature-level method versioning)
-                    //   * per-entity _network.EntityCapabilities (config-boundary overlay)
-                    // Both are allocation-free on the common path (null / empty lists).
-                    sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(_network.Capabilities, ServiceName, \"{methodAlias}\", {methodVersion})");
+                    // 0.24.0 capabilities gate. Two layers checked:
+                    //   * session-level _network.Annotated.Statuses[methodId] (O(1) array index)
+                    //   * per-entity _network.EntityCapabilities (config-boundary overlay,
+                    //     still by ServiceName — per-entity granularity isn't folded yet).
+                    // Allocation-free on the common path (null annotation, empty entity caps).
+                    var methodIdConst = $"global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}";
+                    sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(_network.Annotated, {methodIdConst})");
                     sb.AppendLine($"                || global::SharedMeta.Core.Transport.CapabilitiesGate.IsServiceRejectedByEntity(_network.EntityCapabilities, ServiceName))");
                     sb.AppendLine($"                throw global::SharedMeta.Core.Transport.CapabilitiesGate.RejectedException(ServiceName, \"{methodAlias}\", {methodVersion});");
-                    // 0.22.0 force-ServerPatch downgrade — server flagged this method (or its whole
-                    // service) as incompatible with optimistic local execution. The generator already
-                    // emits a _ServerPatch variant for every method, so the downgrade is a direct
-                    // route, no extra plumbing needed.
-                    sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsForcedServerPatch(_network.Capabilities, ServiceName, \"{methodAlias}\", {methodVersion})");
+                    // 0.24.0 force-ServerPatch downgrade — server folded service-level rules into
+                    // per-method Statuses, so the session-level check is also a single array index.
+                    sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsForcedServerPatch(_network.Annotated, {methodIdConst})");
                     sb.AppendLine($"                || global::SharedMeta.Core.Transport.CapabilitiesGate.IsServiceForcedServerPatchByEntity(_network.EntityCapabilities, ServiceName))");
                     sb.AppendLine($"                return {methodName}Async_ServerPatch({callArgs});");
                 }
@@ -670,8 +669,9 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
                 if (capabilitiesEnabled)
                 {
-                    // 0.22.0 capabilities gate — same contract as the async overload (session + per-entity).
-                    sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(_network.Capabilities, ServiceName, \"{methodAlias}\", {methodVersion})");
+                    // 0.24.0 capabilities gate — same contract as the async overload (session + per-entity).
+                    var methodIdConst = $"global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}";
+                    sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(_network.Annotated, {methodIdConst})");
                     sb.AppendLine($"                || global::SharedMeta.Core.Transport.CapabilitiesGate.IsServiceRejectedByEntity(_network.EntityCapabilities, ServiceName))");
                     sb.AppendLine($"                throw global::SharedMeta.Core.Transport.CapabilitiesGate.RejectedException(ServiceName, \"{methodAlias}\", {methodVersion});");
                 }

@@ -52,7 +52,7 @@ namespace SharedMeta.Core.Transport
         /// client when <see cref="ConnectionSessionConnectResult.NeedsSignatureRegistration"/>
         /// is true on the previous <see cref="SessionConnectAsync"/> reply. Sends the full
         /// <see cref="MetaClientSignature"/> so the server can compute and persist
-        /// <see cref="ClientCapabilities"/> for this client build.
+        /// <see cref="ClientSignatureAnnotated"/> for this client build.
         /// <para>
         /// Default implementation throws — transports add real impls when wired into the
         /// 0.22.0 negotiation pipeline. A connection that doesn't support negotiation can
@@ -133,6 +133,20 @@ namespace SharedMeta.Core.Transport
         event Action<string>? OnSessionTerminated;
 
         /// <summary>
+        /// 0.24.0+ Fired when the server reports its handler is unbound for this connection
+        /// (typically: SignalR auto-reconnected with a new ConnectionId after a server restart
+        /// that wiped session state). The dispatcher responds by running <c>SessionConnect</c>
+        /// with the cached <c>SessionId</c> + <c>LastAcknowledgedSequence</c>, which both
+        /// re-binds the handler AND re-fetches the signature annotation if the server hash
+        /// changed. Default no-op listener — transports without the protocol leave this null.
+        /// </summary>
+        event Action<string>? OnRequireSessionReconnect
+        {
+            add { /* default: no-op for transports that don't support it */ }
+            remove { /* default: no-op */ }
+        }
+
+        /// <summary>
         /// Fired when the connection is lost.
         /// </summary>
         event Action<TransportDisconnectReason>? OnDisconnected;
@@ -177,11 +191,20 @@ namespace SharedMeta.Core.Transport
         public bool NeedsSignatureRegistration { get; set; }
 
         /// <summary>
-        /// 0.22.0+: Server's compatibility verdict for this client signature. Null when
-        /// negotiation is disabled or when <see cref="NeedsSignatureRegistration"/> is true
-        /// (capabilities will arrive on the phase-2 follow-up).
+        /// 0.24.0+ Server signature hash, ALWAYS populated when the transport supports the
+        /// 0.24.0 handshake. Drives the client-side annotation cache invalidation: client
+        /// compares to <c>cachedAnnotated.ServerSignatureHash</c>; mismatch forces a phase-2
+        /// re-registration even when the server already knew this clientHash.
         /// </summary>
-        public ClientCapabilities? Capabilities { get; set; }
+        public ulong ServerSignatureHash { get; set; }
+
+        /// <summary>
+        /// 0.24.0+ Annotated client signature (verdict + id mapping) — supersedes
+        /// <see cref="Capabilities"/>. Populated when the server already knew this clientHash
+        /// AND its cached annotations are current for the reported
+        /// <see cref="ServerSignatureHash"/>. Null when phase-2 is needed.
+        /// </summary>
+        public ClientSignatureAnnotated? Annotated { get; set; }
     }
 
     /// <summary>

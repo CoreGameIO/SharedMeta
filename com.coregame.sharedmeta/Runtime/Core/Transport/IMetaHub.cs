@@ -14,17 +14,17 @@ namespace SharedMeta.Core.Transport
         /// 0.22.0+: Phase-2 of the compatibility-negotiation handshake. Called when
         /// <see cref="SessionConnectResponse.NeedsSignatureRegistration"/> is true — the
         /// client follows up with the full <see cref="MetaClientSignature"/>, the server
-        /// computes <see cref="ClientCapabilities"/> from it, stores in the signature
-        /// registry keyed by <see cref="MetaClientSignature.SignatureHash"/>, and returns
-        /// the verdict.
+        /// computes <see cref="ClientSignatureAnnotated"/> from it, stores the signature in
+        /// the registry keyed by <see cref="MetaClientSignature.SignatureHash"/>, and returns
+        /// the annotated verdict.
         /// <para>
-        /// Default no-op implementation returns success with empty capabilities — used by
+        /// Default no-op implementation returns success with null annotation — used by
         /// transports that haven't been updated to the 0.22.0 handshake yet and by tests
         /// that don't exercise negotiation.
         /// </para>
         /// </summary>
         Task<RegisterClientSignatureResponse> RegisterClientSignature(RegisterClientSignatureRequest request)
-            => Task.FromResult(new RegisterClientSignatureResponse { Success = true, Capabilities = new ClientCapabilities() });
+            => Task.FromResult(new RegisterClientSignatureResponse { Success = true });
 
         Task<SubscribeResponse> Subscribe(SubscribeRequest request);
         Task<UnsubscribeResponse> Unsubscribe(UnsubscribeRequest request);
@@ -89,5 +89,16 @@ namespace SharedMeta.Core.Transport
 
         Task SessionTerminated(string reason);
         Task EntityDeactivating(string entityId);
+
+        /// <summary>
+        /// 0.24.0+ Server-initiated push: "your session state is lost on the server, please
+        /// re-run SessionConnect to recover". Sent when an unbound MetaConnectionHandler
+        /// (typically: SignalR auto-reconnected with a new ConnectionId after server restart)
+        /// receives RPC/Signal/Subscribe without prior SessionConnect. Distinct from
+        /// <see cref="SessionTerminated"/> — that ends the session permanently; this is a
+        /// recoverable "please re-handshake" prompt. Default no-op for transports that don't
+        /// implement the protocol yet.
+        /// </summary>
+        Task RequireSessionReconnect(string reason) => Task.CompletedTask;
     }
 }

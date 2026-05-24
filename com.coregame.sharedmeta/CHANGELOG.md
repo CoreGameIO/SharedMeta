@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.24.0] - 2026-05-24
+
+Signature handshake redesign: legacy `ClientCapabilities` shape (four parallel lists, alias/version triples per gate check) replaced by a single `ClientSignatureAnnotated` (flat `Statuses[clientMethodId]` + `ServerToClient[serverMethodId]`). Wire-breaking: 0.23.x clients and 0.24.0 servers cannot negotiate.
+
+Highlights:
+- **`ClientSignatureAnnotated` wire shape** — server computes verdicts + id mapping once per `(clientHash × serverHash)`, ships flat arrays. O(1) `CapabilitiesGate.IsRejected(annotated, methodId)` replaces N-list `HashSet<MethodIdentity>.Contains`. Steady-state connect: < 100 B vs ~5 KB in 0.23.x.
+- **Client-side annotation cache** — `IServerAnnotationCache` (in-memory default + Unity PlayerPrefs `SharedMeta.Client.PlayerPrefs.asmdef`). Cache key = `clientHash`; invalidation on `serverHash` mismatch returned by the server on every connect.
+- **`MetaServerSignature.SignatureHash`** — generator emits FNV-1a over server-specific fields (`MinCompatibleVersion`, `GenerateClientApi`, `ConfigTypeFullName`, `ConfigBoundaries`); any change that should invalidate previously-shipped annotations contributes.
+- **Removals** — `ClientCapabilities`, `MethodIdentity`, `SessionConnectRequest.MethodSignatures`, `SessionConnectResponse.SignatureMismatches`, `SignatureValidator` delegate + ctor params, `MetaMethodSignatureValidator` generator emit (~70 LoC dead validator class), `CapabilitiesGate.TailorBroadcastPayload` (no production callers since EntityGrain.SubscriberNeedsPatch took over).
+- **Generator** — `*ApiClient` emits `CapabilitiesGate.IsRejected(_network.Annotated, GameMethodIds.X)` and `IsForcedServerPatch(...)` against the annotated form; legacy alias-based overloads removed.
+
+References:
+- [docs/adr/0.24.0-server-signature-handshake.md](../docs/adr/0.24.0-server-signature-handshake.md) — full design + alternatives considered
+- [SharedMeta-AI.md](SharedMeta-AI.md) — AI-assistant context
+
 ## [0.23.1] - 2026-05-22
 
 First actual release of the 0.23 content. The earlier `v0.23.0` tag was pushed against the v0.22.0 commit by mistake (release prep ran before the wire-refactoring branch was merged) and NuGet/UPM versions are immutable once published — bumped to 0.23.1 to ship the real changes.

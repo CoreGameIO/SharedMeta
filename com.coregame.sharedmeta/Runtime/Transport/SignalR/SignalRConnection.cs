@@ -30,6 +30,7 @@ namespace SharedMeta.Client.Network
 
         public event Action<SessionResponse>? OnBatch;
         public event Action<string>? OnSessionTerminated;
+        public event Action<string>? OnRequireSessionReconnect;
         public event Action<TransportDisconnectReason>? OnDisconnected;
         public event Action? OnReconnecting;
         public event Action? OnReconnected;
@@ -62,6 +63,7 @@ namespace SharedMeta.Client.Network
             _hubConnection.On<SessionResponse>(nameof(IMetaHubClient.ReceiveBroadcast), OnReceiveBroadcast);
             _hubConnection.On<string>(nameof(IMetaHubClient.SessionTerminated), msg => OnSessionTerminated?.Invoke(msg));
             _hubConnection.On<string>(nameof(IMetaHubClient.EntityDeactivating), OnEntityDeactivating);
+            _hubConnection.On<string>(nameof(IMetaHubClient.RequireSessionReconnect), msg => OnRequireSessionReconnect?.Invoke(msg));
 
             // Connection lifecycle events
             _hubConnection.Closed += OnConnectionClosed;
@@ -136,7 +138,8 @@ namespace SharedMeta.Client.Network
                 MinClientVersion = response.MinClientVersion,
                 MaxClientVersion = response.MaxClientVersion,
                 NeedsSignatureRegistration = response.NeedsSignatureRegistration,
-                Capabilities = response.Capabilities,
+                ServerSignatureHash = response.ServerSignatureHash,
+                Annotated = response.Annotated,
             };
         }
 

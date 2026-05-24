@@ -29,6 +29,19 @@ namespace SharedMeta.Server.Core.Transport
         void SendEntityDeactivating(string entityId);
 
         /// <summary>
+        /// 0.24.0+ Notify client that the server-side connection handler has no bound session
+        /// (typically after a server restart that wiped session state, while the underlying
+        /// transport reconnected transparently). The client should treat this as a prompt to
+        /// re-run <c>SessionConnect</c> with the saved <c>SessionId</c> + <c>LastAcknowledgedSequence</c>
+        /// to recover. Distinct from <see cref="SendSessionTerminated"/> — that one is "session
+        /// gone forever, start fresh"; this is "session state lost on the server, please
+        /// re-handshake to recover and resume". Default no-op for transports that haven't
+        /// adopted the protocol yet (HTTP polling default goes through SendSessionTerminated
+        /// as a fallback path).
+        /// </summary>
+        void SendRequireSessionReconnect(string reason) { }
+
+        /// <summary>
         /// Clear all queued data (broadcasts, termination, deactivations).
         /// Called when a new session is established on the same connection,
         /// to prevent stale data from the old session being delivered.
@@ -65,12 +78,13 @@ namespace SharedMeta.Server.Core.Transport
 
         /// <summary>
         /// Phase-2 of compatibility negotiation: accept the client's full
-        /// <see cref="MetaClientSignature"/> and return computed <see cref="ClientCapabilities"/>.
-        /// Default impl returns success with empty caps so transport adapters that haven't
-        /// adopted the new handshake remain compilable.
+        /// <see cref="MetaClientSignature"/> and return the computed
+        /// <see cref="ClientSignatureAnnotated"/>. Default impl returns success with null
+        /// annotation so transport adapters that haven't adopted the new handshake remain
+        /// compilable.
         /// </summary>
         Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(RegisterClientSignatureRequest request)
-            => Task.FromResult(new RegisterClientSignatureResponse { Success = true, Capabilities = new ClientCapabilities() });
+            => Task.FromResult(new RegisterClientSignatureResponse { Success = true });
 
         /// <summary>
         /// Subscribe to an entity.
@@ -133,14 +147,6 @@ namespace SharedMeta.Server.Core.Transport
         /// </summary>
         Task OnDisconnectedAsync();
     }
-
-    /// <summary>
-    /// Delegate for validating client method signatures.
-    /// Returns null if all signatures match, or list of mismatches.
-    /// </summary>
-    /// <param name="clientSignatures">Client's method signature hashes.</param>
-    /// <returns>List of mismatches, or null if all match.</returns>
-    public delegate List<string>? SignatureValidator(Dictionary<string, ulong> clientSignatures);
 
     /// <summary>
     /// Factory for creating connection handlers.

@@ -28,7 +28,7 @@ namespace SharedMeta.Core.Packets
         // ── Call identification (what was invoked) ────────────────────────
         // 0.24.0+ Wire identification is purely the server-side global method index
         // (stable per server build). The client translates to its own local id via
-        // ClientCapabilities.ServerToClientMethodIds at session-connect time. The
+        // ClientSignatureAnnotated.ServerToClient at session-connect time. The
         // legacy ServiceName/MethodName/MethodVersion strings were removed from the
         // wire — id slots 0/1/2 are intentionally vacated (never reuse them for new
         // fields; old recorded broadcasts may still carry data there).

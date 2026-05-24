@@ -17,10 +17,11 @@ namespace SharedMeta.Server.Core.Grains
         /// Subscribes to this entity. Returns the current snapshot.
         /// <para>
         /// <paramref name="clientSignatureHash"/> = caller's negotiated signature hash (0 =
-        /// no negotiation, no caps). The grain resolves <see cref="ClientCapabilities"/>
-        /// locally via <see cref="IClientSignatureRegistry.TryGetCapabilitiesAsync"/> and
-        /// refcounts force-patch contributions so subsequent dispatches activate patch
-        /// tracking when needed.
+        /// no negotiation, no annotation). The grain resolves
+        /// <see cref="ClientSignatureAnnotated"/> locally via
+        /// <see cref="IClientSignatureRegistry.TryGetAnnotatedAsync"/> and refcounts
+        /// force-patch contributions so subsequent dispatches activate patch tracking
+        /// when needed.
         /// </para>
         /// </summary>
         Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null, ulong clientSignatureHash = 0);
