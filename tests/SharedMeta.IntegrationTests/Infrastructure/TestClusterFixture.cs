@@ -70,7 +70,6 @@ public class TestClusterFixture : IAsyncLifetime
             GrainFactory,
             new GeneratedEntityGrainResolver(),
             NullLoggerFactory.Instance,
-            MetaMethodSignatureValidator.ValidateClientSignatures,
             transportOptions,
             transportOptions != null ? Serializer : null,
             schemaRegistry: null,

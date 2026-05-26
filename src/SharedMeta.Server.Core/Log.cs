@@ -183,6 +183,9 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Information, Message = "Handshake[{PlayerId}] phase-2 REGISTER: clientHash=0x{ClientHash:X16} ({KnownMethodsCount} methods) -> serverHash=0x{ServerHash:X16}, annotation: {RejectedCount} rejected, {ForcePatchCount} force-patch, {ServerOnlyCount} server-only (client doesn't know)")]
     public static partial void HandshakeSignatureRegistered(this ILogger logger, string playerId, ulong clientHash, int knownMethodsCount, ulong serverHash, int rejectedCount, int forcePatchCount, int serverOnlyCount);
 
+    [LoggerMessage(Level = LogLevel.Information, Message = "Session not connected on connection {ConnectionId} ({Operation}) — pushed RequireSessionReconnect, expecting client to re-handshake")]
+    public static partial void HandshakeSessionRecoveryPrompted(this ILogger logger, string connectionId, string operation);
+
     [LoggerMessage(Level = LogLevel.Error, Message = "SessionConnect error")]
     public static partial void HandlerSessionConnectError(this ILogger logger, Exception ex);
 

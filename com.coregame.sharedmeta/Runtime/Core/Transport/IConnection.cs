@@ -45,7 +45,7 @@ namespace SharedMeta.Core.Transport
         /// for per-client config branch resolution (<c>[MetaConfigVersion]</c> rules) and for
         /// the strict server-side contract that arrives in upcoming releases.
         /// </summary>
-        Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0);
+        Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0, SessionConnectMode mode = SessionConnectMode.StartNew, long lastCompletedRequestId = 0, List<SubscriptionClaim>? claimedSubscriptions = null);
 
         /// <summary>
         /// 0.22.0+: Phase-2 of the compatibility handshake. Called by the higher-level
@@ -138,13 +138,10 @@ namespace SharedMeta.Core.Transport
         /// that wiped session state). The dispatcher responds by running <c>SessionConnect</c>
         /// with the cached <c>SessionId</c> + <c>LastAcknowledgedSequence</c>, which both
         /// re-binds the handler AND re-fetches the signature annotation if the server hash
-        /// changed. Default no-op listener — transports without the protocol leave this null.
+        /// changed. Required on every transport — implementers without server-side support
+        /// declare the event but never raise it.
         /// </summary>
-        event Action<string>? OnRequireSessionReconnect
-        {
-            add { /* default: no-op for transports that don't support it */ }
-            remove { /* default: no-op */ }
-        }
+        event Action<string>? OnRequireSessionReconnect;
 
         /// <summary>
         /// Fired when the connection is lost.
@@ -174,7 +171,13 @@ namespace SharedMeta.Core.Transport
         public bool IsNewSession { get; set; }
         public List<SessionResponse> MissedPackets { get; set; } = new();
         public long ServerTimeTicks { get; set; }
-        public List<ResubscribedEntityInfo>? ResubscribedEntities { get; set; }
+        /// <summary>
+        /// 0.24.0+ Per-claim subscription verdicts produced on Resume. Replaces the older
+        /// server-driven <c>ResubscribedEntities</c> flow — client now claims subscriptions via
+        /// <c>SessionConnectRequest.ClaimedSubscriptions</c>, server returns one
+        /// <see cref="SubscriptionResult"/> per claim.
+        /// </summary>
+        public List<SubscriptionResult>? Subscriptions { get; set; }
         /// <summary>Server version reported during handshake. Null if server does not send version info.</summary>
         public string? ServerVersion { get; set; }
         /// <summary>Minimum client version required. Populated only when connection was rejected due to version mismatch.</summary>
@@ -205,6 +208,14 @@ namespace SharedMeta.Core.Transport
         /// <see cref="ServerSignatureHash"/>. Null when phase-2 is needed.
         /// </summary>
         public ClientSignatureAnnotated? Annotated { get; set; }
+
+        /// <summary>
+        /// 0.24.0+ Structured rejection reason when <see cref="Success"/> is false. See
+        /// <see cref="SessionConnectFailureReason"/>. Client uses this to decide between
+        /// retry-as-StartNew (<see cref="SessionConnectFailureReason.SessionUnknown"/>) and
+        /// surfacing the failure to game-level logic.
+        /// </summary>
+        public SessionConnectFailureReason FailureReason { get; set; }
     }
 
     /// <summary>
@@ -218,6 +229,13 @@ namespace SharedMeta.Core.Transport
         public byte[]? OptimisticRandomBytes { get; set; }
         public byte[]? NamedRandomsBytes { get; set; }
         public MetaConfigVersion ConfigVersion { get; set; }
+        /// <summary>
+        /// 0.24.0+ Current entity sequence number at subscribe time. Client seeds its per-entity
+        /// seq tracker with this value so the next Resume's <c>SubscriptionClaim.LastKnownEntitySequence</c>
+        /// is accurate even if no broadcast has yet arrived for this entity (rare timing window
+        /// between Subscribe and the first broadcast).
+        /// </summary>
+        public long EntitySequenceNumber { get; set; }
         /// <summary>
         /// 0.22.0+: structured rejection details when Success=false and the failure was a
         /// compatibility mismatch (e.g. <c>[MetaStateVersion(..., Breaking = true)]</c> gate).

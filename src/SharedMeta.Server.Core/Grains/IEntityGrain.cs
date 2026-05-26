@@ -27,6 +27,25 @@ namespace SharedMeta.Server.Core.Grains
         Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null, ulong clientSignatureHash = 0);
 
         /// <summary>
+        /// 0.24.0+ Client-driven reclaim path. The client claims a previously-held subscription
+        /// (entity id + last-known entity sequence number) on Resume. The grain verifies its
+        /// persisted state and returns one of three verdicts:
+        /// <list type="bullet">
+        /// <item><c>Continued</c> — subscriber present, sequence numbers match, signature hash
+        /// unchanged. No state shipped; client keeps its current view, server refreshes the live
+        /// <see cref="ISessionManagerReference"/> binding so broadcasts resume flowing.</item>
+        /// <item><c>Refreshed</c> — subscriber missing (eviction / never persisted) or sequence
+        /// gap detected. Behaves like a full <see cref="SubscribeAsync"/>: migration, schema
+        /// gate, force-patch refcounts, snapshot. State + randoms + config version returned.</item>
+        /// <item><c>Failed</c> — access policy denied or schema incompatible. Reported with
+        /// <c>FailureReason</c>; client surfaces to game via IMetaSubscriptionRecoveryHandler.</item>
+        /// </list>
+        /// Replaces the older server-driven re-subscribe-from-persisted-state flow; subscriptions
+        /// are now owned by the client (single source of truth), the entity grain is the verifier.
+        /// </summary>
+        Task<SubscriptionResult> ReclaimSubscriptionAsync(string playerId, ISessionManagerReference sessionManager, long lastKnownEntitySequence, string? clientVersion = null, ulong clientSignatureHash = 0);
+
+        /// <summary>
         /// Unsubscribe from this entity.
         /// </summary>
         Task UnsubscribeAsync(string playerId);

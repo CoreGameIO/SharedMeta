@@ -28,6 +28,7 @@ namespace SharedMeta.Transport.SignalR
         // Events for async operations (broadcasts from server)
         public event Action<SessionResponse>? OnBatch;
         public event Action<string>? OnSessionTerminated;
+        public event Action<string>? OnRequireSessionReconnect;       // server-side SignalR transport — used as INTERNAL test harness too
         public event Action<TransportDisconnectReason>? OnDisconnected;
         public event Action? OnReconnecting;
         public event Action? OnReconnected;
@@ -111,7 +112,7 @@ namespace SharedMeta.Transport.SignalR
         /// <summary>
         /// Connect to a session on the server.
         /// </summary>
-        public async Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0)
+        public async Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0, SessionConnectMode mode = SessionConnectMode.StartNew, long lastCompletedRequestId = 0, List<SubscriptionClaim>? claimedSubscriptions = null)
         {
             MetaLog.Debug($"[SignalR] SessionConnectAsync: playerId={playerId}");
             EnsureConnected();
@@ -122,7 +123,10 @@ namespace SharedMeta.Transport.SignalR
                 SessionId = sessionId,
                 LastAcknowledgedSequence = lastAcknowledgedSequence,
                 ClientVersion = clientAppVersion,
-                ClientSignatureHash = clientSignatureHash
+                ClientSignatureHash = clientSignatureHash,
+                Mode = mode,
+                LastCompletedRequestId = lastCompletedRequestId,
+                ClaimedSubscriptions = claimedSubscriptions,
             });
             MetaLog.Debug($"[SignalR] SessionConnectAsync response: Success={response.Success}");
 
@@ -134,10 +138,11 @@ namespace SharedMeta.Transport.SignalR
                 IsNewSession = response.IsNewSession,
                 MissedPackets = response.MissedPackets,
                 ServerTimeTicks = response.ServerTimeTicks,
-                ResubscribedEntities = response.ResubscribedEntities,
+                Subscriptions = response.Subscriptions,
                 NeedsSignatureRegistration = response.NeedsSignatureRegistration,
                 ServerSignatureHash = response.ServerSignatureHash,
                 Annotated = response.Annotated,
+                FailureReason = response.FailureReason,
             };
         }
 
@@ -162,6 +167,7 @@ namespace SharedMeta.Transport.SignalR
                 OptimisticRandomBytes = response.OptimisticRandomBytes,
                 NamedRandomsBytes = response.NamedRandomsBytes,
                 ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion, response.ConfigPatchVersion),
+                EntitySequenceNumber = response.EntitySequenceNumber,
                 FeatureRequirement = response.FeatureRequirement,
                 AugmentedCapabilities = response.AugmentedCapabilities,
             };
@@ -324,3 +330,5 @@ namespace SharedMeta.Transport.SignalR
         }
     }
 }
+
+

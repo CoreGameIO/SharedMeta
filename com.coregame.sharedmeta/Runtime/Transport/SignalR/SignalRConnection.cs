@@ -112,7 +112,7 @@ namespace SharedMeta.Client.Network
         }
 
         public async Task<ConnectionSessionConnectResult> SessionConnectAsync(
-            string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0)
+            string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0, SessionConnectMode mode = SessionConnectMode.StartNew, long lastCompletedRequestId = 0, List<SubscriptionClaim>? claimedSubscriptions = null)
         {
             EnsureConnected();
 
@@ -122,7 +122,10 @@ namespace SharedMeta.Client.Network
                 SessionId = sessionId,
                 LastAcknowledgedSequence = lastAcknowledgedSequence,
                 ClientVersion = clientAppVersion ?? _clientVersion,
-                ClientSignatureHash = clientSignatureHash
+                ClientSignatureHash = clientSignatureHash,
+                Mode = mode,
+                LastCompletedRequestId = lastCompletedRequestId,
+                ClaimedSubscriptions = claimedSubscriptions,
             });
 
             return new ConnectionSessionConnectResult
@@ -133,13 +136,14 @@ namespace SharedMeta.Client.Network
                 IsNewSession = response.IsNewSession,
                 MissedPackets = response.MissedPackets ?? new List<SessionResponse>(),
                 ServerTimeTicks = response.ServerTimeTicks,
-                ResubscribedEntities = response.ResubscribedEntities,
+                Subscriptions = response.Subscriptions,
                 ServerVersion = response.ServerVersion,
                 MinClientVersion = response.MinClientVersion,
                 MaxClientVersion = response.MaxClientVersion,
                 NeedsSignatureRegistration = response.NeedsSignatureRegistration,
                 ServerSignatureHash = response.ServerSignatureHash,
                 Annotated = response.Annotated,
+                FailureReason = response.FailureReason,
             };
         }
 
@@ -177,6 +181,7 @@ namespace SharedMeta.Client.Network
                 OptimisticRandomBytes = response.OptimisticRandomBytes,
                 NamedRandomsBytes = response.NamedRandomsBytes,
                 ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion, response.ConfigPatchVersion),
+                EntitySequenceNumber = response.EntitySequenceNumber,
                 FeatureRequirement = response.FeatureRequirement,
                 AugmentedCapabilities = response.AugmentedCapabilities,
             };
@@ -326,3 +331,5 @@ namespace SharedMeta.Client.Network
         }
     }
 }
+
+

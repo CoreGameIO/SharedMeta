@@ -638,52 +638,52 @@ namespace SharedMeta.Client
         #endregion
 
         /// <summary>
-        /// Refresh entity states from server-provided resubscription data.
-        /// Called after transport reconnect when the server re-subscribed entities automatically.
-        /// Updates the shared container (so every API client sees the new state) and notifies
-        /// each registered API client via its StateRefresher for OnStateRefreshed-style hooks.
+        /// 0.24.0+ Apply per-entity subscription verdicts produced by the server on Resume.
+        /// <list type="bullet">
+        /// <item><see cref="Core.Transport.SubscriptionStatus.Continued"/> — no state shipped,
+        /// nothing to do; the local view is already current.</item>
+        /// <item><see cref="Core.Transport.SubscriptionStatus.Refreshed"/> — full snapshot
+        /// attached; replace the container's state, update optimistic / named randoms, and
+        /// fire StateRefresher hooks on every registered API client.</item>
+        /// <item><see cref="Core.Transport.SubscriptionStatus.Failed"/> — not applied here;
+        /// reaches this method only if SessionManagerGrain didn't abort the Resume (it should
+        /// have, but defensive). Logged and skipped; game-level recovery handles it.</item>
+        /// </list>
         /// </summary>
-        public void RefreshEntityStates(List<Core.Transport.ResubscribedEntityInfo> resubscribedEntities)
+        public void ApplySubscriptionVerdicts(List<Core.Transport.SubscriptionResult> verdicts)
         {
             lock (_lock)
             {
-                foreach (var entity in resubscribedEntities)
+                foreach (var v in verdicts)
                 {
-                    if (!_connections.TryGetValue(entity.EntityId, out var connection))
+                    if (v.Status == Core.Transport.SubscriptionStatus.Continued)
+                        continue; // server confirmed our view; nothing to apply
+
+                    if (v.Status == Core.Transport.SubscriptionStatus.Failed)
+                        continue; // defensive — Resume should have aborted upstream
+
+                    if (!_connections.TryGetValue(v.EntityId, out var connection))
                         continue;
 
-                    // Deserialize fresh state from server
-                    if (entity.StateBytes is { Length: > 0 })
+                    if (v.StateBytes is not { Length: > 0 })
+                        continue; // Refreshed without bytes — malformed, skip
+
+                    var newState = _serializer.Unpack(connection.StateType, v.StateBytes);
+                    if (newState == null) continue;
+
+                    connection.StateContainer.ReplaceObject(newState);
+
+                    if (v.OptimisticRandomBytes is { Length: > 0 })
+                        connection.OptimisticRandom = _serializer.Unpack<MetaRandom>(v.OptimisticRandomBytes);
+
+                    if (v.NamedRandomsBytes is { Length: > 0 } nrBytes)
+                        connection.NamedRandoms = _serializer.Unpack<MetaRandom[]>(nrBytes);
+
+                    foreach (var (clientType, apiClient) in connection.ApiClients)
                     {
-                        var newState = _serializer.Unpack(connection.StateType, entity.StateBytes);
-                        if (newState != null)
+                        if (_serviceConfigs.TryGetValue(clientType, out var config))
                         {
-                            // Replace through the container — this bumps MutationCount and fires
-                            // OnMutated, which the API clients are subscribed to.
-                            connection.StateContainer.ReplaceObject(newState);
-
-                            // Update optimistic random
-                            if (entity.OptimisticRandomBytes is { Length: > 0 })
-                            {
-                                connection.OptimisticRandom = _serializer.Unpack<MetaRandom>(entity.OptimisticRandomBytes);
-                            }
-
-                            // Update named randoms
-                            if (entity.NamedRandomsBytes is { Length: > 0 } nrBytes)
-                            {
-                                connection.NamedRandoms = _serializer.Unpack<MetaRandom[]>(nrBytes);
-                            }
-
-                            // Refresh state in existing API clients via generated StateRefresher.
-                            // This fires OnStateRefreshed event so client code can update Views;
-                            // the underlying state field was already swapped through the container.
-                            foreach (var (clientType, apiClient) in connection.ApiClients)
-                            {
-                                if (_serviceConfigs.TryGetValue(clientType, out var config))
-                                {
-                                    config.StateRefresher?.Invoke(apiClient, newState, connection.OptimisticRandom, connection.NamedRandoms);
-                                }
-                            }
+                            config.StateRefresher?.Invoke(apiClient, newState, connection.OptimisticRandom, connection.NamedRandoms);
                         }
                     }
                 }

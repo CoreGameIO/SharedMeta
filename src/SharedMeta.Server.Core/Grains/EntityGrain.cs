@@ -169,6 +169,37 @@ namespace SharedMeta.Server.Core.Grains
                 _logger.SubscriberRestored(entityId, playerId);
             }
 
+            // 0.24.0+ Rehydrate force-patch refcounts for surviving subscribers using their
+            // persisted ClientSignatureHash. Each subscriber's force-patch contributions get
+            // re-applied to the grain-local counters, so the next HandleCallAsync activates
+            // patch tracking on the correct method set without needing the client to re-subscribe.
+            // Skips subscribers whose ClientSignatureHash is 0 (legacy / pre-0.24 persisted state)
+            // — they'll be repopulated naturally on their next Subscribe.
+            if (_signatureRegistry != null && _serverSignature != null)
+            {
+                foreach (var (playerId, sub) in state.Subscribers)
+                {
+                    if (sub.ClientSignatureHash == 0) continue;
+                    var annotated = await _signatureRegistry.TryGetAnnotatedAsync(sub.ClientSignatureHash);
+                    var clientToServer = await _signatureRegistry.TryGetClientToServerMapAsync(sub.ClientSignatureHash);
+                    if (annotated == null || clientToServer == null) continue;
+                    EnsureForcePatchRefs();
+                    var contributions = new List<ushort>();
+                    var statuses = annotated.Statuses;
+                    int max = statuses.Length < clientToServer.Length ? statuses.Length : clientToServer.Length;
+                    for (ushort clientId = 0; clientId < max; clientId++)
+                    {
+                        if (statuses[clientId] != MethodStatus.ForceServerPatch) continue;
+                        var serverId = clientToServer[clientId];
+                        if (serverId == ushort.MaxValue) continue;
+                        contributions.Add(serverId);
+                        IncrementMethodRef(serverId);
+                    }
+                    if (contributions.Count > 0)
+                        _subscriberForcePatchContributions[playerId] = contributions;
+                }
+            }
+
             // Create and initialize provider with persisted state
             _provider = _providerFactory.Create();
 
@@ -489,7 +520,9 @@ namespace SharedMeta.Server.Core.Grains
             state.Subscribers[playerId] = new PersistedSubscriberInfo
             {
                 PlayerId = playerId,
-                LastActiveUtc = DateTime.UtcNow
+                LastActiveUtc = DateTime.UtcNow,
+                ClientVersion = clientVersion,
+                ClientSignatureHash = clientSignatureHash,
             };
             _subscriberRefs[playerId] = sessionManager;
 
@@ -587,6 +620,84 @@ namespace SharedMeta.Server.Core.Grains
             {
                 __m.MarkError();
                 throw;
+            }
+        }
+
+        public async Task<SubscriptionResult> ReclaimSubscriptionAsync(
+            string playerId,
+            ISessionManagerReference sessionManager,
+            long lastKnownEntitySequence,
+            string? clientVersion = null,
+            ulong clientSignatureHash = 0)
+        {
+            try
+            {
+                var state = _persistentState.State;
+
+                // Cheap path: grain already knows this subscriber, no broadcast gap, signature
+                // hash unchanged — refresh the live ref + liveness ticker, no state shipped.
+                // Migration / schema gate / config-pin are no-ops here because they were already
+                // resolved on the original Subscribe with the same clientVersion+signatureHash.
+                if (state.Subscribers.TryGetValue(playerId, out var existing)
+                    && state.EntitySequenceNumber == lastKnownEntitySequence
+                    && existing.ClientSignatureHash == clientSignatureHash)
+                {
+                    existing.LastActiveUtc = DateTime.UtcNow;
+                    _subscriberRefs[playerId] = sessionManager;
+                    return new SubscriptionResult
+                    {
+                        EntityId = _entityId,
+                        Status = SubscriptionStatus.Continued,
+                        EntitySequenceNumber = state.EntitySequenceNumber,
+                    };
+                }
+
+                // Full path — either no record of this subscriber, sequence gap, or signature
+                // change. Run the canonical Subscribe to re-establish access policy, migration,
+                // config pin, force-patch refs, snapshot. Caller treats the result as Refreshed.
+                var snapshot = await SubscribeAsync(playerId, sessionManager, clientVersion, clientSignatureHash);
+                return new SubscriptionResult
+                {
+                    EntityId = _entityId,
+                    Status = SubscriptionStatus.Refreshed,
+                    EntitySequenceNumber = snapshot.CurrentSequenceNumber,
+                    StateBytes = snapshot.StateBytes.IsEmpty ? null : snapshot.StateBytes.ToArray(),
+                    OptimisticRandomBytes = snapshot.OptimisticRandomBytes,
+                    NamedRandomsBytes = snapshot.NamedRandomsBytes,
+                    ConfigMajorVersion = snapshot.ConfigVersion.Major,
+                    ConfigMinorVersion = snapshot.ConfigVersion.Minor,
+                    ConfigPatchVersion = snapshot.ConfigVersion.Patch,
+                };
+            }
+            catch (EntityAccessDeniedException ex)
+            {
+                _logger.LogWarning("[EntityGrain] Reclaim denied: entity={EntityId} player={PlayerId} reason={Reason}", _entityId, playerId, ex.Message);
+                return new SubscriptionResult
+                {
+                    EntityId = _entityId,
+                    Status = SubscriptionStatus.Failed,
+                    FailureReason = ex.Message,
+                };
+            }
+            catch (IncompatibleFeatureException ex)
+            {
+                _logger.LogWarning("[EntityGrain] Reclaim schema-incompatible: entity={EntityId} player={PlayerId} reason={Reason}", _entityId, playerId, ex.Requirement.Reason);
+                return new SubscriptionResult
+                {
+                    EntityId = _entityId,
+                    Status = SubscriptionStatus.Failed,
+                    FailureReason = $"Schema incompatible: {ex.Requirement.Reason}",
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[EntityGrain] Reclaim unexpected error: entity={EntityId} player={PlayerId}", _entityId, playerId);
+                return new SubscriptionResult
+                {
+                    EntityId = _entityId,
+                    Status = SubscriptionStatus.Failed,
+                    FailureReason = $"Reclaim failed: {ex.Message}",
+                };
             }
         }
 

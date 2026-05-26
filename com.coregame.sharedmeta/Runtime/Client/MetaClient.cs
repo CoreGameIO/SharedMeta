@@ -68,6 +68,18 @@ namespace SharedMeta.Client
         /// (Hash=0). Required when the host configures the registry to reject Hash=0.
         /// </summary>
         public SharedMeta.Core.Transport.MetaClientSignature? ClientSignature { get; set; }
+
+        /// <summary>
+        /// 0.24.0+ Optional game-level callback invoked when the server reports the session
+        /// is lost (typical cause: server restart cleared session state while the transport
+        /// remained connected, then a Resume attempt returned
+        /// <see cref="SharedMeta.Core.Transport.SessionConnectFailureReason.SessionUnknown"/>).
+        /// Default <c>null</c> → dispatcher uses <see cref="DefaultSessionRecoveryHandler"/>
+        /// which returns <see cref="SessionRecoveryAction.Reconnect"/> (re-subscribe to known
+        /// entities on a fresh session). Override to plug in custom UX (e.g. "you've been
+        /// disconnected, tap to reconnect").
+        /// </summary>
+        public IMetaSessionRecoveryHandler? SessionRecoveryHandler { get; set; }
     }
 
     /// <summary>
@@ -138,11 +150,12 @@ namespace SharedMeta.Client
                 SessionHealthListener = options.SessionHealth,
                 ConnectionHealthListener = options.ConnectionHealth,
                 ClientSignature = options.ClientSignature,
+                SessionRecoveryHandler = options.SessionRecoveryHandler ?? new DefaultSessionRecoveryHandler(),
             };
             if (options.ConnectionHealthOptions != null)
                 _dispatcher.ConnectionHealthOptions = options.ConnectionHealthOptions;
             _dispatcher.OnSessionSuperseded += reason => OnSessionSuperseded?.Invoke(reason);
-            _dispatcher.OnEntitiesResubscribed += entities => _resolver!.RefreshEntityStates(entities);
+            _dispatcher.OnSubscriptionsReclaimed += verdicts => _resolver!.ApplySubscriptionVerdicts(verdicts);
 
             _resolver = new MetaServiceResolver(
                 async (entityId, stateTypeName) =>
@@ -196,7 +209,10 @@ namespace SharedMeta.Client
                 await Connection.ConnectAsync();
 
                 _dispatcher.PlayerId = PlayerId;
-                var sessionResult = await _dispatcher.ConnectSessionAsync(Guid.NewGuid(), 0, ClientAppVersion);
+                // 0.24.0+ Fresh app launch — explicit StartNew; server allocates the SessionId.
+                // Pass Guid.Empty + Mode=StartNew so dispatcher's default-mode logic doesn't
+                // misclassify the seed Guid as a resume attempt.
+                var sessionResult = await _dispatcher.ConnectSessionAsync(Guid.Empty, 0, ClientAppVersion, SessionConnectMode.StartNew);
 
                 if (!sessionResult.Success)
                 {

@@ -31,8 +31,20 @@ namespace SharedMeta.Core.Transport
         /// <summary>Current server UTC ticks for clock synchronization.</summary>
         [Id(5), Key(5)] public long ServerTimeTicks { get; set; }
 
-        /// <summary>Entities re-subscribed by server after transport disconnect recovery.</summary>
-        [Id(6), Key(6)] public List<ResubscribedEntityInfo>? ResubscribedEntities { get; set; }
+        /// <summary>
+        /// 0.24.0+ Per-claim subscription verdicts. Replaces the older server-driven
+        /// <c>ResubscribedEntities</c> flow — client owns the subscription list and claims it
+        /// on Resume via <c>SessionConnectRequest.ClaimedSubscriptions</c>.
+        /// </summary>
+        [Id(6), Key(6)] public List<SubscriptionResult>? Subscriptions { get; set; }
+
+        /// <summary>
+        /// 0.24.0+ Structured rejection reason when <see cref="Success"/> is false. See
+        /// <see cref="SessionConnectFailureReason"/>. Drives client-side recovery routing:
+        /// <see cref="SessionConnectFailureReason.SessionUnknown"/> fires
+        /// <c>IMetaSessionRecoveryHandler.OnSessionLostAsync</c>.
+        /// </summary>
+        [Id(7), Key(7)] public SessionConnectFailureReason FailureReason { get; set; }
     }
 
     /// <summary>
@@ -177,7 +189,7 @@ namespace SharedMeta.Core.Transport
         /// Cached by the dispatcher so auto-reconnect re-uses the same version.
         /// </param>
         /// <returns>Connection result with missed packets if resuming.</returns>
-        Task<SessionConnectResult> ConnectSessionAsync(Guid sessionId, long lastAcknowledgedSequence, string? clientAppVersion = null);
+        Task<SessionConnectResult> ConnectSessionAsync(Guid sessionId, long lastAcknowledgedSequence, string? clientAppVersion = null, SessionConnectMode? mode = null);
 
         /// <summary>
         /// Acknowledge that all broadcasts up to this sequence have been processed.

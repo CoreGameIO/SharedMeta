@@ -169,6 +169,30 @@ namespace SharedMeta.Server.Core.Session
             _count = 0;
             _lastDispatchedRequestId = 0;
         }
+
+        /// <summary>
+        /// 0.24.0+ Restore the dispatch baseline after persistent-state rehydration. Used by
+        /// <c>SessionManagerGrain.OnActivateAsync</c> to pick up where the previous activation
+        /// left off — without this, the buffer starts at 0 and any incoming RPC with id
+        /// greater than 0 would be classified as <see cref="RequestPosition.OutOfOrder"/>
+        /// (stash-and-wait), even though the client has long since moved past that point.
+        /// <para>
+        /// Also honours an externally-reported "client says it's seen results up to X" via the
+        /// Resume-side <c>SessionConnectRequest.LastCompletedRequestId</c> — the grain takes
+        /// the max of persisted and reported to skip over a gap where the server lost some
+        /// responses that the client did receive (idempotency cache eviction or crash before
+        /// persistence write).
+        /// </para>
+        /// <para>
+        /// Idempotent: only advances forward — passing a smaller value than current is a no-op
+        /// so concurrent callers can race without rewind.
+        /// </para>
+        /// </summary>
+        public void AdvanceLastDispatched(long requestId)
+        {
+            if (requestId > _lastDispatchedRequestId)
+                _lastDispatchedRequestId = requestId;
+        }
     }
 
     /// <summary>

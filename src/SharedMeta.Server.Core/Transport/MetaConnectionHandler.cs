@@ -228,7 +228,23 @@ namespace SharedMeta.Server.Core.Transport
                 // GrainFactory.GetGrain (which reparses the grain type name on every call).
                 var grain = _grainFactory.GetGrain<ISessionManager>(request.PlayerId);
                 _sessionManagerGrain = grain;
-                var result = await grain.ConnectAsync(request.SessionId ?? Guid.Empty, request.LastAcknowledgedSequence);
+
+                // 0.24.0+ Honor explicit SessionConnectMode. StartNew → allocate a fresh
+                // SessionId (handler-side, grain doesn't synthesize ids). Resume → forward
+                // the client-supplied SessionId for grain-side match; on mismatch the grain
+                // returns SessionUnknown, which we propagate as wire FailureReason so the
+                // client fires its IMetaSessionRecoveryHandler.
+                Guid effectiveSessionId = request.Mode == SessionConnectMode.StartNew
+                    ? Guid.NewGuid()
+                    : request.SessionId ?? Guid.Empty;
+                var result = await grain.ConnectAsync(
+                    effectiveSessionId,
+                    request.LastAcknowledgedSequence,
+                    request.Mode,
+                    request.LastCompletedRequestId,
+                    request.ClaimedSubscriptions,
+                    request.ClientVersion,
+                    request.ClientSignatureHash);
 
                 if (result.Success)
                 {
@@ -299,20 +315,11 @@ namespace SharedMeta.Server.Core.Transport
                     NeedsSignatureRegistration = needsSignatureRegistration,
                     ServerSignatureHash = serverSignatureHash,
                     Annotated = annotated,
-                    ResubscribedEntities = result.ResubscribedEntities?.Select(e => new ResubscribedEntityInfo
-                    {
-                        EntityId = e.EntityId,
-                        // ROM → byte[] on the wire boundary. Cold path (session reconnect);
-                        // wire-flipping ResubscribedEntityInfo.StateBytes to ROM is a separate
-                        // change that touches Unity clients.
-                        StateBytes = e.StateBytes.IsEmpty ? System.Array.Empty<byte>() : e.StateBytes.ToArray(),
-                        EntitySequenceNumber = e.EntitySequenceNumber,
-                        OptimisticRandomBytes = e.OptimisticRandomBytes,
-                        NamedRandomsBytes = e.NamedRandomsBytes,
-                        ConfigMajorVersion = e.ConfigVersion.Major,
-                        ConfigMinorVersion = e.ConfigVersion.Minor,
-                        ConfigPatchVersion = e.ConfigVersion.Patch
-                    }).ToList()
+                    FailureReason = result.FailureReason,
+                    // 0.24.0+ Server-driven ResubscribedEntities replaced by client-driven
+                    // Subscriptions[] — grain produces these directly from the per-claim
+                    // ReclaimSubscriptionAsync verdicts; no further DTO mapping needed.
+                    Subscriptions = result.Subscriptions,
                 };
                 return __scResponse;
             }
@@ -391,7 +398,8 @@ namespace SharedMeta.Server.Core.Transport
         {
             try
             {
-                EnsureSessionConnected();
+                if (!TryEnsureSessionConnected("Subscribe"))
+                    return new SubscribeResponse { Success = false, Error = "Session not connected — please re-handshake." };
 
                 if (string.IsNullOrEmpty(request.EntityId))
                 {
@@ -437,7 +445,8 @@ namespace SharedMeta.Server.Core.Transport
         {
             try
             {
-                EnsureSessionConnected();
+                if (!TryEnsureSessionConnected("Unsubscribe"))
+                    return new UnsubscribeResponse { Success = false, Error = "Session not connected — please re-handshake." };
 
                 if (!string.IsNullOrEmpty(request.EntityId))
                 {
@@ -465,7 +474,11 @@ namespace SharedMeta.Server.Core.Transport
             using var __m = SharedMeta.Server.Core.Telemetry.ServerRpcTotalMeasurement.Start(request.MethodId);
             try
             {
-                EnsureSessionConnected();
+                if (!TryEnsureSessionConnected("RpcCall"))
+                {
+                    __m.MarkRejected();
+                    return SessionResponse.ForError("Session not connected — please re-handshake.");
+                }
 
                 if (string.IsNullOrEmpty(request.EntityId))
                 {
@@ -578,7 +591,8 @@ namespace SharedMeta.Server.Core.Transport
         {
             try
             {
-                EnsureSessionConnected();
+                if (!TryEnsureSessionConnected("QueryCall"))
+                    return new QueryCallResponse { Error = "Session not connected — please re-handshake." };
 
                 if (string.IsNullOrEmpty(request.EntityId))
                     return new QueryCallResponse { Error = "EntityId is required" };
@@ -627,7 +641,7 @@ namespace SharedMeta.Server.Core.Transport
             // Signal is fire-and-forget: validation errors are logged, never surfaced to caller.
             try
             {
-                EnsureSessionConnected();
+                if (!TryEnsureSessionConnected("SignalCall")) return;
 
                 if (string.IsNullOrEmpty(request.EntityId))
                 {
@@ -690,7 +704,8 @@ namespace SharedMeta.Server.Core.Transport
         {
             try
             {
-                EnsureSessionConnected();
+                if (!TryEnsureSessionConnected("AcknowledgeSequence"))
+                    return new AcknowledgeResponse { Success = false, Error = "Session not connected — please re-handshake." };
 
                 var grain = SessionManagerGrainOrThrow;
                 await grain.AcknowledgeSequenceAsync(request.SequenceNumber);
@@ -721,7 +736,8 @@ namespace SharedMeta.Server.Core.Transport
                 if (_transportOptions?.DesyncReportingEnabled != true)
                     return new DesyncReportResponse { Status = "disabled" };
 
-                EnsureSessionConnected();
+                if (!TryEnsureSessionConnected("DesyncReport"))
+                    return new DesyncReportResponse { Status = "rejected", Error = "Session not connected — please re-handshake." };
 
                 var kind = (DesyncMismatchKind)request.MismatchKind;
                 // Backwards compat: legacy clients that only set ClientPatchBytes had no MismatchKind.
@@ -920,7 +936,10 @@ namespace SharedMeta.Server.Core.Transport
                 try
                 {
                     var grain = SessionManagerGrainOrThrow;
-                    await grain.GracefulDisconnectAsync();
+                    // 0.24.0+ Pass SessionId so grain ignores stale graceful disconnects
+                    // from superseded handlers (old client's late teardown after a fresh
+                    // session has bound on the same player grain).
+                    await grain.GracefulDisconnectAsync(SessionId);
                 }
                 catch (Exception ex)
                 {
@@ -995,19 +1014,19 @@ namespace SharedMeta.Server.Core.Transport
 
         #endregion
 
-        private void EnsureSessionConnected()
+        // 0.24.0+ Structured "session not connected" check. Returns true when the handler
+        // is bound; otherwise pushes the recovery prompt to the client and returns false so
+        // the caller bails out gracefully. Replaces the older throw-then-log-ERR flow which
+        // produced operator-noise spam during server restarts (every in-flight RPC/Signal
+        // landed on the unbound handler and logged ERR; now they all early-return one INFO
+        // line each, and the client recovers off the single push notification).
+        private bool TryEnsureSessionConnected(string operation)
         {
-            if (!IsSessionConnected)
-            {
-                // 0.24.0+ Side-channel the recovery prompt to the client before throwing.
-                // Typical cause: SignalR auto-reconnected (or fresh negotiate) onto a new
-                // server-side handler that never saw SessionConnect. Pushing the notification
-                // lets the client run a re-handshake (re-binds the session AND re-fetches
-                // the annotation if the server signature changed). The throw still bubbles
-                // to the transport layer for logging, but the client recovers asynchronously.
-                _broadcastSender.SendRequireSessionReconnect("Server-side session handler is unbound — re-run SessionConnect to recover.");
-                throw new InvalidOperationException("Session not connected. Call SessionConnect first.");
-            }
+            if (IsSessionConnected) return true;
+            _broadcastSender.SendRequireSessionReconnect(
+                "Server-side session handler is unbound — re-run SessionConnect to recover.");
+            _logger.HandshakeSessionRecoveryPrompted(_connectionId, operation);
+            return false;
         }
 
         public void Dispose()

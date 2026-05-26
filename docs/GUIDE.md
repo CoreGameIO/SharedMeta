@@ -3514,48 +3514,48 @@ public DispatchResult DispatchCall(string serviceName, string methodName, byte[]
 }
 ```
 
-### Method Signature Validation (generated)
+### Signature Negotiation (0.22.0+, redesigned in 0.24.0)
 
-The generator produces `MetaMethodSignatureValidator` with FNV-1a 64-bit hashes of every method's canonical signature. Validation runs at connection time — if client and server signatures don't match, the connection is rejected with a list of mismatches.
+The generator emits a `MetaClientSignature` constant containing every `[MetaMethod]` the client knows about. On `SessionConnect` the client sends just its `ClientSignatureHash` (8 bytes). The server side:
 
-**Canonical signature format:**
-```
-{ServiceName}.{MethodAlias}({ParamType1},{ParamType2},...)->{ReturnType}
-```
+1. Looks up the hash in its silo-local cache. **Known + same `ServerSignatureHash` as client's cached entry** → ships back a `ClientSignatureAnnotated` (verdict + id-translation array) directly on the SessionConnect response. **Unknown OR server redeployed** → returns `NeedsSignatureRegistration = true`, prompting the client to follow up with `RegisterClientSignatureRequest` carrying the full signature; server computes the annotation, persists the signature, returns the annotation on the phase-2 response.
+2. The annotation lives on the silo-local cache for the lifetime of the silo; the underlying signature is persisted in `IClientSignatureGrain` keyed by hash and survives silo restarts.
 
-Examples:
-```
-IProfileService.SetName(string)->void
-ICardGameService.PlayCard(Card)->bool
-IExpeditionService.Move(int,int)->MoveResult
-```
-
-**What triggers a signature mismatch:**
-- Changing a method's parameter types or order
-- Changing a method's return type
-- Renaming a method (without updating `Alias`)
-- Adding/removing parameters
-
-**What does NOT trigger a mismatch:**
-- Adding new methods (server has extra methods — OK)
-- Changing execution mode (`[MetaMethod(Mode = ...)]`)
-- Changing `Version`, `SkipServerOnFalse`, `ForcePersist`
-
-**Generated validator (server-side):**
+**`ClientSignatureAnnotated` wire shape:**
 ```csharp
-public static class MetaMethodSignatureValidator
+public partial class ClientSignatureAnnotated
 {
-    public static readonly Dictionary<string, ulong> ServerSignatures = new()
-    {
-        { "IProfileService.SetName", 0xA1B2C3D4E5F60718UL },
-        { "ICardGameService.PlayCard", 0x1234567890ABCDEFUL },
-        // ... all methods
-    };
-
-    // Returns null if valid, list of mismatch descriptions otherwise
-    public static List<string>? ValidateClientSignatures(
-        Dictionary<string, ulong> clientSignatures);
+    public ulong ClientSignatureHash;
+    public ulong ServerSignatureHash;
+    public ushort[] ServerToClient;        // index = serverMethodId, value = clientMethodId
+    public MethodStatus[] Statuses;        // index = clientMethodId
 }
+
+public enum MethodStatus : byte { Ok, ForceServerPatch, Rejected }
+```
+
+**Client-side cache** — `IServerAnnotationCache` (in-memory default; Unity `PlayerPrefsServerAnnotationCache` for persistence across app launches). Cache key = `clientHash`; invalidation when the `ServerSignatureHash` returned on a fresh connect diverges from the cached entry's stored hash.
+
+**What goes into the signature hashes:**
+- `MetaClientSignature.SignatureHash` = FNV-1a over canonical `{ServiceName}.{MethodAlias}@{Version}#{ArgHash}` lines, sorted.
+- `MetaServerSignature.SignatureHash` = same, plus per-method server-only fields (`MinCompatibleVersion`, `GenerateClientApi`, `ConfigTypeFullName`) and `[MetaConfigStructureBoundary]` declarations.
+
+**What the per-method `Statuses[clientId]` verdict can be:**
+- `Ok` (default) — call proceeds normally on the wire.
+- `ForceServerPatch` — server-side body diverged enough that optimistic local execution would desync; client downgrades to ServerPatch.
+- `Rejected` — method missing on the server (or flagged `GenerateClientApi = false`, or its `ArgHash` doesn't match, or the client's `Version` is below the server's `MinCompatibleVersion`); client gate throws `IncompatibleFeatureException` locally without going to the wire.
+
+**Tracing the handshake:** both sides log INFO entries at every phase transition. Run client + server with logging enabled to verify they understand each other:
+```
+# server-side
+Handshake[playerX] phase-1 HIT: clientHash=0x..., serverHash=0x..., annotation: 47 methods (0 rejected, 0 force-patch)
+Handshake[playerX] phase-1 MISS: clientHash=0x... unknown, serverHash=0x...; needs phase-2 registration
+Handshake[playerX] phase-2 REGISTER: clientHash=0x... (47 methods) -> serverHash=0x..., annotation: 0 rejected, 0 force-patch, 3 server-only
+
+# client-side
+[ClientDispatcher] Handshake phase-1 HIT: clientHash=0x..., serverHash=0x..., annotation: ...
+[ClientDispatcher] Handshake phase-1 MISS: ...; sending phase-2 RegisterClientSignature
+[ClientDispatcher] Handshake phase-2 REGISTERED: clientHash=0x... (47 methods) -> serverHash=0x..., annotation: ...
 ```
 
 ### Method Version (`MetaMethod.Version`)

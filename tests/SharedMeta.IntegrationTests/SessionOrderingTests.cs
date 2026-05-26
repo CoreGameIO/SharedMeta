@@ -48,7 +48,7 @@ public class SessionOrderingTests
         Assert.Equal(1, state.Operations[0].Value);
         Assert.Equal(2, state.Operations[1].Value);
 
-        await grain.GracefulDisconnectAsync();
+        await grain.GracefulDisconnectAsync(sessionId);
     }
 
     [Fact(Timeout = 60_000)]
@@ -72,7 +72,7 @@ public class SessionOrderingTests
         var resp1 = await grain.SendToEntityAsync(entityId, requestId: 1, BuildAddCall(1), 0, sessionId);
         Assert.Equal(3, resp1.Operations.Count(o => o.RequestId > 0));
 
-        await grain.GracefulDisconnectAsync();
+        await grain.GracefulDisconnectAsync(sessionId);
     }
 
     [Fact(Timeout = 60_000)]
@@ -128,7 +128,7 @@ public class SessionOrderingTests
         // Recover by sending req=1 — drains all stashed
         await grain.SendToEntityAsync(entityId, requestId: 1, BuildAddCall(1), 0, sessionId);
 
-        await grain.GracefulDisconnectAsync();
+        await grain.GracefulDisconnectAsync(sessionId);
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -141,7 +141,7 @@ public class SessionOrderingTests
         var grain = _fixture.GrainFactory.GetGrain<ISessionManager>(playerId);
 
         var sessionId = Guid.NewGuid();
-        var connect = await grain.ConnectAsync(sessionId, 0);
+        var connect = await grain.ConnectAsync(sessionId, 0, SharedMeta.Core.Transport.SessionConnectMode.StartNew, 0, null, null, 0UL);
         Assert.True(connect.Success);
 
         var observer = new TestObserver();
@@ -234,3 +234,4 @@ public class SessionOrderingTests
         }
     }
 }
+

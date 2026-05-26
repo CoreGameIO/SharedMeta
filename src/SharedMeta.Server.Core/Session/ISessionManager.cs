@@ -12,14 +12,47 @@ namespace SharedMeta.Server.Core.Session
     {
         /// <summary>
         /// Connect to the session manager.
-        /// If sessionId matches current session, returns missed packets.
-        /// If sessionId is old (superseded), returns error.
-        /// If sessionId is new, starts a new session.
+        /// <para>
+        /// 0.24.0+ Explicit mode:
+        /// <list type="bullet">
+        ///   <item><see cref="SessionConnectMode.StartNew"/> — always create a fresh session.
+        ///     Supersedes any current session (clears observers, unsubscribes from entities,
+        ///     resets sequence numbers). <paramref name="sessionId"/> is the new id to assign
+        ///     (handler allocates via <c>Guid.NewGuid()</c>). <c>IsNewSession=true</c>.</item>
+        ///   <item><see cref="SessionConnectMode.Resume"/> — re-bind to an existing session.
+        ///     If <paramref name="sessionId"/> matches the current one, replays missed packets
+        ///     and returns <c>IsNewSession=false</c>. Otherwise returns
+        ///     <c>Success=false</c> with
+        ///     <see cref="SessionConnectionResult.FailureReason"/> =
+        ///     <see cref="SessionConnectFailureReason.SessionUnknown"/> — the client decides
+        ///     whether to retry with StartNew.</item>
+        /// </list>
+        /// </para>
         /// </summary>
-        /// <param name="sessionId">The client's session ID.</param>
+        /// <param name="sessionId">The client's session ID (Resume) or the allocated new id (StartNew).</param>
         /// <param name="lastAcknowledgedSequence">The last sequence number the client received.</param>
-        /// <returns>Connection result with missed packets or error.</returns>
-        Task<SessionConnectionResult> ConnectAsync(Guid sessionId, long lastAcknowledgedSequence);
+        /// <param name="mode">0.24.0+ Connect intent.</param>
+        /// <param name="lastCompletedRequestId">0.24.0+ The highest RequestId the client has fully completed (response delivered + resolved).
+        /// Used on Resume to advance the server's RPC ordering baseline past any responses the server lost (eviction/crash before persistence flush)
+        /// but the client did receive — prevents the next-new RequestId from being misclassified as OutOfOrder and stashed forever.</param>
+        /// <param name="claimedSubscriptions">0.24.0+ Client-owned subscription list to reclaim on Resume.
+        /// Each claim names an entity (id + state type) and the client's last-known entity sequence number;
+        /// the grain calls <c>EntityGrain.ReclaimSubscriptionAsync</c> per claim to verify (Continued / Refreshed / Failed).
+        /// Null/empty for StartNew or for first-ever connect. If any single claim returns Failed,
+        /// the whole Resume aborts with <c>SubscriptionReclaimFailed</c>.</param>
+        /// <param name="clientVersion">0.24.0+ Forwarded to <c>ReclaimSubscriptionAsync</c> so the entity grain
+        /// can drive per-client config branch resolution + force-patch refcount setup on the Refreshed path.</param>
+        /// <param name="clientSignatureHash">0.24.0+ Forwarded to <c>ReclaimSubscriptionAsync</c> for signature-aware
+        /// reclaim. Mismatch with the entity grain's stored hash triggers Refreshed (force-patch refs recompute).</param>
+        /// <returns>Connection result with missed packets, subscription verdicts, new id, or structured failure.</returns>
+        Task<SessionConnectionResult> ConnectAsync(
+            Guid sessionId,
+            long lastAcknowledgedSequence,
+            SessionConnectMode mode,
+            long lastCompletedRequestId,
+            IReadOnlyList<SubscriptionClaim>? claimedSubscriptions,
+            string? clientVersion,
+            ulong clientSignatureHash);
 
         /// <summary>
         /// Set the observer for receiving notifications.
@@ -37,8 +70,15 @@ namespace SharedMeta.Server.Core.Session
         /// Graceful disconnect: client explicitly leaves.
         /// Full cleanup — clear observer, unsubscribe from all entities, reset session.
         /// Client cannot resume this session.
+        /// <para>
+        /// 0.24.0+ The caller supplies <paramref name="sessionId"/> so the grain can guard
+        /// against stale graceful-disconnect messages from a superseded handler (typical
+        /// cause: old SignalR connection's tear-down arrives at the grain after a fresh
+        /// session has been established on a new connection). Mismatched sessionId →
+        /// the grain logs and skips cleanup, leaving the current session intact.
+        /// </para>
         /// </summary>
-        Task GracefulDisconnectAsync();
+        Task GracefulDisconnectAsync(Guid sessionId);
 
         /// <summary>
         /// Transport disconnected (timeout/network loss).

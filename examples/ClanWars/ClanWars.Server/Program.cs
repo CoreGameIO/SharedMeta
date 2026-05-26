@@ -191,7 +191,6 @@ builder.Services.AddSingleton<IMetaConnectionHandlerFactory>(sp =>
     var serverSignature = sp.GetService<SharedMeta.Core.Transport.MetaServerSignature>();
     return new MetaConnectionHandlerFactory(
         grainFactory, entityGrainResolver, loggerFactory,
-        signatureValidator: null,
         transportOptions: transportOptions,
         serializer: serializer,
         versionPolicy: versionPolicy,

@@ -40,4 +40,19 @@ public partial class PersistedSubscriberInfo
 {
     [Id(0), Key(0), MemoryPackOrder(0)] public string PlayerId { get; set; } = "";
     [Id(1), Key(1), MemoryPackOrder(1)] public DateTime LastActiveUtc { get; set; }
+
+    /// <summary>
+    /// 0.24.0+ Subscriber's app version captured at Subscribe time. Persisted so the grain
+    /// can re-evaluate <see cref="ConfigBoundaryEvaluator"/> per-entity force-patch services
+    /// after reactivation without waiting for the next Subscribe call.
+    /// </summary>
+    [Id(2), Key(2), MemoryPackOrder(2)] public string? ClientVersion { get; set; }
+
+    /// <summary>
+    /// 0.24.0+ Subscriber's negotiated client signature hash. Persisted so the grain can
+    /// resolve the same <see cref="SharedMeta.Core.Transport.ClientSignatureAnnotated"/>
+    /// via <c>IClientSignatureRegistry.TryGetAnnotatedAsync</c> after reactivation, and
+    /// rebuild force-patch refcounts without round-tripping to the client.
+    /// </summary>
+    [Id(3), Key(3), MemoryPackOrder(3)] public ulong ClientSignatureHash { get; set; }
 }

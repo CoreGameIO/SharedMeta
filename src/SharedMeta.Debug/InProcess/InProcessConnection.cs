@@ -25,6 +25,7 @@ namespace SharedMeta.Debug.InProcess
 
         public event Action<SessionResponse>? OnBatch;
         public event Action<string>? OnSessionTerminated;
+        public event Action<string>? OnRequireSessionReconnect;       // InProcess: server pushes via SendRequireSessionReconnect → wired through InProcessBroadcastSender
         public event Action<TransportDisconnectReason>? OnDisconnected;
         #pragma warning disable 67 // Event is never used
         public event Action? OnReconnecting;
@@ -67,7 +68,7 @@ namespace SharedMeta.Debug.InProcess
             MetaLog.Debug($"[InProcess] Disconnected: {_connectionId}");
         }
 
-        public async Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0)
+        public async Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0, SessionConnectMode mode = SessionConnectMode.StartNew, long lastCompletedRequestId = 0, List<SubscriptionClaim>? claimedSubscriptions = null)
         {
             EnsureConnected();
 
@@ -77,7 +78,10 @@ namespace SharedMeta.Debug.InProcess
                 SessionId = sessionId,
                 LastAcknowledgedSequence = lastAcknowledgedSequence,
                 ClientVersion = clientAppVersion,
-                ClientSignatureHash = clientSignatureHash
+                ClientSignatureHash = clientSignatureHash,
+                Mode = mode,
+                LastCompletedRequestId = lastCompletedRequestId,
+                ClaimedSubscriptions = claimedSubscriptions,
             });
 
             // Missed packets carry pool-backed payloads that the server retains in
@@ -99,10 +103,11 @@ namespace SharedMeta.Debug.InProcess
                 IsNewSession = response.IsNewSession,
                 MissedPackets = missedCopies,
                 ServerTimeTicks = response.ServerTimeTicks,
-                ResubscribedEntities = response.ResubscribedEntities,
+                Subscriptions = response.Subscriptions,
                 NeedsSignatureRegistration = response.NeedsSignatureRegistration,
                 ServerSignatureHash = response.ServerSignatureHash,
                 Annotated = response.Annotated,
+                FailureReason = response.FailureReason,
             };
         }
 
@@ -124,6 +129,7 @@ namespace SharedMeta.Debug.InProcess
                 OptimisticRandomBytes = response.OptimisticRandomBytes,
                 NamedRandomsBytes = response.NamedRandomsBytes,
                 ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion, response.ConfigPatchVersion),
+                EntitySequenceNumber = response.EntitySequenceNumber,
                 FeatureRequirement = response.FeatureRequirement,
                 AugmentedCapabilities = response.AugmentedCapabilities,
             };
@@ -287,3 +293,5 @@ namespace SharedMeta.Debug.InProcess
         }
     }
 }
+
+
