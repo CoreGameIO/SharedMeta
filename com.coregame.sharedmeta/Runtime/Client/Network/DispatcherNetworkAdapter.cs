@@ -83,11 +83,9 @@ namespace SharedMeta.Client.Network
 
         // SessionOp.OpBytes carries the pre-serialized MetaOperation produced by the server.
         // We deserialize once and project into the in-memory NetworkBroadcast / CallResponse
-        // shapes the API client expects. OpBytes is a PooledPayload; on the client side the
-        // Memory is byte[]-backed (transport copied bytes before delivery — see InProcess /
-        // network transport contracts).
+        // shapes the API client expects. OpBytes is a ReadOnlyMemory<byte>.
         private MetaOperation UnpackOp(SessionOp sessionOp)
-            => sessionOp.OpBytes.Length > 0 ? _serializer.Unpack<MetaOperation>(sessionOp.OpBytes.Memory) : new MetaOperation();
+            => sessionOp.OpBytes.Length > 0 ? _serializer.Unpack<MetaOperation>(sessionOp.OpBytes) : new MetaOperation();
 
         // 0.24.0+ Translate server's global method index → client's local index using the
         // per-signature map shipped in ClientSignatureAnnotated.ServerToClient. When the map

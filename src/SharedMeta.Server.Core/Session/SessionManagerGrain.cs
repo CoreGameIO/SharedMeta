@@ -4,7 +4,6 @@ using Orleans;
 using Orleans.Runtime;
 using Orleans.Utilities;
 using SharedMeta.Core;
-using SharedMeta.Core.Memory;
 using SharedMeta.Core.Packets;
 using SharedMeta.Core.Transport;
 using SharedMeta.Server;
@@ -162,34 +161,17 @@ namespace SharedMeta.Server.Core.Session
             ILogger<SessionManagerGrain> logger,
             IEntityGrainResolver entityGrainResolver,
             [PersistentState("sessionMgr", "Default")] IPersistentState<SessionManagerGrainState> persistentState,
-            IOptions<SessionManagerOptions>? options = null,
-            SharedMeta.Server.Core.Memory.PooledPayloadRegistry? pooledPayloadRegistry = null)
+            IOptions<SessionManagerOptions>? options = null)
         {
             _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
             _persistentState = persistentState ?? throw new ArgumentNullException(nameof(persistentState));
             _options = options?.Value ?? new SessionManagerOptions();
-            _pooledPayloadRegistry = pooledPayloadRegistry;
             _observerManager = new ObserverManager<ISessionObserver>(TimeSpan.FromMinutes(2), _logger);
             _playerId = this.GetPrimaryKeyString();
             _orderingBuffer = new RpcOrderingBuffer<StashedRpcCall>(Math.Max(1, _options.StashCapacity));
             _onBatchInvoker = NotifyOnBatch;  // one delegate alloc per grain lifetime
-        }
-
-        // Silo-scoped pool registry — when wired, broadcast/result PooledPayload tokens arriving
-        // from EntityGrain are released here after their bytes are copied into the SessionResponse.
-        // Null when host hasn't opted into the pool path (legacy byte[]-allocating builds).
-        private readonly SharedMeta.Server.Core.Memory.PooledPayloadRegistry? _pooledPayloadRegistry;
-
-        // Release a PooledPayload token after extracting its bytes. Ref==0 is the byte[]
-        // fallback wrapper (no slot to release); foreign-silo refs are deferred until the
-        // cross-silo decrement protocol lands (next iteration).
-        private void ReleasePoolToken(SharedMeta.Core.Memory.PooledPayload payload)
-        {
-            if (payload.Ref == 0 || _pooledPayloadRegistry == null) return;
-            if (payload.SiloId != _pooledPayloadRegistry.SiloId) return;
-            _pooledPayloadRegistry.Release(payload);
         }
 
         // Delegate target for ObserverManager.Notify — reads _pendingNotifyResponse set by
@@ -807,7 +789,7 @@ namespace SharedMeta.Server.Core.Session
                                 EntityId = entityId,
                                 RequestId = requestId,
                                 Error = "Request was processed by a previous server instance — result no longer available",
-                                OpBytes = PooledPayload.Empty,
+                                OpBytes = ReadOnlyMemory<byte>.Empty,
                             }
                         },
                         ServerTimeTicks = DateTime.UtcNow.Ticks,
@@ -854,7 +836,7 @@ namespace SharedMeta.Server.Core.Session
                                 EntityId = stashed.EntityId,
                                 RequestId = stashed.RequestId,
                                 Error = $"Not subscribed to entity {stashed.EntityId}",
-                                OpBytes = PooledPayload.Empty,
+                                OpBytes = ReadOnlyMemory<byte>.Empty,
                             });
                             continue;
                         }
@@ -1180,16 +1162,14 @@ namespace SharedMeta.Server.Core.Session
                 if (state.HeldBroadcasts.TryGetValue(entitySequenceNumber, out var prior)
                     && !ReferenceEquals(prior, CrossCallSlotMarker))
                 {
-                    ReleasePayloadIfLocal(prior.OpBytes);
+                    // ROM-backed by GC byte[] — no explicit release.
                 }
                 state.HeldBroadcasts[entitySequenceNumber] = broadcast;
             }
             else
             {
                 _logger.BroadcastDuplicate(_playerId, entitySequenceNumber, expectedNext);
-                // Drop the duplicate AND its pool ref — EntityGrain IncrementRef'd us as a
-                // consumer, no one else will Release for this entity-sequence position.
-                ReleasePayloadIfLocal(broadcast.OpBytes);
+                // Drop the duplicate — bytes are GC-managed.
             }
 
             // Flush all buffered operations as one batch to the client
@@ -1301,15 +1281,13 @@ namespace SharedMeta.Server.Core.Session
                     if (state.HeldBroadcasts.TryGetValue(b.EntitySequenceNumber, out var prior)
                         && !ReferenceEquals(prior, CrossCallSlotMarker))
                     {
-                        ReleasePayloadIfLocal(prior.OpBytes);
+                        // ROM-backed by GC byte[] — no explicit release.
                     }
                     state.HeldBroadcasts[b.EntitySequenceNumber] = b.Broadcast;
                 }
                 else
                 {
-                    // Duplicate / old — EntityGrain IncrementRef'd us as a consumer but we're
-                    // dropping it. Release here so the slot can return to the pool.
-                    ReleasePayloadIfLocal(b.Broadcast.OpBytes);
+                    // Duplicate / old — bytes are GC-managed, no explicit release.
                 }
             }
 
@@ -1492,7 +1470,7 @@ namespace SharedMeta.Server.Core.Session
             {
                 if (_pendingPackets[i].SequenceNumber <= acknowledgedSequence)
                 {
-                    ReleasePacketPoolTokens(_pendingPackets[i]);
+                    // ROM-backed by GC byte[] — eviction just drops the reference.
                     _pendingPackets.RemoveAt(i);
                     removed++;
                 }
@@ -1501,101 +1479,15 @@ namespace SharedMeta.Server.Core.Session
                 _logger.PacketsCleanedBySeq(removed, acknowledgedSequence);
         }
 
-        // Release all PooledPayload tokens that the SessionResponse's SessionOps hold a
-        // ref-count share on. Called whenever a pending packet is evicted (acknowledgment,
-        // overflow trim, session reset / supersede). Network transports embed the bytes via
-        // wire serialization before the ack arrives, so by the time evict fires it's safe
-        // to return the pool slots.
-        private void ReleasePacketPoolTokens(SessionResponse response)
-        {
-            if (_pooledPayloadRegistry == null) return;
-            var ops = response.Operations;
-            if (ops == null) return;
-            for (int i = 0; i < ops.Count; i++)
-            {
-                var op = ops[i];
-                if (op.OpBytes.Ref == 0 || op.OpBytes.SiloId != _pooledPayloadRegistry.SiloId) continue;
-                _pooledPayloadRegistry.Release(op.OpBytes);
-                op.OpBytes = default;
-                ops[i] = op;
-            }
-        }
-
-        private void ReleaseAndClearPendingPackets()
-        {
-            if (_pendingPackets.Count == 0) return;
-            // Snapshot + clear FIRST so a re-entrant call (or an exception during release)
-            // never sees the same packet twice. The OpBytes-clearing inside
-            // ReleasePacketPoolTokens defends against in-snapshot duplicates.
-            var snapshot = _pendingPackets.ToArray();
-            _pendingPackets.Clear();
-            for (int i = 0; i < snapshot.Length; i++)
-                ReleasePacketPoolTokens(snapshot[i]);
-        }
-
-        // Release pool refs held by DeferredResponse.Result.OpBytes before dropping the list.
-        // A plain .Clear() leaks the slot share — DeferredResponse outlives a single RPC frame
-        // and the OpBytes is acquired upstream in EntityGrain's response path.
-        private void ReleaseAndClearDeferredResponses()
-        {
-            if (_deferredResponses.Count == 0) return;
-            if (_pooledPayloadRegistry != null)
-            {
-                for (int i = 0; i < _deferredResponses.Count; i++)
-                {
-                    var op = _deferredResponses[i].Result.OpBytes;
-                    if (op.Ref != 0 && op.SiloId == _pooledPayloadRegistry.SiloId)
-                        _pooledPayloadRegistry.Release(op);
-                }
-            }
-            _deferredResponses.Clear();
-        }
-
-        // Release pool refs held by queued broadcasts before dropping the list. RPC reset
-        // (line 717 / 741) historically called .Clear() unconditionally — that leaked the
-        // EntityGrain-side IncrementRef share for any broadcasts that never made it into a
-        // flushed SessionResponse.
-        private void ReleaseAndClearRpcBroadcastQueue()
-        {
-            if (_rpcBroadcastQueue.Count == 0) return;
-            if (_pooledPayloadRegistry != null)
-            {
-                for (int i = 0; i < _rpcBroadcastQueue.Count; i++)
-                {
-                    var op = _rpcBroadcastQueue[i].Broadcast.OpBytes;
-                    if (op.Ref != 0 && op.SiloId == _pooledPayloadRegistry.SiloId)
-                        _pooledPayloadRegistry.Release(op);
-                }
-            }
-            _rpcBroadcastQueue.Clear();
-        }
-
-        // Release a single PooledPayload — null/Ref==0/cross-silo are silently skipped, the same
-        // tolerance ReleasePacketPoolTokens uses. Centralized so individual leak-prone sites
-        // (broadcast duplicates, HeldBroadcasts drain on entity-state clear) stay one-liners.
-        private void ReleasePayloadIfLocal(PooledPayload payload)
-        {
-            if (_pooledPayloadRegistry == null) return;
-            if (payload.Ref == 0 || payload.SiloId != _pooledPayloadRegistry.SiloId) return;
-            _pooledPayloadRegistry.Release(payload);
-        }
-
-        // Walk HeldBroadcasts on every EntityOrderingState and release their pool refs before
-        // dropping the dictionary. _entityStates.Clear() alone leaks because each HeldBroadcasts
-        // entry carries an OpBytes ref that no one else holds.
+        // Pool ref-count machinery was removed in the PooledPayload → ROM<byte> refactor.
+        // OpBytes is now GC-backed; eviction just drops references and GC reclaims naturally.
+        private void ReleaseAndClearPendingPackets() => _pendingPackets.Clear();
+        private void ReleaseAndClearDeferredResponses() => _deferredResponses.Clear();
+        private void ReleaseAndClearRpcBroadcastQueue() => _rpcBroadcastQueue.Clear();
         private void ReleaseAndClearEntityStates()
         {
-            if (_entityStates.Count == 0) return;
             foreach (var state in _entityStates.Values)
-            {
-                foreach (var held in state.HeldBroadcasts.Values)
-                {
-                    // CrossCallSlotMarker is a sentinel without a real payload — skip.
-                    if (ReferenceEquals(held, CrossCallSlotMarker)) continue;
-                    ReleasePayloadIfLocal(held.OpBytes);
-                }
                 state.HeldBroadcasts.Clear();
-            }
             _entityStates.Clear();
         }
 
@@ -1693,7 +1585,7 @@ namespace SharedMeta.Server.Core.Session
             {
                 var toRemove = _pendingPackets.Count - MaxPendingPackets / 2;
                 for (int i = 0; i < toRemove; i++)
-                    ReleasePacketPoolTokens(_pendingPackets[i]);
+                    // ROM-backed by GC byte[] — eviction just drops the reference.
                 _pendingPackets.RemoveRange(0, toRemove);
                 _logger.PacketsCleanedByCount(toRemove);
             }

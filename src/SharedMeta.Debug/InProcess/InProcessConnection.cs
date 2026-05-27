@@ -233,29 +233,8 @@ namespace SharedMeta.Debug.InProcess
         private static SessionResponse CopyPooledBytesForWire(SessionResponse src)
         {
             if (src == null) return src!;
-            var srcOps = src.Operations;
-            List<SessionOp>? newOps = null;
-            if (srcOps != null)
-            {
-                newOps = new List<SessionOp>(srcOps.Count);
-                for (int i = 0; i < srcOps.Count; i++)
-                {
-                    var op = srcOps[i];
-                    if (op.OpBytes.Ref != 0 && !op.OpBytes.Memory.IsEmpty)
-                    {
-                        var copy = op.OpBytes.Memory.ToArray();
-                        op.OpBytes = new SharedMeta.Core.Memory.PooledPayload(copy, 0);
-                    }
-                    newOps.Add(op);
-                }
-            }
-            return new SessionResponse
-            {
-                SequenceNumber = src.SequenceNumber,
-                Operations = newOps,
-                ServerTimeTicks = src.ServerTimeTicks,
-                Error = src.Error,
-            };
+            // OpBytes is now plain ROM<byte> over GC byte[]; no pool refs to materialize.
+            return src;
         }
 
         /// <summary>

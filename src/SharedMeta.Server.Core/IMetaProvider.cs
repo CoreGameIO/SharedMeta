@@ -4,12 +4,10 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Orleans;
 using SharedMeta.Core;
-using SharedMeta.Core.Memory;
 using SharedMeta.Core.Packets;
 using SharedMeta.Core.Transport;
 using SharedMeta.Server;
 using SharedMeta.Server.Core.Grains;
-using SharedMeta.Server.Core.Memory;
 
 namespace SharedMeta.Server.Core
 {
@@ -35,25 +33,13 @@ namespace SharedMeta.Server.Core
         /// Packed list of MetaRandom in attribute declaration order. Null = no named randoms persisted yet.
         /// </summary>
         byte[]? NamedRandomsBytes => null;
-
-        /// <summary>
-        /// Per-silo pool that backs broadcast payloads produced by this provider. Callers that
-        /// receive a <see cref="HandleCallResult"/> or <see cref="HandleEventResult"/> with a
-        /// non-default <c>Owned*</c> token are responsible for invoking <c>Release</c> here once
-        /// the corresponding bytes have crossed any grain boundary (Orleans deep-copies on the
-        /// hop). Null when the host has not wired the registry — providers fall back to the
-        /// pre-pool serializer path.
-        /// </summary>
-        PooledPayloadRegistry? Registry => null;
     }
 
     /// <summary>
-    /// Result of handling an RPC call. All payload fields are <see cref="ReadOnlyMemory{T}"/>
-    /// slices into pool-rented buffers owned by the provider; the underlying pool slots stay
-    /// alive across the provider→grain boundary. EntityGrain wraps the outgoing payloads into
-    /// <see cref="PooledPayload"/>-typed wire fields by calling
-    /// <c>TakeOutgoing*</c> on <see cref="MetaProviderBase{TState}"/> — that transfer hands
-    /// ownership off to whoever ships the bytes (receiver releases when done).
+    /// Result of handling an RPC call. Payload fields are <see cref="ReadOnlyMemory{T}"/>
+    /// over GC-managed byte[] (fresh allocation per RPC via <c>PackForExternalUsage</c>).
+    /// Orleans honors class-level <c>[Immutable]</c> markers on the wrapping wire DTOs
+    /// (EntityCallResult, EntityBroadcast) so in-silo hops share by reference, not deep-copy.
     /// </summary>
     public readonly struct HandleCallResult
     {

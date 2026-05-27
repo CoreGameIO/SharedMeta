@@ -567,7 +567,7 @@ namespace SharedMeta.Server.Core.Transport
                     {
                         if (op.RequestId == request.RequestId && op.OpBytes.Length > 0)
                         {
-                            var meta = _serializer.Unpack<MetaOperation>(op.OpBytes.Memory);
+                            var meta = _serializer.Unpack<MetaOperation>(op.OpBytes);
                             if (meta != null && !meta.PatchBytes.IsEmpty)
                             {
                                 CachePatch(request.EntityId, resolvedService, resolvedMethod, meta.PatchBytes);

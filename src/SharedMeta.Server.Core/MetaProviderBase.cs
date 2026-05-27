@@ -3,7 +3,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using SharedMeta.Core;
 using SharedMeta.Core.Logging;
-using SharedMeta.Core.Memory;
 using SharedMeta.Core.Network;
 using SharedMeta.Core.Packets;
 using SharedMeta.Core.Patch;
@@ -83,30 +82,6 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     private static ReadOnlyMemory<byte> PackBytes(IMetaSerializer serializer, MetaOperation op)
     {
         return serializer.PackForExternalUsage(op);
-    }
-
-    /// <summary>
-    /// Serialize <paramref name="op"/> into a pool-rented buffer when the silo-scoped
-    /// <see cref="PooledPayloadRegistry"/> is wired; otherwise serialize via the byte[]
-    /// fallback and wrap the result as a Ref=0 <see cref="PooledPayload"/> so callers can
-    /// treat both paths uniformly (Ref=0 means "no slot to release"; GC reclaims the byte[]).
-    /// Returns <c>(Bytes, Owned)</c>: <c>Bytes</c> is <c>Owned.Memory</c>, exposed separately
-    /// so call sites that only need the ROM (state-bytes carrier, error-response) don't have
-    /// to peek into the struct.
-    /// </summary>
-    private (ReadOnlyMemory<byte> Bytes, PooledPayload Owned) PackBroadcastVariant(MetaOperation op)
-    {
-        var registry = Context.Registry;
-        // PooledPayloadOptions.UsePoolPath gates whether outgoing serialization rents a pool
-        // slot (ref-counted fan-out) or allocates a fresh byte[] (Ref=0, GC-managed). Default
-        // OFF; hosts opt in via services.Configure<PooledPayloadOptions>(o => o.UsePoolPath = true).
-        if (registry?.IsEnabled == true)
-        {
-            var owned = Context.Serializer.PackPooled(op, registry);
-            return (owned.Memory, owned);
-        }
-        var bytes = PackBytes(Context.Serializer, op);
-        return (bytes, new PooledPayload(bytes, 0));
     }
 
     /// <summary>
@@ -371,73 +346,50 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         _intermediateWriter = new ScratchBufferWriter(_scratchPool);
     }
 
-    // ── Outgoing pool tokens ──────────────────────────────────────────────
+    // ── Outgoing bytes ────────────────────────────────────────────────────
     // Filled by serialization paths inside HandleCallAsync / HandleExternalEventAsync; taken
-    // by EntityGrain via TakeOutgoing* before wrapping into PooledPayload-typed wire fields
-    // (EntityCallResult.OpBytes / EntityBroadcast.OpBytes etc.).
-    // <para>
-    // The sender (us) does NOT release outgoing payloads — the receiving grain / wire pipeline
-    // owns the buffer once the PooledPayload crosses the boundary, and Release fires there.
-    // Untaken tokens (e.g. fan-out had zero subscribers, or a code path forgot to Take) are
-    // released as a safety net at the next provider entry by <see cref="FlushPendingOutgoing"/>.
-    // </para>
-    private PooledPayload _outgoingResponse;
-    private PooledPayload _outgoingResult;
-    private PooledPayload _outgoingBroadcastReplay;
-    private PooledPayload _outgoingBroadcastPatch;
-    private PooledPayload _outgoingEventBroadcast;
+    // by EntityGrain via TakeOutgoing* before wrapping into wire fields. Backed by GC byte[]
+    // (fresh per RPC) — no refcount, no pool registry. The receiving grain holds the bytes
+    // through Orleans [Immutable] share-by-reference until GC reclaims them.
+    private ReadOnlyMemory<byte> _outgoingResponse;
+    private ReadOnlyMemory<byte> _outgoingResult;
+    private ReadOnlyMemory<byte> _outgoingBroadcastReplay;
+    private ReadOnlyMemory<byte> _outgoingBroadcastPatch;
+    private ReadOnlyMemory<byte> _outgoingEventBroadcast;
 
-    public PooledPayload TakeOutgoingResponse()
+    public ReadOnlyMemory<byte> TakeOutgoingResponse()
     {
         var p = _outgoingResponse;
         _outgoingResponse = default;
         return p;
     }
 
-    public PooledPayload TakeOutgoingResult()
+    public ReadOnlyMemory<byte> TakeOutgoingResult()
     {
         var p = _outgoingResult;
         _outgoingResult = default;
         return p;
     }
 
-    public PooledPayload TakeOutgoingBroadcastReplay()
+    public ReadOnlyMemory<byte> TakeOutgoingBroadcastReplay()
     {
         var p = _outgoingBroadcastReplay;
         _outgoingBroadcastReplay = default;
         return p;
     }
 
-    public PooledPayload TakeOutgoingBroadcastPatch()
+    public ReadOnlyMemory<byte> TakeOutgoingBroadcastPatch()
     {
         var p = _outgoingBroadcastPatch;
         _outgoingBroadcastPatch = default;
         return p;
     }
 
-    public PooledPayload TakeOutgoingEventBroadcast()
+    public ReadOnlyMemory<byte> TakeOutgoingEventBroadcast()
     {
         var p = _outgoingEventBroadcast;
         _outgoingEventBroadcast = default;
         return p;
-    }
-
-    private void FlushPendingOutgoing()
-    {
-        var registry = Context?.Registry;
-        if (registry == null) return;
-        // Ref==0 is the byte[]-fallback wrapper — no slot to release, GC reclaims naturally.
-        // Only pool-backed (Ref!=0) tokens need explicit Release here.
-        if (_outgoingResponse.Ref != 0) registry.Release(_outgoingResponse);
-        if (_outgoingResult.Ref != 0) registry.Release(_outgoingResult);
-        if (_outgoingBroadcastReplay.Ref != 0) registry.Release(_outgoingBroadcastReplay);
-        if (_outgoingBroadcastPatch.Ref != 0) registry.Release(_outgoingBroadcastPatch);
-        if (_outgoingEventBroadcast.Ref != 0) registry.Release(_outgoingEventBroadcast);
-        _outgoingResponse = default;
-        _outgoingResult = default;
-        _outgoingBroadcastReplay = default;
-        _outgoingBroadcastPatch = default;
-        _outgoingEventBroadcast = default;
     }
 
     /// <summary>
@@ -834,7 +786,6 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // pool tokens that the previous call's caller forgot to take (safety net — should
             // be empty in normal flow because EntityGrain Takes everything before returning).
             FlushPendingNamedScrollReturns();
-            FlushPendingOutgoing();
 
             // Rewind the intermediate scratch buffer for this call. Any ROMs the PREVIOUS
             // call handed out (replay/patch/state/triggers) have already been embedded into
@@ -882,7 +833,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // → the receiver would read stale bytes. .ToArray() here puts the result on a
             // stable byte[] that outlives the source grain's next call.
             if (!isClientOriginated)
-                _outgoingResult = new PooledPayload(result.ResultBytes.ToArray(), 0);
+                _outgoingResult = result.ResultBytes.ToArray();
 
             // End recording. EndOperation returns ROM over the recorder writer's internal
             // pool buffer — valid only until the NEXT BeginOperation on this context (which
@@ -1082,27 +1033,23 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // Serialize response once — only when needed for the originating client's RPC reply.
             // Cross-entity callers (isClientOriginated=false) read just ResultBytes from the
             // slim CrossEntityCallReturn; the full ResponseBytes would be ignored, so skip it.
-            // Pool path: owned slot rides out as EntityCallResult.OpBytes (PooledPayload).
-            // Sender does not Release — the SessionManager / wire pipeline owns the buffer
-            // once the result crosses the grain boundary.
+            // Bytes are GC-managed (PackForExternalUsage). Orleans shares-by-reference on
+            // in-silo hops via the [Immutable] marker on EntityCallResult / EntityBroadcast.
             ReadOnlyMemory<byte> responseBytes = default;
-            PooledPayload ownedResponse = default;
             if (isClientOriginated)
-                (responseBytes, ownedResponse) = PackBroadcastVariant(_pooledResponseOp);
+                responseBytes = PackBytes(Context.Serializer, _pooledResponseOp);
 
-            // Serialize broadcast variants — high fan-out, this is where the pool win is.
-            // Common case: one variant (replay-only). When requirePatchForFanOut is on we also
-            // need a patch-only variant for the legacy subscriber population.
+            // Serialize broadcast variants. Common case: one variant (replay-only). When
+            // requirePatchForFanOut is on we also emit a patch-only variant for the legacy
+            // subscriber population.
             ReadOnlyMemory<byte> broadcastReplayBytes = default;
             ReadOnlyMemory<byte> broadcastPatchBytes = default;
-            PooledPayload ownedBroadcastReplay = default;
-            PooledPayload ownedBroadcastPatch = default;
 
             // Variant 1: replay-eligible audience. Strip PatchBytes so the variant carries
             // only the replay payload (and state, for ServerReplace which already null'd replay).
             var origPatch = _pooledBroadcastOp.PatchBytes;
             _pooledBroadcastOp.PatchBytes = default;
-            (broadcastReplayBytes, ownedBroadcastReplay) = PackBroadcastVariant(_pooledBroadcastOp);
+            broadcastReplayBytes = PackBytes(Context.Serializer, _pooledBroadcastOp);
             _pooledBroadcastOp.PatchBytes = origPatch;
 
             // Variant 2: patch-eligible audience. Only emit when force-patch tailoring is
@@ -1113,18 +1060,14 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             {
                 var origReplay = _pooledBroadcastOp.ReplayPayload;
                 _pooledBroadcastOp.ReplayPayload = default;
-                (broadcastPatchBytes, ownedBroadcastPatch) = PackBroadcastVariant(_pooledBroadcastOp);
+                broadcastPatchBytes = PackBytes(Context.Serializer, _pooledBroadcastOp);
                 _pooledBroadcastOp.ReplayPayload = origReplay;
             }
 
-            // Outgoing pool tokens — EntityGrain takes them via TakeOutgoing* and wraps into
-            // PooledPayload-typed wire fields (EntityCallResult.OpBytes / EntityBroadcast.OpBytes).
-            // Sender (us) does NOT release these; the receiving grain / wire pipeline owns the
-            // buffer once it crosses the boundary. Any token left un-taken at the next provider
-            // entry is released as a safety net via FlushPendingOutgoing.
-            _outgoingResponse = ownedResponse;
-            _outgoingBroadcastReplay = ownedBroadcastReplay;
-            _outgoingBroadcastPatch = ownedBroadcastPatch;
+            // Stash outgoing bytes for EntityGrain to pick up via TakeOutgoing*.
+            _outgoingResponse = responseBytes;
+            _outgoingBroadcastReplay = broadcastReplayBytes;
+            _outgoingBroadcastPatch = broadcastPatchBytes;
 
             return new HandleCallResult
             {
@@ -1147,7 +1090,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             _pooledResponseOp.MethodId = call.MethodId;
             _pooledResponseOp.Error = ex.Message;
             var errBytes = PackBytes(Context.Serializer, _pooledResponseOp);
-            _outgoingResponse = new PooledPayload(errBytes, 0);
+            _outgoingResponse = errBytes;
             return new HandleCallResult
             {
                 ResponseBytes = errBytes,
@@ -1217,7 +1160,6 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
 
             // Reclaim any pool buffers / outgoing tokens left over from the previous call.
             FlushPendingNamedScrollReturns();
-            FlushPendingOutgoing();
             _scratchPool.Reset();
             (Context.Serializer as Memory.IServerMetaSerializer)?.ResetScratch();
 
@@ -1253,10 +1195,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             _pooledBroadcastOp.ServerTimeTicks = MetaContext.ServerTimeTicks;
             _pooledBroadcastOp.ExecutedConfigVersion = MetaContext.ConfigVersion;
 
-            // Pool path: owned slot rides out as EntityBroadcast.OpBytes (PooledPayload) and
-            // receivers release. Falls back to byte[] when registry isn't wired.
-            var (broadcastBytes, ownedEventBroadcast) = PackBroadcastVariant(_pooledBroadcastOp);
-            _outgoingEventBroadcast = ownedEventBroadcast;
+            var broadcastBytes = PackBytes(Context.Serializer, _pooledBroadcastOp);
+            _outgoingEventBroadcast = broadcastBytes;
             return new HandleEventResult
             {
                 BroadcastBytes = broadcastBytes,
@@ -1342,7 +1282,6 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
 
             // Reclaim any pool buffers / outgoing tokens left over from the previous call.
             FlushPendingNamedScrollReturns();
-            FlushPendingOutgoing();
             _scratchPool.Reset();
             (Context.Serializer as Memory.IServerMetaSerializer)?.ResetScratch();
 

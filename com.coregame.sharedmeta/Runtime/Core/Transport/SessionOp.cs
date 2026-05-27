@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using Orleans;
 using MemoryPack;
 using MessagePack;
-using SharedMeta.Core.Memory;
 using SharedMeta.Core.Packets;
 
 namespace SharedMeta.Core.Transport
@@ -33,7 +32,7 @@ namespace SharedMeta.Core.Transport
         /// <summary>Pre-serialized MetaOperation. Empty when dispatch failed before producing
         /// a payload (check <see cref="Error"/>). Decode once on the client via
         /// <c>IMetaSerializer.Unpack&lt;MetaOperation&gt;</c>.</summary>
-        [Id(2), Key(2), MemoryPackOrder(2), MemoryPackAllowSerialize] public PooledPayload OpBytes { get; set; }
+        [Id(2), Key(2), MemoryPackOrder(2), MemoryPackAllowSerialize] public ReadOnlyMemory<byte> OpBytes { get; set; }
 
         /// <summary>Top-level error if dispatch failed before the method was executed.
         /// Method-level errors are embedded inside <see cref="OpBytes"/> via

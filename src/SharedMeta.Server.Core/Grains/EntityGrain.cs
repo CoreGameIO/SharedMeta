@@ -23,18 +23,15 @@ namespace SharedMeta.Server.Core.Grains
         public IGrainFactory GrainFactory { get; }
         public ILogger? Logger { get; }
         public byte[]? NamedRandomsBytes { get; }
-        public SharedMeta.Server.Core.Memory.PooledPayloadRegistry? Registry { get; }
 
         public MetaProviderContext(string entityId, IMetaSerializer serializer, IGrainFactory grainFactory,
-            ILogger? logger = null, byte[]? namedRandomsBytes = null,
-            SharedMeta.Server.Core.Memory.PooledPayloadRegistry? registry = null)
+            ILogger? logger = null, byte[]? namedRandomsBytes = null)
         {
             EntityId = entityId;
             Serializer = serializer;
             GrainFactory = grainFactory;
             Logger = logger;
             NamedRandomsBytes = namedRandomsBytes;
-            Registry = registry;
         }
     }
 
@@ -114,8 +111,7 @@ namespace SharedMeta.Server.Core.Grains
             MetaServerSignature serverSignature,
             IExecutionModeProvider? executionModeProvider = null,
             IConfigVersionResolver? configVersionResolver = null,
-            IClientSignatureRegistry? signatureRegistry = null,
-            SharedMeta.Server.Core.Memory.PooledPayloadRegistry? pooledPayloadRegistry = null)
+            IClientSignatureRegistry? signatureRegistry = null)
         {
             _persistentState = persistentState ?? throw new ArgumentNullException(nameof(persistentState));
             _providerFactory = providerFactory ?? throw new ArgumentNullException(nameof(providerFactory));
@@ -127,12 +123,7 @@ namespace SharedMeta.Server.Core.Grains
             _configVersionResolver = configVersionResolver;
             _serverSignature = serverSignature;
             _signatureRegistry = signatureRegistry;
-            // Optional — host wires the silo-scoped registry when pooled broadcast allocation
-            // is enabled. When null, providers fall back to the byte[]-allocating serializer path.
-            _pooledPayloadRegistry = pooledPayloadRegistry;
         }
-
-        private readonly SharedMeta.Server.Core.Memory.PooledPayloadRegistry? _pooledPayloadRegistry;
 
         // ConfigBoundaries + service-to-config bindings. Null = host hasn't wired
         // MetaServerSignature in DI; Subscribe emits no per-entity capability overlay.
@@ -263,33 +254,16 @@ namespace SharedMeta.Server.Core.Grains
                         throw new InvalidOperationException(
                             $"Cross-entity call failed: {result.Error}");
 
-                    // Cross-entity is the one outgoing wire shape where the SENDER IS the
-                    // consumer — the target grain produced ResultBytes as a pool-rented
-                    // buffer and we (the caller) own the ref-count. Copy the bytes into a
-                    // managed byte[] for embedding into our outgoing response/broadcast,
-                    // then release the source's pool slot immediately so the slot returns
-                    // to the registry within the same call frame (no lifetime races, no
-                    // intermediate-tracking machinery).
-                    ReadOnlyMemory<byte> resultBytes;
-                    if (result.ResultBytes.Ref != 0 && _pooledPayloadRegistry != null
-                        && result.ResultBytes.SiloId == _pooledPayloadRegistry.SiloId)
-                    {
-                        resultBytes = result.ResultBytes.Memory.ToArray();
-                        _pooledPayloadRegistry.Release(result.ResultBytes);
-                    }
-                    else
-                    {
-                        // Ref==0 (byte[]-backed) or foreign-silo (cross-silo deferred):
-                        // just take the Memory as-is.
-                        resultBytes = result.ResultBytes.Memory;
-                    }
-
+                    // Cross-entity result: target grain produced ResultBytes as GC byte[]
+                    // (PackForExternalUsage on the wire-exit boundary). The Orleans [Immutable]
+                    // marker on CrossEntityCallReturn shared the ROM by reference on this
+                    // in-silo hop; we can use the bytes as-is.
                     return new CrossEntityOperationInfo
                     {
                         EntityId = targetEntityId,
                         EntitySequenceNumber = result.EntitySequenceNumber,
                         MethodId = methodId,
-                        ResultBytes = resultBytes
+                        ResultBytes = result.ResultBytes
                     };
                 };
 
@@ -373,7 +347,7 @@ namespace SharedMeta.Server.Core.Grains
             // serialization (dispatcher result, patch tree, state pack, triggers) goes into
             // pool-rented memory instead of allocating a fresh byte[] per call.
             _scopedSerializer = new Memory.GrainScopedSerializer(_serializer, _scratchPool);
-            var context = new MetaProviderContext(entityId, _scopedSerializer, GrainFactory, _logger, state.NamedRandomsBytes, _pooledPayloadRegistry);
+            var context = new MetaProviderContext(entityId, _scopedSerializer, GrainFactory, _logger, state.NamedRandomsBytes);
             _provider.Initialize(context, state.UserState, state.ServerRandomBytes, state.OptimisticRandomBytes);
 
             // Apply global deep desync override from EntityGrainOptions
@@ -826,15 +800,13 @@ namespace SharedMeta.Server.Core.Grains
                 var providerResult = await _provider.HandleCallAsync(call, isClientOriginated: true, requirePatchForFanOut: requirePatchForFanOut, entitySequenceNumber: operationSequence);
                 forcePersist = providerResult.ForcePersist;
 
-                // Take outgoing pool-tracked payloads from the provider. Sender (us) does NOT
-                // release these — receiving grains (SessionManager / EntityGrain across silos)
-                // own them and release via PooledPayloadRegistry once the buffer crosses the
-                // grain boundary. Fan-out IncrementRef happens inside DistributeBroadcasts
-                // before the Orleans hop. Provider's FlushPendingOutgoing at next call entry
-                // is the safety net for tokens we forget to take.
-                SharedMeta.Core.Memory.PooledPayload responsePayload = default;
-                SharedMeta.Core.Memory.PooledPayload replayPayload = default;
-                SharedMeta.Core.Memory.PooledPayload patchPayload = default;
+                // Take outgoing bytes from the provider. ROM-backed by GC byte[]; the receiving
+                // grain (SessionManager / sibling EntityGrain) holds the reference until GC
+                // reclaims. Orleans [Immutable] markers on wire DTOs (EntityCallResult,
+                // EntityBroadcast) avoid in-silo defensive deep-copy.
+                ReadOnlyMemory<byte> responsePayload = default;
+                ReadOnlyMemory<byte> replayPayload = default;
+                ReadOnlyMemory<byte> patchPayload = default;
                 if (_provider is MetaProviderBase<TState> mpbTake)
                 {
                     responsePayload = mpbTake.TakeOutgoingResponse();
@@ -927,9 +899,9 @@ namespace SharedMeta.Server.Core.Grains
                 var providerResult = await _provider.HandleCallAsync(call, isClientOriginated: false, entitySequenceNumber: operationSequence);
                 forcePersist = providerResult.ForcePersist;
 
-                SharedMeta.Core.Memory.PooledPayload resultPayload = default;
-                SharedMeta.Core.Memory.PooledPayload replayPayload = default;
-                SharedMeta.Core.Memory.PooledPayload patchPayload = default;
+                ReadOnlyMemory<byte> resultPayload = default;
+                ReadOnlyMemory<byte> replayPayload = default;
+                ReadOnlyMemory<byte> patchPayload = default;
                 if (_provider is MetaProviderBase<TState> mpbTake)
                 {
                     resultPayload = mpbTake.TakeOutgoingResult();
@@ -1077,21 +1049,14 @@ namespace SharedMeta.Server.Core.Grains
             {
                 var providerResult = await _provider.HandleExternalEventAsync(methodId, eventData, callerId);
 
-                SharedMeta.Core.Memory.PooledPayload eventPayload = default;
+                ReadOnlyMemory<byte> eventPayload = default;
                 if (_provider is MetaProviderBase<TState> mpbTake)
                     eventPayload = mpbTake.TakeOutgoingEventBroadcast();
 
-                // The event payload is consumed by TWO classes of receivers:
-                //   1. Subscribers via DistributeBroadcasts (each releases its share — refcount
-                //      management is internal to DistributeBroadcasts via IncrementRef(N-1)).
-                //   2. The originating framework caller via EntityCallResult.OpBytes (their
-                //      SessionManager releases through CallResultToSessionOp).
-                // Bump refcount by 1 BEFORE DistributeBroadcasts so the caller's release also
-                // has a share to consume — otherwise DistributeBroadcasts' subscriber-side
-                // releases bring refcount to 0 and the caller's release fires on a freed slot.
-                if (eventPayload.Ref != 0 && _pooledPayloadRegistry != null)
-                    _pooledPayloadRegistry.IncrementRef(eventPayload, 1);
-
+                // The event payload is the same ROM-over-byte[] handed to subscribers AND to
+                // the originating caller. With Orleans [Immutable] markers on EntityBroadcast /
+                // EntityCallResult, no in-silo deep-copy happens; GC reclaims when both fan-out
+                // sends and the caller's response packet have evicted.
                 await DistributeBroadcasts(
                     eventPayload,
                     default,
@@ -1233,20 +1198,14 @@ namespace SharedMeta.Server.Core.Grains
             state.NamedRandomsBytes = namedBytes.Length > 0 ? namedBytes : null;
         }
 
-        // Fan-out lifecycle (0.25.x pool path):
-        //   * Each variant arrives from the provider with refcount=1 (creator's reference).
-        //   * Before the fan-out loop we pre-count N = subscribers receiving that variant and
-        //     IncrementRef(N-1) → refcount=N. Each receiver's SessionManagerGrain Releases its
-        //     share once the broadcast has been delivered / evicted; net refcount → 0.
-        //   * When N == 0 for a variant (no subscriber consumes it) we Release the creator's
-        //     reference here so the slot returns to the pool — no consumer will ever do it.
-        //   * Ref==0 tokens are byte[]-backed fallbacks (no registry slot); skip IncrementRef
-        //     and Release for them entirely.
-        // EntityBroadcast carries PooledPayload by reference — PooledPayload is class-level
-        // [Immutable] so Orleans skips defensive deep-copy on in-silo grain hops.
+        // Fan-out: each broadcast variant is a ROM-over-byte[] from the provider. The same
+        // ROM is handed to every subscriber via EntityBroadcast.OpBytes; Orleans honors the
+        // class-level [Immutable] marker on EntityBroadcast and shares by reference on
+        // in-silo hops (no defensive deep-copy). GC reclaims the byte[] once all subscriber
+        // packets evict from SessionManager's _pendingPackets and the wire-send completes.
         private ValueTask DistributeBroadcasts(
-            SharedMeta.Core.Memory.PooledPayload replayPayload,
-            SharedMeta.Core.Memory.PooledPayload patchPayload,
+            ReadOnlyMemory<byte> replayPayload,
+            ReadOnlyMemory<byte> patchPayload,
             string serviceName, string methodName, ushort methodId,
             long operationSequence, string? excludePlayerId)
         {
@@ -1255,31 +1214,15 @@ namespace SharedMeta.Server.Core.Grains
             if (replayEmpty && patchEmpty)
                 return default;
             if (_subscriberRefs.Count == 0)
-            {
-                ReleaseUnusedVariant(replayPayload);
-                ReleaseUnusedVariant(patchPayload);
                 return default;
-            }
             if (excludePlayerId != null && _subscriberRefs.Count == 1 && _subscriberRefs.ContainsKey(excludePlayerId))
-            {
-                ReleaseUnusedVariant(replayPayload);
-                ReleaseUnusedVariant(patchPayload);
                 return default;
-            }
             return new ValueTask(DistributeBroadcastsImpl(replayPayload, patchPayload, serviceName, methodName, methodId, operationSequence, excludePlayerId));
         }
 
-        // Release the creator's reference on a variant that won't be fanned out to any consumer.
-        // Ref==0 means byte[]-backed fallback (no slot to release).
-        private void ReleaseUnusedVariant(SharedMeta.Core.Memory.PooledPayload payload)
-        {
-            if (payload.Ref == 0 || _pooledPayloadRegistry == null) return;
-            _pooledPayloadRegistry.Release(payload);
-        }
-
         private async Task DistributeBroadcastsImpl(
-            SharedMeta.Core.Memory.PooledPayload replayPayload,
-            SharedMeta.Core.Memory.PooledPayload patchPayload,
+            ReadOnlyMemory<byte> replayPayload,
+            ReadOnlyMemory<byte> patchPayload,
             string serviceName, string methodName, ushort methodId,
             long operationSequence, string? excludePlayerId)
         {
@@ -1290,29 +1233,6 @@ namespace SharedMeta.Server.Core.Grains
 
             bool replayAvailable = !replayPayload.IsEmpty;
             bool patchAvailable = !patchPayload.IsEmpty;
-
-            // Pre-pass: count how many subscribers will consume each variant so we can balance
-            // ref-counts BEFORE the fan-out (IncrementRef(N-1) → refcount=N → N receivers each
-            // Release → 0). Without this we'd either leak slots (no IncrementRef) or
-            // double-release (IncrementRef done in-loop while receivers Release in parallel).
-            int replayConsumers = 0;
-            int patchConsumers = 0;
-            foreach (var (playerId, _) in _subscriberRefs)
-            {
-                if (excludePlayerId != null && playerId == excludePlayerId) continue;
-                bool needsPatch = patchAvailable && SubscriberNeedsPatch(playerId, serviceName, methodId);
-                if (needsPatch) patchConsumers++;
-                else if (replayAvailable) replayConsumers++;
-            }
-
-            // Settle creator-ref vs consumer-count: when N==0 the creator's refcount=1 has no
-            // consumer to release it — drop it here. When N>=1, IncrementRef(N-1) so total = N.
-            if (replayConsumers == 0) ReleaseUnusedVariant(replayPayload);
-            else if (replayConsumers > 1 && replayPayload.Ref != 0 && _pooledPayloadRegistry != null)
-                _pooledPayloadRegistry.IncrementRef(replayPayload, replayConsumers - 1);
-            if (patchConsumers == 0) ReleaseUnusedVariant(patchPayload);
-            else if (patchConsumers > 1 && patchPayload.Ref != 0 && _pooledPayloadRegistry != null)
-                _pooledPayloadRegistry.IncrementRef(patchPayload, patchConsumers - 1);
 
             var sentCount = 0;
             int patchSent = 0;
@@ -1333,11 +1253,6 @@ namespace SharedMeta.Server.Core.Grains
                     var opPayload = subscriberNeedsPatch ? patchPayload : replayPayload;
                     if (opPayload.IsEmpty) continue;
 
-                    // Share-by-reference passthrough: same PooledPayload (Immutable<ROM> inside)
-                    // handed to every subscriber needing the same variant. Orleans in-silo
-                    // honors the Immutable marker → no defensive deep-copy. The receiving
-                    // SessionManager owns the ref-count share and Releases when delivery is
-                    // settled (ack / eviction).
                     var broadcast = new EntityBroadcast
                     {
                         ExcludePlayerId = excludePlayerId,
@@ -1349,10 +1264,6 @@ namespace SharedMeta.Server.Core.Grains
                     sentCount++;
                     if (subscriberNeedsPatch) patchSent++;
                     else replaySent++;
-                    // Fan-out is transport machinery, not a state operation — the originating
-                    // Call entry already represents the state change at `operationSequence`.
-                    // Recording one row per subscriber here would multiply by fan-out factor
-                    // without adding diagnostic signal.
                 }
                 catch (Exception ex)
                 {
