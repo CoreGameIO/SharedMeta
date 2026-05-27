@@ -160,13 +160,14 @@ public class SessionOrderingTests
 
     private RpcCall BuildAddCall(int value)
     {
-        // CounterService.AddValue(int value, int clientSequence) — see ICounterService.cs.
-        // Server expects payload to be the serialized arg list. Use the same serializer the
-        // grain is configured with so encoding matches the dispatcher.
-        var writer = _fixture.Serializer.CreateWriter();
-        writer.Write(value);
-        writer.Write(0);
-        var bytes = writer.Complete();
+        // CounterService.AddValue(int value, int clientSequence) — must produce the same wire
+        // shape the generated ApiClient does: raw MemoryPack concatenation via MemoryPackWriter,
+        // NOT the length-prefixed IPayloadWriter envelope. The MemoryPack dispatcher reads via
+        // MemoryPackReader.ReadValue<int>() which expects raw values in sequence.
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>();
+        global::MemoryPack.MemoryPackSerializer.Serialize(buffer, value);
+        global::MemoryPack.MemoryPackSerializer.Serialize(buffer, 0);
+        var bytes = buffer.WrittenSpan.ToArray();
         return new RpcCall
         {
             MethodId = global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_Add_v0,

@@ -223,10 +223,7 @@ public class RpcOrderingBufferTests
         Assert.Throws<System.ArgumentOutOfRangeException>(() => new RpcOrderingBuffer<Item>(-1));
     }
 
-    [Fact]
-    public void TryStash_NullPayload_Throws()
-    {
-        var buf = NewBuffer();
-        Assert.Throws<System.ArgumentNullException>(() => buf.TryStash(2, null!));
-    }
+    // 2026-05-27: dropped Constraint `where T : class` and the corresponding null-throw
+    // guard so the buffer can hold struct StashedRpcCall. Null callers on a class T param
+    // just get a null payload entry — caller-side discipline.
 }
