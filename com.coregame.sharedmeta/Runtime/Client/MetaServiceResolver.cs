@@ -671,6 +671,11 @@ namespace SharedMeta.Client
                     var newState = _serializer.Unpack(connection.StateType, v.StateBytes);
                     if (newState == null) continue;
 
+                    // Diagnostic: Refreshed verdict ships fresh server-side state that overwrites
+                    // ANY local optimistic mutations. Logs the moment of state replacement so a
+                    // visible "state rollback on reconnect" can be traced to the exact verdict.
+                    Core.Logging.MetaLog.Info(
+                        $"[MetaServiceResolver] State REPLACED for entity {v.EntityId} via Refreshed verdict — seq={v.EntitySequenceNumber}, stateBytes={v.StateBytes.Length}");
                     connection.StateContainer.ReplaceObject(newState);
 
                     if (v.OptimisticRandomBytes is { Length: > 0 })
@@ -882,7 +887,14 @@ namespace SharedMeta.Client
                 {
                     var newState = _serializer!.Unpack(StateType, sb);
                     if (newState != null)
+                    {
+                        // Diagnostic: ServerReplace broadcast ships fresh state that overwrites
+                        // local optimistic mutations. Logs when this happens so reconnect-time
+                        // state rollback can be traced to the exact broadcast.
+                        Core.Logging.MetaLog.Info(
+                            $"[MetaServiceResolver] State REPLACED for entity {EntityId} via ServerReplace broadcast — methodId={broadcast.MethodId}, stateBytes={sb.Length}");
                         StateContainer.ReplaceObject(newState);
+                    }
                     return;
                 }
 

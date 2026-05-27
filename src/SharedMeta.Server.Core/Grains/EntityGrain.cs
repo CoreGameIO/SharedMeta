@@ -612,27 +612,59 @@ namespace SharedMeta.Server.Core.Grains
             {
                 var state = _persistentState.State;
 
-                // Cheap path: grain already knows this subscriber, no broadcast gap, signature
-                // hash unchanged — refresh the live ref + liveness ticker, no state shipped.
-                // Migration / schema gate / config-pin are no-ops here because they were already
-                // resolved on the original Subscribe with the same clientVersion+signatureHash.
-                if (state.Subscribers.TryGetValue(playerId, out var existing)
-                    && state.EntitySequenceNumber == lastKnownEntitySequence
-                    && existing.ClientSignatureHash == clientSignatureHash)
+                // Cheap path. Truth-source for "data is in sync" is state.EntitySequenceNumber
+                // (the persisted grain state advances strictly through dispatched calls). The
+                // Subscribers map is derivable bookkeeping — it can be lost across grain
+                // deactivation/reactivation, subscriber-TTL expiry, or server restart without
+                // any underlying state change. So:
+                //   * Seq matches AND signature matches → no data divergence; either re-attach
+                //     to existing Subscribers entry OR re-register the player. Either way,
+                //     ship Continued with no state snapshot, because the client's view is
+                //     already current.
+                //   * Seq mismatch OR signature change → fall through to the full Subscribe
+                //     path which ships a fresh snapshot.
+                // Prior behaviour required Subscribers.TryGetValue to succeed before allowing
+                // Continued, which caused state-clobbering Refreshed verdicts every time the
+                // subscriber bookkeeping was lost while the underlying state was identical
+                // (e.g. server stop+restart cycle with offline-client optimistic moves —
+                // local mutations got wiped by the snapshot even though data was synchronized).
+                if (state.EntitySequenceNumber == lastKnownEntitySequence)
                 {
-                    existing.LastActiveUtc = DateTime.UtcNow;
-                    _subscriberRefs[playerId] = sessionManager;
-                    return new SubscriptionResult
+                    // Signature change at the same seq is rare but possible (client rebuild
+                    // between disconnect and reconnect without touching state). Fall through
+                    // to full Subscribe so access-policy + capability cache re-run.
+                    if (state.Subscribers.TryGetValue(playerId, out var existing)
+                        && existing.ClientSignatureHash != clientSignatureHash)
                     {
-                        EntityId = _entityId,
-                        Status = SubscriptionStatus.Continued,
-                        EntitySequenceNumber = state.EntitySequenceNumber,
-                    };
+                        // fall through to Refreshed path
+                    }
+                    else
+                    {
+                        // Either subscriber entry exists with matching signature — refresh
+                        // liveness — or it's missing (TTL/restart) and we re-register. Either
+                        // way data is in sync, ship Continued, no snapshot needed.
+                        if (existing == null)
+                        {
+                            existing = new PersistedSubscriberInfo
+                            {
+                                ClientSignatureHash = clientSignatureHash,
+                            };
+                            state.Subscribers[playerId] = existing;
+                        }
+                        existing.LastActiveUtc = DateTime.UtcNow;
+                        _subscriberRefs[playerId] = sessionManager;
+                        return new SubscriptionResult
+                        {
+                            EntityId = _entityId,
+                            Status = SubscriptionStatus.Continued,
+                            EntitySequenceNumber = state.EntitySequenceNumber,
+                        };
+                    }
                 }
 
-                // Full path — either no record of this subscriber, sequence gap, or signature
-                // change. Run the canonical Subscribe to re-establish access policy, migration,
-                // config pin, force-patch refs, snapshot. Caller treats the result as Refreshed.
+                // Full path — sequence gap or signature change. Run the canonical Subscribe to
+                // re-establish access policy, migration, config pin, force-patch refs, snapshot.
+                // Caller treats the result as Refreshed.
                 var snapshot = await SubscribeAsync(playerId, sessionManager, clientVersion, clientSignatureHash);
                 return new SubscriptionResult
                 {

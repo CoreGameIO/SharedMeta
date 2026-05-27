@@ -958,16 +958,17 @@ namespace SharedMeta.Generator.Generators
             {
                 // Generic serializer — always use writer for consistent length-prefixed format.
                 // Server dispatcher reads with CreateReader() which expects length-prefixed data.
-                // No `using` — writer is pool-owned, Reset() between uses; the Complete()
-                // ROM is valid until the next Reset on this writer (well past the awaited
-                // RPC's wire serialization).
+                // No `using` — writer is pool-owned, Reset() between uses. Materialize to byte[]
+                // here so argsBytes has the same type across both serializer branches: downstream
+                // sites (DesyncReportRequest.ArgsBytes — byte[] field) avoid an extra .ToArray() copy,
+                // and INetwork.CallAsync takes ROM which accepts byte[] via implicit conversion.
                 sb.AppendLine("            var writer = _serializer.CreateWriter();");
                 sb.AppendLine("            writer.Reset();");
                 foreach (var param in method.ParameterList.Parameters)
                 {
                     sb.AppendLine($"            writer.Write({param.Identifier.Text});");
                 }
-                sb.AppendLine("            System.ReadOnlyMemory<byte> argsBytes = writer.Complete();");
+                sb.AppendLine("            var argsBytes = writer.Complete().ToArray();");
             }
         }
 
@@ -2436,7 +2437,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}        EntityId = _network.EntityId ?? string.Empty,");
             sb.AppendLine($"{indent}        ServiceName = ServiceName,");
             sb.AppendLine($"{indent}        MethodName = \"{methodAlias}\",");
-            sb.AppendLine($"{indent}        ArgsBytes = argsBytes.ToArray(),");
+            sb.AppendLine($"{indent}        ArgsBytes = argsBytes,");
             sb.AppendLine($"{indent}        ClientPatchBytes = _ddLocalPatchBytes,");
             sb.AppendLine($"{indent}        MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Patch,");
             sb.AppendLine($"{indent}    }});");
@@ -2455,7 +2456,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}    EntityId = _network.EntityId ?? string.Empty,");
             sb.AppendLine($"{indent}    ServiceName = ServiceName,");
             sb.AppendLine($"{indent}    MethodName = \"{methodAlias}\",");
-            sb.AppendLine($"{indent}    ArgsBytes = argsBytes.ToArray(),");
+            sb.AppendLine($"{indent}    ArgsBytes = argsBytes,");
             sb.AppendLine($"{indent}    ServerResultBytes = {serverBytesExpr} ?? System.Array.Empty<byte>(),");
             sb.AppendLine($"{indent}    LocalResultBytes = {localBytesExpr} ?? System.Array.Empty<byte>(),");
             sb.AppendLine($"{indent}    MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Result,");
@@ -2472,7 +2473,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}    EntityId = _network.EntityId ?? string.Empty,");
             sb.AppendLine($"{indent}    ServiceName = ServiceName,");
             sb.AppendLine($"{indent}    MethodName = \"{methodAlias}\",");
-            sb.AppendLine($"{indent}    ArgsBytes = argsBytes.ToArray(),");
+            sb.AppendLine($"{indent}    ArgsBytes = argsBytes,");
             sb.AppendLine($"{indent}    ServerRandomDelta = {serverDeltaExpr},");
             sb.AppendLine($"{indent}    LocalRandomDelta = {localDeltaExpr},");
             sb.AppendLine($"{indent}    MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Random,");

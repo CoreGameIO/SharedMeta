@@ -573,6 +573,8 @@ namespace SharedMeta.Client
                 {
                     foreach (var v in result.Subscriptions)
                     {
+                        _lastKnownEntitySeq.TryGetValue(v.EntityId,  out var known);
+                        MetaLog.Info($"[ClientDispatcher] Subscription {v.EntityId} EntitySequenceNumber = {v.EntitySequenceNumber} Known = {known}");
                         if (v.Status == SubscriptionStatus.Failed) continue;
                         if (v.EntitySequenceNumber > 0)
                             _lastKnownEntitySeq[v.EntityId] = v.EntitySequenceNumber;
@@ -601,7 +603,7 @@ namespace SharedMeta.Client
         /// <summary>
         /// Re-send all pending requests after reconnect.
         /// </summary>
-        private Task ResendPendingRequestsAsync()
+        private async Task ResendPendingRequestsAsync()
         {
             List<PendingRequest> pendingList;
             lock (_lock)
@@ -610,18 +612,28 @@ namespace SharedMeta.Client
             }
 
             if (pendingList.Count == 0)
-                return Task.CompletedTask;
+                return;
 
             MetaLog.Info($"[ClientDispatcher] Re-sending {pendingList.Count} pending requests after reconnect");
             LogDiag($"RESEND_ALL count={pendingList.Count} ids=[{string.Join(",", pendingList.Select(p => p.RequestId))}]");
 
-            foreach (var pending in pendingList)
+            // Await all re-sends so the caller (ReconnectAsync → OnConnectionStatusChanged)
+            // doesn't signal "Reconnected" until every pending RPC has either received its
+            // server response or failed. Before this was fire-and-forget and the connection
+            // status callback fired while server was still draining the re-sent queue —
+            // game code (or the user) could start NEW actions on stale optimistic state
+            // before re-sends settled, producing false-positive desyncs and state drift.
+            var resends = new Task[pendingList.Count];
+            for (int i = 0; i < pendingList.Count; i++)
+                resends[i] = ResendRequestAsync(pendingList[i]);
+            try { await Task.WhenAll(resends); }
+            catch
             {
-                // Re-send without creating new TCS - reuse existing
-                _ = ResendRequestAsync(pending);
+                // ResendRequestAsync swallows its own per-pending errors into the PendingRequest's
+                // TCS; an exception escaping here would be unexpected. Don't let one bad re-send
+                // tank the whole reconnect — log via the diag channel and continue.
+                LogDiag("RESEND_ALL one or more re-sends threw; per-RPC errors are surfaced via TCS");
             }
-
-            return Task.CompletedTask;
         }
 
         private async Task ResendRequestAsync(PendingRequest pending)
@@ -902,6 +914,28 @@ namespace SharedMeta.Client
                     {
                         if (!_lastKnownEntitySeq.TryGetValue(op.EntityId, out var prev) || op.EntitySequenceNumber > prev)
                             _lastKnownEntitySeq[op.EntityId] = op.EntitySequenceNumber;
+                    }
+                }
+
+                // Cross-entity ops carry the TARGET entity's post-call seq. The target entity
+                // advances on the server through this cross-call, but its own broadcast to us
+                // is suppressed (we're the originator — the effect is inlined in the outer op's
+                // replay payload). Without recording these seqs the next Resume claim would
+                // report stale LastKnownEntitySequence for the target, server would see a gap
+                // and ship a fresh state snapshot (Refreshed verdict), clobbering local state.
+                if (op.CrossEntityOperations is { Count: > 0 } crossOps)
+                {
+                    lock (_lock)
+                    {
+                        for (int i = 0; i < crossOps.Count; i++)
+                        {
+                            var ce = crossOps[i];
+                            if (ce.EntitySequenceNumber > 0 && !string.IsNullOrEmpty(ce.EntityId))
+                            {
+                                if (!_lastKnownEntitySeq.TryGetValue(ce.EntityId, out var cePrev) || ce.EntitySequenceNumber > cePrev)
+                                    _lastKnownEntitySeq[ce.EntityId] = ce.EntitySequenceNumber;
+                            }
+                        }
                     }
                 }
 
