@@ -4,16 +4,16 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageVersion Include="CoreGame.SharedMeta.Core" Version="0.20.0" />
-    <PackageVersion Include="CoreGame.SharedMeta.Client" Version="0.20.0" />
-    <PackageVersion Include="CoreGame.SharedMeta.Generator" Version="0.20.0" />
-    <PackageVersion Include="CoreGame.SharedMeta.Server" Version="0.20.0" />
-    <PackageVersion Include="CoreGame.SharedMeta.Server.Core" Version="0.20.0" />
-    <PackageVersion Include="CoreGame.SharedMeta.Orleans" Version="0.20.0" />
-    <PackageVersion Include="CoreGame.SharedMeta.Transport.SignalR" Version="0.20.0" />
-    <PackageVersion Include="CoreGame.SharedMeta.Transport.HttpPolling" Version="0.20.0" />
-    <PackageVersion Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.20.0" />
-    <PackageVersion Include="CoreGame.SharedMeta.Auth" Version="0.20.0" />
+    <PackageVersion Include="CoreGame.SharedMeta.Core" Version="0.24.0" />
+    <PackageVersion Include="CoreGame.SharedMeta.Client" Version="0.24.0" />
+    <PackageVersion Include="CoreGame.SharedMeta.Generator" Version="0.24.0" />
+    <PackageVersion Include="CoreGame.SharedMeta.Server" Version="0.24.0" />
+    <PackageVersion Include="CoreGame.SharedMeta.Server.Core" Version="0.24.0" />
+    <PackageVersion Include="CoreGame.SharedMeta.Orleans" Version="0.24.0" />
+    <PackageVersion Include="CoreGame.SharedMeta.Transport.SignalR" Version="0.24.0" />
+    <PackageVersion Include="CoreGame.SharedMeta.Transport.HttpPolling" Version="0.24.0" />
+    <PackageVersion Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.24.0" />
+    <PackageVersion Include="CoreGame.SharedMeta.Auth" Version="0.24.0" />
     <PackageVersion Include="Microsoft.Orleans.Server" Version="10.1.0" />
     <PackageVersion Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageVersion Include="MemoryPack" Version="1.21.4" />

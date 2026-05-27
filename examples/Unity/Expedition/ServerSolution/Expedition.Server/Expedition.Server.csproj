@@ -26,4 +26,8 @@
     <ProjectReference Include="..\Expedition.Shared\Expedition.Shared.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="data\sessionMgr\" />
+  </ItemGroup>
+
 </Project>

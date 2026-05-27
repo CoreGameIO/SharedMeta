@@ -127,7 +127,8 @@ public class MetaGameClient : IDisposable
         {
             PlayerId = login.PlayerId,
             Diagnostics = _diagnostics,
-            ConnectionHealth = _connectionHealth
+            ConnectionHealth = _connectionHealth,
+            ClientSignature = Expedition.Shared.GameServiceDiscoveryBase.ClientSignature,
         });
 
         var writerCapture = _diagLogWriter;
@@ -177,25 +178,6 @@ public class MetaGameClient : IDisposable
         LocalServer.RegisterConfig<ProfileState>(config);
         LocalServer.RegisterConfig<ExpeditionState>(config);
 
-        // LocalServer defaults every method to Optimistic. Mirror the [MetaMethod(Mode = ...)]
-        // declarations from the service interfaces so ServerReplace, Server, and CrossOptimistic
-        // behave identically to a real Orleans server.
-        LocalServer.ExecutionModeProvider = new ExecutionModeProvider()
-            .SetMode("IExpeditionProfileService", "SpendEnergy", ExecutionMode.Server)
-            .SetMode("IExpeditionProfileService", "SpendEnergyUpTo", ExecutionMode.Server)
-            .SetMode("IExpeditionProfileService", "AddMoney", ExecutionMode.Server)
-            .SetMode("IExpeditionProfileService", "StartNewExpedition", ExecutionMode.Server)
-            .SetMode("IExpeditionProfileService", "AbandonExpedition", ExecutionMode.Server)
-            .SetMode("IExpeditionProfileService", "SendGift", ExecutionMode.Server)
-            .SetMode("ISocialService", "ReceiveGift", ExecutionMode.Server)
-            .SetMode("IExpeditionService", "Init", ExecutionMode.Server)
-            .SetMode("IExpeditionService", "MarkAbandoned", ExecutionMode.Server)
-            .SetMode("IExpeditionService", "Move", ExecutionMode.CrossOptimistic)
-            .SetMode("IExpeditionService", "RemoveObstacle", ExecutionMode.CrossOptimistic)
-            .SetMode("IExpeditionService", "GenerateNewMap", ExecutionMode.ServerReplace)
-            .SetMode("IExpeditionService", "GenerateNewMapOptimistic", ExecutionMode.Optimistic)
-            .SetMode("IExpeditionService", "GenerateNewMapBroken", ExecutionMode.Optimistic);
-
         var tokenStorage = new PlayerPrefsTokenStorage(deviceId);
         var login = await MetaAuth.EnsureAuthenticatedAsync("local://", deviceId, tokenStorage);
         Connection = LocalServer.CreateConnection();
@@ -204,7 +186,8 @@ public class MetaGameClient : IDisposable
         {
             PlayerId = login.PlayerId,
             Diagnostics = _diagnostics,
-            ConnectionHealth = _connectionHealth
+            ConnectionHealth = _connectionHealth,
+            ClientSignature = Expedition.Shared.GameServiceDiscoveryBase.ClientSignature,
         });
         Client.Resolver.RegisterAllServices();
 
