@@ -62,6 +62,18 @@ namespace SharedMeta.Server.Core.Memory
             _start = pool.Offset;
         }
 
+        /// <summary>Re-arm the writer onto the current pool tail without allocating a new
+        /// instance. Use this when the same writer is reused across N sequential Pack calls
+        /// within one grain invocation — each <see cref="WrittenMemory"/> captured before the
+        /// next <c>Reset</c> stays valid (it's a struct holding <c>(array, start, length)</c>);
+        /// only the writer's own forward pointer moves. Saves ~24B/op vs <c>new</c>.</summary>
+        public void Reset()
+        {
+            _backing = _pool.Buffer;
+            _start = _pool.Offset;
+            _written = 0;
+        }
+
         /// <summary>Slice of the backing byte[] containing the bytes written so far. Valid
         /// until the provider resets the pool at the start of a subsequent Handle*Async call.</summary>
         public ReadOnlyMemory<byte> WrittenMemory => _backing.AsMemory(_start, _written);

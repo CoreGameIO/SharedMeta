@@ -24,6 +24,7 @@ namespace SharedMeta.Client.Network
         public string ClientId => _dispatcher.Connection.ConnectionId;
         public string? PlayerId { get; set; }
         public string? EntityId => _entityId;
+        public long LastKnownEntitySequence => _dispatcher.GetLastKnownEntitySequence(_entityId);
         public long ServerTimeTicks => _serverTimeClock();
 
         /// <summary>
@@ -111,6 +112,7 @@ namespace SharedMeta.Client.Network
             // server emits a method the client doesn't know (e.g. server-only), the sentinel
             // ushort.MaxValue propagates and generated dispatch ignores it.
             ushort clientMethodId = TranslateIncomingMethodId(op.MethodId);
+
             OnBroadcast?.Invoke(new NetworkBroadcast
             {
                 MethodId = clientMethodId,
@@ -132,7 +134,7 @@ namespace SharedMeta.Client.Network
             OnDisconnected?.Invoke(reason.ToString());
         }
 
-        public async Task<CallResponse<T>> CallAsync<T>(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
+        public async Task<CallResponse<T>> CallAsync<T>(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
         {
             // 0.24.0+ RpcCall no longer carries ServiceName/MethodName/MethodVersion — only
             // MethodId addresses the dispatch. ServiceName/methodName/methodVersion are still
@@ -175,11 +177,12 @@ namespace SharedMeta.Client.Network
                 PatchBytes = op.PatchBytes.IsEmpty ? null : op.PatchBytes.ToArray(),
                 StateBytes = op.StateBytes.IsEmpty ? null : op.StateBytes.ToArray(),
                 DeepDesyncCrc = op.DeepDesyncCrc,
-                ExecutedConfigVersion = op.ExecutedConfigVersion
+                ExecutedConfigVersion = op.ExecutedConfigVersion,
+                Debug = op.Debug,
             };
         }
 
-        public async Task<VoidCallResponse> CallVoidAsync(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
+        public async Task<VoidCallResponse> CallVoidAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
         {
             var call = new RpcCall
             {
@@ -213,7 +216,7 @@ namespace SharedMeta.Client.Network
             };
         }
 
-        public async Task<ByteCallResponse> CallBytesAsync(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
+        public async Task<ByteCallResponse> CallBytesAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
         {
             var call = new RpcCall
             {
@@ -244,7 +247,8 @@ namespace SharedMeta.Client.Network
                 PatchBytes = op.PatchBytes.IsEmpty ? null : op.PatchBytes.ToArray(),
                 StateBytes = op.StateBytes.IsEmpty ? null : op.StateBytes.ToArray(),
                 DeepDesyncCrc = op.DeepDesyncCrc,
-                ExecutedConfigVersion = op.ExecutedConfigVersion
+                ExecutedConfigVersion = op.ExecutedConfigVersion,
+                Debug = op.Debug,
             };
         }
 
@@ -253,13 +257,13 @@ namespace SharedMeta.Client.Network
         /// no auto-retry. Completes as soon as the connection hands the message off.
         /// Server-side errors are never reported back.
         /// </summary>
-        public ValueTask SendSignalAsync(ushort methodId, byte[] args)
+        public ValueTask SendSignalAsync(ushort methodId, ReadOnlyMemory<byte> args)
         {
             var request = new SignalCallRequest
             {
                 EntityId = _entityId,
                 MethodId = methodId,
-                Payload = args ?? Array.Empty<byte>()
+                Payload = args
             };
 
             // Fire-and-forget at the dispatcher level too — we do NOT await the Task here.

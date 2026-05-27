@@ -34,10 +34,6 @@ namespace SharedMeta.Generator
                 var interfaceName = symbol.Name;
                 var namespaceName = symbol.ContainingNamespace.ToDisplayString();
 
-                // Client Proxy Generation (legacy IMetaProvider-based)
-                var clientSource = ClientProxyGenerator.Generate(interfaceName, namespaceName, node);
-                spc.AddSource($"{interfaceName}Client.g.cs", clientSource);
-
                 // Server Dispatcher Generation (with trigger support)
                 var serverSource = ServerDispatcherGenerator.Generate(interfaceName, namespaceName, node, symbol, ctx.SemanticModel.Compilation);
                 spc.AddSource($"{interfaceName}Dispatcher.g.cs", serverSource);

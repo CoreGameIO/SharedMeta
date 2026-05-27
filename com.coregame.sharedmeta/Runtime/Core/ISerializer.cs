@@ -4,7 +4,21 @@ using System.Buffers;
 namespace SharedMeta.Core
 {
     /// <summary>
-    /// Writes multiple values into a payload sequentially.
+    /// Writes multiple values into a payload sequentially. Backed by a pool-rented buffer
+    /// where the implementation supports it (MemoryPack); MessagePack falls back to its
+    /// own MemoryStream and copies once on <see cref="Complete"/>.
+    /// <para>
+    /// Two lifecycle modes:
+    /// <list type="bullet">
+    ///   <item><b>Pooled (cached):</b> container owns the writer, calls <see cref="Reset"/>
+    ///     between uses. <see cref="IDisposable.Dispose"/> is a no-op. The
+    ///     <see cref="ReadOnlyMemory{T}"/> returned by <see cref="Complete"/> stays valid
+    ///     until the NEXT <see cref="Reset"/>. Typical: <c>IServerRecordContext.AcquireWriter()</c>.</item>
+    ///   <item><b>Transient:</b> caller owns via <c>using</c>. <see cref="IDisposable.Dispose"/>
+    ///     returns the pool buffer to <see cref="ArrayPool{T}"/>. ROM lifetime = until Dispose.
+    ///     Typical: ad-hoc test code, one-shot scripts.</item>
+    /// </list>
+    /// </para>
     /// </summary>
     public interface IPayloadWriter : IDisposable
     {
@@ -14,27 +28,17 @@ namespace SharedMeta.Core
         void Write<T>(T value);
 
         /// <summary>
-        /// Finalize and return the completed payload as bytes.
+        /// Finalize and return the completed payload as ROM over the writer's internal buffer.
+        /// ROM is valid until the next <see cref="Reset"/> or <see cref="IDisposable.Dispose"/>
+        /// — caller MUST consume (or <c>.ToArray()</c>) before either is called.
         /// </summary>
-        byte[] Complete();
+        ReadOnlyMemory<byte> Complete();
 
         /// <summary>
-        /// True when the writer can transfer its internal pool-rented buffer to the caller
-        /// via <see cref="CompleteAsRented"/> without copying. Implementations that don't
-        /// pool their working buffer (e.g. MessagePack's MemoryStream-backed writer) return
-        /// false and callers must fall back to <see cref="Complete"/>.
+        /// Re-arm the writer for next use. Cheap; keeps the existing pool buffer.
+        /// Cached/pooled writers call this between sequential <see cref="Complete"/>+use cycles.
         /// </summary>
-        bool SupportsRentedComplete { get; }
-
-        /// <summary>
-        /// Finalize and transfer ownership of the writer's internal buffer to the caller.
-        /// When <see cref="SupportsRentedComplete"/> is true, the returned <paramref name="buffer"/>
-        /// was rented from <see cref="ArrayPool{T}.Shared"/> and the caller is responsible for
-        /// returning it (either directly or via <c>PooledPayloadRegistry.AcquireExisting</c>
-        /// + <c>Release</c>). After this call, <see cref="IDisposable.Dispose"/> is a no-op —
-        /// the writer no longer owns a buffer.
-        /// </summary>
-        void CompleteAsRented(out byte[] buffer, out int length);
+        void Reset();
     }
 
     /// <summary>
@@ -82,9 +86,23 @@ namespace SharedMeta.Core
         /// implementation-defined: stock codec returns ROM over a fresh GC-managed byte[];
         /// grain-scoped serializer returns ROM over its internal scratch buffer, valid only
         /// until the next <c>ResetScratch</c> (called at the start of each Handle*Async).
-        /// Caller MUST <c>.ToArray()</c> if it needs to outlive the current invocation.
+        /// Caller MUST <c>.ToArray()</c> if it needs to outlive the current invocation —
+        /// or use <see cref="PackForExternalUsage{T}"/> which encodes that intent in one call.
         /// </summary>
         ReadOnlyMemory<byte> Pack<T>(T value);
+
+        /// <summary>
+        /// Serialize one value AS A GRAIN-EXIT PAYLOAD — returns a fresh GC-managed
+        /// <c>byte[]</c> whose lifetime is independent of any per-grain scratch buffer.
+        /// Use at every site where the result crosses an Orleans grain boundary, lands in
+        /// a wire DTO, or is otherwise observed past the current grain method.
+        /// <para>
+        /// Return type is <c>byte[]</c> (not <see cref="ReadOnlyMemory{T}"/>) so callers
+        /// that need a byte array don't pay a second <c>.ToArray()</c> copy — and so the
+        /// "independent allocation" contract is encoded in the method signature itself.
+        /// </para>
+        /// </summary>
+        byte[] PackForExternalUsage<T>(T value);
 
         T Unpack<T>(byte[] data);
 
@@ -95,6 +113,11 @@ namespace SharedMeta.Core
         // lets callers feed pool-backed slices without converting to byte[].
         void Pack<T>(T value, IBufferWriter<byte> writer);
         T Unpack<T>(ReadOnlyMemory<byte> data);
+
+        // Span overload — for sync codec sites where the source is already a span
+        // (e.g. generated server dispatcher reads payload.Span). Saves one Span accessor
+        // hop relative to the ROM overload. Cannot cross await, ref-struct-clean.
+        T Unpack<T>(ReadOnlySpan<byte> data);
 
         // Runtime type support (for reflection scenarios). Same ROM contract as Pack<T>(T).
         ReadOnlyMemory<byte> Pack(Type type, object value);

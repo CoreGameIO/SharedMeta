@@ -12,8 +12,8 @@ namespace SharedMeta.Server.Core.Grains
     /// across the SessionManager grain hop, so the source slice is safe to recycle by the
     /// time the next RPC arrives — in-silo single-thread grain execution).
     /// </summary>
-    [GenerateSerializer]
-    public class EntitySnapshot
+    [GenerateSerializer, Immutable]
+    public struct EntitySnapshot
     {
         [Id(0)] public ReadOnlyMemory<byte> StateBytes { get; set; }
         [Id(1)] public long CurrentSequenceNumber { get; set; }

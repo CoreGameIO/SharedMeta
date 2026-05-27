@@ -174,16 +174,16 @@ internal static partial class Log
     // 0.24.0+ Signature-handshake tracing. Three transition points covering every path
     // a client takes through phase-1 / phase-2. Read alongside ClientDispatcher's mirror
     // log entries on the client side — together they trace the complete negotiation flow.
-    [LoggerMessage(Level = LogLevel.Information, Message = "Handshake[{PlayerId}] phase-1 HIT: clientHash=0x{ClientHash:X16} known, serverHash=0x{ServerHash:X16}, annotation: {StatusesCount} methods ({RejectedCount} rejected, {ForcePatchCount} force-patch)")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Handshake[{PlayerId}] phase-1 HIT: clientHash=0x{ClientHash:X16} known, serverHash=0x{ServerHash:X16}, annotation: {StatusesCount} methods ({RejectedCount} rejected, {ForcePatchCount} force-patch)")]
     public static partial void HandshakeAnnotationFromCache(this ILogger logger, string playerId, ulong clientHash, ulong serverHash, int statusesCount, int rejectedCount, int forcePatchCount);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Handshake[{PlayerId}] phase-1 MISS: clientHash=0x{ClientHash:X16} unknown, serverHash=0x{ServerHash:X16}; needs phase-2 registration")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Handshake[{PlayerId}] phase-1 MISS: clientHash=0x{ClientHash:X16} unknown, serverHash=0x{ServerHash:X16}; needs phase-2 registration")]
     public static partial void HandshakeNeedsRegistration(this ILogger logger, string playerId, ulong clientHash, ulong serverHash);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Handshake[{PlayerId}] phase-2 REGISTER: clientHash=0x{ClientHash:X16} ({KnownMethodsCount} methods) -> serverHash=0x{ServerHash:X16}, annotation: {RejectedCount} rejected, {ForcePatchCount} force-patch, {ServerOnlyCount} server-only (client doesn't know)")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Handshake[{PlayerId}] phase-2 REGISTER: clientHash=0x{ClientHash:X16} ({KnownMethodsCount} methods) -> serverHash=0x{ServerHash:X16}, annotation: {RejectedCount} rejected, {ForcePatchCount} force-patch, {ServerOnlyCount} server-only (client doesn't know)")]
     public static partial void HandshakeSignatureRegistered(this ILogger logger, string playerId, ulong clientHash, int knownMethodsCount, ulong serverHash, int rejectedCount, int forcePatchCount, int serverOnlyCount);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Session not connected on connection {ConnectionId} ({Operation}) — pushed RequireSessionReconnect, expecting client to re-handshake")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Session not connected on connection {ConnectionId} ({Operation}) — pushed RequireSessionReconnect, expecting client to re-handshake")]
     public static partial void HandshakeSessionRecoveryPrompted(this ILogger logger, string connectionId, string operation);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "SessionConnect error")]

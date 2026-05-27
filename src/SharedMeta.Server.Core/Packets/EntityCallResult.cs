@@ -12,8 +12,8 @@ namespace SharedMeta.Server.Core.Grains
     /// before returning. SessionManagerGrain forwards the payload unchanged into the wire
     /// frame and releases the pool ref-count when delivery is acknowledged.
     /// </summary>
-    [GenerateSerializer]
-    public class EntityCallResult
+    [GenerateSerializer, Immutable]
+    public struct EntityCallResult
     {
         /// <summary>Entity-level sequence number after this operation.</summary>
         [Id(0)] public long EntitySequenceNumber { get; set; }

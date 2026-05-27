@@ -28,6 +28,16 @@ namespace SharedMeta.Core.Network
         string? EntityId { get; }
 
         /// <summary>
+        /// 0.24.0+ Highest per-entity broadcast sequence number the client has observed for the
+        /// network's bound entity. Surfaced for desync diagnostic — generated <c>*ApiClient</c>
+        /// logs this alongside the server-stamped <c>response.Debug</c> ("seq=N") so a desync
+        /// reader can immediately tell whether the client's local replay ran against a stale
+        /// state (gap between client seq and server seq → ordering issue, broadcast not yet
+        /// applied) or a matching state (true result-computation divergence).
+        /// </summary>
+        long LastKnownEntitySequence { get; }
+
+        /// <summary>
         /// 0.24.0+ Annotated client signature returned by the server (verdict + id mapping).
         /// Set by <c>ClientDispatcher</c> after <c>SessionConnect</c> / phase-2
         /// <c>RegisterClientSignature</c>, or restored from <see cref="IServerAnnotationCache"/>
@@ -65,18 +75,18 @@ namespace SharedMeta.Core.Network
         /// index from <c>GameMethodIds</c>, stamped on <c>RpcCall.MethodId</c> — the server
         /// translates it to its own server-side index via the signature mapping.</para>
         /// </summary>
-        Task<CallResponse<T>> CallAsync<T>(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
+        Task<CallResponse<T>> CallAsync<T>(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
 
         /// <summary>
         /// Call a void method. See <see cref="CallAsync{T}"/> for the parameter contract.
         /// </summary>
-        Task<VoidCallResponse> CallVoidAsync(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
+        Task<VoidCallResponse> CallVoidAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
 
         /// <summary>
         /// Call a method and get raw bytes result (for serializer-specific deserialization).
         /// See <see cref="CallAsync{T}"/> for the parameter contract.
         /// </summary>
-        Task<ByteCallResponse> CallBytesAsync(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
+        Task<ByteCallResponse> CallBytesAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
 
         /// <summary>
         /// Send a desync follow-up report (deep desync detection).
@@ -95,7 +105,7 @@ namespace SharedMeta.Core.Network
         /// the message is handed off to the wire; it does NOT represent server execution.
         /// Default implementation throws — transports that do not support signals must opt in.
         /// </summary>
-        ValueTask SendSignalAsync(ushort methodId, byte[] args)
+        ValueTask SendSignalAsync(ushort methodId, ReadOnlyMemory<byte> args)
             => throw new System.NotSupportedException(
                 "This transport does not support fire-and-forget signals. Use a MetaMethod without [Signal] or switch to a transport that supports signals (InProcess, SignalR, HttpPolling).");
 

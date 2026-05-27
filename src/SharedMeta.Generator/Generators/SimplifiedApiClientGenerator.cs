@@ -404,9 +404,10 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
             sb.AppendLine();
 
-            sb.AppendLine("        private void SetError(Exception ex, ushort methodId)");
+            sb.AppendLine("        private void SetError(Exception ex, ushort methodId, string methodName = \"\")");
             sb.AppendLine("        {");
-            sb.AppendLine("            MetaLog.Error($\"[{ServiceName} methodId={methodId}] Service error\", ex);");
+            sb.AppendLine("            var label = string.IsNullOrEmpty(methodName) ? $\"methodId={methodId}\" : $\"{methodName} (methodId={methodId})\";");
+            sb.AppendLine("            MetaLog.Error($\"[{ServiceName}.{label}] Service error\", ex);");
             sb.AppendLine("            _errorException = ex;");
             sb.AppendLine("            OnServiceError?.Invoke(ServiceName, ex);");
             sb.AppendLine("        }");
@@ -878,6 +879,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"                if (!{fieldName}.AreEqual(serverResult, localResult))");
                     sb.AppendLine("                {");
                     sb.AppendLine($"                    _diagnostics?.OnResultMismatch(ServiceName, \"{methodAlias}\", serverResult, localResult);");
+                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult}} local={{localResult}} serverSeq={{response.Debug ?? \"<none>\"}} clientSeq={{_network.LastKnownEntitySequence}}\");");
                     if (serializer == DetectedSerializer.MemoryPack)
                         sb.AppendLine($"                    var localResultBytes = MemoryPackSerializer.Serialize(localResult);");
                     else
@@ -892,6 +894,7 @@ namespace SharedMeta.Generator.Generators
                     GenerateResultByteComparison(sb, returnType, serializer, "response.ResultBytes", "                ");
                     sb.AppendLine("                {");
                     sb.AppendLine($"                    _diagnostics?.OnResultMismatch(ServiceName, \"{methodAlias}\", serverResult, localResult);");
+                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult}} local={{localResult}} serverSeq={{response.Debug ?? \"<none>\"}} clientSeq={{_network.LastKnownEntitySequence}}\");");
                     GenerateResultMismatchReport(sb, methodAlias, "response.ResultBytes", "localResultBytes", "                    ");
                     sb.AppendLine($"                    throw new DesyncException(ServiceName, \"{methodAlias}\", serverResult, localResult);");
                     sb.AppendLine("                }");
@@ -914,7 +917,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                _stateContainer.NotifyMutated();");
             }
             sb.AppendLine("                }");
-            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
+            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, \"{methodAlias}\"); throw; }}");
 
             sb.AppendLine("            }");
             sb.AppendLine("            finally");
@@ -955,12 +958,16 @@ namespace SharedMeta.Generator.Generators
             {
                 // Generic serializer — always use writer for consistent length-prefixed format.
                 // Server dispatcher reads with CreateReader() which expects length-prefixed data.
-                sb.AppendLine("            using var writer = _serializer.CreateWriter();");
+                // No `using` — writer is pool-owned, Reset() between uses; the Complete()
+                // ROM is valid until the next Reset on this writer (well past the awaited
+                // RPC's wire serialization).
+                sb.AppendLine("            var writer = _serializer.CreateWriter();");
+                sb.AppendLine("            writer.Reset();");
                 foreach (var param in method.ParameterList.Parameters)
                 {
                     sb.AppendLine($"            writer.Write({param.Identifier.Text});");
                 }
-                sb.AppendLine("            var argsBytes = writer.Complete();");
+                sb.AppendLine("            System.ReadOnlyMemory<byte> argsBytes = writer.Complete();");
             }
         }
 
@@ -1071,7 +1078,7 @@ namespace SharedMeta.Generator.Generators
             }
 
             sb.AppendLine("            }");
-            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
+            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            _stateContainer.NotifyMutated();");
@@ -1231,7 +1238,7 @@ namespace SharedMeta.Generator.Generators
             }
 
             sb.AppendLine("            }");
-            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
+            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            _stateContainer.NotifyMutated();");
@@ -1388,7 +1395,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                localResult = {awaitPrefix}{coServiceRef}.{methodName}({callArgs});");
             }
             sb.AppendLine("            }");
-            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
+            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            _stateContainer.NotifyMutated();");
@@ -1561,7 +1568,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                _tracker.FlushAndNotify();");
             sb.AppendLine("                _stateContainer.NotifyMutated();");
             sb.AppendLine("                }");
-            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
+            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, \"{methodAlias}\"); throw; }}");
 
             // Return server result
             if (!isVoidReturn)
@@ -1641,7 +1648,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                _tracker.FlushAndNotify();");
             sb.AppendLine($"                OnStateRefreshed?.Invoke(_state);");
             sb.AppendLine("                }");
-            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
+            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, \"{methodAlias}\"); throw; }}");
 
             // Return server result
             if (!isVoidReturn)
@@ -2429,9 +2436,9 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}        EntityId = _network.EntityId ?? string.Empty,");
             sb.AppendLine($"{indent}        ServiceName = ServiceName,");
             sb.AppendLine($"{indent}        MethodName = \"{methodAlias}\",");
-            sb.AppendLine($"{indent}        ArgsBytes = argsBytes,");
+            sb.AppendLine($"{indent}        ArgsBytes = argsBytes.ToArray(),");
             sb.AppendLine($"{indent}        ClientPatchBytes = _ddLocalPatchBytes,");
-            sb.AppendLine($"{indent}        MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Patch");
+            sb.AppendLine($"{indent}        MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Patch,");
             sb.AppendLine($"{indent}    }});");
             sb.AppendLine($"{indent}}}");
         }
@@ -2448,10 +2455,10 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}    EntityId = _network.EntityId ?? string.Empty,");
             sb.AppendLine($"{indent}    ServiceName = ServiceName,");
             sb.AppendLine($"{indent}    MethodName = \"{methodAlias}\",");
-            sb.AppendLine($"{indent}    ArgsBytes = argsBytes,");
+            sb.AppendLine($"{indent}    ArgsBytes = argsBytes.ToArray(),");
             sb.AppendLine($"{indent}    ServerResultBytes = {serverBytesExpr} ?? System.Array.Empty<byte>(),");
             sb.AppendLine($"{indent}    LocalResultBytes = {localBytesExpr} ?? System.Array.Empty<byte>(),");
-            sb.AppendLine($"{indent}    MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Result");
+            sb.AppendLine($"{indent}    MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Result,");
             sb.AppendLine($"{indent}}});");
         }
 
@@ -2465,10 +2472,10 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}    EntityId = _network.EntityId ?? string.Empty,");
             sb.AppendLine($"{indent}    ServiceName = ServiceName,");
             sb.AppendLine($"{indent}    MethodName = \"{methodAlias}\",");
-            sb.AppendLine($"{indent}    ArgsBytes = argsBytes,");
+            sb.AppendLine($"{indent}    ArgsBytes = argsBytes.ToArray(),");
             sb.AppendLine($"{indent}    ServerRandomDelta = {serverDeltaExpr},");
             sb.AppendLine($"{indent}    LocalRandomDelta = {localDeltaExpr},");
-            sb.AppendLine($"{indent}    MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Random");
+            sb.AppendLine($"{indent}    MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Random,");
             sb.AppendLine($"{indent}}});");
         }
 

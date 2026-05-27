@@ -12,8 +12,37 @@ namespace SharedMeta.Server
         private readonly IMetaSerializer _serializer;
         private readonly Dictionary<Type, object> _wrapperCache = new();
         
+        // Per-context recorder writer. Lazily created on first BeginOperation, then Reset()
+        // between operations — eliminates the per-RPC writer allocation in the prior pattern.
         private IPayloadWriter? _writer;
         private PayloadDebug? _debug;
+        // Cached buffer writer for multi-parameter cross-entity arg packing in generated
+        // EntityRecorder methods. Cleared on each Acquire so callers see offset 0; lives for
+        // the duration of the grain method (resettable just like _scratchPool). Avoids
+        // `new ArrayBufferWriter<byte>()` per cross-entity multi-param call.
+        private System.Buffers.ArrayBufferWriter<byte>? _argsBufferWriter;
+        // Cached IPayloadWriter for cross-entity args (separate from _writer which serves
+        // the operation recorder). Returned to generated EntityCallerHelpers from
+        // AcquireWriter(); Reset on each Acquire so callers always start at offset 0.
+        private IPayloadWriter? _crossEntityArgsWriter;
+
+        public System.Buffers.IBufferWriter<byte> AcquireArgsBufferWriter()
+        {
+            if (_argsBufferWriter == null) _argsBufferWriter = new System.Buffers.ArrayBufferWriter<byte>();
+            else _argsBufferWriter.Clear();
+            return _argsBufferWriter;
+        }
+
+        public IPayloadWriter AcquireWriter()
+        {
+            // Generated EntityCallerHelpers calls this once per cross-entity RPC to pack args.
+            // First call: lazy-create; subsequent: Reset to reuse the pool buffer. The returned
+            // writer's Complete() ROM lifetime extends until the NEXT AcquireWriter call on
+            // this context — long enough for the awaited grain hop to complete.
+            if (_crossEntityArgsWriter == null) _crossEntityArgsWriter = _serializer.CreateWriter();
+            else _crossEntityArgsWriter.Reset();
+            return _crossEntityArgsWriter;
+        }
 
         public ServerMetaContext(TState state, IMetaSerializer serializer)
         {
@@ -58,46 +87,29 @@ namespace SharedMeta.Server
         public PayloadDebug? CurrentDebug => _debug;
 
         /// <summary>
-        /// Start recording a new operation.
+        /// Start recording a new operation. Reuses the cached writer (Reset between uses) —
+        /// no per-RPC writer allocation on the steady-state path.
         /// </summary>
         public void BeginOperation()
         {
-            _writer = _serializer.CreateWriter();
+            if (_writer == null) _writer = _serializer.CreateWriter();
+            else _writer.Reset();
             _debug = DebugEnabled ? new PayloadDebug() : null;
             _crossEntityCalls = null;
         }
 
         /// <summary>
-        /// Complete recording and return the payload bytes.
+        /// Complete recording and return the payload as ROM over the writer's internal pool
+        /// buffer. ROM lifetime: valid until the NEXT <see cref="BeginOperation"/> on this
+        /// context. Callers that need the bytes to outlive the next operation must copy
+        /// (typically into the per-grain scratch buffer in <c>MetaProviderBase.HandleCallAsync</c>).
         /// </summary>
-        public byte[] EndOperation()
+        public ReadOnlyMemory<byte> EndOperation()
         {
             if (_writer == null) throw new InvalidOperationException("No operation in progress.");
-            var payloadBytes = _writer.Complete();
-            // Dispose returns any pool-rented buffers (e.g. MemoryPackPayloadWriter's ArrayPool
-            // buffer). Required for the pooled-writer optimization to actually return memory.
-            _writer.Dispose();
-            _writer = null;
-            return payloadBytes;
-        }
-
-        /// <summary>
-        /// Complete recording and transfer the writer's underlying pool-rented buffer to the
-        /// caller. Returns <c>true</c> when the writer supports ownership transfer (e.g.
-        /// MemoryPack's ArrayPool-backed implementation) — <paramref name="buffer"/> is then
-        /// the rented array and the caller must return it to <see cref="System.Buffers.ArrayPool{T}.Shared"/>
-        /// (typically through <c>PooledPayloadRegistry.AcquireExisting</c>). When the writer
-        /// does not support transfer, falls back to <see cref="EndOperation"/> and returns
-        /// <c>false</c>; the caller treats <paramref name="buffer"/> as an ordinary GC byte[].
-        /// </summary>
-        public bool EndOperationAsRented(out byte[] buffer, out int length)
-        {
-            if (_writer == null) throw new InvalidOperationException("No operation in progress.");
-            bool supportsRented = _writer.SupportsRentedComplete;
-            _writer.CompleteAsRented(out buffer, out length);
-            _writer.Dispose();
-            _writer = null;
-            return supportsRented;
+            return _writer.Complete();
+            // Note: _writer is NOT cleared / disposed here — it's cached for the next
+            // BeginOperation. The returned ROM is valid until that next BeginOperation Resets.
         }
 
         /// <summary>
@@ -123,6 +135,10 @@ namespace SharedMeta.Server
         /// operation context. The returned <see cref="NestedOperationFrame"/> must be passed
         /// back to <see cref="PopNestedOperation"/> to restore the outer state. Used by
         /// the gift-to-self short-circuit path in <c>EntityGrain.EntityCallHandler</c>.
+        /// <para>
+        /// Nesting is rare (sibling-on-same-entity self-call) — the inner gets a fresh
+        /// transient writer; we don't pool a second writer just for this path.
+        /// </para>
         /// </summary>
         public NestedOperationFrame PushNestedOperation()
         {
@@ -134,16 +150,19 @@ namespace SharedMeta.Server
         }
 
         /// <summary>
-        /// End the inner operation, return its payload bytes, and restore the outer
-        /// recorder state captured by the matching <see cref="PushNestedOperation"/> call.
+        /// End the inner operation, return its payload bytes as a GC-managed byte[] (the
+        /// inner writer's pool buffer is disposed here so the bytes survive past restoration),
+        /// and restore the outer recorder state captured by the matching
+        /// <see cref="PushNestedOperation"/> call.
         /// Inner cross-entity calls collected during the nested dispatch are returned via
-        /// <paramref name="nestedCrossEntityCalls"/> so the caller can attach them to the
-        /// inner result without merging them into the outer's list.
+        /// <paramref name="nestedCrossEntityCalls"/>.
         /// </summary>
         public byte[] PopNestedOperation(NestedOperationFrame frame, out List<CrossEntityOperationInfo>? nestedCrossEntityCalls)
         {
             if (_writer == null) throw new InvalidOperationException("No nested operation in progress.");
-            var innerBytes = _writer.Complete();
+            // Materialize to GC byte[] before disposing the inner writer — its ROM would
+            // be invalidated by the pool buffer return.
+            var innerBytes = _writer.Complete().ToArray();
             _writer.Dispose();   // return inner writer's pool buffer
             nestedCrossEntityCalls = _crossEntityCalls;
             _writer = frame.OuterWriter;
@@ -202,13 +221,13 @@ namespace SharedMeta.Server
         /// Set by the MetaProvider to enable calling other entities.
         /// Returns CrossEntityCallInfo with EntitySequenceNumber and ResultBytes.
         /// </summary>
-        public Func<string, ushort, byte[], long, Task<CrossEntityOperationInfo>>? EntityCallHandler { get; set; }
+        public Func<string, ushort, ReadOnlyMemory<byte>, long, Task<CrossEntityOperationInfo>>? EntityCallHandler { get; set; }
 
         /// <summary>
         /// 0.22.0+: Handler for fire-and-forget cross-entity calls. Source grain dispatches
         /// without waiting; <see cref="CallEntityOneWay"/> returns immediately.
         /// </summary>
-        public Action<string, ushort, byte[], long>? EntityCallOneWayHandler { get; set; }
+        public Action<string, ushort, ReadOnlyMemory<byte>, long>? EntityCallOneWayHandler { get; set; }
 
         /// <summary>
         /// Handler for read-only cross-entity state access.
@@ -249,7 +268,7 @@ namespace SharedMeta.Server
         /// Implementation of IServerRecordContext.CallEntityAsync.
         /// Collects CrossEntityCallInfo as a side effect.
         /// </summary>
-        public async Task<byte[]> CallEntityAsync(string targetEntityId, ushort methodId, byte[] argsBytes)
+        public async Task<byte[]> CallEntityAsync(string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes)
         {
             if (EntityCallHandler == null)
             {
@@ -271,7 +290,7 @@ namespace SharedMeta.Server
         /// via an Orleans <c>[OneWay]</c> entry point. No <see cref="CrossEntityOperationInfo"/> is
         /// recorded (nothing to replay client-side), and no result is observed by the caller.
         /// </summary>
-        public void CallEntityOneWay(string targetEntityId, ushort methodId, byte[] argsBytes)
+        public void CallEntityOneWay(string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes)
         {
             if (EntityCallOneWayHandler == null)
             {

@@ -586,9 +586,24 @@ namespace SharedMeta.Core
         void BeginOperation();
 
         /// <summary>
-        /// Complete recording and return the payload bytes.
+        /// Complete recording and return the payload as ROM over the writer's internal buffer.
+        /// ROM lifetime: valid until the NEXT <see cref="BeginOperation"/> on this context.
         /// </summary>
-        byte[] EndOperation();
+        ReadOnlyMemory<byte> EndOperation();
+
+        /// <summary>
+        /// Return a pool-friendly <see cref="IPayloadWriter"/> for packing cross-entity args.
+        /// Implementations reuse a cached instance via <see cref="IPayloadWriter.Reset"/> —
+        /// no allocation per call. The returned writer's <see cref="IPayloadWriter.Complete"/>
+        /// ROM is valid until the NEXT call to <c>AcquireWriter</c> on this context.
+        /// <para>
+        /// Default implementation returns a fresh transient writer per call (no pooling). It's
+        /// the safe fallback for non-server contexts; <see cref="IPayloadWriter.Dispose"/> on
+        /// the returned writer is needed only for transients — pooled implementations make
+        /// Dispose a no-op.
+        /// </para>
+        /// </summary>
+        IPayloadWriter AcquireWriter() => Serializer.CreateWriter();
 
         /// <summary>
         /// Get current debug info and reset.
@@ -603,14 +618,21 @@ namespace SharedMeta.Core
         /// <summary>
         /// Call a method on another entity asynchronously.
         /// Used by generated EntityCaller interfaces for cross-entity communication.
+        /// <para>
+        /// Args are placed into the target's <c>RpcCall.Payload</c> (<see cref="ReadOnlyMemory{T}"/>).
+        /// <c>RpcCall</c> itself is class-level <c>[Immutable]</c>, so Orleans skips the in-silo
+        /// defensive deep-copy for the entire DTO — passing scratch-pool slices is safe. The
+        /// caller awaits this call so the underlying buffer stays valid until the target returns;
+        /// for fire-and-forget see <see cref="CallEntityOneWay"/>.
+        /// </para>
         /// </summary>
         /// <param name="targetEntityId">The ID of the target entity.</param>
         /// <param name="methodId">0.24.0+ Server-side global method index from <c>GameMethodIds</c>.
-        /// <param name="argsBytes">Serialized method arguments.</param>
         /// Generated recorders stamp it directly so the target grain doesn't have to resolve
         /// from the string fields. <c>0</c> means legacy path / not provided.</param>
+        /// <param name="argsBytes">Serialized method arguments.</param>
         /// <returns>Serialized result bytes (empty for void methods).</returns>
-        Task<byte[]> CallEntityAsync(string targetEntityId, ushort methodId, byte[] argsBytes);
+        Task<byte[]> CallEntityAsync(string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes);
 
         /// <summary>
         /// 0.22.0+: Fire-and-forget cross-entity call. Used by generated EntityCaller wrappers
@@ -619,13 +641,35 @@ namespace SharedMeta.Core
         /// invocation. No result is recorded into the replay payload — the client-side replayer
         /// for the same call site consumes nothing.
         /// <para>
+        /// <b>Lifetime contract:</b> the source does NOT await the OneWay, so the underlying
+        /// bytes MUST outlive the target's wire-serialization. Callers passing scratch-backed
+        /// ROM must <c>.ToArray()</c> before handing it in — for GC-managed <c>byte[]</c> (e.g.
+        /// <c>MemoryPackSerializer.Serialize</c> output), the byte[] is already independent and
+        /// can be passed as-is.
+        /// </para>
+        /// <para>
         /// Default implementation throws — implementations that don't support OneWay (e.g.
         /// <see cref="NullServerRecordContext"/>) can remain on the default.
         /// </para>
         /// </summary>
-        void CallEntityOneWay(string targetEntityId, ushort methodId, byte[] argsBytes)
+        void CallEntityOneWay(string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes)
             => throw new NotSupportedException(
                 "This IServerRecordContext does not support OneWay cross-entity calls.");
+
+        /// <summary>
+        /// Return a per-context-cached <see cref="System.Buffers.IBufferWriter{T}"/> for packing
+        /// multi-parameter cross-entity args. Implementations are expected to clear the writer
+        /// before returning so the caller starts at offset 0. Avoids the per-call
+        /// <c>new ArrayBufferWriter&lt;byte&gt;()</c> allocation in generated EntityRecorder
+        /// methods with more than one parameter.
+        /// <para>
+        /// Default implementation returns a fresh <see cref="System.Buffers.ArrayBufferWriter{T}"/>
+        /// — implementations that want zero-alloc cross-entity dispatch should override with a
+        /// cleared cached instance. Generated EntityRecorder code calls this; user code should not.
+        /// </para>
+        /// </summary>
+        System.Buffers.IBufferWriter<byte> AcquireArgsBufferWriter()
+            => new System.Buffers.ArrayBufferWriter<byte>();
     }
 
     /// <summary>

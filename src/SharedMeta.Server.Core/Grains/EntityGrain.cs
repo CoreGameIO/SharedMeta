@@ -223,7 +223,11 @@ namespace SharedMeta.Server.Core.Grains
                             GrainFactory, serviceName, targetEntityId);
                         if (resolved is IEntityGrain<TState>)
                         {
-                            return await providerBase.HandleNestedCallAsync(targetEntityId, methodId, argsBytes);
+                            // Self-call short-circuit doesn't go through Orleans — pass ROM bytes
+                            // directly (no copy). HandleNestedCallAsync still uses byte[] for now
+                            // to keep its internal recorder/replay shape stable; cheap .ToArray()
+                            // copy here is the only allocation on this very-rare path.
+                            return await providerBase.HandleNestedCallAsync(targetEntityId, methodId, argsBytes.ToArray());
                         }
                     }
 
@@ -819,7 +823,7 @@ namespace SharedMeta.Server.Core.Grains
 
                 // isClientOriginated: true → provider rejects [MetaMethod(GenerateClientApi=false)]
                 // methods. Cross-entity peers land at HandleCallFromEntityAsync below with false.
-                var providerResult = await _provider.HandleCallAsync(call, isClientOriginated: true, requirePatchForFanOut: requirePatchForFanOut);
+                var providerResult = await _provider.HandleCallAsync(call, isClientOriginated: true, requirePatchForFanOut: requirePatchForFanOut, entitySequenceNumber: operationSequence);
                 forcePersist = providerResult.ForcePersist;
 
                 // Take outgoing pool-tracked payloads from the provider. Sender (us) does NOT
@@ -920,7 +924,7 @@ namespace SharedMeta.Server.Core.Grains
                 // calling entity's public method already authorized the originating client
                 // through its own access policy. [MetaMethod(GenerateClientApi=false)] methods
                 // are reachable here.
-                var providerResult = await _provider.HandleCallAsync(call, isClientOriginated: false);
+                var providerResult = await _provider.HandleCallAsync(call, isClientOriginated: false, entitySequenceNumber: operationSequence);
                 forcePersist = providerResult.ForcePersist;
 
                 SharedMeta.Core.Memory.PooledPayload resultPayload = default;
@@ -1238,8 +1242,8 @@ namespace SharedMeta.Server.Core.Grains
         //     reference here so the slot returns to the pool — no consumer will ever do it.
         //   * Ref==0 tokens are byte[]-backed fallbacks (no registry slot); skip IncrementRef
         //     and Release for them entirely.
-        // EntityBroadcast carries PooledPayload by reference (Data is wrapped in
-        // Orleans.Concurrency.Immutable so in-silo hops share-by-reference; no deep copy).
+        // EntityBroadcast carries PooledPayload by reference — PooledPayload is class-level
+        // [Immutable] so Orleans skips defensive deep-copy on in-silo grain hops.
         private ValueTask DistributeBroadcasts(
             SharedMeta.Core.Memory.PooledPayload replayPayload,
             SharedMeta.Core.Memory.PooledPayload patchPayload,
@@ -1345,6 +1349,10 @@ namespace SharedMeta.Server.Core.Grains
                     sentCount++;
                     if (subscriberNeedsPatch) patchSent++;
                     else replaySent++;
+                    // Fan-out is transport machinery, not a state operation — the originating
+                    // Call entry already represents the state change at `operationSequence`.
+                    // Recording one row per subscriber here would multiply by fan-out factor
+                    // without adding diagnostic signal.
                 }
                 catch (Exception ex)
                 {

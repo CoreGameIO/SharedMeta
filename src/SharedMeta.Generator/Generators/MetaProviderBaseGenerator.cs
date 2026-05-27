@@ -196,7 +196,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        public byte[] GetStateBytes()");
             sb.AppendLine("        {");
             sb.AppendLine("            if (Context == null) return Array.Empty<byte>();");
-            sb.AppendLine("            return Context.Serializer.Pack(State).ToArray();");
+            sb.AppendLine("            return Context.Serializer.PackForExternalUsage(State);");
             sb.AppendLine("        }");
             sb.AppendLine();
 

@@ -174,14 +174,19 @@ namespace SharedMeta.Generator.Generators
             // (see [SimplifiedApiClientGenerator.cs:953-963]).
             if (method.Parameters.Length == 0)
             {
-                sb.AppendLine("            byte[] argsBytes = System.Array.Empty<byte>();");
+                sb.AppendLine("            System.ReadOnlyMemory<byte> argsBytes = System.ReadOnlyMemory<byte>.Empty;");
             }
             else
             {
-                sb.AppendLine("            using var payloadWriter = _serializer.CreateWriter();");
+                // Pooled writer: container-owned, no `using`. Reset() before write, the ROM
+                // returned from Complete() stays valid until the next Reset on this writer
+                // — long enough for the awaited QueryCallAsync to complete and the codec
+                // to send the bytes on the wire.
+                sb.AppendLine("            var payloadWriter = _serializer.CreateWriter();");
+                sb.AppendLine("            payloadWriter.Reset();");
                 foreach (var p in method.Parameters)
                     sb.AppendLine($"            payloadWriter.Write({p.Name});");
-                sb.AppendLine("            byte[] argsBytes = payloadWriter.Complete();");
+                sb.AppendLine("            System.ReadOnlyMemory<byte> argsBytes = payloadWriter.Complete();");
             }
 
             sb.AppendLine();

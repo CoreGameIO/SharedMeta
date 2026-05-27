@@ -103,9 +103,7 @@ namespace SharedMeta.Server.Core.Grains
         /// <summary>
         /// Get the current serialized state of this entity (read-only).
         /// Returns null if the entity hasn't been activated or has no state.
-        /// Marked [AlwaysInterleave] to prevent deadlocks in mutual cross-entity reads.
         /// </summary>
-        [AlwaysInterleave]
         Task<byte[]?> GetEntityStateAsync();
 
         /// <summary>

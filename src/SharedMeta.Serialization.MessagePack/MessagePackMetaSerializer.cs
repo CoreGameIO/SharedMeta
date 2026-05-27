@@ -22,6 +22,9 @@ namespace SharedMeta.Serialization.MessagePack
         public ReadOnlyMemory<byte> Pack<T>(T value)
             => MessagePackSerializer.Serialize(value, Options);
 
+        public byte[]  PackForExternalUsage<T>(T value)
+            => MessagePackSerializer.Serialize(value, Options);
+
         public T Unpack<T>(byte[] data)
             => MessagePackSerializer.Deserialize<T>(data, Options)!;
 
@@ -39,6 +42,14 @@ namespace SharedMeta.Serialization.MessagePack
 
         public T Unpack<T>(ReadOnlyMemory<byte> data)
             => MessagePackSerializer.Deserialize<T>(data, Options)!;
+
+        public T Unpack<T>(ReadOnlySpan<byte> data)
+        {
+            // MessagePack-CSharp's primary entry takes ROM/ReadOnlySequence. Wrap via ToArray —
+            // the Span overload's main win is on MemoryPack projects; MessagePack callers
+            // already pay a higher codec overhead per call.
+            return MessagePackSerializer.Deserialize<T>(data.ToArray(), Options)!;
+        }
 
         public ReadOnlyMemory<byte> Pack(Type type, object value)
             => MessagePackSerializer.Serialize(type, value, Options);

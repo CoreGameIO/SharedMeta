@@ -10,8 +10,8 @@ namespace SharedMeta.Server.Core.Grains
     /// <see cref="EntityCallResult"/> (returned from <c>HandleCallAsync</c> to SessionManager)
     /// carries the full pre-serialized <c>OpBytes</c> for the wire frame.
     /// </summary>
-    [GenerateSerializer]
-    public class CrossEntityCallReturn
+    [GenerateSerializer, Immutable]
+    public struct CrossEntityCallReturn
     {
         /// <summary>Target entity's sequence number after this operation. Used by the source
         /// grain to populate <c>CrossEntityCallInfo.EntitySequenceNumber</c> for client replay.</summary>

@@ -137,7 +137,15 @@ namespace SharedMeta.Server.Core
         /// keeps patch). Set by EntityGrain when its force-patch refcount contains the call.
         /// </param>
         /// <returns>Response and broadcasts to distribute.</returns>
-        ValueTask<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true, bool requirePatchForFanOut = false);
+        /// <param name="entitySequenceNumber">
+        /// 0.24.0+ The entity grain's seq value for this call (advanced by ++ in EntityGrain.HandleCallAsync
+        /// BEFORE invoking the provider). Stamped onto <c>MetaOperation.Debug</c> for response /
+        /// broadcast so client-side desync diagnostics can see exactly which entity-seq the server
+        /// ran the body against — invaluable for tracing ordering races between RPC results and
+        /// preceding broadcasts. Zero when invoked from a context that has no entity seq
+        /// (legacy callers, tests).
+        /// </param>
+        ValueTask<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true, bool requirePatchForFanOut = false, long entitySequenceNumber = 0);
 
         /// <summary>
         /// Handle an external event from a framework service asynchronously.

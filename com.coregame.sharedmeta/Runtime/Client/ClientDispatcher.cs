@@ -1289,6 +1289,21 @@ namespace SharedMeta.Client
         public int PendingRequestCount { get { lock (_lock) return _pendingRequests.Count; } }
 
         /// <summary>
+        /// 0.24.0+ Highest per-entity broadcast sequence the client has observed for the given
+        /// entity. Used by generated <c>*ApiClient</c> desync diagnostics to compare against the
+        /// server-stamped seq in <c>response.Debug</c>. Returns 0 when no broadcast has been
+        /// observed yet (cold subscribe + no broadcast since).
+        /// </summary>
+        public long GetLastKnownEntitySequence(string? entityId)
+        {
+            if (string.IsNullOrEmpty(entityId)) return 0;
+            lock (_lock)
+            {
+                return _lastKnownEntitySeq.TryGetValue(entityId, out var seq) ? seq : 0;
+            }
+        }
+
+        /// <summary>
         /// Reset dispatcher state for session restart (after supersede).
         /// Clears all subscriptions, handlers, buffer, and pending requests.
         /// </summary>

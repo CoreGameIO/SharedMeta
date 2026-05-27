@@ -197,7 +197,7 @@ namespace SharedMeta.Core.Transport
     /// carries a short diagnostic; other state fields are empty.
     /// </para>
     /// </summary>
-    [MemoryPackable, MessagePackObject, GenerateSerializer]
+    [MemoryPackable, MessagePackObject, GenerateSerializer, Immutable]
     public partial class SubscriptionResult
     {
         [Id(0), Key(0)] public string EntityId { get; set; } = "";

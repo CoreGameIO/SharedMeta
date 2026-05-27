@@ -87,6 +87,13 @@ namespace SharedMeta.Core.Transport
         IConnection Connection { get; }
 
         /// <summary>
+        /// 0.24.0+ Highest per-entity broadcast sequence the client has observed. Returns 0 when
+        /// no broadcast or Subscribe seed has been recorded yet. Used by generated <c>*ApiClient</c>
+        /// desync diagnostics to compare against the server-stamped seq in <c>response.Debug</c>.
+        /// </summary>
+        long GetLastKnownEntitySequence(string? entityId);
+
+        /// <summary>
         /// Subscribe to an entity and receive initial state.
         /// Auto-creates the entity on server if it doesn't exist.
         /// </summary>
