@@ -23,13 +23,13 @@ namespace SharedMeta.Server.Core.Session
     /// Payload type. Typically a small DTO carrying the original RPC call and any
     /// per-request metadata the caller needs to replay later.
     /// </typeparam>
-    public sealed class RpcOrderingBuffer<T> where T : class
+    public sealed class RpcOrderingBuffer<T>
     {
         private struct Slot
         {
             public bool HasValue;
             public long RequestId;
-            public T? Payload;
+            public T Payload;
         }
 
         private readonly Slot[] _slots;
@@ -81,8 +81,6 @@ namespace SharedMeta.Server.Core.Session
         /// </summary>
         public StashResult TryStash(long requestId, T payload)
         {
-            if (payload == null) throw new ArgumentNullException(nameof(payload));
-
             long offset = requestId - (_lastDispatchedRequestId + 1);
             if (offset < 0)
                 return StashResult.Stale;
@@ -106,12 +104,12 @@ namespace SharedMeta.Server.Core.Session
         /// both the head and <see cref="LastDispatchedRequestId"/>. Returns false if the
         /// head is empty (gap not yet filled) or the buffer is empty.
         /// </summary>
-        public bool TryDequeueNext(out long requestId, out T? payload)
+        public bool TryDequeueNext(out long requestId, out T payload)
         {
             if (_count == 0)
             {
                 requestId = 0;
-                payload = null;
+                payload = default!;
                 return false;
             }
 
@@ -119,7 +117,7 @@ namespace SharedMeta.Server.Core.Session
             if (!slot.HasValue || slot.RequestId != _lastDispatchedRequestId + 1)
             {
                 requestId = 0;
-                payload = null;
+                payload = default!;
                 return false;
             }
 
@@ -128,7 +126,7 @@ namespace SharedMeta.Server.Core.Session
 
             slot.HasValue = false;
             slot.RequestId = 0;
-            slot.Payload = null;
+            slot.Payload = default!;
             _count--;
             _head = (_head + 1) % _slots.Length;
             _lastDispatchedRequestId = requestId;
@@ -162,7 +160,7 @@ namespace SharedMeta.Server.Core.Session
             for (int i = 0; i < _slots.Length; i++)
             {
                 _slots[i].HasValue = false;
-                _slots[i].Payload = null;
+                _slots[i].Payload = default!;
                 _slots[i].RequestId = 0;
             }
             _head = 0;
