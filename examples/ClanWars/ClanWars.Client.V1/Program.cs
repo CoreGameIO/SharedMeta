@@ -7,7 +7,7 @@ using ClanWars.Client.Common;
 
 var options = new StressTestOptions
 {
-    ClientAppVersion = "1.0.0",
+    ClientAppVersion = "2.0.0",
     PlayerPrefix = "v1",
 };
 

@@ -32,13 +32,12 @@ namespace ClanWars.Shared
             await NotifyContainerPowerDelta(delta);
         }
 
-        public Task SubmitApplication(string playerId)
+        public void SubmitApplication(string playerId)
         {
-            if (S.Members.Contains(playerId)) return Task.CompletedTask;
-            if (S.Applications.Contains(playerId)) return Task.CompletedTask;
-            if (S.Members.Count >= C.MaxMembers) return Task.CompletedTask;
+            if (S.Members.Contains(playerId)) return;
+            if (S.Applications.Contains(playerId)) return;
+            if (S.Members.Count >= C.MaxMembers) return;
             S.Applications.Add(playerId);
-            return Task.CompletedTask;
         }
 
         public async Task<bool> RemoveMember(string playerId, int playerScore)
@@ -55,15 +54,15 @@ namespace ClanWars.Shared
             return true;
         }
 
-        public Task<bool> AcceptApplication(string playerId)
+        public OperationResult AcceptApplication(string playerId)
         {
-            if (Context.CallerId != S.LeaderId && !S.Officers.Contains(Context.CallerId ?? "")) return Task.FromResult(false);
-            if (!S.Applications.Remove(playerId)) return Task.FromResult(false);
-            if (S.Members.Count >= C.MaxMembers) return Task.FromResult(false);
+            if (Context.CallerId != S.LeaderId && !S.Officers.Contains(Context.CallerId ?? "")) return OperationResult.NoPermission;
+            if (!S.Applications.Remove(playerId)) return OperationResult.NoPlayer;
+            if (S.Members.Count >= C.MaxMembers) return OperationResult.PlayersLimit;
             // Don't add to Members yet — player may already be in another clan and decline.
             // Fire-and-forget the offer; profile will call back ConfirmJoin if they accept.
             GetIProfileService(playerId).OfferMembership(Context.EntityId ?? "");
-            return Task.FromResult(true);
+            return OperationResult.Ok;
         }
 
         /// <summary>
@@ -85,56 +84,56 @@ namespace ClanWars.Shared
             return true;
         }
 
-        public Task<bool> RejectApplication(string playerId)
+        public OperationResult RejectApplication(string playerId)
         {
-            if (Context.CallerId != S.LeaderId && !S.Officers.Contains(Context.CallerId ?? "")) return Task.FromResult(false);
-            return Task.FromResult(S.Applications.Remove(playerId));
+            if (Context.CallerId != S.LeaderId && !S.Officers.Contains(Context.CallerId ?? "")) return OperationResult.NoPermission;
+            return S.Applications.Remove(playerId) ? OperationResult.Ok : OperationResult.NoPlayer;
         }
 
-        public Task<bool> KickMember(string playerId)
+        public bool KickMember(string playerId)
         {
-            if (Context.CallerId != S.LeaderId) return Task.FromResult(false);
-            if (playerId == S.LeaderId) return Task.FromResult(false);
-            return Task.FromResult(S.Members.Remove(playerId));
+            if (Context.CallerId != S.LeaderId) return false;
+            if (playerId == S.LeaderId) return false;
+            return S.Members.Remove(playerId);
         }
 
         // ── v2-only mechanics ────────────────────────────────────────────────────
 
-        public Task<bool> PromoteToOfficer(string playerId)
+        public bool PromoteToOfficer(string playerId)
         {
-            if (Context.CallerId != S.LeaderId) return Task.FromResult(false);
-            if (!S.Members.Contains(playerId)) return Task.FromResult(false);
-            if (S.Officers.Contains(playerId)) return Task.FromResult(false);
-            if (S.Officers.Count >= C.MaxOfficers) return Task.FromResult(false);
+            if (Context.CallerId != S.LeaderId) return false;
+            if (!S.Members.Contains(playerId)) return false;
+            if (S.Officers.Contains(playerId)) return false;
+            if (S.Officers.Count >= C.MaxOfficers) return false;
             S.Officers.Add(playerId);
-            return Task.FromResult(true);
+            return true;
         }
 
-        public Task<bool> SendFriendshipProposal(string otherClanId)
+        public bool SendFriendshipProposal(string otherClanId)
         {
-            if (Context.CallerId != S.LeaderId && !S.Officers.Contains(Context.CallerId ?? "")) return Task.FromResult(false);
-            if (S.Friendships.Any(f => f.OtherClanId == otherClanId)) return Task.FromResult(false);
-            if (S.Friendships.Count >= C.MaxFriendships) return Task.FromResult(false);
+            if (Context.CallerId != S.LeaderId && !S.Officers.Contains(Context.CallerId ?? "")) return false;
+            if (S.Friendships.Any(f => f.OtherClanId == otherClanId)) return false;
+            if (S.Friendships.Count >= C.MaxFriendships) return false;
             S.Friendships.Add(new FriendshipEntry { OtherClanId = otherClanId, Status = FriendshipStatus.Pending });
-            return Task.FromResult(true);
+            return true;
         }
 
-        public Task<bool> AcceptFriendship(string otherClanId)
+        public bool AcceptFriendship(string otherClanId)
         {
-            if (Context.CallerId != S.LeaderId && !S.Officers.Contains(Context.CallerId ?? "")) return Task.FromResult(false);
+            if (Context.CallerId != S.LeaderId && !S.Officers.Contains(Context.CallerId ?? "")) return false;
             var entry = S.Friendships.FirstOrDefault(f => f.OtherClanId == otherClanId);
-            if (entry == null || entry.Status != FriendshipStatus.Pending) return Task.FromResult(false);
+            if (entry == null || entry.Status != FriendshipStatus.Pending) return false;
             entry.Status = FriendshipStatus.Active;
-            return Task.FromResult(true);
+            return true;
         }
 
-        public Task<bool> RevokeFriendship(string otherClanId)
+        public bool RevokeFriendship(string otherClanId)
         {
-            if (Context.CallerId != S.LeaderId && !S.Officers.Contains(Context.CallerId ?? "")) return Task.FromResult(false);
+            if (Context.CallerId != S.LeaderId && !S.Officers.Contains(Context.CallerId ?? "")) return false;
             var entry = S.Friendships.FirstOrDefault(f => f.OtherClanId == otherClanId);
-            if (entry == null) return Task.FromResult(false);
+            if (entry == null) return false;
             S.Friendships.Remove(entry);
-            return Task.FromResult(true);
+            return true;
         }
 
         public ClanSummary GetSummary()

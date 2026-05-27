@@ -64,21 +64,11 @@ builder.Services.AddSingleton(new MetaTransportOptions
     ServerVersion    = "2.0.0",
     MinClientVersion = "1.0.0",
     MaxClientVersion = "2.x.*",
+    // Opt-in deep-desync reporting (patch comparison). Off by default; enabled here for
+    // stress-test diagnostics so the server stores per-method server patches and accepts
+    // client patch reports for diff'ing on the desync path.
+    DesyncReportingEnabled = Environment.GetEnvironmentVariable("SHAREDMETA_DESYNC_DEBUG") == "1",
 });
-
-// Per-silo pool registry — single instance shared between the web host DI (for the /debug/pool
-// endpoint) and the silo DI (where EntityGrain / SessionManagerGrain consume it). The startup
-// task registered on the silo binds the SiloId on this same instance.
-// Both toggles default OFF — opt in via env vars:
-//   SHAREDMETA_ENABLE_POOL=1     route outgoing payloads through the pool (ref-counted)
-//   SHAREDMETA_POOL_HISTORY=1    record per-slot Acquire/IncrementRef/Release stacks
-var pooledOptions = new SharedMeta.Server.Core.Memory.PooledPayloadOptions
-{
-    UsePoolPath   = Environment.GetEnvironmentVariable("SHAREDMETA_ENABLE_POOL")  == "1",
-    EnableHistory = Environment.GetEnvironmentVariable("SHAREDMETA_POOL_HISTORY") == "1",
-};
-var pooledRegistry = new SharedMeta.Server.Core.Memory.PooledPayloadRegistry(pooledOptions);
-builder.Services.AddSingleton(pooledRegistry);
 
 // Per-silo capability registry (signature → ClientCapabilities cache).
 builder.Services.AddSharedMetaClientSignatureRegistry();
@@ -114,7 +104,6 @@ builder.Host.UseOrleans(siloBuilder =>
         // codec eliminates that bucket — see observability/allocation-profile.md, Stack profile #1.
         .AddMemoryGrainStorage("Default", o =>
             o.GrainStorageSerializer = new MemoryPackGrainStorageSerializer())
-        .AddStartupTask<SharedMeta.Server.Core.Memory.PooledPayloadRegistryStartupTask>()
         .ConfigureServices(services =>
         {
             services.AddSingleton<IMetaSerializer>(serializer);
@@ -132,12 +121,6 @@ builder.Host.UseOrleans(siloBuilder =>
             // can pick it up via DI when constructing per-connection handlers).
             services.AddSharedMetaClientSignatureRegistry();
             services.AddSingleton(global::ClanWars.Shared.GameServiceDiscoveryBase.ServerSignature);
-
-            // Per-silo pool registry — same instance as the web-host DI uses. SiloId is allocated
-            // by the cluster-singleton IPooledPayloadRegistryCoordinator grain at startup
-            // (see PooledPayloadRegistryStartupTask); the web-host /debug/pool endpoint reads
-            // the same registry's DumpAllocatedSlots() to surface leak diagnostics.
-            services.AddSingleton(pooledRegistry);
 
             // ConfigureMeta wires the generated provider factories.
             services.ConfigureMeta(svc =>
@@ -222,47 +205,6 @@ app.MapHub<MetaHub>("/meta");
 app.MapMetaMuxHub("/meta-mux");
 // Prometheus scrape endpoint — point Grafana / Prometheus at http://localhost:5050/metrics
 app.MapPrometheusScrapingEndpoint();
-
-// Diagnostic: dump currently-allocated pool slots. Use this when the AllocatedSlots gauge
-// in Grafana shows residual slots long after load stopped — each entry shows ref-count,
-// payload length, acquire timestamp + age, and (if SHAREDMETA_POOL_HISTORY=1 was set at
-// startup) the full Acquire/IncrementRef/Release call-stack chain.
-//   GET /debug/pool                       → human-readable text dump
-//   GET /debug/pool?minAgeSec=N           → only slots older than N seconds
-//   GET /debug/pool?stacks=1              → include history dumps (verbose; only useful if EnableHistory)
-app.MapGet("/debug/pool", (HttpContext ctx, SharedMeta.Server.Core.Memory.PooledPayloadRegistry reg) =>
-{
-    var minAgeSec = ctx.Request.Query.TryGetValue("minAgeSec", out var v) && double.TryParse(v, out var d) ? d : 0d;
-    var includeStacks = ctx.Request.Query.TryGetValue("stacks", out var s) && s == "1";
-
-    var snapshots = reg.DumpAllocatedSlots();
-    var sb = new System.Text.StringBuilder();
-    sb.Append("AllocatedSlotCount=").Append(reg.AllocatedSlotCount)
-      .Append("  PoolEnabled=").Append(reg.IsEnabled)
-      .Append("  HistoryEnabled=").Append(reg.EnableHistory)
-      .Append("  SiloId=").Append(reg.IsInitialized ? reg.SiloId.ToString() : "<unbound>")
-      .Append("  Now=").Append(DateTime.UtcNow.ToString("O")).Append('\n').Append('\n');
-
-    int shown = 0;
-    foreach (var snap in snapshots)
-    {
-        if (snap.Age.TotalSeconds < minAgeSec) continue;
-        sb.Append("slot=").Append(snap.SlotIndex)
-          .Append(" ref=0x").Append(snap.Ref.ToString("X8"))
-          .Append(" refcount=").Append(snap.RefCount)
-          .Append(" len=").Append(snap.Length)
-          .Append(" acquired=").Append(snap.AcquiredAtUtc == DateTime.MinValue
-              ? "<unknown>"
-              : snap.AcquiredAtUtc.ToString("O"))
-          .Append(" age=").Append(snap.Age.ToString(@"hh\:mm\:ss\.fff"))
-          .Append('\n');
-        if (includeStacks && snap.HistoryDump != null)
-            sb.Append(snap.HistoryDump).Append('\n');
-        shown++;
-    }
-    sb.Append('\n').Append("Total shown=").Append(shown).Append(" of ").Append(snapshots.Count).Append('\n');
-    return Results.Text(sb.ToString(), "text/plain; charset=utf-8");
-});
 
 Console.WriteLine($"[ClanWars] Server listening on http://localhost:{port}");
 Console.WriteLine($"           Orleans silo: {siloPort}, gateway: {gatewayPort}");

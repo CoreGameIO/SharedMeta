@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using SharedMeta.Core.Logging;
 using SharedMeta.Debug.Mux;
 using SharedMeta.Transport.SignalR;     // AddMetaMessagePackProtocol extension
 
@@ -27,6 +28,12 @@ namespace ClanWars.Client.Common
     {
         public static async Task RunAsync(StressTestOptions options)
         {
+            // Route SharedMeta's MetaLog through the console at Error level so framework-level
+            // diagnostics (e.g. the per-desync `[Desync] ... serverSeq=N clientSeq=M` line emitted
+            // by generated *ApiClient) surface during stress runs. Lower-level info / debug stays
+            // suppressed — the metrics renderer at end-of-run is the primary signal.
+            MetaLog.SetLogger(new ConsoleMetaLogger(MetaLogLevel.Error));
+
             var transportNote = options.MuxChannels > 0
                 ? $"mux@{options.MuxServerUrl} (channels={options.MuxChannels}, ~{options.PlayerCount / Math.Max(1, options.MuxChannels)} players/socket)"
                 : options.ServerUrl;
@@ -64,13 +71,17 @@ namespace ClanWars.Client.Common
             try
             {
                 var simulators = Enumerable.Range(0, options.PlayerCount)
-                    .Select(i => new PlayerSimulator(
-                        options, metrics, sharedClans,
-                        playerId: $"{options.PlayerPrefix}-{i}",
-                        rngSeed: i * 31 + (int)(DateTime.UtcNow.Ticks & 0xFFFF),
-                        // Pick channel by round-robin; tag = simulator index for uniqueness within the channel.
-                        muxChannel: channels?[i % channels.Length],
-                        muxTag: channels != null ? i : (int?)null))
+                    .Select(i =>
+                    {
+                        var playerId = $"{options.PlayerPrefix}-{i}";
+                        return new PlayerSimulator(
+                            options, metrics, sharedClans,
+                            playerId: playerId,
+                            rngSeed: i * 31 + (int)(DateTime.UtcNow.Ticks & 0xFFFF),
+                            // Pick channel by round-robin; tag = simulator index for uniqueness within the channel.
+                            muxChannel: channels?[i % channels.Length],
+                            muxTag: channels != null ? i : (int?)null);
+                    })
                     .ToList();
 
                 var tasks = simulators.Select(s => Task.Run(() => s.RunAsync(cts.Token))).ToList();
