@@ -23,6 +23,9 @@ namespace SharedMeta.Transport.BestHttp
         public Task<SessionConnectResponse> SessionConnect(SessionConnectRequest request)
             => InvokeAsync<SessionConnectResponse>(nameof(SessionConnect), request);
 
+        public Task<RegisterClientSignatureResponse> RegisterClientSignature(RegisterClientSignatureRequest request)
+            => InvokeAsync<RegisterClientSignatureResponse>(nameof(RegisterClientSignature), request);
+
         public Task<SubscribeResponse> Subscribe(SubscribeRequest request)
             => InvokeAsync<SubscribeResponse>(nameof(Subscribe), request);
 

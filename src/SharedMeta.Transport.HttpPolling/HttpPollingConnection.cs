@@ -146,6 +146,15 @@ namespace SharedMeta.Transport.HttpPolling
             };
         }
 
+        public async Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(Guid sessionId, MetaClientSignature signature)
+        {
+            EnsureConnected();
+            return await PostAsync<RegisterClientSignatureResponse>(
+                "/register-client-signature",
+                new RegisterClientSignatureRequest { SessionId = sessionId, Signature = signature },
+                MetaJsonContext.Default.RegisterClientSignatureRequest);
+        }
+
         public async Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, string stateTypeName)
         {
             EnsureSessionConnected();

@@ -364,6 +364,12 @@ namespace SharedMeta.Client
         /// <inheritdoc />
         public MetaClientSignature? ClientSignature { get; set; }
 
+        /// <summary>
+        /// 0.24.0+ When true, skip the auto-default fallback and connect with Hash=0 (legacy
+        /// opt-out). Set by <c>MetaClient</c> from <c>MetaClientOptions.DisableClientSignatureNegotiation</c>.
+        /// </summary>
+        public bool DisableClientSignatureNegotiation { get; set; }
+
         /// <inheritdoc />
         public ClientSignatureAnnotated? Annotated { get; private set; }
 
@@ -393,6 +399,13 @@ namespace SharedMeta.Client
                 _lastAcknowledgedSequence = lastAcknowledgedSequence;
                 _clientAppVersion = clientAppVersion;
             }
+
+            // 0.24.0+ Auto-default: when the consumer didn't pin a signature, fall back to the one
+            // the generator published into MetaClientSignature.Default (from RegisterAllServices /
+            // module initializer). Resolved here at connect time — not in the ctor — so it tolerates
+            // the publish running after MetaClient construction. Idempotent across reconnects.
+            if (ClientSignature == null && !DisableClientSignatureNegotiation)
+                ClientSignature = ClientSignatureDefault.Value;
 
             // 0.22.0: phase-1 of the compatibility handshake. Transmit the generated
             // ClientSignature.SignatureHash when negotiation is enabled (consumer assigned

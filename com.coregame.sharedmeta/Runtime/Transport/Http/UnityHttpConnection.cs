@@ -170,12 +170,13 @@ namespace SharedMeta.Client.Network
             };
         }
 
-        // 0.22.0+ phase-2 of the compatibility-negotiation handshake is NOT YET wired on
-        // the HTTP polling endpoint surface (HttpPollingEndpoints.MapHttpPolling has no
-        // /register-client-signature route). Until both sides land, leave the default
-        // IConnection impl (which throws NotSupportedException). ClientDispatcher's
-        // fail-loud guard surfaces this at ConnectAsync with a clear message instead of
-        // letting the user hit "out of range for client signature" on the first RPC.
+        public async Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(Guid sessionId, MetaClientSignature signature)
+        {
+            EnsureConnected();
+            return await PostAsync<RegisterClientSignatureResponse>(
+                "/register-client-signature",
+                new RegisterClientSignatureRequest { SessionId = sessionId, Signature = signature });
+        }
 
         public async Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, string stateTypeName)
         {

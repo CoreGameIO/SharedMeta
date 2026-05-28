@@ -30,6 +30,7 @@ namespace SharedMeta.Transport.HttpPolling
             var group = endpoints.MapGroup(prefix);
 
             group.MapPost("/session-connect", HandleSessionConnect);
+            group.MapPost("/register-client-signature", HandleRegisterClientSignature);
             group.MapPost("/subscribe", HandleSubscribe);
             group.MapPost("/unsubscribe", HandleUnsubscribe);
             group.MapPost("/rpc", HandleRpcCall);
@@ -78,6 +79,20 @@ namespace SharedMeta.Transport.HttpPolling
 
             var response = await state.Handler.SessionConnectAsync(request);
             return Results.Json(response, MetaJsonContext.Default.SessionConnectResponse);
+        }
+
+        private static async Task<IResult> HandleRegisterClientSignature(
+            HttpContext ctx,
+            HttpPollingConnectionManager mgr)
+        {
+            var (state, error) = GetExistingConnection(ctx, mgr);
+            if (state == null) return error!;
+
+            var request = await ctx.Request.ReadFromJsonAsync(MetaJsonContext.Default.RegisterClientSignatureRequest);
+            if (request == null) return Results.BadRequest("Invalid request body");
+
+            var response = await state.Handler.RegisterClientSignatureAsync(request);
+            return Results.Json(response, MetaJsonContext.Default.RegisterClientSignatureResponse);
         }
 
         private static async Task<IResult> HandleSubscribe(

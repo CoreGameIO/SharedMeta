@@ -81,6 +81,21 @@ namespace SharedMeta.Transport.BestHttp
             // (server-side System.Text.Json expects byte[] as base64 string)
             BestHTTP.JSON.LitJson.JsonMapper.RegisterExporter<byte[]>((bytes, writer) => writer.Write(Convert.ToBase64String(bytes)));
             BestHTTP.JSON.LitJson.JsonMapper.RegisterImporter<string, byte[]>(input => Convert.FromBase64String(input));
+
+            // Wire payloads are ReadOnlyMemory<byte> (post-0.23.1 memory optimization). Without a
+            // converter LitJson recurses into the struct's properties until it hits max object depth.
+            // Encode as base64 to match server-side System.Text.Json, which serializes
+            // ReadOnlyMemory<byte> as a base64 string (built-in since .NET 7).
+            BestHTTP.JSON.LitJson.JsonMapper.RegisterExporter<ReadOnlyMemory<byte>>((rom, writer) => writer.Write(Convert.ToBase64String(rom.ToArray())));
+            BestHTTP.JSON.LitJson.JsonMapper.RegisterImporter<string, ReadOnlyMemory<byte>>(input => Convert.FromBase64String(input));
+
+            // ulong wire fields (signature hashes: ServerSignatureHash, ClientSignatureHash, ArgHash).
+            // LitJson's lexer reads a JSON integer as int, then long, then ulong by magnitude. It has
+            // base importers for int->ulong and (huge) ulong->ulong, but NOT long->ulong — so a hash
+            // in (int.MaxValue, long.MaxValue] is read as long and can't be assigned to a ulong field.
+            // Register the missing rung. Write side already works: ulong is exported as a JSON number
+            // and server-side System.Text.Json reads the full ulong range.
+            BestHTTP.JSON.LitJson.JsonMapper.RegisterImporter<long, ulong>(input => (ulong)input);
         }
 
         private readonly BestHttpSignalRConnectionOptions _options;
@@ -249,6 +264,19 @@ namespace SharedMeta.Transport.BestHttp
                 Annotated = response.Annotated,
                 FailureReason = response.FailureReason,
             };
+        }
+
+        // 0.22.0+ phase-2 of the compatibility handshake. Without this override IConnection's
+        // default-interface implementation throws NotSupportedException, so a server that replies
+        // NeedsSignatureRegistration leaves the client unable to register → every RPC is rejected.
+        public async Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(Guid sessionId, MetaClientSignature signature)
+        {
+            EnsureConnected();
+            return await _proxy!.RegisterClientSignature(new RegisterClientSignatureRequest
+            {
+                SessionId = sessionId,
+                Signature = signature,
+            });
         }
 
         public async Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, string stateTypeName)

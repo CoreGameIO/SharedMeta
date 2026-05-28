@@ -489,6 +489,29 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("    }");
             sb.AppendLine("}");
             sb.AppendLine();
+
+            // 0.24.0+ Auto-publish ClientSignature into MetaClientSignature.Default so consumers
+            // don't have to wire MetaClientOptions.ClientSignature by hand (0.24 dispatch requires
+            // a negotiated signature). On net5+ a ModuleInitializer publishes it at module load.
+            // Unity (netstandard, no built-in ModuleInitializerAttribute, and shared asmdefs may
+            // be "no engine references" so no UnityEngine either) relies on the publish emitted into
+            // RegisterAllServices instead — called before ConnectAsync, and the dispatcher resolves
+            // the default at connect time. Layer-neutral (SharedMeta.Core), so it also compiles into
+            // the server assembly where it just sets an unused static. Explicit option still wins;
+            // last writer wins across multiple signature-bearing assemblies.
+            sb.AppendLine("#if NET5_0_OR_GREATER");
+            sb.AppendLine($"namespace {rootNamespace}.Generated");
+            sb.AppendLine("{");
+            sb.AppendLine("    internal static class __ClientSignatureAutoInit");
+            sb.AppendLine("    {");
+            sb.AppendLine("        [global::System.Runtime.CompilerServices.ModuleInitializer]");
+            sb.AppendLine("        internal static void Register()");
+            sb.AppendLine($"            => global::SharedMeta.Core.Transport.ClientSignatureDefault.Value = global::{rootNamespace}.GameServiceDiscoveryBase.ClientSignature;");
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
+            sb.AppendLine("#endif");
+            sb.AppendLine();
+
             // Re-open rootNamespace + GameServiceDiscoveryBase so the server signature emit
             // below continues to live inside GameServiceDiscoveryBase as before.
             sb.AppendLine($"namespace {rootNamespace}");

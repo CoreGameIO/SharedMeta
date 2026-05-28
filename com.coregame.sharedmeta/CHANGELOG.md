@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.24.1] - 2026-05-28
+
+Unity BestHTTP/JSON compatibility patch for the 0.24.0 handshake. No wire change — interoperates with 0.24.0.
+
+- Client signature auto-wired into `ClientSignatureDefault.Value` (via `RegisterAllServices()` / net5+ module initializer); `MetaClientOptions.ClientSignature` no longer required. New `DisableClientSignatureNegotiation` opt-out.
+- Phase-2 `RegisterClientSignatureAsync` wired across all transports (BestHTTP SignalR + HTTP-polling clients) plus a new `/register-client-signature` polling endpoint — was unimplemented → `NotSupportedException`.
+- LitJson fixes: `SessionConnectMode` enum byte→int; `ReadOnlyMemory<byte>` base64 converter; `long`→`ulong` importer for signature hashes.
+
 ## [0.24.0] - 2026-05-27
 
 Two redesigns and a server-side allocation rework. Wire-breaking: 0.23.x ↔ 0.24.0 do not mix.

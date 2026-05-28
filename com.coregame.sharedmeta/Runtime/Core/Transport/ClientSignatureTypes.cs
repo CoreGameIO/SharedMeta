@@ -33,6 +33,22 @@ namespace SharedMeta.Core.Transport
     /// of every <c>[MetaMethod]</c> the client's <c>[MetaService]</c> interfaces
     /// declare.
     /// </summary>
+    /// <summary>
+    /// 0.24.0+ Process-wide default client signature, kept off <see cref="MetaClientSignature"/>
+    /// itself so reflection-based JSON serializers (BestHTTP LitJson enumerates public static
+    /// properties) don't recurse into a self-referential static when serializing the signature.
+    /// The generator publishes the assembly's compile-time
+    /// <c>GameServiceDiscoveryBase.ClientSignature</c> here from <c>RegisterAllServices()</c> and,
+    /// on net5+, a module initializer — so consumers don't have to wire
+    /// <c>MetaClientOptions.ClientSignature</c> by hand. The client dispatcher falls back to this
+    /// at connect time when the option is left null. Last writer wins if more than one
+    /// signature-bearing assembly is loaded; set the option explicitly to pin a specific one.
+    /// </summary>
+    public static class ClientSignatureDefault
+    {
+        public static MetaClientSignature? Value { get; set; }
+    }
+
     [MemoryPackable, MessagePackObject, GenerateSerializer]
     public partial class MetaClientSignature
     {

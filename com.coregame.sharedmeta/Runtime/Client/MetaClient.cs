@@ -61,13 +61,26 @@ namespace SharedMeta.Client
         public string? ClientAppVersion { get; set; }
 
         /// <summary>
-        /// 0.24.0+ Generated <c>MetaClientSignature</c> for compatibility negotiation. Pass
-        /// <c>GameServiceDiscoveryBase.ClientSignature</c> from the generated assembly to enable
-        /// signature-based handshake (phase-1 hash check + phase-2 registration). Default:
-        /// <c>null</c> — the client opts out of negotiation and the server treats it as legacy
-        /// (Hash=0). Required when the host configures the registry to reject Hash=0.
+        /// 0.24.0+ Generated <c>MetaClientSignature</c> for compatibility negotiation.
+        /// Normally leave this <c>null</c>: the generator auto-publishes the assembly's
+        /// <c>GameServiceDiscoveryBase.ClientSignature</c> into
+        /// <see cref="SharedMeta.Core.Transport.ClientSignatureDefault.Value"/> (from
+        /// <c>RegisterAllServices()</c> and, on net5+, a module initializer), and the client falls
+        /// back to it at connect time. Set this explicitly only to pin a specific signature when
+        /// more than one signature-bearing assembly is loaded.
+        /// To force legacy opt-out (Hash=0, no negotiation) set
+        /// <see cref="DisableClientSignatureNegotiation"/> instead — note 0.24.0 servers reject
+        /// Hash=0 on dispatch, so opt-out only works against a legacy server or query-only client.
         /// </summary>
         public SharedMeta.Core.Transport.MetaClientSignature? ClientSignature { get; set; }
+
+        /// <summary>
+        /// 0.24.0+ Force legacy opt-out: when true the client sends Hash=0 and skips the
+        /// signature handshake, ignoring both <see cref="ClientSignature"/> and the auto-default.
+        /// Default false. Only useful against a legacy (pre-0.24) server — current servers reject
+        /// Hash=0 on RPC dispatch.
+        /// </summary>
+        public bool DisableClientSignatureNegotiation { get; set; }
 
         /// <summary>
         /// 0.24.0+ Optional game-level callback invoked when the server reports the session
@@ -149,7 +162,10 @@ namespace SharedMeta.Client
             {
                 SessionHealthListener = options.SessionHealth,
                 ConnectionHealthListener = options.ConnectionHealth,
+                // Raw passthrough; the dispatcher resolves the MetaClientSignature.Default
+                // fallback at connect time (tolerates the auto-publish running post-construction).
                 ClientSignature = options.ClientSignature,
+                DisableClientSignatureNegotiation = options.DisableClientSignatureNegotiation,
                 SessionRecoveryHandler = options.SessionRecoveryHandler ?? new DefaultSessionRecoveryHandler(),
             };
             if (options.ConnectionHealthOptions != null)

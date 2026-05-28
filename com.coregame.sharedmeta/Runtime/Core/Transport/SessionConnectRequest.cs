@@ -118,8 +118,12 @@ namespace SharedMeta.Core.Transport
     /// <summary>
     /// 0.24.0+ Direction of the SessionConnect call. See <see cref="SessionConnectRequest.Mode"/>.
     /// </summary>
+    // Underlying type is the default int (NOT byte): BestHTTP's LitJson JSON encoder
+    // serializes byte/short-backed enums via (int)obj, which throws InvalidCastException
+    // when unboxing a boxed byte-enum. This enum travels client→server in every
+    // SessionConnect over the JSON protocol, so it must stay int-backed.
     [GenerateSerializer]
-    public enum SessionConnectMode : byte
+    public enum SessionConnectMode
     {
         /// <summary>Server allocates a new SessionId and binds to it. SessionId in the request
         /// is ignored. <c>IsNewSession=true</c> on the response.</summary>

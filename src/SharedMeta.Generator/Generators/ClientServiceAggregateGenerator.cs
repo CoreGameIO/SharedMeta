@@ -120,6 +120,11 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            where TResolver : IMetaServiceResolver");
             sb.AppendLine("        {");
 
+            // 0.24.0+ Publish this assembly's client signature as the process default so MetaClient
+            // auto-negotiates without manual wiring. Primary mechanism on Unity (the net5+ module
+            // initializer doesn't exist there); always runs before ConnectAsync in the normal flow.
+            sb.AppendLine($"            global::SharedMeta.Core.Transport.ClientSignatureDefault.Value = global::{rootNamespace}.GameServiceDiscoveryBase.ClientSignature;");
+
             foreach (var service in serviceList)
             {
                 sb.AppendLine($"            resolver.Add{service.BaseName}Services();");

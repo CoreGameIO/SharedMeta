@@ -3580,6 +3580,8 @@ The generator emits a `MetaClientSignature` constant containing every `[MetaMeth
 1. Looks up the hash in its silo-local cache. **Known + same `ServerSignatureHash` as client's cached entry** → ships back a `ClientSignatureAnnotated` (verdict + id-translation array) directly on the SessionConnect response. **Unknown OR server redeployed** → returns `NeedsSignatureRegistration = true`, prompting the client to follow up with `RegisterClientSignatureRequest` carrying the full signature; server computes the annotation, persists the signature, returns the annotation on the phase-2 response.
 2. The annotation lives on the silo-local cache for the lifetime of the silo; the underlying signature is persisted in `IClientSignatureGrain` keyed by hash and survives silo restarts.
 
+**Client wiring is automatic (0.24.0+).** The generator publishes the assembly's `GameServiceDiscoveryBase.ClientSignature` into `ClientSignatureDefault.Value` — from the generated `RegisterAllServices()` (primary path, works on Unity) and, on net5+, additionally from a module initializer. The client resolves that default at connect time when `MetaClientOptions.ClientSignature` is left null — so a normal client needs **no** manual wiring (just call `RegisterAllServices()` before connecting, as usual). Set `MetaClientOptions.ClientSignature` explicitly only to pin one signature when several signature-bearing assemblies are loaded (last writer otherwise wins). To force legacy opt-out (Hash=0, no negotiation) set `MetaClientOptions.DisableClientSignatureNegotiation = true` — but note 0.24.0 servers reject Hash=0 on RPC dispatch, so opt-out only works against a pre-0.24 server.
+
 **`ClientSignatureAnnotated` wire shape:**
 ```csharp
 public partial class ClientSignatureAnnotated
