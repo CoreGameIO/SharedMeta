@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -7,23 +7,33 @@
     <Nullable>enable</Nullable>
     <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
     <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)Generated</CompilerGeneratedFilesOutputPath>
+    <!-- Enables the generator's server-only emit (ServerSignature, dispatcher hookups). -->
+    <DefineConstants>$(DefineConstants);SHAREDMETA_SERVER</DefineConstants>
   </PropertyGroup>
 
+  <!-- Source generator runs here too — scans Shared services + Server-only types. -->
   <ItemGroup>
-    <PackageReference Include="CoreGame.SharedMeta.Generator" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
-    <PackageReference Include="CoreGame.SharedMeta.Server" />
-    <PackageReference Include="CoreGame.SharedMeta.Server.Core" />
-    <PackageReference Include="CoreGame.SharedMeta.Orleans" />
-    <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR" />
-    <PackageReference Include="CoreGame.SharedMeta.Transport.HttpPolling" />
-    <PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" />
-    <PackageReference Include="CoreGame.SharedMeta.Auth" />
+    <ProjectReference Include="..\..\..\..\..\src\SharedMeta.Generator\SharedMeta.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\..\..\src\SharedMeta.Server\SharedMeta.Server.csproj" />
+    <ProjectReference Include="..\..\..\..\..\src\SharedMeta.Server.Core\SharedMeta.Server.Core.csproj" />
+    <ProjectReference Include="..\..\..\..\..\src\SharedMeta.Orleans\SharedMeta.Orleans.csproj" />
+    <ProjectReference Include="..\..\..\..\..\src\SharedMeta.Transport.SignalR\SharedMeta.Transport.SignalR.csproj" />
+    <ProjectReference Include="..\..\..\..\..\src\SharedMeta.Transport.HttpPolling\SharedMeta.Transport.HttpPolling.csproj" />
+    <ProjectReference Include="..\..\..\..\..\src\SharedMeta.Serialization.MemoryPack\SharedMeta.Serialization.MemoryPack.csproj" />
+    <ProjectReference Include="..\..\..\..\..\src\SharedMeta.Auth\SharedMeta.Auth.csproj" />
+    <ProjectReference Include="..\Expedition.Shared\Expedition.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Orleans.Server" />
     <PackageReference Include="Serilog.AspNetCore" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Expedition.Shared\Expedition.Shared.csproj" />
+    <Folder Include="data\sessionMgr\" />
   </ItemGroup>
 
 </Project>

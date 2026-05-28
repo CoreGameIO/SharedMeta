@@ -55,6 +55,10 @@ namespace SharedMeta.Core.Network
         /// — the client falls back to its session-resolved version.
         /// </summary>
         public MetaConfigVersion ExecutedConfigVersion { get; set; }
+
+        /// <summary>0.24.0+ Server-stamped diagnostic string from <c>MetaOperation.Debug</c>
+        /// (currently carries entity-seq as <c>"seq=N"</c>). See <c>ByteCallResponse.Debug</c>.</summary>
+        public string? Debug { get; set; }
     }
 
     /// <summary>
@@ -103,6 +107,10 @@ namespace SharedMeta.Core.Network
         /// — the client falls back to its session-resolved version.
         /// </summary>
         public MetaConfigVersion ExecutedConfigVersion { get; set; }
+
+        /// <summary>0.24.0+ Server-stamped diagnostic string from <c>MetaOperation.Debug</c>
+        /// (currently carries entity-seq as <c>"seq=N"</c>). See <c>ByteCallResponse.Debug</c>.</summary>
+        public string? Debug { get; set; }
     }
 
     /// <summary>
@@ -156,5 +164,14 @@ namespace SharedMeta.Core.Network
         /// — the client falls back to its session-resolved version.
         /// </summary>
         public MetaConfigVersion ExecutedConfigVersion { get; set; }
+
+        /// <summary>
+        /// 0.24.0+ Server-stamped diagnostic string from <c>MetaOperation.Debug</c>. Currently
+        /// carries the entity sequence number the server ran the body under (<c>"seq=N"</c>).
+        /// Surfaced in desync error reports so client-side ordering races against preceding
+        /// broadcasts can be diagnosed by comparing this against the client's locally-tracked
+        /// per-entity seq.
+        /// </summary>
+        public string? Debug { get; set; }
     }
 }

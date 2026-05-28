@@ -29,23 +29,21 @@ namespace SharedMeta.Server.Core.Session
         [Id(5)] public long ServerTimeTicks { get; set; }
 
         /// <summary>
-        /// Entities re-subscribed after transport disconnect recovery.
-        /// Contains full state for entities where the client may have missed updates.
+        /// 0.24.0+ Per-claim subscription verdicts. Replaces the older
+        /// <c>ResubscribedEntities</c> server-driven re-subscribe flow — subscriptions are
+        /// now owned by the client (sent via <c>SessionConnectRequest.ClaimedSubscriptions</c>),
+        /// the server verifies with each entity grain and reports
+        /// <see cref="SubscriptionStatus.Continued"/> / <see cref="SubscriptionStatus.Refreshed"/>
+        /// / <see cref="SubscriptionStatus.Failed"/> per entity.
         /// </summary>
-        [Id(6)] public List<ResubscribedEntity>? ResubscribedEntities { get; set; }
-    }
+        [Id(6)] public List<SubscriptionResult>? Subscriptions { get; set; }
 
-    /// <summary>
-    /// Info about an entity that was re-subscribed during session reconnect.
-    /// </summary>
-    [GenerateSerializer]
-    public class ResubscribedEntity
-    {
-        [Id(0)] public string EntityId { get; set; } = "";
-        [Id(1)] public ReadOnlyMemory<byte> StateBytes { get; set; }
-        [Id(2)] public long EntitySequenceNumber { get; set; }
-        [Id(3)] public byte[]? OptimisticRandomBytes { get; set; }
-        [Id(4)] public MetaConfigVersion ConfigVersion { get; set; }
-        [Id(5)] public byte[]? NamedRandomsBytes { get; set; }
+        /// <summary>
+        /// 0.24.0+ Structured failure reason when <see cref="Success"/> is false. Lets the
+        /// transport handler map the grain-level error to a wire-level
+        /// <see cref="SharedMeta.Core.Transport.SessionConnectFailureReason"/> the client can
+        /// distinguish from generic rejection (no string parsing).
+        /// </summary>
+        [Id(7)] public SessionConnectFailureReason FailureReason { get; set; }
     }
 }

@@ -19,6 +19,12 @@ namespace SharedMeta.Generator.Generators
                 a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaServiceAttribute");
             if (attr == null) return null;
 
+            // Detect serializer so EntityReplayDispatcher's arg-unpacking matches the wire format
+            // emitted by the corresponding ApiClient (raw MemoryPack vs length-prefixed envelope).
+            var serializer = compilation != null
+                ? Utilities.SerializerDetector.Detect(compilation)
+                : Utilities.DetectedSerializer.Generic;
+
             // Get state type from attribute if available
             var stateTypeArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "StateType");
             string? stateTypeName = null;
@@ -99,7 +105,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        {");
             sb.AppendLine($"            resolver.RegisterService<{baseName}ApiClient>(new MetaServiceConfig");
             sb.AppendLine("            {");
-            EmitConfigBody(sb, node, baseName, stateTypeFullName, stateTypeName, configTypeFullName, interfaceName, namespaceName);
+            EmitConfigBody(sb, node, baseName, stateTypeFullName, stateTypeName, configTypeFullName, interfaceName, namespaceName, serializer);
             sb.AppendLine("            });");
             if (configTypeFullName != null && usesDefaultConfig)
             {
@@ -123,7 +129,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        {");
             sb.AppendLine($"            return new MetaServiceConfig");
             sb.AppendLine("            {");
-            EmitConfigBody(sb, node, baseName, stateTypeFullName, stateTypeName, configTypeFullName, interfaceName, namespaceName);
+            EmitConfigBody(sb, node, baseName, stateTypeFullName, stateTypeName, configTypeFullName, interfaceName, namespaceName, serializer);
             sb.AppendLine("            };");
             sb.AppendLine("        }");
             sb.AppendLine("    }");
@@ -140,7 +146,8 @@ namespace SharedMeta.Generator.Generators
             string stateTypeName,
             string? configTypeFullName,
             string interfaceName,
-            string namespaceName)
+            string namespaceName,
+            Utilities.DetectedSerializer serializer)
         {
             sb.AppendLine($"                ServiceName = \"{interfaceName}\",");
             sb.AppendLine($"                ApiClientType = typeof({baseName}ApiClient),");
@@ -159,7 +166,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                    var patch = ser.Unpack<PatchNode>(patchBytes);");
             sb.AppendLine($"                    {stateTypeFullName}PatchApplier.Apply(({stateTypeFullName})state, patch, ser);");
             sb.AppendLine($"                }},");
-            EmitEntityReplayDispatcher(sb, node, baseName, interfaceName, stateTypeFullName, namespaceName);
+            EmitEntityReplayDispatcher(sb, node, baseName, interfaceName, stateTypeFullName, namespaceName, serializer);
             // 0.20.0: Client-side sibling factory. When user code calls Get{Iface}SiblingAsync()
             // or GetI{Iface}(self) on the client, the framework asks the resolver to produce
             // a transient impl bound to the calling client-side MetaContext. Typed cast — no
@@ -186,7 +193,8 @@ namespace SharedMeta.Generator.Generators
             string baseName,
             string interfaceName,
             string stateTypeFullName,
-            string namespaceName)
+            string namespaceName,
+            Utilities.DetectedSerializer serializer)
         {
             sb.AppendLine($"                EntityReplayDispatcher = (state, methodId, argsBytes, replayContext, callerId, serverTimeTicks, ser, optRandom, namedRandoms, cfg, crossResolver) =>");
             sb.AppendLine($"                {{");
@@ -253,11 +261,38 @@ namespace SharedMeta.Generator.Generators
                 {
                     callArgs = "";
                 }
+                else if (serializer == Utilities.DetectedSerializer.MemoryPack)
+                {
+                    // Match the ApiClient's raw MemoryPack arg encoding (single-arg: direct
+                    // Serialize<T>, multi-arg: concatenated Serialize<T,TBufferWriter>). The
+                    // length-prefixed CreateReader path consumes the first value's bytes as a
+                    // length header and produces garbage on raw MemoryPack input.
+                    var argNames = new System.Collections.Generic.List<string>();
+                    var ps = method.ParameterList.Parameters;
+                    if (ps.Count == 1)
+                    {
+                        var paramType = ps[0].Type!.ToString();
+                        var paramName = ps[0].Identifier.Text;
+                        sb.AppendLine($"                                var {paramName} = global::MemoryPack.MemoryPackSerializer.Deserialize<{paramType}>(((System.ReadOnlySpan<byte>)argsBytes))!;");
+                        argNames.Add(paramName);
+                    }
+                    else
+                    {
+                        sb.AppendLine($"                                var mpState_ = global::MemoryPack.MemoryPackReaderOptionalStatePool.Rent(null);");
+                        sb.AppendLine($"                                var mpReader_ = new global::MemoryPack.MemoryPackReader(((System.ReadOnlySpan<byte>)argsBytes), mpState_);");
+                        foreach (var param in ps)
+                        {
+                            var paramType = param.Type!.ToString();
+                            var paramName = param.Identifier.Text;
+                            sb.AppendLine($"                                var {paramName} = mpReader_.ReadValue<{paramType}>()!;");
+                            argNames.Add(paramName);
+                        }
+                        sb.AppendLine($"                                mpReader_.Dispose();");
+                    }
+                    callArgs = string.Join(", ", argNames);
+                }
                 else
                 {
-                    // Args are written via _serializer.CreateWriter().Write(...) (length-prefixed
-                    // payload format), so the matching read path is CreateReader().Read<T>().
-                    // Direct ser.Unpack<T>(argsBytes) would consume the length prefix as data.
                     sb.AppendLine($"                                using var rdr = ser.CreateReader(argsBytes);");
                     var argNames = new System.Collections.Generic.List<string>();
                     foreach (var param in method.ParameterList.Parameters)

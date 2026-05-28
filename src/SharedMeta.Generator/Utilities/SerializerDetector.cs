@@ -28,7 +28,11 @@ namespace SharedMeta.Generator.Utilities
     public static class SerializerDetector
     {
         private const string MetaSerializerAttributeName = "SharedMeta.Core.MetaSerializerAttribute";
-        private const string MemoryPackAssemblyName = "MemoryPack";
+        // The NuGet package "MemoryPack" produces the runtime DLL "MemoryPack.Core" — that's
+        // the assembly identity the compilation references. The legacy "MemoryPack" check
+        // missed every consumer, silently falling through to Generic IPayloadWriter path
+        // (which costs one IPayloadWriter instance + one byte[] per cross-entity call).
+        private const string MemoryPackAssemblyName = "MemoryPack.Core";
 
         /// <summary>
         /// Detect which serializer to use based on assembly attributes and references.

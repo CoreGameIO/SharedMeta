@@ -4,7 +4,6 @@ using Orleans;
 using Orleans.Runtime;
 using Orleans.Utilities;
 using SharedMeta.Core;
-using SharedMeta.Core.Memory;
 using SharedMeta.Core.Packets;
 using SharedMeta.Core.Transport;
 using SharedMeta.Server;
@@ -34,8 +33,10 @@ namespace SharedMeta.Server.Core.Session
         private readonly List<Guid> _previousSessionIds = [];
         private long _sequenceNumber;
 
-        // Pending responses for reconnection replay — one SequenceNumber per response
-        private readonly List<SessionResponse> _pendingPackets = [];
+        // Pending responses for reconnection replay — one SequenceNumber per response.
+        // The persisted list IS the working list (no duplicate field, no defensive copy on persist).
+        // Initialized to non-null once in OnActivateAsync; the property is a thin field read after JIT.
+        private List<SessionResponse> _pendingPackets => _persistentState.State.PendingPackets!;
         private const int MaxPendingPackets = 1000;
 
         // Cached delegate for ObserverManager.Notify in FlushOutgoingBatch. Constructed once per
@@ -77,8 +78,10 @@ namespace SharedMeta.Server.Core.Session
         // Deferred responses: RPC results waiting for entity sequence gaps to fill
         private readonly List<DeferredResponse> _deferredResponses = [];
 
-        // Saved subscriptions for reconnect after transport disconnect
-        private List<SavedSubscription>? _savedSubscriptions;
+        // 0.24.0+ Subscriptions are NOT held server-side across transport drops or grain
+        // deactivation — the client owns the subscription list (single source of truth) and
+        // claims it via SessionConnectRequest.ClaimedSubscriptions on Resume. SessionManager
+        // verifies each claim with the entity grain via EntityGrain.ReclaimSubscriptionAsync.
 
         // Per-player ClientCapabilities used to live here as a pushed cache. Replaced by
         // the signature-hash flow: MetaConnectionHandler passes the hash on Subscribe and
@@ -95,17 +98,17 @@ namespace SharedMeta.Server.Core.Session
         // Stall diagnostics — no timer, checked lazily on next request or grain deactivation
         private long _stallStartTicks;
 
-        private sealed class StashedRpcCall
+        private struct StashedRpcCall
         {
-            public long RequestId { get; set; }
-            public string EntityId { get; set; } = "";
-            public RpcCall Call { get; set; } = new();
-            public long LastAcknowledgedSequence { get; set; }
+            public long RequestId;
+            public string EntityId;
+            public RpcCall Call;
+            public long LastAcknowledgedSequence;
         }
 
         #region Nested Types
 
-        private class EntitySubscriptionInfo
+        private struct EntitySubscriptionInfo
         {
             public EntitySubscriptionInfo(string entityId, string stateTypeName, IEntityGrainBase grainRef,
                 string? clientVersion = null, ulong clientSignatureHash = 0)
@@ -116,15 +119,15 @@ namespace SharedMeta.Server.Core.Session
                 ClientVersion = clientVersion;
                 ClientSignatureHash = clientSignatureHash;
             }
-            public string EntityId { get; set; }
-            public string StateTypeName { get; set; }
-            public IEntityGrainBase GrainRef { get; set; }
+            public string EntityId;
+            public string StateTypeName;
+            public IEntityGrainBase GrainRef;
             // Captured on the original SubscribeToEntityAsync so transport-disconnect
             // resubscribe can replay the per-client config branch + signature mapping. Without
             // these the entity falls back to "no client version" and IMetaConfigProvider's
             // ResolveForClient throws "clientAppVersion is required".
-            public string? ClientVersion { get; set; }
-            public ulong ClientSignatureHash { get; set; }
+            public string? ClientVersion;
+            public ulong ClientSignatureHash;
         }
 
         private class EntityOrderingState
@@ -133,64 +136,44 @@ namespace SharedMeta.Server.Core.Session
             public SortedDictionary<long, EntityBroadcast> HeldBroadcasts { get; } = new();
         }
 
-        private class QueuedBroadcast
+        private struct QueuedBroadcast
         {
-            public string EntityId { get; set; } = "";
-            public long EntitySequenceNumber { get; set; }
-            public EntityBroadcast Broadcast { get; set; } = new();
+            public string EntityId;
+            public long EntitySequenceNumber;
+            public EntityBroadcast Broadcast;
         }
 
-        private class DeferredResponse
+        private struct DeferredResponse
         {
-            public long RequestId { get; set; }
-            public string EntityId { get; set; } = "";
-            public long RequiredEntitySeq { get; set; }
-            public EntityCallResult Result { get; set; } = new();
-            public RpcCall OriginalCall { get; set; } = new();
-        }
-
-        private class SavedSubscription
-        {
-            public string EntityId { get; set; } = "";
-            public string StateTypeName { get; set; } = "";
-            public long LastKnownEntitySequence { get; set; }
-            public string? ClientVersion { get; set; }
-            public ulong ClientSignatureHash { get; set; }
+            public long RequestId;
+            public string EntityId;
+            public long RequiredEntitySeq;
+            public EntityCallResult Result;
+            public RpcCall OriginalCall;
         }
 
         #endregion
+
+        // 0.24.0+ Persistent state — see SessionManagerGrainState. Written on
+        // graceful disconnect + OnDeactivateAsync; read on OnActivateAsync. Hot path doesn't write.
+        private readonly IPersistentState<SessionManagerGrainState> _persistentState;
 
         public SessionManagerGrain(
             IMetaSerializer serializer,
             ILogger<SessionManagerGrain> logger,
             IEntityGrainResolver entityGrainResolver,
-            IOptions<SessionManagerOptions>? options = null,
-            SharedMeta.Server.Core.Memory.PooledPayloadRegistry? pooledPayloadRegistry = null)
+            [PersistentState("sessionMgr", "Default")] IPersistentState<SessionManagerGrainState> persistentState,
+            IOptions<SessionManagerOptions>? options = null)
         {
             _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
+            _persistentState = persistentState ?? throw new ArgumentNullException(nameof(persistentState));
             _options = options?.Value ?? new SessionManagerOptions();
-            _pooledPayloadRegistry = pooledPayloadRegistry;
             _observerManager = new ObserverManager<ISessionObserver>(TimeSpan.FromMinutes(2), _logger);
             _playerId = this.GetPrimaryKeyString();
             _orderingBuffer = new RpcOrderingBuffer<StashedRpcCall>(Math.Max(1, _options.StashCapacity));
             _onBatchInvoker = NotifyOnBatch;  // one delegate alloc per grain lifetime
-        }
-
-        // Silo-scoped pool registry — when wired, broadcast/result PooledPayload tokens arriving
-        // from EntityGrain are released here after their bytes are copied into the SessionResponse.
-        // Null when host hasn't opted into the pool path (legacy byte[]-allocating builds).
-        private readonly SharedMeta.Server.Core.Memory.PooledPayloadRegistry? _pooledPayloadRegistry;
-
-        // Release a PooledPayload token after extracting its bytes. Ref==0 is the byte[]
-        // fallback wrapper (no slot to release); foreign-silo refs are deferred until the
-        // cross-silo decrement protocol lands (next iteration).
-        private void ReleasePoolToken(SharedMeta.Core.Memory.PooledPayload payload)
-        {
-            if (payload.Ref == 0 || _pooledPayloadRegistry == null) return;
-            if (payload.SiloId != _pooledPayloadRegistry.SiloId) return;
-            _pooledPayloadRegistry.Release(payload);
         }
 
         // Delegate target for ObserverManager.Notify — reads _pendingNotifyResponse set by
@@ -200,6 +183,34 @@ namespace SharedMeta.Server.Core.Session
         public override Task OnActivateAsync(CancellationToken cancellationToken)
         {
             _logger.SessionActivated(_playerId);
+            _persistentState.State.PendingPackets ??= new List<SessionResponse>();
+
+            // 0.24.0+ Restore persisted session state (if any). Observer registration is
+            // ALWAYS transient — _observerManager stays empty until the first SessionConnect
+            // from MetaConnectionHandler re-establishes it via SetObserverAsync.
+            if (_persistentState.State.Populated)
+            {
+                var s = _persistentState.State;
+                _currentSessionId = s.CurrentSessionId;
+                _sequenceNumber = s.SequenceNumber;
+
+                // 0.24.0+ Subscriptions are no longer persisted — the client owns the
+                // subscription list and claims it via SessionConnectRequest.ClaimedSubscriptions
+                // on Resume. State.SubscribedEntities is read but ignored here (legacy field
+                // tolerated for cross-version state on disk; will be empty going forward).
+
+                // 0.24.0+ Restore RPC ordering baseline so the next Resume's RequestId stream
+                // doesn't look like a gap from zero. Critical: without this, client-side
+                // re-sends of pending RPCs get stashed and stall the ordering buffer forever.
+                if (s.LastDispatchedRequestId > 0)
+                {
+                    _orderingBuffer.AdvanceLastDispatched(s.LastDispatchedRequestId);
+                }
+
+                _logger.LogInformation(
+                    "[SessionManager:{Player}] Reactivated with persisted state: sessionId={Session}, seq={Seq}, pendingPackets={PktCount}, lastDispatched={LastDispatched}",
+                    _playerId, _currentSessionId, _sequenceNumber, _pendingPackets.Count, _orderingBuffer.LastDispatchedRequestId);
+            }
 
             // Set up timer for cleaning up expired observers
             _observerCleanupTimer = this.RegisterGrainTimer(
@@ -243,6 +254,12 @@ namespace SharedMeta.Server.Core.Session
                 }
             }
 
+            // 0.24.0+ Persist enough state to make Resume work after reactivation. Pending
+            // packets are saved before being released; the saved copy holds byte[]-backed
+            // SessionResponse instances (Orleans serializer deep-copies on write), so the
+            // pool-payload release below doesn't invalidate the persisted version.
+            await PersistSessionStateAsync(reason);
+
             // Return any still-pending pool slots to the registry. Without this they'd live
             // until the registry is itself disposed (process exit) since SessionManagerGrain
             // is per-player and may be activated/deactivated many times during a silo's life.
@@ -251,97 +268,171 @@ namespace SharedMeta.Server.Core.Session
             await base.OnDeactivateAsync(reason, cancellationToken);
         }
 
-        #region Session Management
-
-        public async Task<SessionConnectionResult> ConnectAsync(Guid sessionId, long lastAcknowledgedSequence)
+        /// <summary>
+        /// 0.24.0+ Snapshot current session state into persistent storage. Called on
+        /// graceful disconnect (which then clears state) and on grain deactivation
+        /// (which keeps it). On <see cref="DeactivationReasonCode.ShuttingDown"/> we
+        /// best-effort still persist — if the silo is shutting down the state may
+        /// already be flushed by Orleans, but a write attempt costs little and survives
+        /// rolling-restart scenarios where the silo comes back.
+        /// </summary>
+        private async Task PersistSessionStateAsync(DeactivationReason? deactivationReason)
         {
-            // New session for this player
             if (_currentSessionId == Guid.Empty)
             {
-                _currentSessionId = sessionId;
-                _sequenceNumber = 0;
-                _logger.NewSessionStarted(_playerId, sessionId);
-
-                return new SessionConnectionResult
+                // No active session — only persist if we had something before (to clear).
+                if (_persistentState.State.Populated)
                 {
-                    Success = true,
-                    SessionId = sessionId,
-                    IsNewSession = true,
-                    MissedPackets = new List<SessionResponse>(),
-                    ServerTimeTicks = DateTime.UtcNow.Ticks
-                };
+                    _persistentState.State.Populated = false;
+                    _persistentState.State.CurrentSessionId = Guid.Empty;
+                    _pendingPackets.Clear();   // shared ref with State.PendingPackets
+                    _persistentState.State.LastDispatchedRequestId = 0;
+                    try { await _persistentState.WriteStateAsync(); } catch { /* best effort */ }
+                }
+                return;
             }
 
-            // Same session - resume
-            if (sessionId == _currentSessionId)
+            // 0.24.0+ Subscriptions are NOT persisted — the client owns the subscription list
+            // and re-claims via ClaimedSubscriptions on Resume. Only the bits that the client
+            // cannot reconstruct on its own are kept: sessionId (recovery handshake gate),
+            // sequenceNumber (broadcast ordering), pendingPackets tail (missed-broadcast replay),
+            // LastDispatchedRequestId (RPC ordering baseline).
+            _persistentState.State.Populated = true;
+            _persistentState.State.CurrentSessionId = _currentSessionId;
+            _persistentState.State.SequenceNumber = _sequenceNumber;
+            // PendingPackets — _pendingPackets aliases State.PendingPackets; no assignment needed.
+            _persistentState.State.LastDispatchedRequestId = _orderingBuffer.LastDispatchedRequestId;
+
+            try { await _persistentState.WriteStateAsync(); }
+            catch (Exception ex)
             {
-                var missedPackets = _pendingPackets
-                    .Where(p => p.SequenceNumber > lastAcknowledgedSequence)
-                    .ToList();
+                _logger.LogWarning(ex, "[SessionManager:{Player}] Failed to persist session state on deactivate", _playerId);
+            }
+        }
 
-                // Re-stamp missed packets with current server time for clock sync
-                var now = DateTime.UtcNow.Ticks;
-                foreach (var packet in missedPackets)
-                    packet.ServerTimeTicks = now;
+        #region Session Management
 
-                // Re-subscribe to saved entities from transport disconnect
-                List<ResubscribedEntity>? resubscribedEntities = null;
-                if (_savedSubscriptions is { Count: > 0 })
+        public async Task<SessionConnectionResult> ConnectAsync(Guid sessionId, long lastAcknowledgedSequence, SessionConnectMode mode, long lastCompletedRequestId, IReadOnlyList<SubscriptionClaim>? claimedSubscriptions, string? clientVersion, ulong clientSignatureHash)
+        {
+            // 0.24.0+ Resume path: sessionId must match the currently-known one. Otherwise the
+            // server-side state is gone (grain reactivated without persistent state, or this is
+            // a stale id from another device / older app launch) — return SessionUnknown so the
+            // client surfaces the loss to its IMetaSessionRecoveryHandler instead of silently
+            // landing on a fresh session.
+            if (mode == SessionConnectMode.Resume)
+            {
+                if (_currentSessionId != Guid.Empty && sessionId == _currentSessionId)
                 {
-                    resubscribedEntities = await ResubscribeSavedEntitiesAsync();
-                    _savedSubscriptions = null;
+                    // ── Happy resume ─────────────────────────────────────────────
+                    // Gap-fix: advance the RPC ordering baseline past anything the client has
+                    // already completed. Without this, if the server lost cached responses (eviction
+                    // or crash before persistence flush) but the client did receive them, the
+                    // client's next-new RequestId would be classified OutOfOrder against a stale
+                    // _lastDispatchedRequestId and stashed forever.
+                    var baselineBefore = _orderingBuffer.LastDispatchedRequestId;
+                    if (lastCompletedRequestId > 0)
+                        _orderingBuffer.AdvanceLastDispatched(lastCompletedRequestId);
+                    _logger.LogInformation(
+                        "[SessionManager:{Player}] Resume baseline check: persisted={Before}, clientReported={Reported}, after={After}",
+                        _playerId, baselineBefore, lastCompletedRequestId, _orderingBuffer.LastDispatchedRequestId);
+
+                    var missedPackets = _pendingPackets
+                        .Where(p => p.SequenceNumber > lastAcknowledgedSequence)
+                        .ToList();
+
+                    var now = DateTime.UtcNow.Ticks;
+                    foreach (var packet in missedPackets)
+                        packet.ServerTimeTicks = now;
+
+                    // 0.24.0+ Client-driven subscription reclaim. For each claimed entity, ask
+                    // the entity grain whether it still has us as subscriber AND our seq numbers
+                    // agree (→ Continued, no state shipped) or whether we need a fresh snapshot
+                    // (→ Refreshed). On any Failed → abort whole Resume so the client falls back
+                    // to fresh-session via the recovery handler (cannot safely continue with a
+                    // partial subscription set).
+                    List<SubscriptionResult>? subscriptionResults = null;
+                    if (claimedSubscriptions is { Count: > 0 })
+                    {
+                        subscriptionResults = await ReclaimClaimedSubscriptionsAsync(
+                            claimedSubscriptions, clientVersion, clientSignatureHash);
+
+                        var failed = subscriptionResults.Where(r => r.Status == SubscriptionStatus.Failed).ToList();
+                        if (failed.Count > 0)
+                        {
+                            _logger.LogWarning(
+                                "[SessionManager:{Player}] Resume aborted — {FailedCount} of {Total} subscriptions failed reclaim",
+                                _playerId, failed.Count, subscriptionResults.Count);
+                            return new SessionConnectionResult
+                            {
+                                Success = false,
+                                Error = $"Subscription reclaim failed for {failed.Count} entity(ies)",
+                                SessionId = _currentSessionId,
+                                ServerTimeTicks = now,
+                                Subscriptions = subscriptionResults,
+                                FailureReason = SessionConnectFailureReason.SubscriptionReclaimFailed,
+                            };
+                        }
+                    }
+
+                    _logger.SessionResumed(_playerId, missedPackets.Count);
+
+                    return new SessionConnectionResult
+                    {
+                        Success = true,
+                        SessionId = sessionId,
+                        IsNewSession = false,
+                        MissedPackets = missedPackets,
+                        ServerTimeTicks = now,
+                        Subscriptions = subscriptionResults,
+                        FailureReason = SessionConnectFailureReason.None,
+                    };
                 }
 
-                _logger.SessionResumed(_playerId, missedPackets.Count);
-
-                return new SessionConnectionResult
-                {
-                    Success = true,
-                    SessionId = sessionId,
-                    IsNewSession = false,
-                    MissedPackets = missedPackets,
-                    ServerTimeTicks = now,
-                    ResubscribedEntities = resubscribedEntities
-                };
-            }
-
-            // Old session (superseded)
-            if (_previousSessionIds.Contains(sessionId))
-            {
+                // Resume requested but server doesn't recognize this sessionId. Return structured
+                // failure so the handler maps to SessionConnectFailureReason.SessionUnknown on the
+                // wire. Client fires its recovery handler and (typical default) retries StartNew.
                 _logger.OldSessionRejected(sessionId, _playerId);
-
                 return new SessionConnectionResult
                 {
                     Success = false,
-                    Error = "Session superseded by a newer session",
+                    Error = "Session unknown to server (resume failed)",
                     SessionId = _currentSessionId,
-                    ServerTimeTicks = DateTime.UtcNow.Ticks
+                    ServerTimeTicks = DateTime.UtcNow.Ticks,
+                    FailureReason = SessionConnectFailureReason.SessionUnknown,
                 };
             }
 
-            // New session - supersede current
-            // Notify old observers BEFORE clearing
-            await _observerManager.Notify(o => o.OnSessionTerminated("Session superseded by new connection"));
-            _observerManager.Clear();
-
-            // Unsubscribe from all entities — new client starts with clean slate
-            foreach (var sub in _subscribedEntities.Values)
+            // ── Mode = StartNew ─────────────────────────────────────────────────
+            // Always allocate a clean session. Supersedes the current one if any.
+            if (_currentSessionId != Guid.Empty && sessionId != _currentSessionId)
             {
-                try { await sub.GrainRef.UnsubscribeAsync(_playerId); }
-                catch { /* best effort */ }
+                // Notify old observers BEFORE clearing
+                await _observerManager.Notify(o => o.OnSessionTerminated("Session superseded by new connection"));
+                _observerManager.Clear();
+
+                foreach (var sub in _subscribedEntities.Values)
+                {
+                    try { await sub.GrainRef.UnsubscribeAsync(_playerId); }
+                    catch { /* best effort */ }
+                }
+                _subscribedEntities.Clear();
+
+                _previousSessionIds.Add(_currentSessionId);
+                ReleaseAndClearPendingPackets();
+                ReleaseAndClearEntityStates();
+                ReleaseAndClearDeferredResponses();
+                ReleaseAndClearRpcBroadcastQueue();
+                ResetRpcOrderingState();
+
+                _logger.SessionSuperseded(sessionId, _playerId);
             }
-            _subscribedEntities.Clear();
+            else
+            {
+                _logger.NewSessionStarted(_playerId, sessionId);
+            }
 
-            _previousSessionIds.Add(_currentSessionId);
             _currentSessionId = sessionId;
-            ReleaseAndClearPendingPackets();
-            ReleaseAndClearEntityStates();
-            ReleaseAndClearDeferredResponses();
-            ReleaseAndClearRpcBroadcastQueue();
             _sequenceNumber = 0;
-            ResetRpcOrderingState();
-
-            _logger.SessionSuperseded(sessionId, _playerId);
 
             return new SessionConnectionResult
             {
@@ -349,7 +440,8 @@ namespace SharedMeta.Server.Core.Session
                 SessionId = sessionId,
                 IsNewSession = true,
                 MissedPackets = new List<SessionResponse>(),
-                ServerTimeTicks = DateTime.UtcNow.Ticks
+                ServerTimeTicks = DateTime.UtcNow.Ticks,
+                FailureReason = SessionConnectFailureReason.None,
             };
         }
 
@@ -367,8 +459,20 @@ namespace SharedMeta.Server.Core.Session
             return Task.CompletedTask;
         }
 
-        public async Task GracefulDisconnectAsync()
+        public async Task GracefulDisconnectAsync(Guid sessionId)
         {
+            // 0.24.0+ Guard against stale graceful disconnect from a superseded session.
+            // Typical race: old SignalR connection's GracefulDisconnect arrives at the grain
+            // after a fresh session has bound here. Without this check, the old call would
+            // wipe the live session's state.
+            if (sessionId != Guid.Empty && sessionId != _currentSessionId)
+            {
+                _logger.LogDebug(
+                    "[SessionManager:{PlayerId}] Ignoring graceful disconnect for stale sessionId={Stale} (current={Current})",
+                    _playerId, sessionId, _currentSessionId);
+                return;
+            }
+
             _observerManager.Clear();
 
             // Unsubscribe from all entities
@@ -390,10 +494,25 @@ namespace SharedMeta.Server.Core.Session
             ReleaseAndClearDeferredResponses();
             ReleaseAndClearRpcBroadcastQueue();
             ReleaseAndClearPendingPackets();
-            _savedSubscriptions = null;
             _currentSessionId = Guid.Empty;
             _sequenceNumber = 0;
             ResetRpcOrderingState();
+
+            // 0.24.0+ Clear persistent state too — graceful disconnect explicitly closes
+            // the session; client cannot resume it, so leaving CurrentSessionId on disk
+            // would create misleading "we know this session" responses on reactivation.
+            if (_persistentState.State.Populated)
+            {
+                _persistentState.State.Populated = false;
+                _persistentState.State.CurrentSessionId = Guid.Empty;
+                _persistentState.State.PendingPackets = null;
+                _persistentState.State.LastDispatchedRequestId = 0;
+                try { await _persistentState.WriteStateAsync(); }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[SessionManager:{Player}] Failed to clear persistent state on graceful disconnect", _playerId);
+                }
+            }
 
             _logger.GracefulDisconnect(_playerId);
         }
@@ -402,21 +521,15 @@ namespace SharedMeta.Server.Core.Session
         {
             _observerManager.Clear();
 
-            // Save subscriptions for potential reconnect — keep clientVersion + signature so
-            // ResubscribeSavedEntitiesAsync can re-drive per-client config resolution. Without
-            // these the provider's ResolveForClient throws "clientAppVersion is required".
-            _savedSubscriptions = _subscribedEntities.Values.Select(sub => new SavedSubscription
-            {
-                EntityId = sub.EntityId,
-                StateTypeName = sub.StateTypeName,
-                LastKnownEntitySequence = _entityStates.TryGetValue(sub.EntityId, out var es)
-                    ? es.KnownEntitySequence : 0,
-                ClientVersion = sub.ClientVersion,
-                ClientSignatureHash = sub.ClientSignatureHash,
-            }).ToList();
-
-            // Unsubscribe from entity grains to stop receiving broadcasts
-            foreach (var sub in _subscribedEntities.Values)
+            // 0.24.0+ Subscriptions live on the client now — no server-side stash. We just
+            // unsubscribe from entity grains to stop broadcasts flowing into a dead session.
+            // On Resume the client re-claims via ClaimedSubscriptions; entity grains see this
+            // as a fresh subscriber and return Refreshed (which is correct — there may be a
+            // gap during the disconnect window). The Continued cheap-path only kicks in after
+            // silo-shutdown reactivation, where OnDeactivateAsync(reason=ShuttingDown) skips
+            // the unsubscribe loop and state.Subscribers survives.
+            var subscribers = _subscribedEntities.Values.ToList();
+            foreach (var sub in subscribers)
             {
                 try
                 {
@@ -428,15 +541,12 @@ namespace SharedMeta.Server.Core.Session
                 }
             }
 
-            // Clear active state but keep session + pending packets + saved subscriptions.
-            // Deferred responses, broadcast queue, and HeldBroadcasts refs would never be
-            // redelivered after a transport drop, so release their pool tokens here.
             _subscribedEntities.Clear();
             ReleaseAndClearEntityStates();
             ReleaseAndClearDeferredResponses();
             ReleaseAndClearRpcBroadcastQueue();
 
-            _logger.TransportDisconnected(_playerId, _savedSubscriptions.Count);
+            _logger.TransportDisconnected(_playerId, subscribers.Count);
         }
 
         #endregion
@@ -654,12 +764,32 @@ namespace SharedMeta.Server.Core.Session
                 }
                 if (position == RequestPosition.Stale)
                 {
-                    // Stale resend. Idempotency cache above should have caught the common
-                    // case; this branch handles cases where the response was already
-                    // evicted from _pendingPackets. Pass through and let the entity grain
-                    // re-execute (it's idempotent for replay-safe operations).
-                    _logger.LogDebug("[Session] Stale RPC requestId={ReqId}, lastDispatched={Last}",
-                        requestId, _orderingBuffer.LastDispatchedRequestId);
+                    // Stale + cache-miss: the idempotency cache check above missed (response was
+                    // evicted from _pendingPackets, or grain reactivated without it), but the
+                    // ordering baseline says this RequestId was already dispatched. We must NOT
+                    // re-execute (could violate at-most-once for non-idempotent operations and,
+                    // worse, mutate state that the client may have ack'd on a prior response).
+                    // Surface an error-SessionOp keyed to the RequestId so the client can resolve
+                    // its pending TCS and stop the retry loop. The client treats this as
+                    // operation-failed-by-server-loss, not network/retryable.
+                    _logger.LogWarning(
+                        "[Session:{Player}] Stale RPC requestId={ReqId} with cache miss, lastDispatched={Last} — returning error to unstick client",
+                        _playerId, requestId, _orderingBuffer.LastDispatchedRequestId);
+                    return new SessionResponse
+                    {
+                        SequenceNumber = 0,
+                        Operations = new List<SessionOp>
+                        {
+                            new SessionOp
+                            {
+                                EntityId = entityId,
+                                RequestId = requestId,
+                                Error = "Request was processed by a previous server instance — result no longer available",
+                                OpBytes = ReadOnlyMemory<byte>.Empty,
+                            }
+                        },
+                        ServerTimeTicks = DateTime.UtcNow.Ticks,
+                    };
                 }
             }
 
@@ -690,7 +820,7 @@ namespace SharedMeta.Server.Core.Session
                 // either the stash is empty or the next slot is empty (gap remains).
                 if (_options.EnforceRpcOrder)
                 {
-                    while (_orderingBuffer.TryDequeueNext(out _, out var stashed) && stashed != null)
+                    while (_orderingBuffer.TryDequeueNext(out _, out var stashed))
                     {
                         if (!_subscribedEntities.TryGetValue(stashed.EntityId, out var stashedSub) || stashedSub.GrainRef == null)
                         {
@@ -702,7 +832,7 @@ namespace SharedMeta.Server.Core.Session
                                 EntityId = stashed.EntityId,
                                 RequestId = stashed.RequestId,
                                 Error = $"Not subscribed to entity {stashed.EntityId}",
-                                OpBytes = PooledPayload.Empty,
+                                OpBytes = ReadOnlyMemory<byte>.Empty,
                             });
                             continue;
                         }
@@ -788,10 +918,9 @@ namespace SharedMeta.Server.Core.Session
             var state = GetOrCreateEntityState(entityId);
             _logger.RpcReturned(_playerId, entityId, result.EntitySequenceNumber, state.KnownEntitySequence, _rpcBroadcastQueue.Count, result.HasError);
 
-            // Collect preceding broadcasts queued during RPC + drain held
-            var preceding = CollectPrecedingOps(state, entityId);
-            if (preceding.Count > 0)
-                allOps.AddRange(preceding);
+            // Collect preceding broadcasts queued during RPC + drain held.
+            // Append directly to allOps to avoid an intermediate List<SessionOp> per RPC.
+            AppendPrecedingOps(state, entityId, allOps);
 
             if (state.KnownEntitySequence >= result.EntitySequenceNumber - 1)
             {
@@ -848,19 +977,14 @@ namespace SharedMeta.Server.Core.Session
         }
 
         /// <summary>
-        /// Collect preceding operations from RPC broadcast queue and drain held broadcasts.
-        /// No sequence numbers assigned yet — just collect SessionOps.
+        /// Append preceding operations (broadcasts queued during the RPC + drained held)
+        /// directly onto <paramref name="allOps"/>. Replaces the prior pattern that allocated
+        /// a fresh List per RPC just to merge into <paramref name="allOps"/>.
         /// </summary>
-        private List<SessionOp> CollectPrecedingOps(EntityOrderingState state, string entityId)
+        private void AppendPrecedingOps(EntityOrderingState state, string entityId, List<SessionOp> allOps)
         {
-            var ops = new List<SessionOp>();
-            var precedingOps = BuildPrecedingOperations();
-            if (precedingOps != null)
-                ops.AddRange(precedingOps);
-
+            AppendBuiltPrecedingOps(allOps);
             DrainAndResolve(state, entityId);
-
-            return ops;
         }
 
         // ── RPC ordering stash helpers ───────────────────────────────────
@@ -1015,29 +1139,21 @@ namespace SharedMeta.Server.Core.Session
             {
                 // In order — buffer for batch delivery
                 state.KnownEntitySequence = entitySequenceNumber;
-                BufferBroadcast(entityId, broadcast);
+                BufferBroadcast(entityId, broadcast, entitySequenceNumber);
 
                 DrainAndResolve(state, entityId);
             }
             else if (entitySequenceNumber > expectedNext)
             {
-                // Out of order — hold (no session seq yet). Same overwrite-guard as
-                // BuildPrecedingOperations: an existing held entry for this seq leaks its ref
-                // if we don't Release before replacing.
+                // Out of order — hold (no session seq yet). Overwrites any prior entry at this
+                // seq (rare resubscribe-replay overlap); the displaced broadcast is GC-managed.
                 _logger.BroadcastOutOfOrder(entityId, entitySequenceNumber, expectedNext);
-                if (state.HeldBroadcasts.TryGetValue(entitySequenceNumber, out var prior)
-                    && !ReferenceEquals(prior, CrossCallSlotMarker))
-                {
-                    ReleasePayloadIfLocal(prior.OpBytes);
-                }
                 state.HeldBroadcasts[entitySequenceNumber] = broadcast;
             }
             else
             {
                 _logger.BroadcastDuplicate(_playerId, entitySequenceNumber, expectedNext);
-                // Drop the duplicate AND its pool ref — EntityGrain IncrementRef'd us as a
-                // consumer, no one else will Release for this entity-sequence position.
-                ReleasePayloadIfLocal(broadcast.OpBytes);
+                // Drop the duplicate — bytes are GC-managed.
             }
 
             // Flush all buffered operations as one batch to the client
@@ -1045,14 +1161,16 @@ namespace SharedMeta.Server.Core.Session
         }
 
         /// <summary>
-        /// Buffer a broadcast as a SessionOp for batch delivery. No sequence assigned yet.
+        /// Buffer a broadcast as a SessionOp for batch delivery. No session-level sequence assigned
+        /// yet (FlushOutgoingBatch stamps it); per-entity sequence flows through as-is so the
+        /// client can track its highest seen seq per entity.
         /// </summary>
-        private void BufferBroadcast(string entityId, EntityBroadcast broadcast)
+        private void BufferBroadcast(string entityId, EntityBroadcast broadcast, long entitySequenceNumber)
         {
             _logger.BufferBroadcast(_playerId, entityId);
 
             // Add to outgoing batch
-            _outgoingBatch.Add(BroadcastToSessionOp(entityId, broadcast));
+            _outgoingBatch.Add(BroadcastToSessionOp(entityId, broadcast, entitySequenceNumber));
         }
 
         /// <summary>
@@ -1100,34 +1218,43 @@ namespace SharedMeta.Server.Core.Session
         {
             while (state.HeldBroadcasts.Count > 0)
             {
-                var first = state.HeldBroadcasts.First();
-                if (first.Key != state.KnownEntitySequence + 1) break;
+                // SortedDictionary.GetEnumerator() returns a struct (no alloc). .First()
+                // extension boxes via IEnumerable<KVP>.GetEnumerator — heap alloc per drain step.
+                long firstKey;
+                EntityBroadcast firstValue;
+                using (var e = state.HeldBroadcasts.GetEnumerator())
+                {
+                    if (!e.MoveNext()) break;
+                    var cur = e.Current;
+                    firstKey = cur.Key;
+                    firstValue = cur.Value;
+                }
+                if (firstKey != state.KnownEntitySequence + 1) break;
 
-                state.HeldBroadcasts.Remove(first.Key);
-                state.KnownEntitySequence = first.Key;
+                state.HeldBroadcasts.Remove(firstKey);
+                state.KnownEntitySequence = firstKey;
                 // CrossCallSlotMarker is a slot reservation, not a real broadcast — its effect
                 // is already inlined in the cross-call's replay payload. Skip emission; only
                 // advance the sequence counter so subsequent broadcasts aren't held forever.
-                if (!ReferenceEquals(first.Value, CrossCallSlotMarker))
-                    BufferBroadcast(entityId, first.Value);
+                if (!ReferenceEquals(firstValue, CrossCallSlotMarker))
+                    BufferBroadcast(entityId, firstValue, firstKey);
             }
         }
 
         /// <summary>
-        /// Build preceding operations from broadcasts queued during an active RPC.
-        /// Applies per-entity ordering: only includes in-order broadcasts, holds out-of-order ones.
-        /// No sequence numbers assigned — just returns SessionOps.
+        /// Append preceding operations (broadcasts queued during active RPC) directly onto
+        /// <paramref name="allOps"/>. Applies per-entity ordering: in-order broadcasts append,
+        /// out-of-order ones go to state.HeldBroadcasts, duplicates drop.
         /// </summary>
-        private List<SessionOp>? BuildPrecedingOperations()
+        private void AppendBuiltPrecedingOps(List<SessionOp> allOps)
         {
-            if (_rpcBroadcastQueue.Count == 0) return null;
+            if (_rpcBroadcastQueue.Count == 0) return;
 
-            // Sort the queue in place — caller clears it after this method runs (see
-            // ExecuteOneCallAsync / outer RPC handler). Avoids OrderBy/ThenBy/ToList alloc graph.
+            // Sort the queue in place — _rpcBroadcastQueue is cleared by the outer caller
+            // after this method runs (see ExecuteOneCallAsync / finally block in the RPC handler).
             if (_rpcBroadcastQueue.Count > 1)
                 _rpcBroadcastQueue.Sort(QueuedBroadcastByEntityThenSequence);
 
-            var result = new List<SessionOp>();
             foreach (var b in _rpcBroadcastQueue)
             {
                 var state = GetOrCreateEntityState(b.EntityId);
@@ -1135,31 +1262,15 @@ namespace SharedMeta.Server.Core.Session
 
                 if (b.EntitySequenceNumber == expectedNext)
                 {
-                    // In order — include in preceding operations
                     state.KnownEntitySequence = b.EntitySequenceNumber;
-                    result.Add(BroadcastToSessionOp(b.EntityId, b.Broadcast));
+                    allOps.Add(BroadcastToSessionOp(b.EntityId, b.Broadcast, b.EntitySequenceNumber));
                 }
                 else if (b.EntitySequenceNumber > expectedNext)
                 {
-                    // Out of order — hold for later delivery. If a held entry for this seq
-                    // already exists (e.g. resubscribe-replay overlap), Release the existing
-                    // one first so its pool ref isn't dropped on the floor.
-                    if (state.HeldBroadcasts.TryGetValue(b.EntitySequenceNumber, out var prior)
-                        && !ReferenceEquals(prior, CrossCallSlotMarker))
-                    {
-                        ReleasePayloadIfLocal(prior.OpBytes);
-                    }
                     state.HeldBroadcasts[b.EntitySequenceNumber] = b.Broadcast;
                 }
-                else
-                {
-                    // Duplicate / old — EntityGrain IncrementRef'd us as a consumer but we're
-                    // dropping it. Release here so the slot can return to the pool.
-                    ReleasePayloadIfLocal(b.Broadcast.OpBytes);
-                }
+                // else: duplicate / old — drop, GC reclaims.
             }
-
-            return result.Count > 0 ? result : null;
         }
 
         /// <summary>
@@ -1224,17 +1335,21 @@ namespace SharedMeta.Server.Core.Session
         /// already filters those subscribers out anyway.
         /// </para>
         /// </summary>
-        private SessionOp BroadcastToSessionOp(string entityId, EntityBroadcast broadcast)
+        private SessionOp BroadcastToSessionOp(string entityId, EntityBroadcast broadcast, long entitySequenceNumber)
         {
             return new SessionOp {
                 EntityId = entityId,
                 RequestId = 0,
-                OpBytes = broadcast.OpBytes
+                OpBytes = broadcast.OpBytes,
+                EntitySequenceNumber = entitySequenceNumber,
             };
         }
 
         /// <summary>
-        /// Convert an EntityCallResult to a SessionOp (no sequence number).
+        /// Convert an EntityCallResult to a SessionOp. The entity sequence number from
+        /// <see cref="EntityCallResult.EntitySequenceNumber"/> is carried through to the wire so
+        /// the client can populate <see cref="SubscriptionClaim.LastKnownEntitySequence"/> on
+        /// next Resume.
         /// </summary>
         private SessionOp CallResultToSessionOp(string entityId, long requestId, EntityCallResult result)
         {
@@ -1243,7 +1358,8 @@ namespace SharedMeta.Server.Core.Session
                 RequestId = requestId,
                 OpBytes = result.OpBytes,
                 Error = result.Error,
-                CrossEntityOperations = result.CrossEntityCalls
+                CrossEntityOperations = result.CrossEntityCalls,
+                EntitySequenceNumber = result.EntitySequenceNumber,
             };
         }
 
@@ -1324,119 +1440,29 @@ namespace SharedMeta.Server.Core.Session
 
         private void CleanupPendingPacketsBySequence(long acknowledgedSequence)
         {
-            int countBefore = _pendingPackets.Count;
-            // Walk in reverse so we can remove evicted packets in place while we release
-            // their pool tokens — RemoveAll's predicate is run in unspecified order and would
-            // miss already-removed entries.
-            int removed = 0;
-            for (int i = _pendingPackets.Count - 1; i >= 0; i--)
+            // _pendingPackets is ordered by SequenceNumber (Add happens with ++_sequenceNumber).
+            // Find the first index with seq > ack — everything before is removable as a single
+            // O(N-K) RemoveRange, vs N×O(N) on per-element RemoveAt walk.
+            int removeUpTo = 0;
+            int count = _pendingPackets.Count;
+            while (removeUpTo < count && _pendingPackets[removeUpTo].SequenceNumber <= acknowledgedSequence)
+                removeUpTo++;
+            if (removeUpTo > 0)
             {
-                if (_pendingPackets[i].SequenceNumber <= acknowledgedSequence)
-                {
-                    ReleasePacketPoolTokens(_pendingPackets[i]);
-                    _pendingPackets.RemoveAt(i);
-                    removed++;
-                }
-            }
-            if (removed > 0)
-                _logger.PacketsCleanedBySeq(removed, acknowledgedSequence);
-        }
-
-        // Release all PooledPayload tokens that the SessionResponse's SessionOps hold a
-        // ref-count share on. Called whenever a pending packet is evicted (acknowledgment,
-        // overflow trim, session reset / supersede). Network transports embed the bytes via
-        // wire serialization before the ack arrives, so by the time evict fires it's safe
-        // to return the pool slots.
-        private void ReleasePacketPoolTokens(SessionResponse response)
-        {
-            if (_pooledPayloadRegistry == null) return;
-            var ops = response.Operations;
-            if (ops == null) return;
-            for (int i = 0; i < ops.Count; i++)
-            {
-                var op = ops[i];
-                if (op.OpBytes.Ref == 0 || op.OpBytes.SiloId != _pooledPayloadRegistry.SiloId) continue;
-                _pooledPayloadRegistry.Release(op.OpBytes);
-                op.OpBytes = default;
-                ops[i] = op;
+                _pendingPackets.RemoveRange(0, removeUpTo);
+                _logger.PacketsCleanedBySeq(removeUpTo, acknowledgedSequence);
             }
         }
 
-        private void ReleaseAndClearPendingPackets()
-        {
-            if (_pendingPackets.Count == 0) return;
-            // Snapshot + clear FIRST so a re-entrant call (or an exception during release)
-            // never sees the same packet twice. The OpBytes-clearing inside
-            // ReleasePacketPoolTokens defends against in-snapshot duplicates.
-            var snapshot = _pendingPackets.ToArray();
-            _pendingPackets.Clear();
-            for (int i = 0; i < snapshot.Length; i++)
-                ReleasePacketPoolTokens(snapshot[i]);
-        }
-
-        // Release pool refs held by DeferredResponse.Result.OpBytes before dropping the list.
-        // A plain .Clear() leaks the slot share — DeferredResponse outlives a single RPC frame
-        // and the OpBytes is acquired upstream in EntityGrain's response path.
-        private void ReleaseAndClearDeferredResponses()
-        {
-            if (_deferredResponses.Count == 0) return;
-            if (_pooledPayloadRegistry != null)
-            {
-                for (int i = 0; i < _deferredResponses.Count; i++)
-                {
-                    var op = _deferredResponses[i].Result.OpBytes;
-                    if (op.Ref != 0 && op.SiloId == _pooledPayloadRegistry.SiloId)
-                        _pooledPayloadRegistry.Release(op);
-                }
-            }
-            _deferredResponses.Clear();
-        }
-
-        // Release pool refs held by queued broadcasts before dropping the list. RPC reset
-        // (line 717 / 741) historically called .Clear() unconditionally — that leaked the
-        // EntityGrain-side IncrementRef share for any broadcasts that never made it into a
-        // flushed SessionResponse.
-        private void ReleaseAndClearRpcBroadcastQueue()
-        {
-            if (_rpcBroadcastQueue.Count == 0) return;
-            if (_pooledPayloadRegistry != null)
-            {
-                for (int i = 0; i < _rpcBroadcastQueue.Count; i++)
-                {
-                    var op = _rpcBroadcastQueue[i].Broadcast.OpBytes;
-                    if (op.Ref != 0 && op.SiloId == _pooledPayloadRegistry.SiloId)
-                        _pooledPayloadRegistry.Release(op);
-                }
-            }
-            _rpcBroadcastQueue.Clear();
-        }
-
-        // Release a single PooledPayload — null/Ref==0/cross-silo are silently skipped, the same
-        // tolerance ReleasePacketPoolTokens uses. Centralized so individual leak-prone sites
-        // (broadcast duplicates, HeldBroadcasts drain on entity-state clear) stay one-liners.
-        private void ReleasePayloadIfLocal(PooledPayload payload)
-        {
-            if (_pooledPayloadRegistry == null) return;
-            if (payload.Ref == 0 || payload.SiloId != _pooledPayloadRegistry.SiloId) return;
-            _pooledPayloadRegistry.Release(payload);
-        }
-
-        // Walk HeldBroadcasts on every EntityOrderingState and release their pool refs before
-        // dropping the dictionary. _entityStates.Clear() alone leaks because each HeldBroadcasts
-        // entry carries an OpBytes ref that no one else holds.
+        // Pool ref-count machinery was removed in the PooledPayload → ROM<byte> refactor.
+        // OpBytes is now GC-backed; eviction just drops references and GC reclaims naturally.
+        private void ReleaseAndClearPendingPackets() => _pendingPackets.Clear();
+        private void ReleaseAndClearDeferredResponses() => _deferredResponses.Clear();
+        private void ReleaseAndClearRpcBroadcastQueue() => _rpcBroadcastQueue.Clear();
         private void ReleaseAndClearEntityStates()
         {
-            if (_entityStates.Count == 0) return;
             foreach (var state in _entityStates.Values)
-            {
-                foreach (var held in state.HeldBroadcasts.Values)
-                {
-                    // CrossCallSlotMarker is a sentinel without a real payload — skip.
-                    if (ReferenceEquals(held, CrossCallSlotMarker)) continue;
-                    ReleasePayloadIfLocal(held.OpBytes);
-                }
                 state.HeldBroadcasts.Clear();
-            }
             _entityStates.Clear();
         }
 
@@ -1450,57 +1476,71 @@ namespace SharedMeta.Server.Core.Session
         }
 
         /// <summary>
-        /// Re-subscribe to entities saved during transport disconnect.
-        /// Returns state for all entities (client always gets a fresh state on reconnect).
+        /// 0.24.0+ Client-driven subscription reclaim. Per claim, ask the entity grain for a
+        /// verdict; populate local <see cref="_subscribedEntities"/> + <see cref="_entityStates"/>
+        /// from the successful results. Failed results are returned in the list so the caller
+        /// can decide whether to abort the whole Resume.
         /// </summary>
-        private async Task<List<ResubscribedEntity>> ResubscribeSavedEntitiesAsync()
+        private async Task<List<SubscriptionResult>> ReclaimClaimedSubscriptionsAsync(
+            IReadOnlyList<SubscriptionClaim> claims,
+            string? clientVersion,
+            ulong clientSignatureHash)
         {
-            var result = new List<ResubscribedEntity>();
+            var results = new List<SubscriptionResult>(claims.Count);
+            var sessionRef = this.AsReference<ISessionManagerReference>();
 
-            foreach (var saved in _savedSubscriptions!)
+            foreach (var claim in claims)
             {
                 try
                 {
-                    var entityGrain = GetEntityGrain(saved.EntityId, saved.StateTypeName);
-                    if (entityGrain == null) continue;
-
-                    // Replay the per-client config branch + signature mapping captured on the
-                    // original SubscribeToEntityAsync. Falling back to (null, 0) here would
-                    // make the provider throw "clientAppVersion is required".
-                    var snapshot = await entityGrain.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>(),
-                        saved.ClientVersion, saved.ClientSignatureHash);
-
-                    _subscribedEntities[saved.EntityId] = new EntitySubscriptionInfo(
-                        entityId: saved.EntityId,
-                        stateTypeName: saved.StateTypeName,
-                        grainRef: entityGrain,
-                        clientVersion: saved.ClientVersion,
-                        clientSignatureHash: saved.ClientSignatureHash);
-
-                    _entityStates[saved.EntityId] = new EntityOrderingState
+                    var entityGrain = GetEntityGrain(claim.EntityId, claim.StateTypeName);
+                    if (entityGrain == null)
                     {
-                        KnownEntitySequence = snapshot.CurrentSequenceNumber
-                    };
+                        results.Add(new SubscriptionResult
+                        {
+                            EntityId = claim.EntityId,
+                            Status = SubscriptionStatus.Failed,
+                            FailureReason = $"Unknown state type '{claim.StateTypeName}' on server",
+                        });
+                        continue;
+                    }
 
-                    result.Add(new ResubscribedEntity
+                    var verdict = await entityGrain.ReclaimSubscriptionAsync(
+                        _playerId, sessionRef, claim.LastKnownEntitySequence,
+                        clientVersion, clientSignatureHash);
+
+                    if (verdict.Status != SubscriptionStatus.Failed)
                     {
-                        EntityId = saved.EntityId,
-                        StateBytes = snapshot.StateBytes,
-                        EntitySequenceNumber = snapshot.CurrentSequenceNumber,
-                        OptimisticRandomBytes = snapshot.OptimisticRandomBytes,
-                        NamedRandomsBytes = snapshot.NamedRandomsBytes,
-                        ConfigVersion = snapshot.ConfigVersion
-                    });
+                        _subscribedEntities[claim.EntityId] = new EntitySubscriptionInfo(
+                            entityId: claim.EntityId,
+                            stateTypeName: claim.StateTypeName,
+                            grainRef: entityGrain,
+                            clientVersion: clientVersion,
+                            clientSignatureHash: clientSignatureHash);
 
-                    _logger.SubscribedToEntity(_playerId, saved.EntityId, snapshot.CurrentSequenceNumber);
+                        _entityStates[claim.EntityId] = new EntityOrderingState
+                        {
+                            KnownEntitySequence = verdict.EntitySequenceNumber
+                        };
+
+                        _logger.SubscribedToEntity(_playerId, claim.EntityId, verdict.EntitySequenceNumber);
+                    }
+
+                    results.Add(verdict);
                 }
                 catch (Exception ex)
                 {
-                    _logger.ErrorSubscribing(ex, saved.EntityId);
+                    _logger.LogWarning(ex, "[SessionManager:{Player}] Reclaim threw for entity {EntityId}", _playerId, claim.EntityId);
+                    results.Add(new SubscriptionResult
+                    {
+                        EntityId = claim.EntityId,
+                        Status = SubscriptionStatus.Failed,
+                        FailureReason = ex.Message,
+                    });
                 }
             }
 
-            return result;
+            return results;
         }
 
         private IEntityGrainBase? GetEntityGrain(string entityId, string stateTypeName)
@@ -1519,8 +1559,7 @@ namespace SharedMeta.Server.Core.Session
             if (_pendingPackets.Count > MaxPendingPackets)
             {
                 var toRemove = _pendingPackets.Count - MaxPendingPackets / 2;
-                for (int i = 0; i < toRemove; i++)
-                    ReleasePacketPoolTokens(_pendingPackets[i]);
+                // ROM-backed by GC byte[] — eviction just drops the reference; no per-element work.
                 _pendingPackets.RemoveRange(0, toRemove);
                 _logger.PacketsCleanedByCount(toRemove);
             }

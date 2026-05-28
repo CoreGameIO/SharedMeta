@@ -24,6 +24,7 @@ namespace SharedMeta.Client.Network
         public string ClientId => _dispatcher.Connection.ConnectionId;
         public string? PlayerId { get; set; }
         public string? EntityId => _entityId;
+        public long LastKnownEntitySequence => _dispatcher.GetLastKnownEntitySequence(_entityId);
         public long ServerTimeTicks => _serverTimeClock();
 
         /// <summary>
@@ -36,12 +37,17 @@ namespace SharedMeta.Client.Network
         /// object directly on the adapter) but in production the value flows from the dispatcher.
         /// </para>
         /// </summary>
-        public ClientCapabilities? Capabilities
+        /// <summary>
+        /// 0.24.0+ Annotated signature view of the session capabilities. Setter-override pattern
+        /// so unit tests can inject directly while production flow inherits from the parent
+        /// dispatcher.
+        /// </summary>
+        public ClientSignatureAnnotated? Annotated
         {
-            get => _capabilitiesOverride ?? _dispatcher.Capabilities;
-            set => _capabilitiesOverride = value;
+            get => _annotatedOverride ?? _dispatcher.Annotated;
+            set => _annotatedOverride = value;
         }
-        private ClientCapabilities? _capabilitiesOverride;
+        private ClientSignatureAnnotated? _annotatedOverride;
 
         /// <summary>
         /// 0.22.0+ Per-entity capability overlay. Stored on the per-entity adapter so generated
@@ -77,23 +83,21 @@ namespace SharedMeta.Client.Network
 
         // SessionOp.OpBytes carries the pre-serialized MetaOperation produced by the server.
         // We deserialize once and project into the in-memory NetworkBroadcast / CallResponse
-        // shapes the API client expects. OpBytes is a PooledPayload; on the client side the
-        // Memory is byte[]-backed (transport copied bytes before delivery — see InProcess /
-        // network transport contracts).
+        // shapes the API client expects. OpBytes is a ReadOnlyMemory<byte>.
         private MetaOperation UnpackOp(SessionOp sessionOp)
-            => sessionOp.OpBytes.Length > 0 ? _serializer.Unpack<MetaOperation>(sessionOp.OpBytes.Memory) : new MetaOperation();
+            => sessionOp.OpBytes.Length > 0 ? _serializer.Unpack<MetaOperation>(sessionOp.OpBytes) : new MetaOperation();
 
         // 0.24.0+ Translate server's global method index → client's local index using the
-        // per-signature map shipped in ClientCapabilities.ServerToClientMethodIds. When the
-        // map isn't available (signature negotiation disabled / not yet completed) we fall
-        // back to identity — client and server built from the same protocol surface produce
+        // per-signature map shipped in ClientSignatureAnnotated.ServerToClient. When the map
+        // isn't available (signature negotiation disabled / not yet completed) we fall back
+        // to identity — client and server built from the same protocol surface produce
         // identical sort orders, so server's id equals client's id in that case. Returns
-        // ushort.MaxValue (sentinel) only when the explicit map says "client doesn't know".
+        // UnknownClientMethodId (sentinel) only when the explicit map says "client doesn't know".
         private ushort TranslateIncomingMethodId(ushort serverMethodId)
         {
-            var caps = Capabilities;
-            if (caps == null) return serverMethodId;
-            var map = caps.ServerToClientMethodIds;
+            var annotated = Annotated;
+            if (annotated == null) return serverMethodId;
+            var map = annotated.ServerToClient;
             if (map == null || serverMethodId >= map.Length) return serverMethodId;
             return map[serverMethodId];
         }
@@ -106,6 +110,7 @@ namespace SharedMeta.Client.Network
             // server emits a method the client doesn't know (e.g. server-only), the sentinel
             // ushort.MaxValue propagates and generated dispatch ignores it.
             ushort clientMethodId = TranslateIncomingMethodId(op.MethodId);
+
             OnBroadcast?.Invoke(new NetworkBroadcast
             {
                 MethodId = clientMethodId,
@@ -127,7 +132,7 @@ namespace SharedMeta.Client.Network
             OnDisconnected?.Invoke(reason.ToString());
         }
 
-        public async Task<CallResponse<T>> CallAsync<T>(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
+        public async Task<CallResponse<T>> CallAsync<T>(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
         {
             // 0.24.0+ RpcCall no longer carries ServiceName/MethodName/MethodVersion — only
             // MethodId addresses the dispatch. ServiceName/methodName/methodVersion are still
@@ -170,11 +175,12 @@ namespace SharedMeta.Client.Network
                 PatchBytes = op.PatchBytes.IsEmpty ? null : op.PatchBytes.ToArray(),
                 StateBytes = op.StateBytes.IsEmpty ? null : op.StateBytes.ToArray(),
                 DeepDesyncCrc = op.DeepDesyncCrc,
-                ExecutedConfigVersion = op.ExecutedConfigVersion
+                ExecutedConfigVersion = op.ExecutedConfigVersion,
+                Debug = op.Debug,
             };
         }
 
-        public async Task<VoidCallResponse> CallVoidAsync(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
+        public async Task<VoidCallResponse> CallVoidAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
         {
             var call = new RpcCall
             {
@@ -208,7 +214,7 @@ namespace SharedMeta.Client.Network
             };
         }
 
-        public async Task<ByteCallResponse> CallBytesAsync(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
+        public async Task<ByteCallResponse> CallBytesAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
         {
             var call = new RpcCall
             {
@@ -239,7 +245,8 @@ namespace SharedMeta.Client.Network
                 PatchBytes = op.PatchBytes.IsEmpty ? null : op.PatchBytes.ToArray(),
                 StateBytes = op.StateBytes.IsEmpty ? null : op.StateBytes.ToArray(),
                 DeepDesyncCrc = op.DeepDesyncCrc,
-                ExecutedConfigVersion = op.ExecutedConfigVersion
+                ExecutedConfigVersion = op.ExecutedConfigVersion,
+                Debug = op.Debug,
             };
         }
 
@@ -248,13 +255,13 @@ namespace SharedMeta.Client.Network
         /// no auto-retry. Completes as soon as the connection hands the message off.
         /// Server-side errors are never reported back.
         /// </summary>
-        public ValueTask SendSignalAsync(ushort methodId, byte[] args)
+        public ValueTask SendSignalAsync(ushort methodId, ReadOnlyMemory<byte> args)
         {
             var request = new SignalCallRequest
             {
                 EntityId = _entityId,
                 MethodId = methodId,
-                Payload = args ?? Array.Empty<byte>()
+                Payload = args
             };
 
             // Fire-and-forget at the dispatcher level too — we do NOT await the Task here.

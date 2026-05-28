@@ -32,6 +32,7 @@ namespace SharedMeta.Debug.Mux
 
         public event Action<SessionResponse>? OnBatch;
         public event Action<string>? OnSessionTerminated;
+        public event Action<string>? OnRequireSessionReconnect;       // Mux: not raised yet (no server-restart simulation)
         public event Action<TransportDisconnectReason>? OnDisconnected;
         public event Action? OnReconnecting;
         public event Action? OnReconnected;
@@ -60,7 +61,7 @@ namespace SharedMeta.Debug.Mux
         public Task GracefulDisconnectAsync()
             => _channel.IsConnected ? _hub.GracefulDisconnect(_sessionTag) : Task.CompletedTask;
 
-        public async Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0)
+        public async Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0, SessionConnectMode mode = SessionConnectMode.StartNew, long lastCompletedRequestId = 0, List<SubscriptionClaim>? claimedSubscriptions = null)
         {
             var resp = await _hub.SessionConnect(_sessionTag, new SessionConnectRequest
             {
@@ -69,6 +70,9 @@ namespace SharedMeta.Debug.Mux
                 LastAcknowledgedSequence = lastAcknowledgedSequence,
                 ClientVersion = clientAppVersion,
                 ClientSignatureHash = clientSignatureHash,
+                Mode = mode,
+                LastCompletedRequestId = lastCompletedRequestId,
+                ClaimedSubscriptions = claimedSubscriptions,
             });
             return new ConnectionSessionConnectResult
             {
@@ -78,12 +82,14 @@ namespace SharedMeta.Debug.Mux
                 IsNewSession = resp.IsNewSession,
                 MissedPackets = resp.MissedPackets ?? new(),
                 ServerTimeTicks = resp.ServerTimeTicks,
-                ResubscribedEntities = resp.ResubscribedEntities,
+                Subscriptions = resp.Subscriptions,
                 ServerVersion = resp.ServerVersion,
                 MinClientVersion = resp.MinClientVersion,
                 MaxClientVersion = resp.MaxClientVersion,
                 NeedsSignatureRegistration = resp.NeedsSignatureRegistration,
-                Capabilities = resp.Capabilities,
+                ServerSignatureHash = resp.ServerSignatureHash,
+                Annotated = resp.Annotated,
+                FailureReason = resp.FailureReason,
             };
         }
 
@@ -175,3 +181,5 @@ namespace SharedMeta.Debug.Mux
         }
     }
 }
+
+

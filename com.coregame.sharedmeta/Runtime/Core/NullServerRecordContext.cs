@@ -17,15 +17,9 @@ namespace SharedMeta.Core
 
         public void Write<T>(T value) { }
 
-        public byte[] Complete() => Array.Empty<byte>();
+        public ReadOnlyMemory<byte> Complete() => ReadOnlyMemory<byte>.Empty;
 
-        public bool SupportsRentedComplete => false;
-
-        public void CompleteAsRented(out byte[] buffer, out int length)
-        {
-            buffer = Array.Empty<byte>();
-            length = 0;
-        }
+        public void Reset() { }
 
         public void Dispose() { }
     }
@@ -59,13 +53,13 @@ namespace SharedMeta.Core
 
         public void BeginOperation() { }
 
-        public byte[] EndOperation() => Array.Empty<byte>();
+        public ReadOnlyMemory<byte> EndOperation() => ReadOnlyMemory<byte>.Empty;
 
         public PayloadDebug? GetAndClearDebug() => null;
 
         public string? EntityId => null;
 
-        public Task<byte[]> CallEntityAsync(string targetEntityId, ushort methodId, byte[] argsBytes)
+        public Task<byte[]> CallEntityAsync(string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes)
             => throw new NotSupportedException(
                 "Cross-entity calls are not supported from signal methods. Use a regular MetaMethod for cross-entity routing.");
     }

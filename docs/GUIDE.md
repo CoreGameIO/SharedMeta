@@ -2206,29 +2206,88 @@ Rules:
 ### Architecture
 
 One `SessionManagerGrain` per player. Manages:
-- Active session (SessionId)
-- Entity subscriptions
+- Active session (`SessionId`, `SequenceNumber`)
 - Broadcast ordering (per-entity sequence tracking)
-- Missed packet buffer for reconnection (max 1000 packets)
+- Missed packet buffer for reconnection (`PendingPackets`, max 1000 packets)
 - RPC response batching with broadcasts
+- Persisted RPC-ordering baseline (`LastDispatchedRequestId`) — survives silo restart
+
+Subscriptions are **client-owned** since 0.24.0 — the server no longer persists a parallel subscription list. The client claims its set on every `Resume`, the entity grain verifies each claim. The grain's own `Subscribers` dict is a soft cache rebuilt from claims, not the authoritative store.
 
 ### Session Lifecycle
 
-```
-1. New Connection
-   Client → SessionConnect(playerId, null) → New session, new SessionId
+Two explicit connect modes from 0.24.0 — `SessionConnectMode.Resume` (rehydrate the existing session) vs `SessionConnectMode.StartNew` (allocate a fresh session, supersede any existing). No silent fallback between them.
 
-2. Reconnection (same session)
-   Client → SessionConnect(playerId, sessionId, lastAcknowledgedSequence)
+```
+1. New connection (or explicit StartNew)
+   Client → SessionConnect(playerId, Mode=StartNew)
+   Server → Fresh SessionId, empty subscription set, supersedes any prior session
+
+2. Resume (same SessionId)
+   Client → SessionConnect(playerId, Mode=Resume, sessionId, lastAcknowledgedSequence,
+                           lastCompletedRequestId, ClaimedSubscriptions=[...])
    Server → Returns missed packets (sequence > lastAcknowledged)
-   Server → Re-subscribes to previously subscribed entities
+          → Per-claim verdict for every entity the client says it was subscribed to (see below)
+          → Mismatch on SessionId ⇒ SessionUnknown failure (no silent re-start)
 
-3. Session Supersede (another client connects)
-   New Client → SessionConnect(playerId, newSessionId)
+3. Session supersede (a fresh StartNew from the same player)
+   New Client → SessionConnect(playerId, Mode=StartNew)
    Server → Notifies old observer: "Session superseded"
-   Server → Unsubscribes old session from all entities
-   Old Client → OnSessionSuperseded event fires
+          → Unsubscribes old session from all entities
+   Old Client → OnSessionSuperseded fires
 ```
+
+### Client-Owned Subscriptions and Reclaim Verdicts (0.24.0+)
+
+The client tracks its own subscription set (entity id + state type + last known entity sequence). On every `Resume`, that set ships in `SessionConnectRequest.ClaimedSubscriptions`. The server forwards each claim to the entity grain (`EntityGrain.ReclaimSubscriptionAsync`) and returns a per-claim verdict in `SessionConnectResponse.Subscriptions`:
+
+| Verdict | When | What the response carries |
+|---|---|---|
+| `Continued` | Sequence matches; signature hash unchanged. The grain may need to repair its `Subscribers` entry (after silo restart) — done in place, no state ship. | No state bytes; client keeps its local view. |
+| `Refreshed` | Sequence gap, or signature hash changed (schema migration). | Full snapshot — state bytes, optimistic + named-random scrolls, config version. Client deserializes and fires `StateRefresher` hooks. |
+| `Failed` | Access denied, schema incompatible, unknown state type, or grain exception. | Failure reason. Any single `Failed` aborts the whole Resume with `SessionConnectFailureReason.SubscriptionReclaimFailed` — the client routes through `IMetaSessionRecoveryHandler`. |
+
+**Truth source for Continued is `EntitySequenceNumber` alone.** If the server's `state.Subscribers` lost the player's entry (e.g. silo crash without graceful deactivate) but the sequence number still matches, the cheap path repairs the entry in place — it does **not** force-push a Refreshed snapshot. Without this guarantee, a client that applied offline RPCs during a server outage would have its locally-applied state overwritten by the pre-outage snapshot on reconnect.
+
+**Client-side cross-entity tracking.** `_lastKnownEntitySeq` advances on every `CrossEntityOperations[i].TargetEntityId` in the response, not just the outer entity. Without this, a cross-entity call from entity A into entity B leaves B's client-side seq stale; the next Reclaim of B would report a gap and the server would force-push a Refreshed snapshot.
+
+### `IMetaSessionRecoveryHandler` — Game-Level Recovery Callback (0.24.0+)
+
+When the server reports `SessionUnknown` (Resume against a session the grain no longer remembers) or `SubscriptionReclaimFailed` (any subscription verdict was `Failed`), the client invokes a game-level callback so the game decides what to do:
+
+```csharp
+public interface IMetaSessionRecoveryHandler
+{
+    Task<SessionRecoveryAction> OnSessionLost(SessionLostContext ctx, CancellationToken ct);
+}
+
+public enum SessionRecoveryAction { Reconnect, Restart, Disconnect }
+```
+
+| Action | Behavior |
+|---|---|
+| `Reconnect` (default) | Dispatcher runs a fresh `StartNew` and re-subscribes to known entities. Pending RPCs from the lost session fail with `SessionLostException`. |
+| `Restart` | Full client restart — typical when the game wants to drop and reload local UI state. |
+| `Disconnect` | No automatic recovery — the game decides (e.g. show a logout prompt). |
+
+Wire it through `MetaClientOptions`:
+
+```csharp
+var client = new MetaClient(connection, serializer, new MetaClientOptions
+{
+    SessionRecoveryHandler = new MyRecoveryUi(),  // or omit for default Reconnect
+});
+```
+
+A single `TriggerRecovery` entry point handles both transport-reconnect (SignalR `Reconnected`) and server-pushed `RequireSessionReconnect` notifications. `Interlocked` debounce prevents concurrent `ConnectSessionAsync` calls racing inside SignalR's connection lock.
+
+### RPC Ordering Baseline Persistence (0.24.0+)
+
+After silo restart, the grain rehydrates the persisted `RpcOrderingBuffer.LastDispatchedRequestId` from `SessionManagerGrainState`. Without this baseline, the buffer would reset to 0 and the client's re-sent RequestIds would be misclassified `OutOfOrder` against a stale baseline, stashed forever, producing infinite client retry loops.
+
+The client additionally reports `SessionConnectRequest.LastCompletedRequestId` on Resume — the server advances its baseline to `max(persisted, clientReported)`, handling the case where the server lost cached responses (eviction or crash before persistence flush) but the client did receive them. Wire-additive; old clients send 0 (no-op).
+
+Stale + cache-miss returns an error op keyed to the original `RequestId` instead of silent re-execution — at-most-once semantics for non-idempotent operations whose prior responses the client already ack'd.
 
 ### Broadcast Ordering
 
@@ -3514,48 +3573,48 @@ public DispatchResult DispatchCall(string serviceName, string methodName, byte[]
 }
 ```
 
-### Method Signature Validation (generated)
+### Signature Negotiation (0.22.0+, redesigned in 0.24.0)
 
-The generator produces `MetaMethodSignatureValidator` with FNV-1a 64-bit hashes of every method's canonical signature. Validation runs at connection time — if client and server signatures don't match, the connection is rejected with a list of mismatches.
+The generator emits a `MetaClientSignature` constant containing every `[MetaMethod]` the client knows about. On `SessionConnect` the client sends just its `ClientSignatureHash` (8 bytes). The server side:
 
-**Canonical signature format:**
-```
-{ServiceName}.{MethodAlias}({ParamType1},{ParamType2},...)->{ReturnType}
-```
+1. Looks up the hash in its silo-local cache. **Known + same `ServerSignatureHash` as client's cached entry** → ships back a `ClientSignatureAnnotated` (verdict + id-translation array) directly on the SessionConnect response. **Unknown OR server redeployed** → returns `NeedsSignatureRegistration = true`, prompting the client to follow up with `RegisterClientSignatureRequest` carrying the full signature; server computes the annotation, persists the signature, returns the annotation on the phase-2 response.
+2. The annotation lives on the silo-local cache for the lifetime of the silo; the underlying signature is persisted in `IClientSignatureGrain` keyed by hash and survives silo restarts.
 
-Examples:
-```
-IProfileService.SetName(string)->void
-ICardGameService.PlayCard(Card)->bool
-IExpeditionService.Move(int,int)->MoveResult
-```
-
-**What triggers a signature mismatch:**
-- Changing a method's parameter types or order
-- Changing a method's return type
-- Renaming a method (without updating `Alias`)
-- Adding/removing parameters
-
-**What does NOT trigger a mismatch:**
-- Adding new methods (server has extra methods — OK)
-- Changing execution mode (`[MetaMethod(Mode = ...)]`)
-- Changing `Version`, `SkipServerOnFalse`, `ForcePersist`
-
-**Generated validator (server-side):**
+**`ClientSignatureAnnotated` wire shape:**
 ```csharp
-public static class MetaMethodSignatureValidator
+public partial class ClientSignatureAnnotated
 {
-    public static readonly Dictionary<string, ulong> ServerSignatures = new()
-    {
-        { "IProfileService.SetName", 0xA1B2C3D4E5F60718UL },
-        { "ICardGameService.PlayCard", 0x1234567890ABCDEFUL },
-        // ... all methods
-    };
-
-    // Returns null if valid, list of mismatch descriptions otherwise
-    public static List<string>? ValidateClientSignatures(
-        Dictionary<string, ulong> clientSignatures);
+    public ulong ClientSignatureHash;
+    public ulong ServerSignatureHash;
+    public ushort[] ServerToClient;        // index = serverMethodId, value = clientMethodId
+    public MethodStatus[] Statuses;        // index = clientMethodId
 }
+
+public enum MethodStatus : byte { Ok, ForceServerPatch, Rejected }
+```
+
+**Client-side cache** — `IServerAnnotationCache` (in-memory default; Unity `PlayerPrefsServerAnnotationCache` for persistence across app launches). Cache key = `clientHash`; invalidation when the `ServerSignatureHash` returned on a fresh connect diverges from the cached entry's stored hash.
+
+**What goes into the signature hashes:**
+- `MetaClientSignature.SignatureHash` = FNV-1a over canonical `{ServiceName}.{MethodAlias}@{Version}#{ArgHash}` lines, sorted.
+- `MetaServerSignature.SignatureHash` = same, plus per-method server-only fields (`MinCompatibleVersion`, `GenerateClientApi`, `ConfigTypeFullName`) and `[MetaConfigStructureBoundary]` declarations.
+
+**What the per-method `Statuses[clientId]` verdict can be:**
+- `Ok` (default) — call proceeds normally on the wire.
+- `ForceServerPatch` — server-side body diverged enough that optimistic local execution would desync; client downgrades to ServerPatch.
+- `Rejected` — method missing on the server (or flagged `GenerateClientApi = false`, or its `ArgHash` doesn't match, or the client's `Version` is below the server's `MinCompatibleVersion`); client gate throws `IncompatibleFeatureException` locally without going to the wire.
+
+**Tracing the handshake:** both sides log INFO entries at every phase transition. Run client + server with logging enabled to verify they understand each other:
+```
+# server-side
+Handshake[playerX] phase-1 HIT: clientHash=0x..., serverHash=0x..., annotation: 47 methods (0 rejected, 0 force-patch)
+Handshake[playerX] phase-1 MISS: clientHash=0x... unknown, serverHash=0x...; needs phase-2 registration
+Handshake[playerX] phase-2 REGISTER: clientHash=0x... (47 methods) -> serverHash=0x..., annotation: 0 rejected, 0 force-patch, 3 server-only
+
+# client-side
+[ClientDispatcher] Handshake phase-1 HIT: clientHash=0x..., serverHash=0x..., annotation: ...
+[ClientDispatcher] Handshake phase-1 MISS: ...; sending phase-2 RegisterClientSignature
+[ClientDispatcher] Handshake phase-2 REGISTERED: clientHash=0x... (47 methods) -> serverHash=0x..., annotation: ...
 ```
 
 ### Method Version (`MetaMethod.Version`)

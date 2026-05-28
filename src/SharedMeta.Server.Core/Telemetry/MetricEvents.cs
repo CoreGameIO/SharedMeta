@@ -82,19 +82,6 @@ namespace SharedMeta.Server.Core.Telemetry
                     new KeyValuePair<string, object?>("kind", "notification"));
         }
 
-        public static class Pool
-        {
-            public static void Acquired() => SharedMetaMeters.PoolAcquireCount.Add(1);
-            public static void Released() => SharedMetaMeters.PoolReleaseCount.Add(1);
-
-            /// <summary>
-            /// Wire the observable-gauge provider for live slot count. Called once from the
-            /// <c>PooledPayloadRegistry</c> constructor.
-            /// </summary>
-            public static void RegisterAllocatedProvider(Func<long> provider)
-                => SharedMetaMeters.PoolAllocatedSlotsProvider = provider;
-        }
-
         public static class Broadcast
         {
             /// <summary>

@@ -23,7 +23,7 @@ namespace SharedMeta.Server.Core.Grains
     {
         /// <summary>
         /// True if any silo has previously registered this signature hash. Cheap directory
-        /// lookup — the actual <see cref="SharedMeta.Core.Transport.ClientCapabilities"/>
+        /// lookup — the actual <see cref="SharedMeta.Core.Transport.MetaClientSignature"/>
         /// payload lives in the per-hash <see cref="IClientSignatureGrain"/>.
         /// </summary>
         Task<bool> IsKnownAsync(ulong signatureHash);

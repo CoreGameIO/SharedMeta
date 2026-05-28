@@ -23,13 +23,13 @@ namespace SharedMeta.Server.Core.Session
     /// Payload type. Typically a small DTO carrying the original RPC call and any
     /// per-request metadata the caller needs to replay later.
     /// </typeparam>
-    public sealed class RpcOrderingBuffer<T> where T : class
+    public sealed class RpcOrderingBuffer<T>
     {
         private struct Slot
         {
             public bool HasValue;
             public long RequestId;
-            public T? Payload;
+            public T Payload;
         }
 
         private readonly Slot[] _slots;
@@ -81,8 +81,6 @@ namespace SharedMeta.Server.Core.Session
         /// </summary>
         public StashResult TryStash(long requestId, T payload)
         {
-            if (payload == null) throw new ArgumentNullException(nameof(payload));
-
             long offset = requestId - (_lastDispatchedRequestId + 1);
             if (offset < 0)
                 return StashResult.Stale;
@@ -106,12 +104,12 @@ namespace SharedMeta.Server.Core.Session
         /// both the head and <see cref="LastDispatchedRequestId"/>. Returns false if the
         /// head is empty (gap not yet filled) or the buffer is empty.
         /// </summary>
-        public bool TryDequeueNext(out long requestId, out T? payload)
+        public bool TryDequeueNext(out long requestId, out T payload)
         {
             if (_count == 0)
             {
                 requestId = 0;
-                payload = null;
+                payload = default!;
                 return false;
             }
 
@@ -119,7 +117,7 @@ namespace SharedMeta.Server.Core.Session
             if (!slot.HasValue || slot.RequestId != _lastDispatchedRequestId + 1)
             {
                 requestId = 0;
-                payload = null;
+                payload = default!;
                 return false;
             }
 
@@ -128,7 +126,7 @@ namespace SharedMeta.Server.Core.Session
 
             slot.HasValue = false;
             slot.RequestId = 0;
-            slot.Payload = null;
+            slot.Payload = default!;
             _count--;
             _head = (_head + 1) % _slots.Length;
             _lastDispatchedRequestId = requestId;
@@ -162,12 +160,36 @@ namespace SharedMeta.Server.Core.Session
             for (int i = 0; i < _slots.Length; i++)
             {
                 _slots[i].HasValue = false;
-                _slots[i].Payload = null;
+                _slots[i].Payload = default!;
                 _slots[i].RequestId = 0;
             }
             _head = 0;
             _count = 0;
             _lastDispatchedRequestId = 0;
+        }
+
+        /// <summary>
+        /// 0.24.0+ Restore the dispatch baseline after persistent-state rehydration. Used by
+        /// <c>SessionManagerGrain.OnActivateAsync</c> to pick up where the previous activation
+        /// left off — without this, the buffer starts at 0 and any incoming RPC with id
+        /// greater than 0 would be classified as <see cref="RequestPosition.OutOfOrder"/>
+        /// (stash-and-wait), even though the client has long since moved past that point.
+        /// <para>
+        /// Also honours an externally-reported "client says it's seen results up to X" via the
+        /// Resume-side <c>SessionConnectRequest.LastCompletedRequestId</c> — the grain takes
+        /// the max of persisted and reported to skip over a gap where the server lost some
+        /// responses that the client did receive (idempotency cache eviction or crash before
+        /// persistence write).
+        /// </para>
+        /// <para>
+        /// Idempotent: only advances forward — passing a smaller value than current is a no-op
+        /// so concurrent callers can race without rewind.
+        /// </para>
+        /// </summary>
+        public void AdvanceLastDispatched(long requestId)
+        {
+            if (requestId > _lastDispatchedRequestId)
+                _lastDispatchedRequestId = requestId;
         }
     }
 

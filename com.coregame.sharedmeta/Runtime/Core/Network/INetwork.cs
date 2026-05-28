@@ -28,14 +28,27 @@ namespace SharedMeta.Core.Network
         string? EntityId { get; }
 
         /// <summary>
-        /// 0.22.0+: Server-supplied capabilities for this session. Set by the higher-level
-        /// client (<c>ClientDispatcher</c>) after <c>SessionConnect</c> (or phase-2
-        /// <c>RegisterClientSignature</c>) completes. Consumed by generated <c>*ApiClient</c>
-        /// classes to short-circuit calls the server has flagged as rejected, and to force
-        /// ServerPatch execution mode on calls the server has flagged as incompatible with
-        /// optimistic local execution. Null when negotiation is disabled / not yet completed.
+        /// 0.24.0+ Highest per-entity broadcast sequence number the client has observed for the
+        /// network's bound entity. Surfaced for desync diagnostic — generated <c>*ApiClient</c>
+        /// logs this alongside the server-stamped <c>response.Debug</c> ("seq=N") so a desync
+        /// reader can immediately tell whether the client's local replay ran against a stale
+        /// state (gap between client seq and server seq → ordering issue, broadcast not yet
+        /// applied) or a matching state (true result-computation divergence).
         /// </summary>
-        SharedMeta.Core.Transport.ClientCapabilities? Capabilities { get; set; }
+        long LastKnownEntitySequence { get; }
+
+        /// <summary>
+        /// 0.24.0+ Annotated client signature returned by the server (verdict + id mapping).
+        /// Set by <c>ClientDispatcher</c> after <c>SessionConnect</c> / phase-2
+        /// <c>RegisterClientSignature</c>, or restored from <see cref="IServerAnnotationCache"/>
+        /// when the cached <c>ServerSignatureHash</c> matches the server's reported one.
+        /// Consumed by generated <c>*ApiClient</c> through
+        /// <c>CapabilitiesGate.IsRejected(annotated, methodId)</c> /
+        /// <c>CapabilitiesGate.IsForcedServerPatch(annotated, methodId)</c> — O(1) array lookup
+        /// per call. Replaces <see cref="Capabilities"/>; both populated during the
+        /// 0.24.0 migration window, the legacy one removed in the next minor.
+        /// </summary>
+        SharedMeta.Core.Transport.ClientSignatureAnnotated? Annotated { get; set; }
 
         /// <summary>
         /// 0.22.0+: Per-entity capability overlay supplied by the server's
@@ -62,18 +75,18 @@ namespace SharedMeta.Core.Network
         /// index from <c>GameMethodIds</c>, stamped on <c>RpcCall.MethodId</c> — the server
         /// translates it to its own server-side index via the signature mapping.</para>
         /// </summary>
-        Task<CallResponse<T>> CallAsync<T>(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
+        Task<CallResponse<T>> CallAsync<T>(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
 
         /// <summary>
         /// Call a void method. See <see cref="CallAsync{T}"/> for the parameter contract.
         /// </summary>
-        Task<VoidCallResponse> CallVoidAsync(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
+        Task<VoidCallResponse> CallVoidAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
 
         /// <summary>
         /// Call a method and get raw bytes result (for serializer-specific deserialization).
         /// See <see cref="CallAsync{T}"/> for the parameter contract.
         /// </summary>
-        Task<ByteCallResponse> CallBytesAsync(ushort methodId, byte[] args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
+        Task<ByteCallResponse> CallBytesAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
 
         /// <summary>
         /// Send a desync follow-up report (deep desync detection).
@@ -92,7 +105,7 @@ namespace SharedMeta.Core.Network
         /// the message is handed off to the wire; it does NOT represent server execution.
         /// Default implementation throws — transports that do not support signals must opt in.
         /// </summary>
-        ValueTask SendSignalAsync(ushort methodId, byte[] args)
+        ValueTask SendSignalAsync(ushort methodId, ReadOnlyMemory<byte> args)
             => throw new System.NotSupportedException(
                 "This transport does not support fire-and-forget signals. Use a MetaMethod without [Signal] or switch to a transport that supports signals (InProcess, SignalR, HttpPolling).");
 
@@ -127,7 +140,7 @@ namespace SharedMeta.Core.Network
     {
         /// <summary>
         /// 0.24.0+ Client's local global method index (already translated from server's id
-        /// via <c>ClientCapabilities.ServerToClientMethodIds</c>). Generated broadcast handlers
+        /// via <c>ClientSignatureAnnotated.ServerToClient</c>). Generated broadcast handlers
         /// dispatch on this against <c>GameMethodIds</c> / <c>FrameworkMethodIds</c> constants
         /// — a jump table on <c>ushort</c> instead of string-pair matching. <c>ushort.MaxValue</c>
         /// when the server emitted a method the client doesn't know — handler ignores.

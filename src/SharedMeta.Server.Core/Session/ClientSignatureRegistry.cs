@@ -1,7 +1,5 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using Orleans;
 using SharedMeta.Core.Transport;
@@ -12,20 +10,19 @@ namespace SharedMeta.Server.Core.Session
     /// <summary>
     /// Default <see cref="IClientSignatureRegistry"/> implementation. Singleton per silo.
     /// <para>
-    /// Capability compute: <see cref="RegisterAsync"/> consults the injected
-    /// <see cref="MetaServerSignature"/> (generated as <c>GameServiceDiscovery.ServerSignature</c>
-    /// in the consumer project, supplied via DI) and produces <see cref="ClientCapabilities"/>
-    /// that flag:
-    /// <list type="bullet">
-    ///   <item><b>RejectedMethods</b> — methods the client claims to know but the server
-    ///     either doesn't expose at all, marks <c>GenerateClientApi = false</c>, or whose
-    ///     argument shape (<c>ArgHash</c>) disagrees with the server's declaration (Case 4).</item>
-    ///   <item><b>ForceServerPatchMethods</b> — methods where the client's <c>Version</c>
-    ///     is below the server's declared <c>MinCompatibleVersion</c>, meaning the body
-    ///     diverged and the client's optimistic execution would desync (Case 3).</item>
-    /// </list>
-    /// When the host hasn't injected a <see cref="MetaServerSignature"/>, compute degrades
-    /// to "no restrictions" — the same legacy behaviour the Stage 4 placeholder produced.
+    /// 0.24.0+ produces <see cref="ClientSignatureAnnotated"/> for each known client signature
+    /// by walking the local <see cref="MetaServerSignature"/> against the client's
+    /// <see cref="MetaClientSignature.KnownMethods"/>: methods the server doesn't have (or
+    /// flags <c>GenerateClientApi=false</c>, or whose <c>ArgHash</c> diverges) become
+    /// <see cref="MethodStatus.Rejected"/>; methods whose client version sits below the server's
+    /// <c>MinCompatibleVersion</c> become <see cref="MethodStatus.ForceServerPatch"/>; everything
+    /// else stays <see cref="MethodStatus.Ok"/>. The translation table
+    /// <c>ServerToClient[serverMethodId] = clientMethodId</c> is built at the same time.
+    /// </para>
+    /// <para>
+    /// When the host hasn't injected a <see cref="MetaServerSignature"/>, the compute degrades
+    /// to "no restrictions" — empty status array, empty mapping table, no
+    /// <see cref="ClientSignatureAnnotated.ServerSignatureHash"/>.
     /// </para>
     /// </summary>
     public class ClientSignatureRegistry : IClientSignatureRegistry
@@ -33,21 +30,19 @@ namespace SharedMeta.Server.Core.Session
         private readonly IGrainFactory _grainFactory;
         private readonly MetaServerSignature? _serverSignature;
 
-        // Concurrent because the registry is a singleton called from every connection
-        // handler concurrently. Tombstone for "looked up, server doesn't know it" is
-        // intentionally not stored — a "needs registration" reply prompts the client to
-        // follow up, after which we cache the registered capabilities like any other hit.
-        private readonly ConcurrentDictionary<ulong, ClientCapabilities> _cache = new();
+        // Silo-local cache of the annotated form. Concurrent because the registry is a
+        // singleton called from every connection handler concurrently.
+        private readonly ConcurrentDictionary<ulong, ClientSignatureAnnotated> _annotatedCache = new();
 
         // Server-internal clientToServer method-id map per signature hash. Kept separate
-        // from ClientCapabilities (which crosses the wire to the client) — the client only
-        // needs ServerToClient to translate incoming wire ids; ClientToServer is for the
-        // server's inbound RPC translation.
+        // from ClientSignatureAnnotated (which crosses the wire to the client) — the client
+        // only needs ServerToClient to translate incoming wire ids; ClientToServer is for
+        // the server's inbound RPC dispatch translation.
         private readonly ConcurrentDictionary<ulong, ushort[]> _clientToServerCache = new();
 
         // Lazily resolved on first use so unit tests can construct the registry with a
-        // null IGrainFactory and exercise the pure ComputeCapabilitiesAndMaps path without
-        // touching Orleans. Production code always supplies a real grain factory.
+        // null IGrainFactory and exercise the pure compute path without touching Orleans.
+        // Production code always supplies a real grain factory.
         private IClientSignatureManagerGrain? _manager;
         private IClientSignatureManagerGrain Manager
             => _manager ??= _grainFactory.GetGrain<IClientSignatureManagerGrain>("global");
@@ -58,102 +53,118 @@ namespace SharedMeta.Server.Core.Session
             _serverSignature = serverSignature;
         }
 
+        public ulong ServerSignatureHash => _serverSignature?.SignatureHash ?? 0UL;
+
         public async Task<bool> IsKnownAsync(ulong signatureHash)
         {
-            if (_cache.ContainsKey(signatureHash)) return true;
+            if (_annotatedCache.ContainsKey(signatureHash)) return true;
             return await Manager.IsKnownAsync(signatureHash);
         }
 
-        public async Task<ClientCapabilities?> TryGetCapabilitiesAsync(ulong signatureHash)
-        {
-            if (_cache.TryGetValue(signatureHash, out var cached)) return cached;
-
-            // Check directory first — cheap, avoids spinning up a per-hash grain activation
-            // for hashes that have never been registered.
-            if (!await Manager.IsKnownAsync(signatureHash)) return null;
-
-            // Known to the directory but not in our cache — fetch from the per-hash grain.
-            var sigGrain = _grainFactory.GetGrain<IClientSignatureGrain>((long)signatureHash);
-            var caps = await sigGrain.GetCapabilitiesAsync();
-            if (caps != null) _cache[signatureHash] = caps;
-            return caps;
-        }
-
-        public async Task<ClientCapabilities> RegisterAsync(MetaClientSignature signature)
+        public async Task<ClientSignatureAnnotated> RegisterAsync(MetaClientSignature signature)
         {
             // Fast path: another connect (or this same connect's earlier handshake) already
             // populated the cache. No grain hop needed.
-            if (_cache.TryGetValue(signature.SignatureHash, out var cached))
+            if (_annotatedCache.TryGetValue(signature.SignatureHash, out var cached))
                 return cached;
 
-            var (capabilities, clientToServer) = ComputeCapabilitiesAndMaps(signature);
+            var (annotated, clientToServer) = ComputeAnnotatedAndMap(signature);
 
-            if (!_cache.TryAdd(signature.SignatureHash, capabilities))
-                return capabilities;
+            if (!_annotatedCache.TryAdd(signature.SignatureHash, annotated))
+                return annotated;
 
             _clientToServerCache[signature.SignatureHash] = clientToServer;
 
             if (!await Manager.IsKnownAsync(signature.SignatureHash)) {
                 var sigGrain = _grainFactory.GetGrain<IClientSignatureGrain>((long)signature.SignatureHash);
-                await sigGrain.SetAsync(signature, capabilities);
+                await sigGrain.SetAsync(signature);
                 await Manager.RegisterAsync(signature.SignatureHash);
             }
 
-            return capabilities;
+            return annotated;
+        }
+
+        public async Task<ClientSignatureAnnotated?> TryGetAnnotatedAsync(ulong signatureHash)
+        {
+            if (_annotatedCache.TryGetValue(signatureHash, out var cached)) return cached;
+
+            // Local cache miss — rehydrate from per-hash grain. Recompute annotated from the
+            // stored signature on first lookup; then it lives in the local cache for the
+            // silo's lifetime.
+            if (!await Manager.IsKnownAsync(signatureHash)) return null;
+
+            var sigGrain = _grainFactory.GetGrain<IClientSignatureGrain>((long)signatureHash);
+            var sig = await sigGrain.GetSignatureAsync();
+            if (sig == null) return null;
+
+            var (annotated, clientToServer) = ComputeAnnotatedAndMap(sig);
+            _annotatedCache.TryAdd(signatureHash, annotated);
+            _clientToServerCache.TryAdd(signatureHash, clientToServer);
+            return annotated;
         }
 
         public async Task<ushort[]?> TryGetClientToServerMapAsync(ulong signatureHash)
         {
             if (_clientToServerCache.TryGetValue(signatureHash, out var cached)) return cached;
 
-            // Not cached locally — try to rehydrate from the per-hash grain (which holds
-            // the original MetaClientSignature). If missing, signature is unknown to the
+            // Not cached locally — rehydrate from the per-hash grain (which holds the
+            // original MetaClientSignature). If missing, signature is unknown to the
             // cluster: caller treats as "needs registration" / reject.
             var sigGrain = _grainFactory.GetGrain<IClientSignatureGrain>((long)signatureHash);
             var sig = await sigGrain.GetSignatureAsync();
             if (sig == null) return null;
 
-            var (caps, c2s) = ComputeCapabilitiesAndMaps(sig);
-            _cache.TryAdd(signatureHash, caps);
-            _clientToServerCache.TryAdd(signatureHash, c2s);
-            return c2s;
+            var (annotated, clientToServer) = ComputeAnnotatedAndMap(sig);
+            _annotatedCache.TryAdd(signatureHash, annotated);
+            _clientToServerCache.TryAdd(signatureHash, clientToServer);
+            return clientToServer;
         }
 
         /// <summary>
-        /// Capability compute + method-id mapping. Walks the client's known methods, produces
-        /// the rejection / force-patch verdict (consumed by the client), AND builds both
-        /// directions of the per-signature method-id map:
+        /// 0.24.0+ Single compute pass that walks the client's known methods against the local
+        /// server signature and builds:
         /// <list type="bullet">
-        ///   <item><b>serverToClient</b> (length = server's method count) — at server's global
-        ///     index, the client's local global index OR <c>ushort.MaxValue</c> (client doesn't
-        ///     know this method, e.g. server-only). Shipped to client via
-        ///     <see cref="ClientCapabilities.ServerToClientMethodIds"/>.</item>
+        ///   <item><b>Statuses</b> (length = client's method count) — per-method verdict (Ok /
+        ///     ForceServerPatch / Rejected) consumed by <c>CapabilitiesGate</c> on the client.</item>
+        ///   <item><b>ServerToClient</b> (length = server's method count) — at server's global
+        ///     index, the client's local global index OR <see cref="ClientSignatureAnnotated.UnknownClientMethodId"/>
+        ///     (client doesn't know this method). Shipped to the client for inbound broadcast
+        ///     translation.</item>
         ///   <item><b>clientToServer</b> (length = client's method count) — at client's local
-        ///     global index, the server's global index OR <c>ushort.MaxValue</c> (rejected
-        ///     method — same set as <see cref="ClientCapabilities.RejectedMethods"/>). Kept
-        ///     server-internal in the registry's silo-local cache; used by the connection
-        ///     handler to translate inbound <c>RpcCall.MethodId</c>.</item>
+        ///     global index, the server's global index OR <c>ushort.MaxValue</c> (rejected method).
+        ///     Kept server-internal; used by the connection handler to translate inbound
+        ///     <c>RpcCall.MethodId</c> to the server-side dispatch key.</item>
         /// </list>
         /// Pure / side-effect free / deterministic — same inputs give same outputs.
         /// </summary>
-        protected virtual (ClientCapabilities, ushort[]) ComputeCapabilitiesAndMaps(MetaClientSignature signature)
+        protected virtual (ClientSignatureAnnotated, ushort[]) ComputeAnnotatedAndMap(MetaClientSignature signature)
         {
-            var caps = new ClientCapabilities();
+            // Size statuses by max client GlobalIndex + 1 to defensively cover any sparse
+            // index space (production generator emits dense 0..N-1 though).
+            int statusLen = 0;
+            foreach (var m in signature.KnownMethods)
+                if (m.GlobalIndex + 1 > statusLen) statusLen = m.GlobalIndex + 1;
+
+            var statuses = new MethodStatus[statusLen];
             var clientToServer = new ushort[signature.KnownMethods.Count];
             for (int i = 0; i < clientToServer.Length; i++) clientToServer[i] = ushort.MaxValue;
 
             if (_serverSignature == null)
             {
-                // No server-side signature wired up — degrade to "no restrictions". Identity-ish
-                // map: clientId == clientId, but server has no methods to dispatch via id either.
-                caps.ServerToClientMethodIds = System.Array.Empty<ushort>();
-                return (caps, clientToServer);
+                // No server-side signature wired up — degrade to "no restrictions". Empty
+                // ServerToClient (no broadcasts to translate); statuses all Ok by default.
+                return (new ClientSignatureAnnotated
+                {
+                    ClientSignatureHash = signature.SignatureHash,
+                    ServerSignatureHash = 0UL,
+                    ServerToClient = System.Array.Empty<ushort>(),
+                    Statuses = statuses,
+                }, clientToServer);
             }
 
-            // Build serverToClient: filled in below as we walk client methods and match server
-            // entries by (ServiceName, Alias, Version). Unmatched server slots stay at sentinel.
             var serverToClient = new ushort[_serverSignature.Methods.Count];
-            for (int i = 0; i < serverToClient.Length; i++) serverToClient[i] = ushort.MaxValue;
+            for (int i = 0; i < serverToClient.Length; i++)
+                serverToClient[i] = ClientSignatureAnnotated.UnknownClientMethodId;
 
             // Index server methods by (Service, Alias, Version) for O(1) lookup.
             var serverByKey = new Dictionary<(string, string, int), ServerMethodEntry>(_serverSignature.Methods.Count);
@@ -166,12 +177,7 @@ namespace SharedMeta.Server.Core.Session
                 var key = (clientMethod.ServiceName, clientMethod.Alias, clientMethod.Version);
                 if (!serverByKey.TryGetValue(key, out var serverMethod))
                 {
-                    caps.RejectedMethods.Add(new MethodIdentity
-                    {
-                        ServiceName = clientMethod.ServiceName,
-                        Alias = clientMethod.Alias,
-                        Version = clientMethod.Version,
-                    });
+                    statuses[clientIdx] = MethodStatus.Rejected;
                     continue;
                 }
 
@@ -188,23 +194,13 @@ namespace SharedMeta.Server.Core.Session
                     // methodId and silently drop, causing a downstream desync on any
                     // subsequent Server-mode RPC that relies on the mutation being applied.
                     serverToClient[serverMethod.GlobalIndex] = clientIdx;
-                    caps.RejectedMethods.Add(new MethodIdentity
-                    {
-                        ServiceName = clientMethod.ServiceName,
-                        Alias = clientMethod.Alias,
-                        Version = clientMethod.Version,
-                    });
+                    statuses[clientIdx] = MethodStatus.Rejected;
                     continue;
                 }
 
                 if (clientMethod.ArgHash != serverMethod.ArgHash)
                 {
-                    caps.RejectedMethods.Add(new MethodIdentity
-                    {
-                        ServiceName = clientMethod.ServiceName,
-                        Alias = clientMethod.Alias,
-                        Version = clientMethod.Version,
-                    });
+                    statuses[clientIdx] = MethodStatus.Rejected;
                     continue;
                 }
 
@@ -215,17 +211,17 @@ namespace SharedMeta.Server.Core.Session
                 if (serverMethod.MinCompatibleVersion > 0
                     && clientMethod.Version < serverMethod.MinCompatibleVersion)
                 {
-                    caps.ForceServerPatchMethods.Add(new MethodIdentity
-                    {
-                        ServiceName = clientMethod.ServiceName,
-                        Alias = clientMethod.Alias,
-                        Version = clientMethod.Version,
-                    });
+                    statuses[clientIdx] = MethodStatus.ForceServerPatch;
                 }
             }
 
-            caps.ServerToClientMethodIds = serverToClient;
-            return (caps, clientToServer);
+            return (new ClientSignatureAnnotated
+            {
+                ClientSignatureHash = signature.SignatureHash,
+                ServerSignatureHash = _serverSignature.SignatureHash,
+                ServerToClient = serverToClient,
+                Statuses = statuses,
+            }, clientToServer);
         }
     }
 }

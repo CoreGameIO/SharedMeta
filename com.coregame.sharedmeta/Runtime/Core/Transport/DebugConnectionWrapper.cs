@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using SharedMeta.Core.Logging;
@@ -82,6 +83,7 @@ namespace SharedMeta.Core.Transport
             // Forward all events from inner connection (unless suppressed during simulated reconnect)
             _inner.OnBatch += response => { if (!_suppressInnerEvents) OnBatch?.Invoke(response); };
             _inner.OnSessionTerminated += reason => { if (!_suppressInnerEvents) OnSessionTerminated?.Invoke(reason); };
+            _inner.OnRequireSessionReconnect += reason => { if (!_suppressInnerEvents) OnRequireSessionReconnect?.Invoke(reason); };
             _inner.OnDisconnected += reason => { if (!_suppressInnerEvents) OnDisconnected?.Invoke(reason); };
             _inner.OnReconnecting += () => { if (!_suppressInnerEvents) OnReconnecting?.Invoke(); };
             _inner.OnReconnected += () => { if (!_suppressInnerEvents) OnReconnected?.Invoke(); };
@@ -96,6 +98,7 @@ namespace SharedMeta.Core.Transport
 
         public event Action<SessionResponse>? OnBatch;
         public event Action<string>? OnSessionTerminated;
+        public event Action<string>? OnRequireSessionReconnect;
         public event Action<TransportDisconnectReason>? OnDisconnected;
         public event Action? OnReconnecting;
         public event Action? OnReconnected;
@@ -106,8 +109,8 @@ namespace SharedMeta.Core.Transport
         public Task DisconnectAsync() => _inner.DisconnectAsync();
         public Task GracefulDisconnectAsync() => _inner.GracefulDisconnectAsync();
 
-        public Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0)
-            => _inner.SessionConnectAsync(playerId, sessionId, lastAcknowledgedSequence, clientAppVersion, clientSignatureHash);
+        public Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0, SessionConnectMode mode = SessionConnectMode.StartNew, long lastCompletedRequestId = 0, List<SubscriptionClaim>? claimedSubscriptions = null)
+            => _inner.SessionConnectAsync(playerId, sessionId, lastAcknowledgedSequence, clientAppVersion, clientSignatureHash, mode, lastCompletedRequestId, claimedSubscriptions);
 
         public Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(Guid sessionId, MetaClientSignature signature)
             => _inner.RegisterClientSignatureAsync(sessionId, signature);

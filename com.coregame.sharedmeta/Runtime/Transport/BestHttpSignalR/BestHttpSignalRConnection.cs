@@ -96,6 +96,7 @@ namespace SharedMeta.Transport.BestHttp
 
         public event Action<SessionResponse>? OnBatch;
         public event Action<string>? OnSessionTerminated;
+        public event Action<string>? OnRequireSessionReconnect;
         public event Action<TransportDisconnectReason>? OnDisconnected;
         public event Action? OnReconnecting;
         public event Action? OnReconnected;
@@ -139,6 +140,7 @@ namespace SharedMeta.Transport.BestHttp
             _hub.On<SessionResponse>(nameof(IMetaHubClient.ReceiveBroadcast), OnReceiveBroadcast);
             _hub.On<string>(nameof(IMetaHubClient.SessionTerminated), msg => OnSessionTerminated?.Invoke(msg));
             _hub.On<string>(nameof(IMetaHubClient.EntityDeactivating), OnEntityDeactivating);
+            _hub.On<string>(nameof(IMetaHubClient.RequireSessionReconnect), msg => OnRequireSessionReconnect?.Invoke(msg));
 
             // Lifecycle events
             _hub.OnConnected += hub =>
@@ -214,7 +216,7 @@ namespace SharedMeta.Transport.BestHttp
         }
 
         public async Task<ConnectionSessionConnectResult> SessionConnectAsync(
-            string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0)
+            string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0, SessionConnectMode mode = SessionConnectMode.StartNew, long lastCompletedRequestId = 0, List<SubscriptionClaim>? claimedSubscriptions = null)
         {
             EnsureConnected();
 
@@ -224,7 +226,10 @@ namespace SharedMeta.Transport.BestHttp
                 SessionId = sessionId,
                 LastAcknowledgedSequence = lastAcknowledgedSequence,
                 ClientVersion = clientAppVersion ?? _options.ClientVersion,
-                ClientSignatureHash = clientSignatureHash
+                ClientSignatureHash = clientSignatureHash,
+                Mode = mode,
+                LastCompletedRequestId = lastCompletedRequestId,
+                ClaimedSubscriptions = claimedSubscriptions,
             });
 
             return new ConnectionSessionConnectResult
@@ -235,12 +240,14 @@ namespace SharedMeta.Transport.BestHttp
                 IsNewSession = response.IsNewSession,
                 MissedPackets = response.MissedPackets ?? new List<SessionResponse>(),
                 ServerTimeTicks = response.ServerTimeTicks,
-                ResubscribedEntities = response.ResubscribedEntities,
+                Subscriptions = response.Subscriptions,
                 ServerVersion = response.ServerVersion,
                 MinClientVersion = response.MinClientVersion,
                 MaxClientVersion = response.MaxClientVersion,
                 NeedsSignatureRegistration = response.NeedsSignatureRegistration,
-                Capabilities = response.Capabilities,
+                ServerSignatureHash = response.ServerSignatureHash,
+                Annotated = response.Annotated,
+                FailureReason = response.FailureReason,
             };
         }
 
@@ -262,6 +269,7 @@ namespace SharedMeta.Transport.BestHttp
                 OptimisticRandomBytes = response.OptimisticRandomBytes,
                 NamedRandomsBytes = response.NamedRandomsBytes,
                 ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion, response.ConfigPatchVersion),
+                EntitySequenceNumber = response.EntitySequenceNumber,
                 FeatureRequirement = response.FeatureRequirement,
                 AugmentedCapabilities = response.AugmentedCapabilities,
             };
@@ -400,3 +408,5 @@ namespace SharedMeta.Transport.BestHttp
         }
     }
 }
+
+

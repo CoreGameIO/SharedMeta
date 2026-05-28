@@ -45,14 +45,14 @@ namespace SharedMeta.Core.Transport
         /// for per-client config branch resolution (<c>[MetaConfigVersion]</c> rules) and for
         /// the strict server-side contract that arrives in upcoming releases.
         /// </summary>
-        Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0);
+        Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0, SessionConnectMode mode = SessionConnectMode.StartNew, long lastCompletedRequestId = 0, List<SubscriptionClaim>? claimedSubscriptions = null);
 
         /// <summary>
         /// 0.22.0+: Phase-2 of the compatibility handshake. Called by the higher-level
         /// client when <see cref="ConnectionSessionConnectResult.NeedsSignatureRegistration"/>
         /// is true on the previous <see cref="SessionConnectAsync"/> reply. Sends the full
         /// <see cref="MetaClientSignature"/> so the server can compute and persist
-        /// <see cref="ClientCapabilities"/> for this client build.
+        /// <see cref="ClientSignatureAnnotated"/> for this client build.
         /// <para>
         /// Default implementation throws — transports add real impls when wired into the
         /// 0.22.0 negotiation pipeline. A connection that doesn't support negotiation can
@@ -133,6 +133,17 @@ namespace SharedMeta.Core.Transport
         event Action<string>? OnSessionTerminated;
 
         /// <summary>
+        /// 0.24.0+ Fired when the server reports its handler is unbound for this connection
+        /// (typically: SignalR auto-reconnected with a new ConnectionId after a server restart
+        /// that wiped session state). The dispatcher responds by running <c>SessionConnect</c>
+        /// with the cached <c>SessionId</c> + <c>LastAcknowledgedSequence</c>, which both
+        /// re-binds the handler AND re-fetches the signature annotation if the server hash
+        /// changed. Required on every transport — implementers without server-side support
+        /// declare the event but never raise it.
+        /// </summary>
+        event Action<string>? OnRequireSessionReconnect;
+
+        /// <summary>
         /// Fired when the connection is lost.
         /// </summary>
         event Action<TransportDisconnectReason>? OnDisconnected;
@@ -160,7 +171,13 @@ namespace SharedMeta.Core.Transport
         public bool IsNewSession { get; set; }
         public List<SessionResponse> MissedPackets { get; set; } = new();
         public long ServerTimeTicks { get; set; }
-        public List<ResubscribedEntityInfo>? ResubscribedEntities { get; set; }
+        /// <summary>
+        /// 0.24.0+ Per-claim subscription verdicts produced on Resume. Replaces the older
+        /// server-driven <c>ResubscribedEntities</c> flow — client now claims subscriptions via
+        /// <c>SessionConnectRequest.ClaimedSubscriptions</c>, server returns one
+        /// <see cref="SubscriptionResult"/> per claim.
+        /// </summary>
+        public List<SubscriptionResult>? Subscriptions { get; set; }
         /// <summary>Server version reported during handshake. Null if server does not send version info.</summary>
         public string? ServerVersion { get; set; }
         /// <summary>Minimum client version required. Populated only when connection was rejected due to version mismatch.</summary>
@@ -177,11 +194,28 @@ namespace SharedMeta.Core.Transport
         public bool NeedsSignatureRegistration { get; set; }
 
         /// <summary>
-        /// 0.22.0+: Server's compatibility verdict for this client signature. Null when
-        /// negotiation is disabled or when <see cref="NeedsSignatureRegistration"/> is true
-        /// (capabilities will arrive on the phase-2 follow-up).
+        /// 0.24.0+ Server signature hash, ALWAYS populated when the transport supports the
+        /// 0.24.0 handshake. Drives the client-side annotation cache invalidation: client
+        /// compares to <c>cachedAnnotated.ServerSignatureHash</c>; mismatch forces a phase-2
+        /// re-registration even when the server already knew this clientHash.
         /// </summary>
-        public ClientCapabilities? Capabilities { get; set; }
+        public ulong ServerSignatureHash { get; set; }
+
+        /// <summary>
+        /// 0.24.0+ Annotated client signature (verdict + id mapping) — supersedes
+        /// <see cref="Capabilities"/>. Populated when the server already knew this clientHash
+        /// AND its cached annotations are current for the reported
+        /// <see cref="ServerSignatureHash"/>. Null when phase-2 is needed.
+        /// </summary>
+        public ClientSignatureAnnotated? Annotated { get; set; }
+
+        /// <summary>
+        /// 0.24.0+ Structured rejection reason when <see cref="Success"/> is false. See
+        /// <see cref="SessionConnectFailureReason"/>. Client uses this to decide between
+        /// retry-as-StartNew (<see cref="SessionConnectFailureReason.SessionUnknown"/>) and
+        /// surfacing the failure to game-level logic.
+        /// </summary>
+        public SessionConnectFailureReason FailureReason { get; set; }
     }
 
     /// <summary>
@@ -195,6 +229,13 @@ namespace SharedMeta.Core.Transport
         public byte[]? OptimisticRandomBytes { get; set; }
         public byte[]? NamedRandomsBytes { get; set; }
         public MetaConfigVersion ConfigVersion { get; set; }
+        /// <summary>
+        /// 0.24.0+ Current entity sequence number at subscribe time. Client seeds its per-entity
+        /// seq tracker with this value so the next Resume's <c>SubscriptionClaim.LastKnownEntitySequence</c>
+        /// is accurate even if no broadcast has yet arrived for this entity (rare timing window
+        /// between Subscribe and the first broadcast).
+        /// </summary>
+        public long EntitySequenceNumber { get; set; }
         /// <summary>
         /// 0.22.0+: structured rejection details when Success=false and the failure was a
         /// compatibility mismatch (e.g. <c>[MetaStateVersion(..., Breaking = true)]</c> gate).

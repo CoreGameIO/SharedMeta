@@ -48,7 +48,7 @@ public class SessionOrderingTests
         Assert.Equal(1, state.Operations[0].Value);
         Assert.Equal(2, state.Operations[1].Value);
 
-        await grain.GracefulDisconnectAsync();
+        await grain.GracefulDisconnectAsync(sessionId);
     }
 
     [Fact(Timeout = 60_000)]
@@ -72,7 +72,7 @@ public class SessionOrderingTests
         var resp1 = await grain.SendToEntityAsync(entityId, requestId: 1, BuildAddCall(1), 0, sessionId);
         Assert.Equal(3, resp1.Operations.Count(o => o.RequestId > 0));
 
-        await grain.GracefulDisconnectAsync();
+        await grain.GracefulDisconnectAsync(sessionId);
     }
 
     [Fact(Timeout = 60_000)]
@@ -128,7 +128,7 @@ public class SessionOrderingTests
         // Recover by sending req=1 — drains all stashed
         await grain.SendToEntityAsync(entityId, requestId: 1, BuildAddCall(1), 0, sessionId);
 
-        await grain.GracefulDisconnectAsync();
+        await grain.GracefulDisconnectAsync(sessionId);
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -141,7 +141,7 @@ public class SessionOrderingTests
         var grain = _fixture.GrainFactory.GetGrain<ISessionManager>(playerId);
 
         var sessionId = Guid.NewGuid();
-        var connect = await grain.ConnectAsync(sessionId, 0);
+        var connect = await grain.ConnectAsync(sessionId, 0, SharedMeta.Core.Transport.SessionConnectMode.StartNew, 0, null, null, 0UL);
         Assert.True(connect.Success);
 
         var observer = new TestObserver();
@@ -160,13 +160,14 @@ public class SessionOrderingTests
 
     private RpcCall BuildAddCall(int value)
     {
-        // CounterService.AddValue(int value, int clientSequence) — see ICounterService.cs.
-        // Server expects payload to be the serialized arg list. Use the same serializer the
-        // grain is configured with so encoding matches the dispatcher.
-        var writer = _fixture.Serializer.CreateWriter();
-        writer.Write(value);
-        writer.Write(0);
-        var bytes = writer.Complete();
+        // CounterService.AddValue(int value, int clientSequence) — must produce the same wire
+        // shape the generated ApiClient does: raw MemoryPack concatenation via MemoryPackWriter,
+        // NOT the length-prefixed IPayloadWriter envelope. The MemoryPack dispatcher reads via
+        // MemoryPackReader.ReadValue<int>() which expects raw values in sequence.
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>();
+        global::MemoryPack.MemoryPackSerializer.Serialize(buffer, value);
+        global::MemoryPack.MemoryPackSerializer.Serialize(buffer, 0);
+        var bytes = buffer.WrittenSpan.ToArray();
         return new RpcCall
         {
             MethodId = global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_Add_v0,
@@ -234,3 +235,4 @@ public class SessionOrderingTests
         }
     }
 }
+

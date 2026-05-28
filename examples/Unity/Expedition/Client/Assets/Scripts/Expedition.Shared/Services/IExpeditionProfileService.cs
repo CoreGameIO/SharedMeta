@@ -6,6 +6,10 @@ namespace Expedition.Shared
     [MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned, DefaultConfig = true)]
     public interface IExpeditionProfileService : IMetaService
     {
+        [MetaMethod(Alias = "DummyChange", Mode = ExecutionMode.Optimistic)]
+        Task<string> DummyChange();
+
+
         [MetaMethod(Alias = "BuyEnergy", Mode = ExecutionMode.Optimistic, SkipServerOnFalse = true)]
         Task<bool> BuyEnergy();
 

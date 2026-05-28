@@ -28,11 +28,29 @@ namespace SharedMeta.Serialization.MemoryPack
         private byte[]? _buffer;
         private int _index;
         private bool _completed;
+        // When true, the writer is owned by a container (e.g. cached per-grain in
+        // GrainScopedSerializer). Dispose becomes a no-op so the using statement at the
+        // call site doesn't return the pool buffer; the container handles lifecycle.
+        // Reset() re-arms state for the next use.
+        private readonly bool _pooled;
 
-        public MemoryPackPayloadWriter(int initialCapacity = 256)
+        public MemoryPackPayloadWriter(int initialCapacity = 256, bool pooled = false)
         {
             _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
             _index = 0;
+            _pooled = pooled;
+        }
+
+        /// <summary>Re-arm a pooled writer for reuse. Keeps the existing pool buffer if
+        /// present (cheap), otherwise rents one of the requested capacity.</summary>
+        public void Reset() => Reset(256);
+
+        public void Reset(int initialCapacity)
+        {
+            if (_buffer == null)
+                _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
+            _index = 0;
+            _completed = false;
         }
 
         // ── IBufferWriter<byte> — MemoryPack calls these directly ──
@@ -81,32 +99,20 @@ namespace SharedMeta.Serialization.MemoryPack
             BinaryPrimitives.WriteInt32LittleEndian(_buffer.AsSpan(lengthStart, 4), bytesWritten);
         }
 
-        public byte[] Complete()
+        public ReadOnlyMemory<byte> Complete()
         {
+            if (_buffer == null) throw new InvalidOperationException("Writer has no buffer (disposed or already taken).");
             _completed = true;
-            // Snapshot to a right-sized byte[] for downstream DTO storage (legacy callers that
-            // still hold byte[] fields). The pool buffer stays owned by this writer and goes
-            // back to ArrayPool on Dispose.
-            return _buffer.AsSpan(0, _index).ToArray();
-        }
-
-        public bool SupportsRentedComplete => true;
-
-        public void CompleteAsRented(out byte[] buffer, out int length)
-        {
-            if (_completed) throw new InvalidOperationException("Writer already completed.");
-            _completed = true;
-            // Hand off the ArrayPool-rented buffer to the caller. Dispose becomes a no-op
-            // since _buffer is now null — the caller (typically via
-            // PooledPayloadRegistry.AcquireExisting) is responsible for returning it to
-            // ArrayPool when the resulting PooledPayload's refcount hits zero.
-            buffer = _buffer!;
-            length = _index;
-            _buffer = null;
+            // ROM over the pool-rented buffer, sliced to actual length. Lifetime:
+            // valid until the next Reset() or Dispose(). Caller MUST consume / copy before then.
+            return _buffer.AsMemory(0, _index);
         }
 
         public void Dispose()
         {
+            // Pooled writer: container owns the lifecycle; using-statement Dispose is a no-op.
+            // Reset() between uses; container drops to GC at grain deactivation.
+            if (_pooled) return;
             if (_buffer != null)
             {
                 ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
@@ -120,11 +126,28 @@ namespace SharedMeta.Serialization.MemoryPack
     /// </summary>
     public class MemoryPackPayloadReader : IPayloadReader
     {
-        private readonly MemoryStream _stream;
-        private readonly BinaryReader _reader;
+        private MemoryStream _stream;
+        private BinaryReader _reader;
+        // Same lifecycle convention as MemoryPackPayloadWriter: when pooled, Dispose is a
+        // no-op and Rebind() points the reader at a new payload without allocating a new
+        // MemoryStream / BinaryReader pair.
+        private readonly bool _pooled;
 
-        public MemoryPackPayloadReader(byte[] data)
+        public MemoryPackPayloadReader(byte[] data, bool pooled = false)
         {
+            _stream = new MemoryStream(data);
+            _reader = new BinaryReader(_stream);
+            _pooled = pooled;
+        }
+
+        /// <summary>Re-point this reader at a new payload for reuse. Cheap: swaps the
+        /// underlying MemoryStream's buffer in place via a fresh small wrapper. Only valid
+        /// on pooled instances; throws otherwise.</summary>
+        public void Rebind(byte[] data)
+        {
+            if (!_pooled) throw new InvalidOperationException("Rebind is only supported on pooled readers.");
+            _reader.Dispose();
+            _stream.Dispose();
             _stream = new MemoryStream(data);
             _reader = new BinaryReader(_stream);
         }
@@ -146,6 +169,8 @@ namespace SharedMeta.Serialization.MemoryPack
 
         public void Dispose()
         {
+            // Pooled reader: container owns lifecycle, using-statement Dispose is a no-op.
+            if (_pooled) return;
             _reader.Dispose();
             _stream.Dispose();
         }
@@ -170,6 +195,13 @@ namespace SharedMeta.Serialization.MemoryPack
             return MemoryPackSerializer.Serialize(value);
         }
 
+        // Stock codec already allocates fresh on Pack<T>(T) — no separate "external usage"
+        // path needed, just forward. Skips the default interface impl's redundant ToArray().
+        public byte[] PackForExternalUsage<T>(T value)
+        {
+            return MemoryPackSerializer.Serialize(value);
+        }
+
         public T Unpack<T>(byte[] data)
         {
             return MemoryPackSerializer.Deserialize<T>(data)!;
@@ -185,6 +217,11 @@ namespace SharedMeta.Serialization.MemoryPack
         public T Unpack<T>(ReadOnlyMemory<byte> data)
         {
             return MemoryPackSerializer.Deserialize<T>(data.Span)!;
+        }
+
+        public T Unpack<T>(ReadOnlySpan<byte> data)
+        {
+            return MemoryPackSerializer.Deserialize<T>(data)!;
         }
 
         public ReadOnlyMemory<byte> Pack(Type type, object value)

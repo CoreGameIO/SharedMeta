@@ -22,6 +22,9 @@ using SharedMeta.Server.Core.Session;
 using Expedition.Shared;
 using Expedition.Shared.Server;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Serilog;
 
 // Port configuration: pass as first arg, e.g. `dotnet run -- 5000`
@@ -38,7 +41,18 @@ builder.Host.UseSerilog((ctx, config) => config
     // configured with DesyncLogLevel.Debug). Serilog's implicit minimum is Information, so
     // without this override the Desync reports are dropped before reaching the sink.
     .MinimumLevel.Override("SharedMeta", Serilog.Events.LogEventLevel.Debug)
-    .WriteTo.Console());
+    .WriteTo.Console()
+    // File sink: rolling daily file under ./logs. Each process run appends to the same day's file
+    // so multiple server sessions in one day are captured in one place — exactly what we need
+    // to diagnose cross-restart session-resume bugs by reading both pre-/stop and post-restart
+    // traces in a single read.
+    .WriteTo.File(
+        path: "logs/expedition-.log",
+        rollingInterval: Serilog.RollingInterval.Day,
+        shared: true,
+        outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}",
+        retainedFileCountLimit: 7)
+);
 
 var serializer = new MemoryPackMetaSerializer();
 builder.Services.AddSingleton<IMetaSerializer>(serializer);
@@ -53,7 +67,10 @@ builder.Host.UseOrleans(siloBuilder =>
             options.ClusterId = "expedition-cluster";
             options.ServiceId = "expedition-server";
         })
-        .AddFileGrainStorage("Default", o => o.RootDirectory = "./data")
+        .AddFileGrainStorage("Default", o => {
+            o.UseOrleansSerializer = false;
+            o.RootDirectory = "./data";
+        })
         .ConfigureServices(services =>
         {
             services.AddSingleton<IMetaSerializer>(serializer);
@@ -70,6 +87,7 @@ builder.Host.UseOrleans(siloBuilder =>
                 // state via the subscribe snapshot.
                 o.FreshRandomSeedFactory = (entityId, streamName) =>
                     $"{entityId}:{streamName}:{DateTime.UtcNow.Ticks:x}:{Random.Shared.NextInt64():x}";
+                o.PersistencePolicy = PersistencePolicy.EveryNRequests(15);
             });
 
             services.ConfigureMeta(svc =>
@@ -145,6 +163,31 @@ app.MapGet("/meta/config/{major:int}/{minor:int}", (int major, int minor, IMetaS
 {
     var config = provider.GetConfig(new MetaConfigVersion(major, minor));
     return Results.Bytes(ser.Pack(config), "application/octet-stream");
+});
+
+app.MapGet("/stop", (
+    [FromServices] IServer server,
+    [FromServices] IHubContext<MetaHub> hubContext,
+    [FromServices] IHostApplicationLifetime appLifetime) =>
+{
+    _ = Task.Run(async () => {
+        await Task.Delay(50);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+
+        try
+        {
+            await server.StopAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        appLifetime.StopApplication();
+
+    });
+
+    return Results.Ok(new { message = "Shutdown." });
 });
 
 app.Logger.LogInformation("=== Expedition.Server ===");

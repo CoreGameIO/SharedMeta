@@ -25,6 +25,7 @@ namespace SharedMeta.Debug.InProcess
 
         public event Action<SessionResponse>? OnBatch;
         public event Action<string>? OnSessionTerminated;
+        public event Action<string>? OnRequireSessionReconnect;       // InProcess: server pushes via SendRequireSessionReconnect → wired through InProcessBroadcastSender
         public event Action<TransportDisconnectReason>? OnDisconnected;
         #pragma warning disable 67 // Event is never used
         public event Action? OnReconnecting;
@@ -67,7 +68,7 @@ namespace SharedMeta.Debug.InProcess
             MetaLog.Debug($"[InProcess] Disconnected: {_connectionId}");
         }
 
-        public async Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0)
+        public async Task<ConnectionSessionConnectResult> SessionConnectAsync(string playerId, Guid? sessionId = null, long lastAcknowledgedSequence = 0, string? clientAppVersion = null, ulong clientSignatureHash = 0, SessionConnectMode mode = SessionConnectMode.StartNew, long lastCompletedRequestId = 0, List<SubscriptionClaim>? claimedSubscriptions = null)
         {
             EnsureConnected();
 
@@ -77,7 +78,10 @@ namespace SharedMeta.Debug.InProcess
                 SessionId = sessionId,
                 LastAcknowledgedSequence = lastAcknowledgedSequence,
                 ClientVersion = clientAppVersion,
-                ClientSignatureHash = clientSignatureHash
+                ClientSignatureHash = clientSignatureHash,
+                Mode = mode,
+                LastCompletedRequestId = lastCompletedRequestId,
+                ClaimedSubscriptions = claimedSubscriptions,
             });
 
             // Missed packets carry pool-backed payloads that the server retains in
@@ -99,9 +103,11 @@ namespace SharedMeta.Debug.InProcess
                 IsNewSession = response.IsNewSession,
                 MissedPackets = missedCopies,
                 ServerTimeTicks = response.ServerTimeTicks,
-                ResubscribedEntities = response.ResubscribedEntities,
+                Subscriptions = response.Subscriptions,
                 NeedsSignatureRegistration = response.NeedsSignatureRegistration,
-                Capabilities = response.Capabilities,
+                ServerSignatureHash = response.ServerSignatureHash,
+                Annotated = response.Annotated,
+                FailureReason = response.FailureReason,
             };
         }
 
@@ -123,6 +129,7 @@ namespace SharedMeta.Debug.InProcess
                 OptimisticRandomBytes = response.OptimisticRandomBytes,
                 NamedRandomsBytes = response.NamedRandomsBytes,
                 ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion, response.ConfigPatchVersion),
+                EntitySequenceNumber = response.EntitySequenceNumber,
                 FeatureRequirement = response.FeatureRequirement,
                 AugmentedCapabilities = response.AugmentedCapabilities,
             };
@@ -226,29 +233,8 @@ namespace SharedMeta.Debug.InProcess
         private static SessionResponse CopyPooledBytesForWire(SessionResponse src)
         {
             if (src == null) return src!;
-            var srcOps = src.Operations;
-            List<SessionOp>? newOps = null;
-            if (srcOps != null)
-            {
-                newOps = new List<SessionOp>(srcOps.Count);
-                for (int i = 0; i < srcOps.Count; i++)
-                {
-                    var op = srcOps[i];
-                    if (op.OpBytes.Ref != 0 && !op.OpBytes.Memory.IsEmpty)
-                    {
-                        var copy = op.OpBytes.Memory.ToArray();
-                        op.OpBytes = new SharedMeta.Core.Memory.PooledPayload(copy, 0);
-                    }
-                    newOps.Add(op);
-                }
-            }
-            return new SessionResponse
-            {
-                SequenceNumber = src.SequenceNumber,
-                Operations = newOps,
-                ServerTimeTicks = src.ServerTimeTicks,
-                Error = src.Error,
-            };
+            // OpBytes is now plain ROM<byte> over GC byte[]; no pool refs to materialize.
+            return src;
         }
 
         /// <summary>
@@ -286,3 +272,5 @@ namespace SharedMeta.Debug.InProcess
         }
     }
 }
+
+

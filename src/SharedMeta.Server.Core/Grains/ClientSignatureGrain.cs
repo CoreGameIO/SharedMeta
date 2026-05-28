@@ -19,13 +19,13 @@ namespace SharedMeta.Server.Core.Grains
     {
         [Id(0), Key(0), MemoryPackOrder(0)] public bool Populated { get; set; }
         [Id(1), Key(1), MemoryPackOrder(1)] public MetaClientSignature? Signature { get; set; }
-        [Id(2), Key(2), MemoryPackOrder(2)] public ClientCapabilities? Capabilities { get; set; }
     }
 
     /// <summary>
     /// One activation per signature hash. State persisted under the <c>"Default"</c> storage
-    /// provider so a freshly-restarted silo still recognizes previously-seen client builds
-    /// and can serve cached capabilities without recomputation.
+    /// provider so a freshly-restarted silo still recognizes previously-seen client builds.
+    /// Only the <see cref="MetaClientSignature"/> is persisted; the
+    /// <see cref="ClientSignatureAnnotated"/> verdict is recomputed deterministically per silo.
     /// </summary>
     public class ClientSignatureGrain : Grain, IClientSignatureGrain
     {
@@ -37,13 +37,10 @@ namespace SharedMeta.Server.Core.Grains
             _state = state;
         }
 
-        public Task<ClientCapabilities?> GetCapabilitiesAsync()
-            => Task.FromResult(_state.State.Populated ? _state.State.Capabilities : null);
-
         public Task<bool> ExistsAsync()
             => Task.FromResult(_state.State.Populated);
 
-        public async Task SetAsync(MetaClientSignature signature, ClientCapabilities capabilities)
+        public async Task SetAsync(MetaClientSignature signature)
         {
             // Idempotent: if the grain already holds the same signature hash, skip the
             // WriteStateAsync hop entirely. Many stress-test connects hit the same hash
@@ -61,7 +58,6 @@ namespace SharedMeta.Server.Core.Grains
             }
             _state.State.Populated = true;
             _state.State.Signature = signature;
-            _state.State.Capabilities = capabilities;
             await _state.WriteStateAsync();
         }
 

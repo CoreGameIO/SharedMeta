@@ -45,19 +45,14 @@ namespace SharedMeta.Server.Core.Session
         Task<bool> IsKnownAsync(ulong signatureHash);
 
         /// <summary>
-        /// Read-through lookup. Returns the cached/registered capabilities, or <c>null</c>
-        /// when the signature has never been registered with the cluster.
+        /// Phase-2 registration. Persists the full <see cref="MetaClientSignature"/> in the
+        /// per-hash <see cref="SharedMeta.Server.Core.Grains.IClientSignatureGrain"/>, registers
+        /// the hash with the manager directory, computes the
+        /// <see cref="ClientSignatureAnnotated"/> verdict against the local server signature,
+        /// caches it silo-locally, and returns it so the caller can ship it on
+        /// <see cref="RegisterClientSignatureResponse.Annotated"/>.
         /// </summary>
-        Task<ClientCapabilities?> TryGetCapabilitiesAsync(ulong signatureHash);
-
-        /// <summary>
-        /// Phase-2 registration. Computes capabilities for the full <see cref="MetaClientSignature"/>,
-        /// persists them in the per-hash <see cref="SharedMeta.Server.Core.Grains.IClientSignatureGrain"/>,
-        /// registers the hash with the manager directory, and populates the local cache.
-        /// Returns the computed capabilities so the caller can put them directly on the
-        /// <see cref="RegisterClientSignatureResponse"/>.
-        /// </summary>
-        Task<ClientCapabilities> RegisterAsync(MetaClientSignature signature);
+        Task<ClientSignatureAnnotated> RegisterAsync(MetaClientSignature signature);
 
         /// <summary>
         /// Server-internal lookup of the per-signature <c>clientToServer</c> method-id map —
@@ -69,5 +64,22 @@ namespace SharedMeta.Server.Core.Session
         /// signature has never been registered with the cluster.
         /// </summary>
         Task<ushort[]?> TryGetClientToServerMapAsync(ulong signatureHash);
+
+        /// <summary>
+        /// 0.24.0+ Read-through lookup of the <see cref="ClientSignatureAnnotated"/> form.
+        /// Returns the cached entry (recomputing from the stored <see cref="MetaClientSignature"/>
+        /// if only the legacy capabilities are cached locally) or <c>null</c> when the signature
+        /// has never been registered. Used by <c>MetaConnectionHandler</c> to populate
+        /// <see cref="SessionConnectResponse.Annotated"/> on a known signature.
+        /// </summary>
+        Task<ClientSignatureAnnotated?> TryGetAnnotatedAsync(ulong signatureHash);
+
+        /// <summary>
+        /// 0.24.0+ Hash of the server signature this registry was constructed against. Returned
+        /// on every <see cref="SessionConnectResponse.ServerSignatureHash"/> so the client can
+        /// detect when its locally cached annotation has been invalidated by a server redeploy.
+        /// Returns 0 when no <see cref="MetaServerSignature"/> is wired (legacy / pure-test).
+        /// </summary>
+        ulong ServerSignatureHash { get; }
     }
 }

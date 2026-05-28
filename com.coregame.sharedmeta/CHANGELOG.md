@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.24.0] - 2026-05-27
+
+Two redesigns and a server-side allocation rework. Wire-breaking: 0.23.x ↔ 0.24.0 do not mix.
+
+- **Signature handshake** — annotated client signature replaces `ClientCapabilities`. O(1) gate, < 100 B steady-state connect (vs ~5 KB). Client-side `IServerAnnotationCache` (in-memory + Unity PlayerPrefs); cache invalidation via `serverHash`.
+- **Client-owned subscriptions** — server no longer persists subscription list; client claims its set on Resume via `SessionConnectRequest.ClaimedSubscriptions`, entity grain verdicts `Continued` / `Refreshed` / `Failed` per claim. Any `Failed` routes through `IMetaSessionRecoveryHandler`.
+- **Session recovery** — explicit `SessionConnectMode.{Resume,StartNew}`; `IMetaSessionRecoveryHandler` game-level callback on `SessionUnknown`; unified `TriggerRecovery` (transport-reconnect + server-pushed). Persisted RPC-ordering baseline (`LastDispatchedRequestId` + `LastCompletedRequestId`) eliminates infinite retry loops after silo restart; stale + cache-miss returns an error op instead of silent re-execution.
+- **Server-side allocation rework** — `PooledPayloadRegistry` (0.23.1 opt-in, never engaged) removed (~1500 LOC, 9 files). Replaced by cached `IPayloadWriter` per grain returning `ReadOnlyMemory<byte>` over pool-rented scratch (`IServerRecordContext.AcquireWriter()`); `Immutable<ROM>` kept only at Orleans grain boundaries; `SessionManagerGrain` hot-path wrappers flipped class → struct; `_pendingPackets` aliased to persisted state; `CleanupPendingPackets*` rewritten (prefix-scan + single `RemoveRange`).
+- **Fixes** —
+  - `ReclaimSubscriptionAsync` truth source is `EntitySequenceNumber` alone; missing `Subscribers` entry is repaired in place (no more state-rollback after silo restart with offline-applied RPCs).
+  - Client `_lastKnownEntitySeq` advances on every `CrossEntityOperations[i]`, not just the outer entity (no more spurious Refreshed after cross-entity activity).
+  - `ResendPendingRequestsAsync` now awaits `Task.WhenAll(resends)` — was fire-and-forget, racing with new user actions during recovery.
+  - `CleanupPendingPacketsByCount` — leftover empty `for` loop caused N-times `RemoveRange` → broadcasts lost. Fixed.
+  - Unity Expedition example — server projects switched from NuGet to `ProjectReference`.
+
+See [docs/GUIDE.md](../docs/GUIDE.md) and [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) for the integration details and rationale. [SharedMeta-AI.md](SharedMeta-AI.md) — AI-assistant context.
+
 ## [0.23.1] - 2026-05-22
 
 First actual release of the 0.23 content. The earlier `v0.23.0` tag was pushed against the v0.22.0 commit by mistake (release prep ran before the wire-refactoring branch was merged) and NuGet/UPM versions are immutable once published — bumped to 0.23.1 to ship the real changes.

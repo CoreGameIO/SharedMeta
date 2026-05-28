@@ -31,8 +31,20 @@ namespace SharedMeta.Core.Transport
         /// <summary>Current server UTC ticks for clock synchronization.</summary>
         [Id(5), Key(5)] public long ServerTimeTicks { get; set; }
 
-        /// <summary>Entities re-subscribed by server after transport disconnect recovery.</summary>
-        [Id(6), Key(6)] public List<ResubscribedEntityInfo>? ResubscribedEntities { get; set; }
+        /// <summary>
+        /// 0.24.0+ Per-claim subscription verdicts. Replaces the older server-driven
+        /// <c>ResubscribedEntities</c> flow — client owns the subscription list and claims it
+        /// on Resume via <c>SessionConnectRequest.ClaimedSubscriptions</c>.
+        /// </summary>
+        [Id(6), Key(6)] public List<SubscriptionResult>? Subscriptions { get; set; }
+
+        /// <summary>
+        /// 0.24.0+ Structured rejection reason when <see cref="Success"/> is false. See
+        /// <see cref="SessionConnectFailureReason"/>. Drives client-side recovery routing:
+        /// <see cref="SessionConnectFailureReason.SessionUnknown"/> fires
+        /// <c>IMetaSessionRecoveryHandler.OnSessionLostAsync</c>.
+        /// </summary>
+        [Id(7), Key(7)] public SessionConnectFailureReason FailureReason { get; set; }
     }
 
     /// <summary>
@@ -73,6 +85,13 @@ namespace SharedMeta.Core.Transport
         /// The underlying connection.
         /// </summary>
         IConnection Connection { get; }
+
+        /// <summary>
+        /// 0.24.0+ Highest per-entity broadcast sequence the client has observed. Returns 0 when
+        /// no broadcast or Subscribe seed has been recorded yet. Used by generated <c>*ApiClient</c>
+        /// desync diagnostics to compare against the server-stamped seq in <c>response.Debug</c>.
+        /// </summary>
+        long GetLastKnownEntitySequence(string? entityId);
 
         /// <summary>
         /// Subscribe to an entity and receive initial state.
@@ -136,13 +155,13 @@ namespace SharedMeta.Core.Transport
         MetaClientSignature? ClientSignature { get; set; }
 
         /// <summary>
-        /// 0.22.0+: Session-scoped capabilities returned by the server during
-        /// <c>ConnectSessionAsync</c> (phase-1) or <c>RegisterClientSignatureAsync</c>
-        /// (phase-2). Consumed by generated <c>*ApiClient</c> classes to short-circuit
-        /// rejected calls locally. Null until handshake resolves or when negotiation is
-        /// disabled.
+        /// 0.24.0+ Annotated client signature returned by the server (verdict + id mapping).
+        /// Set after <c>ConnectSessionAsync</c> (phase-1) or <c>RegisterClientSignatureAsync</c>
+        /// (phase-2). Consumed by generated <c>*ApiClient</c> through
+        /// <c>CapabilitiesGate.IsRejected(annotated, methodId)</c> — O(1) array index per call.
+        /// Null until handshake resolves or when negotiation is disabled.
         /// </summary>
-        ClientCapabilities? Capabilities { get; }
+        ClientSignatureAnnotated? Annotated { get; }
 
         /// <summary>
         /// True if session has been established with server.
@@ -177,7 +196,7 @@ namespace SharedMeta.Core.Transport
         /// Cached by the dispatcher so auto-reconnect re-uses the same version.
         /// </param>
         /// <returns>Connection result with missed packets if resuming.</returns>
-        Task<SessionConnectResult> ConnectSessionAsync(Guid sessionId, long lastAcknowledgedSequence, string? clientAppVersion = null);
+        Task<SessionConnectResult> ConnectSessionAsync(Guid sessionId, long lastAcknowledgedSequence, string? clientAppVersion = null, SessionConnectMode? mode = null);
 
         /// <summary>
         /// Acknowledge that all broadcasts up to this sequence have been processed.

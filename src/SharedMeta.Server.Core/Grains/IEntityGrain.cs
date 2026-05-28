@@ -17,13 +17,33 @@ namespace SharedMeta.Server.Core.Grains
         /// Subscribes to this entity. Returns the current snapshot.
         /// <para>
         /// <paramref name="clientSignatureHash"/> = caller's negotiated signature hash (0 =
-        /// no negotiation, no caps). The grain resolves <see cref="ClientCapabilities"/>
-        /// locally via <see cref="IClientSignatureRegistry.TryGetCapabilitiesAsync"/> and
-        /// refcounts force-patch contributions so subsequent dispatches activate patch
-        /// tracking when needed.
+        /// no negotiation, no annotation). The grain resolves
+        /// <see cref="ClientSignatureAnnotated"/> locally via
+        /// <see cref="IClientSignatureRegistry.TryGetAnnotatedAsync"/> and refcounts
+        /// force-patch contributions so subsequent dispatches activate patch tracking
+        /// when needed.
         /// </para>
         /// </summary>
         Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null, ulong clientSignatureHash = 0);
+
+        /// <summary>
+        /// 0.24.0+ Client-driven reclaim path. The client claims a previously-held subscription
+        /// (entity id + last-known entity sequence number) on Resume. The grain verifies its
+        /// persisted state and returns one of three verdicts:
+        /// <list type="bullet">
+        /// <item><c>Continued</c> — subscriber present, sequence numbers match, signature hash
+        /// unchanged. No state shipped; client keeps its current view, server refreshes the live
+        /// <see cref="ISessionManagerReference"/> binding so broadcasts resume flowing.</item>
+        /// <item><c>Refreshed</c> — subscriber missing (eviction / never persisted) or sequence
+        /// gap detected. Behaves like a full <see cref="SubscribeAsync"/>: migration, schema
+        /// gate, force-patch refcounts, snapshot. State + randoms + config version returned.</item>
+        /// <item><c>Failed</c> — access policy denied or schema incompatible. Reported with
+        /// <c>FailureReason</c>; client surfaces to game via IMetaSubscriptionRecoveryHandler.</item>
+        /// </list>
+        /// Replaces the older server-driven re-subscribe-from-persisted-state flow; subscriptions
+        /// are now owned by the client (single source of truth), the entity grain is the verifier.
+        /// </summary>
+        Task<SubscriptionResult> ReclaimSubscriptionAsync(string playerId, ISessionManagerReference sessionManager, long lastKnownEntitySequence, string? clientVersion = null, ulong clientSignatureHash = 0);
 
         /// <summary>
         /// Unsubscribe from this entity.
@@ -83,9 +103,7 @@ namespace SharedMeta.Server.Core.Grains
         /// <summary>
         /// Get the current serialized state of this entity (read-only).
         /// Returns null if the entity hasn't been activated or has no state.
-        /// Marked [AlwaysInterleave] to prevent deadlocks in mutual cross-entity reads.
         /// </summary>
-        [AlwaysInterleave]
         Task<byte[]?> GetEntityStateAsync();
 
         /// <summary>

@@ -11,8 +11,8 @@ namespace SharedMeta.Serialization.MessagePack
     /// </summary>
     public class MessagePackPayloadWriter : IPayloadWriter
     {
-        private readonly MemoryStream _stream = new();
-        private readonly BinaryWriter _writer;
+        private MemoryStream _stream = new();
+        private BinaryWriter _writer;
         private bool _completed;
 
         public MessagePackPayloadWriter()
@@ -29,21 +29,21 @@ namespace SharedMeta.Serialization.MessagePack
             _writer.Write(bytes);
         }
 
-        public byte[] Complete()
+        public ReadOnlyMemory<byte> Complete()
         {
             _completed = true;
             _writer.Flush();
-            return _stream.ToArray();
+            // MemoryStream.GetBuffer exposes the underlying byte[] — slice by Position to
+            // produce ROM over the actual content (no copy). ROM is valid until next
+            // Reset() or Dispose().
+            return new ReadOnlyMemory<byte>(_stream.GetBuffer(), 0, (int)_stream.Position);
         }
 
-        // MessagePack writer is MemoryStream-backed (not ArrayPool); zero-copy ownership
-        // transfer would require a separate buffer pool. The plan accepts the byte[] alloc
-        // on the MessagePack path — surfaced via the standard Complete() fallback.
-        public bool SupportsRentedComplete => false;
-        public void CompleteAsRented(out byte[] buffer, out int length)
+        public void Reset()
         {
-            buffer = Complete();
-            length = buffer.Length;
+            _stream.SetLength(0);
+            _stream.Position = 0;
+            _completed = false;
         }
 
         public void Dispose()

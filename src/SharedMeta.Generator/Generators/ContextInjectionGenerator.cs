@@ -815,7 +815,12 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("        {");
                 GenerateArgumentPacking(sb, method.Parameters, paramNames, serializer);
                 sb.AppendLine();
-                sb.AppendLine($"            _context.CallEntityOneWay(_entityId, {methodIdConst}, argsBytes);");
+                // OneWay: source doesn't await, so the bytes MUST be independent of any
+                // scratch/pool the source might reset before the target completes wire-serialize.
+                // Single-param MemoryPack path already returns a fresh byte[]; multi-param path
+                // pulls from the context's cached ArrayBufferWriter — we force a copy via .ToArray()
+                // on the ROM wrap so the OneWay carrier is GC-independent.
+                sb.AppendLine($"            _context.CallEntityOneWay(_entityId, {methodIdConst}, ((System.ReadOnlyMemory<byte>)argsBytes).ToArray());");
                 sb.AppendLine("        }");
                 return;
             }
@@ -849,13 +854,15 @@ namespace SharedMeta.Generator.Generators
             // Serialize arguments based on detected serializer
             GenerateArgumentPacking(sb, method.Parameters, paramNames, serializer);
 
-            // Call remote entity via context's CallEntityAsync
-            // Errors are thrown as exceptions by the handler.
-            // 0.24.0+ signature is (entityId, methodId, argsBytes) — service/method strings
-            // are gone from the call site; the target grain resolves names via signature.
+            // Call remote entity via context's CallEntityAsync.
+            // Awaited: source grain blocks until the target completes, so the bytes
+            // referenced by argsBytes (whether a fresh byte[] from MemoryPackSerializer or a
+            // ROM over the per-context ArrayBufferWriter) stay valid for the whole call. The
+            // bytes end up in the target's RpcCall.Payload — RpcCall is class-level [Immutable]
+            // so Orleans skips the defensive in-silo deep-copy of the whole DTO including the ROM.
             sb.AppendLine();
             sb.AppendLine($"            var resultBytes = await _context.CallEntityAsync(");
-            sb.AppendLine($"                _entityId, {methodIdConst}, argsBytes);");
+            sb.AppendLine($"                _entityId, {methodIdConst}, (System.ReadOnlyMemory<byte>)argsBytes);");
 
             if (innerType != null)
             {
@@ -1221,8 +1228,10 @@ namespace SharedMeta.Generator.Generators
                 }
                 else
                 {
-                    // Multiple parameters: serialize to ArrayBufferWriter sequentially
-                    sb.AppendLine("            var buffer = new ArrayBufferWriter<byte>();");
+                    // Multiple parameters: serialize sequentially into the context's reusable
+                    // buffer writer (cleared on each Acquire — no per-call allocation). The
+                    // terminal ToArray copies for Orleans CallEntityAsync's byte[] signature.
+                    sb.AppendLine("            var buffer = (System.Buffers.ArrayBufferWriter<byte>)_context.AcquireArgsBufferWriter();");
                     foreach (var paramName in paramNames)
                     {
                         sb.AppendLine($"            MemoryPackSerializer.Serialize(buffer, {paramName});");
@@ -1234,12 +1243,15 @@ namespace SharedMeta.Generator.Generators
             {
                 // Generic: always use IPayloadWriter for consistent length-prefixed format.
                 // Server dispatcher reads with CreateReader() which expects length-prefixed data.
-                sb.AppendLine("            using var writer = _context.Serializer.CreateWriter();");
+                // Pool-cached writer from the context — no `using`, no allocation per call.
+                // Complete() ROM stays valid until the next AcquireWriter on this context
+                // (long enough for the awaited cross-entity call).
+                sb.AppendLine("            var writer = _context.AcquireWriter();");
                 foreach (var paramName in paramNames)
                 {
                     sb.AppendLine($"            writer.Write({paramName});");
                 }
-                sb.AppendLine("            var argsBytes = writer.Complete();");
+                sb.AppendLine("            System.ReadOnlyMemory<byte> argsBytes = writer.Complete();");
             }
         }
 

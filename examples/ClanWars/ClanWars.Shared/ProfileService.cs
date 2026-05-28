@@ -15,9 +15,9 @@ namespace ClanWars.Shared
         private ProfileState S => State;
         private ClanConfig C => (ClanConfig)Config!;
 
-        public Task GainPoints(int amount)
+        public void GainPoints(int amount)
         {
-            if (amount <= 0) return Task.CompletedTask;
+            if (amount <= 0) return;
             S.Score += amount;
 
             // Forward the delta to the clan (cross-entity, fire-and-forget). Profile doesn't
@@ -28,7 +28,6 @@ namespace ClanWars.Shared
             {
                 GetIClanService(S.ClanId).AddPower(amount);
             }
-            return Task.CompletedTask;
         }
 
         public async Task<string?> CreateClan(string name)
@@ -69,7 +68,7 @@ namespace ClanWars.Shared
 
             S.PendingApplications.Add(clanId);
             var clan = GetIClanService(clanId);
-            await clan.SubmitApplication(Context.CallerId ?? "anon");
+            await clan.SubmitApplicationAsync(Context.CallerId ?? "anon");
             return ApplyResult.Ok;
         }
 
@@ -184,9 +183,9 @@ namespace ClanWars.Shared
             return true;
         }
 
-        public Task<bool> DeclineInvitation(string clanId)
+        public bool DeclineInvitation(string clanId)
         {
-            return Task.FromResult(S.ApprovedInvitations.Remove(clanId));
+            return S.ApprovedInvitations.Remove(clanId);
         }
 
         // ── Day-to-day profile mutations (mobile-RPG meta loop) ───────────────────
@@ -209,30 +208,30 @@ namespace ClanWars.Shared
             "of the Northern Realms","of the Sundered Crown","of the First Dawn","of Whispered Pacts",
         };
 
-        public Task<bool> BuyItem(int tier)
+        public bool BuyItem(int tier)
         {
             if (tier < 1) tier = 1;
             if (tier > 6) tier = 6;
             var cost = 20 * tier * tier;
-            if (S.Money < cost) return Task.FromResult(false);
+            if (S.Money < cost) return false;
             S.Money -= cost;
             S.Inventory.Add(GenerateItem(tier));
-            return Task.FromResult(true);
+            return true;
         }
 
-        public Task<bool> SellItem(int inventoryIndex)
+        public bool SellItem(int inventoryIndex)
         {
-            if (inventoryIndex < 0 || inventoryIndex >= S.Inventory.Count) return Task.FromResult(false);
+            if (inventoryIndex < 0 || inventoryIndex >= S.Inventory.Count) return false;
             var item = S.Inventory[inventoryIndex];
             S.Money += 10 * item.Tier * item.Tier;
             S.Inventory.RemoveAt(inventoryIndex);
-            return Task.FromResult(true);
+            return true;
         }
 
-        public Task<bool> HireHero(string heroClass)
+        public bool HireHero(string heroClass)
         {
             const int HireCost = 500;
-            if (S.Money < HireCost) return Task.FromResult(false);
+            if (S.Money < HireCost) return false;
             var cls = string.IsNullOrEmpty(heroClass) ? HeroClasses[0] : heroClass;
             S.Money -= HireCost;
             var heroId = S.NextEntityId++;
@@ -251,15 +250,15 @@ namespace ClanWars.Shared
                 },
                 Skills = new List<string> { $"{cls}-basic", $"{cls}-passive" },
             });
-            return Task.FromResult(true);
+            return true;
         }
 
-        public Task<bool> LevelUpHero(int heroId)
+        public bool LevelUpHero(int heroId)
         {
             var hero = FindHero(heroId);
-            if (hero == null) return Task.FromResult(false);
+            if (hero == null) return false;
             var cost = 50 * hero.Level;
-            if (S.Money < cost) return Task.FromResult(false);
+            if (S.Money < cost) return false;
             S.Money -= cost;
             hero.Level++;
             hero.Xp = 0;
@@ -267,14 +266,14 @@ namespace ClanWars.Shared
             hero.Stats.Attack += 10;
             hero.Stats.Defense += 5;
             hero.Power += 50;
-            return Task.FromResult(true);
+            return true;
         }
 
-        public Task<bool> EquipItem(int heroId, int inventoryIndex)
+        public bool EquipItem(int heroId, int inventoryIndex)
         {
             var hero = FindHero(heroId);
-            if (hero == null) return Task.FromResult(false);
-            if (inventoryIndex < 0 || inventoryIndex >= S.Inventory.Count) return Task.FromResult(false);
+            if (hero == null) return false;
+            if (inventoryIndex < 0 || inventoryIndex >= S.Inventory.Count) return false;
             var item = S.Inventory[inventoryIndex];
             // Unequip whatever is currently in that slot (move back to inventory).
             for (int i = 0; i < hero.Equipped.Count; i++)
@@ -298,13 +297,13 @@ namespace ClanWars.Shared
             });
             hero.Power += 25 * item.Tier;
             S.Inventory.RemoveAt(inventoryIndex);
-            return Task.FromResult(true);
+            return true;
         }
 
-        public Task<bool> UnequipItem(int heroId, string slot)
+        public bool UnequipItem(int heroId, string slot)
         {
             var hero = FindHero(heroId);
-            if (hero == null) return Task.FromResult(false);
+            if (hero == null) return false;
             for (int i = 0; i < hero.Equipped.Count; i++)
             {
                 if (hero.Equipped[i].Slot == slot)
@@ -317,15 +316,15 @@ namespace ClanWars.Shared
                     });
                     hero.Equipped.RemoveAt(i);
                     hero.Power -= 25 * eq.Tier;
-                    return Task.FromResult(true);
+                    return true;
                 }
             }
-            return Task.FromResult(false);
+            return false;
         }
 
-        public Task CompleteCampaignLevel(string levelId, int stars, int score)
+        public void CompleteCampaignLevel(string levelId, int stars, int score)
         {
-            if (string.IsNullOrEmpty(levelId)) return Task.CompletedTask;
+            if (string.IsNullOrEmpty(levelId)) return;
             if (stars < 1) stars = 1; else if (stars > 3) stars = 3;
             var now = Context.ServerTimeTicks;
             for (int i = 0; i < S.CompletedLevels.Count; i++)
@@ -338,7 +337,7 @@ namespace ClanWars.Shared
                     existing.Attempts++;
                     existing.LastPlayedTicks = now;
                     S.Money += 25 * stars;
-                    return Task.CompletedTask;
+                    return;
                 }
             }
             S.CompletedLevels.Add(new CompletedLevel
@@ -347,10 +346,9 @@ namespace ClanWars.Shared
                 Attempts = 1, LastPlayedTicks = now,
             });
             S.Money += 75 * stars;
-            return Task.CompletedTask;
         }
 
-        public Task OpenChest(int tier)
+        public void OpenChest(int tier)
         {
             if (tier < 1) tier = 1;
             if (tier > 4) tier = 4;
@@ -373,15 +371,13 @@ namespace ClanWars.Shared
                 ItemIdsAwarded = itemsAwarded,
                 MoneyAwarded = money,
             });
-            return Task.CompletedTask;
         }
 
-        public Task ClaimDailyReward()
+        public void ClaimDailyReward()
         {
             S.Money += 250;
             S.Resources["gems"] = S.Resources.TryGetValue("gems", out var g) ? g + 10 : 10;
             S.Resources["energy"] = S.Resources.TryGetValue("energy", out var e) ? e + 50 : 50;
-            return Task.CompletedTask;
         }
 
         // ── Helpers ──────────────────────────────────────────────────────────────

@@ -48,6 +48,10 @@ namespace SharedMeta.Client
 
         private readonly Dictionary<string, List<Action<SessionOp>>> _broadcastHandlers = new();
         private readonly Dictionary<string, string> _subscribedEntities = new(); // entityId → stateTypeName
+        // 0.24.0+ Highest per-entity broadcast sequence we've observed. Used to populate
+        // SubscriptionClaim.LastKnownEntitySequence on next Resume so the server's entity grain
+        // can return Continued (no gap, no state shipped) instead of Refreshed (full snapshot).
+        private readonly Dictionary<string, long> _lastKnownEntitySeq = new();
         private long _nextRequestId;
 
         // Pending RPC requests awaiting response
@@ -166,6 +170,7 @@ namespace SharedMeta.Client
             _connection.OnBatch += HandleBatch;
             _connection.OnDisconnected += HandleDisconnected;
             _connection.OnSessionTerminated += HandleSessionTerminated;
+            _connection.OnRequireSessionReconnect += HandleRequireSessionReconnect;
             _connection.OnReconnecting += HandleReconnecting;
             _connection.OnReconnected += HandleTransportReconnected;
 
@@ -198,12 +203,17 @@ namespace SharedMeta.Client
             lock (_lock)
             {
                 _subscribedEntities[entityId] = stateTypeName ?? "";
+                // 0.24.0+ Seed per-entity seq tracker from the Subscribe snapshot so the next
+                // Resume claim is accurate even if no broadcast arrives between Subscribe and
+                // Resume (rare timing window — usually broadcasts start flowing immediately).
+                if (result.EntitySequenceNumber > 0)
+                    _lastKnownEntitySeq[entityId] = result.EntitySequenceNumber;
             }
 
             return new ConnectResponse
             {
                 StateBytes = result.StateBytes,
-                CurrentSequenceNumber = 0,
+                CurrentSequenceNumber = result.EntitySequenceNumber,
                 OptimisticRandomBytes = result.OptimisticRandomBytes,
                 NamedRandomsBytes = result.NamedRandomsBytes,
                 ConfigMajorVersion = result.ConfigVersion.Major,
@@ -223,6 +233,7 @@ namespace SharedMeta.Client
             lock (_lock)
             {
                 _subscribedEntities.Remove(entityId);
+                _lastKnownEntitySeq.Remove(entityId);
                 _broadcastHandlers.Remove(entityId);
             }
         }
@@ -271,6 +282,22 @@ namespace SharedMeta.Client
                 if (response.HasError)
                 {
                     LogDiag($"ERROR reqId={pending.RequestId} {response.Error}");
+
+                    // "re-handshake" marker: server-side session handler is unbound (e.g. fresh
+                    // transport reconnect before SessionConnect ran, server restart in flight).
+                    // This is a transient transport-level state, NOT a call failure — the server
+                    // also pushes RequireSessionReconnect, the client's recovery flow will re-run
+                    // SessionConnect, and ResendPendingRequestsAsync will replay this request.
+                    // Removing from pending here would drop the request silently AND leave a gap
+                    // in the RequestId sequence that breaks the server-side ordering buffer on
+                    // the next Resume (client reports a stale LastCompletedRequestId because the
+                    // skipped id was never completed and never bumped the counter).
+                    if (response.Error != null && response.Error.Contains("re-handshake", StringComparison.OrdinalIgnoreCase))
+                    {
+                        LogDiag($"REHANDSHAKE_PENDING reqId={pending.RequestId} (kept for replay after re-handshake)");
+                        return;
+                    }
+
                     lock (_lock) { _pendingRequests.Remove(pending.RequestId); }
 
                     if (response.Error != null && response.Error.Contains("superseded", StringComparison.OrdinalIgnoreCase))
@@ -338,14 +365,24 @@ namespace SharedMeta.Client
         public MetaClientSignature? ClientSignature { get; set; }
 
         /// <inheritdoc />
-        public ClientCapabilities? Capabilities { get; private set; }
+        public ClientSignatureAnnotated? Annotated { get; private set; }
+
+        /// <summary>
+        /// 0.24.0+ Game-level recovery decision callback (see <see cref="IMetaSessionRecoveryHandler"/>).
+        /// Set by <c>MetaClient</c> from <c>MetaClientOptions.SessionRecoveryHandler</c>;
+        /// defaults to <see cref="DefaultSessionRecoveryHandler"/> (returns
+        /// <see cref="SessionRecoveryAction.Reconnect"/>) when the host doesn't override.
+        /// Invoked when the server returns
+        /// <see cref="SessionConnectFailureReason.SessionUnknown"/> on a Resume attempt.
+        /// </summary>
+        public IMetaSessionRecoveryHandler? SessionRecoveryHandler { get; set; }
 
         /// <summary>
         /// True if session has been established with server.
         /// </summary>
         public bool IsSessionConnected { get; private set; }
 
-        public async Task<SessionConnectResult> ConnectSessionAsync(Guid sessionId, long lastAcknowledgedSequence, string? clientAppVersion = null)
+        public async Task<SessionConnectResult> ConnectSessionAsync(Guid sessionId, long lastAcknowledgedSequence, string? clientAppVersion = null, SessionConnectMode? mode = null)
         {
             if (string.IsNullOrEmpty(PlayerId))
                 throw new InvalidOperationException("PlayerId must be set before connecting session");
@@ -361,7 +398,44 @@ namespace SharedMeta.Client
             // ClientSignature.SignatureHash when negotiation is enabled (consumer assigned
             // ClientSignature); otherwise pass 0 so the server treats us as legacy/opt-out.
             var signatureHash = ClientSignature?.SignatureHash ?? 0UL;
-            var result = await _connection.SessionConnectAsync(PlayerId, sessionId == Guid.Empty ? null : sessionId, lastAcknowledgedSequence, clientAppVersion, signatureHash);
+            // 0.24.0+ Explicit mode: caller picks (Resume on transport-reconnect path,
+            // StartNew on cold-app-start / Reconnect recovery action). Default fallback:
+            // Resume when we have a non-empty sessionId, StartNew otherwise.
+            var effectiveMode = mode ?? (sessionId != Guid.Empty ? SessionConnectMode.Resume : SessionConnectMode.StartNew);
+
+            // 0.24.0+ Build subscription claims from the locally-tracked _subscribedEntities.
+            // Only meaningful on Resume — StartNew explicitly discards the prior session, so
+            // claims are skipped to avoid double-subscribe noise. LastKnownEntitySequence comes
+            // from _lastKnownEntitySeq (running max of per-entity seq across all incoming
+            // SessionOps); zero means we haven't seen any broadcast for this entity yet, which
+            // makes the entity grain ship a Refreshed snapshot (correct fallback).
+            List<SubscriptionClaim>? claims = null;
+            if (effectiveMode == SessionConnectMode.Resume)
+            {
+                lock (_lock)
+                {
+                    if (_subscribedEntities.Count > 0)
+                    {
+                        claims = new List<SubscriptionClaim>(_subscribedEntities.Count);
+                        foreach (var (entityId, stateTypeName) in _subscribedEntities)
+                        {
+                            _lastKnownEntitySeq.TryGetValue(entityId, out var lastSeq);
+                            claims.Add(new SubscriptionClaim
+                            {
+                                EntityId = entityId,
+                                StateTypeName = stateTypeName,
+                                LastKnownEntitySequence = lastSeq,
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 0.24.0+ Gap-fix: report our highest fully-completed RequestId so the server can
+            // advance its RPC ordering baseline past responses it may have lost (eviction/crash
+            // before persistence flush). Without this, next-new RequestIds would be classified
+            // OutOfOrder against a stale _lastDispatchedRequestId and stashed forever.
+            var result = await _connection.SessionConnectAsync(PlayerId, sessionId == Guid.Empty ? null : sessionId, lastAcknowledgedSequence, clientAppVersion, signatureHash, effectiveMode, _lastCompletedRequestId, claims);
 
             if (!result.Success)
             {
@@ -374,14 +448,35 @@ namespace SharedMeta.Client
                 return new SessionConnectResult
                 {
                     Success = false,
-                    Error = result.Error
+                    Error = result.Error,
+                    FailureReason = result.FailureReason,
                 };
             }
 
-            // 0.22.0: pick up server-supplied capabilities OR fall through to phase-2 if the
+            // 0.24.0+ pick up server-supplied annotation OR fall through to phase-2 if the
             // server didn't recognize our signature hash. Phase-2 is only performed when the
-            // consumer wired a ClientSignature — opted-out clients stay capability-less.
-            Capabilities = result.Capabilities;
+            // consumer wired a ClientSignature — opted-out clients stay annotation-less.
+            Annotated = result.Annotated;
+
+            // 0.24.0+ Mirror the server-side handshake trace so a developer running
+            // client + server can verify they understood each other from each side's logs.
+            if (signatureHash != 0)
+            {
+                if (result.Annotated != null)
+                {
+                    var (rej, fp) = CountStatuses(result.Annotated.Statuses);
+                    MetaLog.Info($"[ClientDispatcher] Handshake phase-1 HIT: clientHash=0x{signatureHash:X16}, serverHash=0x{result.ServerSignatureHash:X16}, annotation: {result.Annotated.Statuses.Length} methods ({rej} rejected, {fp} force-patch)");
+                }
+                else if (result.NeedsSignatureRegistration)
+                {
+                    MetaLog.Info($"[ClientDispatcher] Handshake phase-1 MISS: clientHash=0x{signatureHash:X16}, serverHash=0x{result.ServerSignatureHash:X16}; sending phase-2 RegisterClientSignature");
+                }
+                else
+                {
+                    MetaLog.Info($"[ClientDispatcher] Handshake: no annotation returned and no registration needed — negotiation likely disabled server-side (clientHash=0x{signatureHash:X16}, serverHash=0x{result.ServerSignatureHash:X16})");
+                }
+            }
+
             if (result.NeedsSignatureRegistration && ClientSignature != null)
             {
                 // Fail-loud: if phase-2 errors out, the server has NO signature for this
@@ -417,7 +512,16 @@ namespace SharedMeta.Client
                         $"Phase-2 signature registration was rejected by the server: " +
                         $"{phase2.Error ?? "<no error message>"}");
                 }
-                Capabilities = phase2.Capabilities;
+                Annotated = phase2.Annotated;
+                if (phase2.Annotated != null)
+                {
+                    var (rej, fp) = CountStatuses(phase2.Annotated.Statuses);
+                    MetaLog.Info($"[ClientDispatcher] Handshake phase-2 REGISTERED: clientHash=0x{signatureHash:X16} ({ClientSignature!.KnownMethods.Count} methods) -> serverHash=0x{phase2.Annotated.ServerSignatureHash:X16}, annotation: {rej} rejected, {fp} force-patch");
+                }
+                else
+                {
+                    MetaLog.Warning($"[ClientDispatcher] Handshake phase-2 returned success but null annotation — server may have negotiation disabled (clientHash=0x{signatureHash:X16})");
+                }
             }
 
             lock (_lock)
@@ -453,7 +557,35 @@ namespace SharedMeta.Client
                 }
             }
 
-            // Re-send remaining pending requests (those not resolved by missed packets)
+            // 0.24.0+ Apply server's per-claim subscription verdicts BEFORE re-sending pending
+            // RPCs. Order matters: Refreshed verdicts ship a fresh state snapshot that must be
+            // installed into the shared state container before any pending RPC's response lands
+            // (RPC responses may depend on the post-Refreshed state, and UI must not flicker
+            // back to old state when a stale-pending RPC completes against new state).
+            if (result.Subscriptions is { Count: > 0 })
+            {
+                MetaLog.Info($"[ClientDispatcher] Server returned {result.Subscriptions.Count} subscription verdict(s)");
+                // Advance per-entity seq tracker to the verdict's reported seq so the next
+                // Resume claim is accurate even if no broadcast arrives between Resume and
+                // next Resume. Continued: seq matches ours, no-op. Refreshed: adopt server's
+                // current seq.
+                lock (_lock)
+                {
+                    foreach (var v in result.Subscriptions)
+                    {
+                        _lastKnownEntitySeq.TryGetValue(v.EntityId,  out var known);
+                        MetaLog.Info($"[ClientDispatcher] Subscription {v.EntityId} EntitySequenceNumber = {v.EntitySequenceNumber} Known = {known}");
+                        if (v.Status == SubscriptionStatus.Failed) continue;
+                        if (v.EntitySequenceNumber > 0)
+                            _lastKnownEntitySeq[v.EntityId] = v.EntitySequenceNumber;
+                    }
+                }
+                OnSubscriptionsReclaimed?.Invoke(result.Subscriptions);
+            }
+
+            // Re-send remaining pending requests (those not resolved by missed packets). Runs
+            // AFTER verdict application so resent RPCs hit the server with the post-Refreshed
+            // state already installed locally.
             await ResendPendingRequestsAsync();
 
             return new SessionConnectResult
@@ -463,14 +595,15 @@ namespace SharedMeta.Client
                 IsNewSession = result.IsNewSession,
                 MissedPackets = result.MissedPackets,
                 ServerTimeTicks = result.ServerTimeTicks,
-                ResubscribedEntities = result.ResubscribedEntities
+                Subscriptions = result.Subscriptions,
+                FailureReason = result.FailureReason,
             };
         }
 
         /// <summary>
         /// Re-send all pending requests after reconnect.
         /// </summary>
-        private Task ResendPendingRequestsAsync()
+        private async Task ResendPendingRequestsAsync()
         {
             List<PendingRequest> pendingList;
             lock (_lock)
@@ -479,18 +612,28 @@ namespace SharedMeta.Client
             }
 
             if (pendingList.Count == 0)
-                return Task.CompletedTask;
+                return;
 
             MetaLog.Info($"[ClientDispatcher] Re-sending {pendingList.Count} pending requests after reconnect");
             LogDiag($"RESEND_ALL count={pendingList.Count} ids=[{string.Join(",", pendingList.Select(p => p.RequestId))}]");
 
-            foreach (var pending in pendingList)
+            // Await all re-sends so the caller (ReconnectAsync → OnConnectionStatusChanged)
+            // doesn't signal "Reconnected" until every pending RPC has either received its
+            // server response or failed. Before this was fire-and-forget and the connection
+            // status callback fired while server was still draining the re-sent queue —
+            // game code (or the user) could start NEW actions on stale optimistic state
+            // before re-sends settled, producing false-positive desyncs and state drift.
+            var resends = new Task[pendingList.Count];
+            for (int i = 0; i < pendingList.Count; i++)
+                resends[i] = ResendRequestAsync(pendingList[i]);
+            try { await Task.WhenAll(resends); }
+            catch
             {
-                // Re-send without creating new TCS - reuse existing
-                _ = ResendRequestAsync(pending);
+                // ResendRequestAsync swallows its own per-pending errors into the PendingRequest's
+                // TCS; an exception escaping here would be unexpected. Don't let one bad re-send
+                // tank the whole reconnect — log via the diag channel and continue.
+                LogDiag("RESEND_ALL one or more re-sends threw; per-RPC errors are surfaced via TCS");
             }
-
-            return Task.CompletedTask;
         }
 
         private async Task ResendRequestAsync(PendingRequest pending)
@@ -503,6 +646,14 @@ namespace SharedMeta.Client
                 // Top-level transport error
                 if (response.HasError)
                 {
+                    // See SendAndCompleteAsync — same "re-handshake" transient path. Keep pending
+                    // so the post-SessionConnect ResendPendingRequestsAsync can replay it.
+                    if (response.Error != null && response.Error.Contains("re-handshake", StringComparison.OrdinalIgnoreCase))
+                    {
+                        LogDiag($"REHANDSHAKE_RESEND reqId={pending.RequestId} (kept for replay after re-handshake)");
+                        return;
+                    }
+
                     lock (_lock) { _pendingRequests.Remove(pending.RequestId); }
 
                     if (response.Error != null && response.Error.Contains("superseded", StringComparison.OrdinalIgnoreCase))
@@ -753,6 +904,41 @@ namespace SharedMeta.Client
 
             foreach (var op in response.Operations)
             {
+                // 0.24.0+ Track highest per-entity sequence number for SubscriptionClaim on next
+                // Resume. Server stamps each SessionOp with the entity-grain's seq at the moment
+                // it was produced — we keep the running max. Zero means the op had no entity
+                // association (e.g. session-level transient errors), don't track that.
+                if (op.EntitySequenceNumber > 0 && !string.IsNullOrEmpty(op.EntityId))
+                {
+                    lock (_lock)
+                    {
+                        if (!_lastKnownEntitySeq.TryGetValue(op.EntityId, out var prev) || op.EntitySequenceNumber > prev)
+                            _lastKnownEntitySeq[op.EntityId] = op.EntitySequenceNumber;
+                    }
+                }
+
+                // Cross-entity ops carry the TARGET entity's post-call seq. The target entity
+                // advances on the server through this cross-call, but its own broadcast to us
+                // is suppressed (we're the originator — the effect is inlined in the outer op's
+                // replay payload). Without recording these seqs the next Resume claim would
+                // report stale LastKnownEntitySequence for the target, server would see a gap
+                // and ship a fresh state snapshot (Refreshed verdict), clobbering local state.
+                if (op.CrossEntityOperations is { Count: > 0 } crossOps)
+                {
+                    lock (_lock)
+                    {
+                        for (int i = 0; i < crossOps.Count; i++)
+                        {
+                            var ce = crossOps[i];
+                            if (ce.EntitySequenceNumber > 0 && !string.IsNullOrEmpty(ce.EntityId))
+                            {
+                                if (!_lastKnownEntitySeq.TryGetValue(ce.EntityId, out var cePrev) || ce.EntitySequenceNumber > cePrev)
+                                    _lastKnownEntitySeq[ce.EntityId] = ce.EntitySequenceNumber;
+                            }
+                        }
+                    }
+                }
+
                 if (op.RequestId > 0)
                 {
                     ResolvePending(op);
@@ -842,13 +1028,54 @@ namespace SharedMeta.Client
         {
             MetaLog.Info("[ClientDispatcher] Transport reconnected, re-establishing session...");
             OnConnectionStatusChanged?.Invoke(ConnectionStatus.Reconnected, "Re-establishing session...");
-            _ = ReconnectAsync();
+            TriggerRecovery("transport-reconnected");
+        }
+
+        // 0.24.0+ Debounce flag so a burst of failing calls in a tight window doesn't
+        // queue multiple parallel ReconnectAsync runs. ConnectSessionAsync itself is
+        // idempotent (the server will happily re-bind the session on each call) but
+        // multiple concurrent runs would step on each other's pending-request drain.
+        private int _recoverInFlight;
+
+        /// <summary>
+        /// 0.24.0+ Single entry point for recovery — both transport-reconnect and the
+        /// server-pushed RequireSessionReconnect flow into here. Interlocked debounce so
+        /// concurrent triggers (which is the normal case: app-level RPC arrives between
+        /// transport reconnect and SessionConnect completion → server pushes recovery
+        /// while we're already recovering) don't fire parallel ConnectSessionAsync runs.
+        /// </summary>
+        private void TriggerRecovery(string reason)
+        {
+            if (System.Threading.Interlocked.Exchange(ref _recoverInFlight, 1) == 1)
+            {
+                MetaLog.Info($"[ClientDispatcher] Recovery already in flight ({reason}) — ignoring");
+                return;
+            }
+            _ = RecoverAndClearFlagAsync();
+
+            async Task RecoverAndClearFlagAsync()
+            {
+                try { await ReconnectAsync(); }
+                finally { System.Threading.Interlocked.Exchange(ref _recoverInFlight, 0); }
+            }
+        }
+
+        private void HandleRequireSessionReconnect(string reason)
+        {
+            // Server pushed a "session lost on server, please re-handshake" notification —
+            // typical cause: SignalR auto-reconnected onto a brand-new server-side handler
+            // (after server restart) that never saw SessionConnect. Run the same recovery
+            // flow as a normal transport reconnect.
+            MetaLog.Info($"[ClientDispatcher] RequireSessionReconnect from server: {reason}");
+            IsSessionConnected = false;
+            OnConnectionStatusChanged?.Invoke(ConnectionStatus.Reconnecting, reason);
+            TriggerRecovery("server-push");
         }
 
         /// <summary>
         /// Re-establish session and re-subscribe to all entities after transport reconnect.
         /// </summary>
-        public event Action<List<ResubscribedEntityInfo>>? OnEntitiesResubscribed;
+        public event Action<List<SubscriptionResult>>? OnSubscriptionsReclaimed;
 
         /// <summary>
         /// Resume the current session — re-establish with the same sessionId and
@@ -871,44 +1098,33 @@ namespace SharedMeta.Client
                 // Re-establish session with server, passing last known sequence for missed packet recovery.
                 // Carry the ClientAppVersion captured on first connect — auto-reconnect must identify
                 // the same client version, otherwise per-call config resolution would drift between
-                // before / after the transport blip.
+                // before / after the transport blip. Mode defaults to Resume when _sessionId is set.
                 var result = await ConnectSessionAsync(_sessionId, _lastAcknowledgedSequence, _clientAppVersion);
 
                 if (!result.Success)
                 {
+                    // 0.24.0+ SessionUnknown: server doesn't recognize our sessionId (typical cause:
+                    // server restart without persistent state). Fire IMetaSessionRecoveryHandler so
+                    // game-level code picks Reconnect / Restart / Disconnect. Default handler picks
+                    // Reconnect — issue a fresh StartNew SessionConnect and re-subscribe known entities.
+                    // 0.24.0+ SessionUnknown and SubscriptionReclaimFailed both route through
+                    // the same recovery flow — server can't safely continue, client falls back
+                    // to fresh session via IMetaSessionRecoveryHandler. Game-level callback
+                    // decides Reconnect / Restart / Disconnect.
+                    if (result.FailureReason == SessionConnectFailureReason.SessionUnknown
+                        || result.FailureReason == SessionConnectFailureReason.SubscriptionReclaimFailed)
+                    {
+                        await HandleSessionLostAsync(result.Error ?? $"server reported {result.FailureReason}");
+                        return;
+                    }
                     MetaLog.Error($"[ClientDispatcher] Session reconnect failed: {result.Error}");
                     OnConnectionStatusChanged?.Invoke(ConnectionStatus.Failed, result.Error);
                     return;
                 }
 
-                // If server already re-subscribed entities, notify listeners and skip manual re-subscribe
-                if (result.ResubscribedEntities is { Count: > 0 })
-                {
-                    MetaLog.Info($"[ClientDispatcher] Server re-subscribed {result.ResubscribedEntities.Count} entities");
-                    OnEntitiesResubscribed?.Invoke(result.ResubscribedEntities);
-                }
-                else
-                {
-                    // Server didn't re-subscribe — do it manually
-                    Dictionary<string, string> entitiesToResubscribe;
-                    lock (_lock)
-                    {
-                        entitiesToResubscribe = new Dictionary<string, string>(_subscribedEntities);
-                    }
-
-                    foreach (var (entityId, stateTypeName) in entitiesToResubscribe)
-                    {
-                        try
-                        {
-                            await _connection.SubscribeAsync(entityId, stateTypeName);
-                            MetaLog.Info($"[ClientDispatcher] Re-subscribed to entity: {entityId}");
-                        }
-                        catch (Exception ex)
-                        {
-                            MetaLog.Error($"[ClientDispatcher] Failed to re-subscribe to entity {entityId}: {ex.Message}");
-                        }
-                    }
-                }
+                // 0.24.0+ Subscription verdicts already applied inside ConnectSessionAsync
+                // (BEFORE ResendPendingRequestsAsync), so the state container is current by the
+                // time pending RPCs come back. Nothing to do here — just confirm reconnect.
 
                 MetaLog.Info("[ClientDispatcher] Reconnection complete");
                 OnConnectionStatusChanged?.Invoke(ConnectionStatus.Connected, "Reconnected");
@@ -916,6 +1132,113 @@ namespace SharedMeta.Client
             catch (Exception ex)
             {
                 MetaLog.Error($"[ClientDispatcher] Reconnection failed: {ex.Message}");
+                OnConnectionStatusChanged?.Invoke(ConnectionStatus.Failed, ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// 0.24.0+ Server returned SessionUnknown on a Resume attempt. The previous session
+        /// is gone on the server side; fail pending RPCs, ask the game what to do, and
+        /// execute the chosen action (Reconnect / Restart / Disconnect).
+        /// </summary>
+        private async Task HandleSessionLostAsync(string reason)
+        {
+            MetaLog.Info($"[ClientDispatcher] Session lost on server: {reason}");
+
+            // Capture the old sessionId + subscribed entities BEFORE we reset state.
+            Guid oldSessionId;
+            List<string> knownEntityIds;
+            lock (_lock)
+            {
+                oldSessionId = _sessionId;
+                knownEntityIds = new List<string>(_subscribedEntities.Keys);
+                _sessionId = Guid.Empty;
+                _lastAcknowledgedSequence = 0;
+                IsSessionConnected = false;
+            }
+            Annotated = null;
+
+            // Drop pending RPCs — they were bound to the old session and cannot be retried
+            // there. Game logic catches SessionLostException on the call sites that care.
+            FailAllPendingRequests($"Session lost: {reason}");
+
+            var handler = SessionRecoveryHandler ?? new DefaultSessionRecoveryHandler();
+            SessionRecoveryAction action;
+            try
+            {
+                action = await handler.OnSessionLostAsync(new SessionLostInfo
+                {
+                    OldSessionId = oldSessionId,
+                    KnownEntityIds = knownEntityIds,
+                    Reason = reason,
+                });
+            }
+            catch (Exception ex)
+            {
+                MetaLog.Error($"[ClientDispatcher] SessionRecoveryHandler threw — defaulting to Reconnect: {ex.Message}");
+                action = SessionRecoveryAction.Reconnect;
+            }
+
+            MetaLog.Info($"[ClientDispatcher] SessionRecoveryAction: {action} (oldSessionId={oldSessionId}, knownEntities={knownEntityIds.Count})");
+
+            switch (action)
+            {
+                case SessionRecoveryAction.Reconnect:
+                    await RecoverViaReconnectAsync(knownEntityIds);
+                    break;
+                case SessionRecoveryAction.Restart:
+                    OnConnectionStatusChanged?.Invoke(ConnectionStatus.Disconnected, "Session restart requested");
+                    try { await _connection.DisconnectAsync(); } catch { /* best effort */ }
+                    // Game-side startup is expected to re-init via MetaClient.ConnectAsync.
+                    break;
+                case SessionRecoveryAction.Disconnect:
+                    OnConnectionStatusChanged?.Invoke(ConnectionStatus.Failed, "Session lost — recovery disabled");
+                    try { await _connection.DisconnectAsync(); } catch { /* best effort */ }
+                    break;
+            }
+        }
+
+        private async Task RecoverViaReconnectAsync(List<string> knownEntityIds)
+        {
+            try
+            {
+                // Explicit StartNew: server allocates a fresh SessionId and binds.
+                var fresh = await ConnectSessionAsync(Guid.Empty, 0, _clientAppVersion, SessionConnectMode.StartNew);
+                if (!fresh.Success)
+                {
+                    MetaLog.Error($"[ClientDispatcher] StartNew after session-loss failed: {fresh.Error}");
+                    OnConnectionStatusChanged?.Invoke(ConnectionStatus.Failed, fresh.Error);
+                    return;
+                }
+
+                // Re-subscribe to entities the player had open. Server returns fresh state
+                // through Subscribe — local optimistic mutations that didn't reach the old
+                // server are dropped (matches the SessionLostException already raised on
+                // pending RPCs).
+                Dictionary<string, string> entitiesToResubscribe;
+                lock (_lock)
+                    entitiesToResubscribe = new Dictionary<string, string>(_subscribedEntities);
+
+                foreach (var entityId in knownEntityIds)
+                {
+                    if (!entitiesToResubscribe.TryGetValue(entityId, out var stateTypeName)) continue;
+                    try
+                    {
+                        await _connection.SubscribeAsync(entityId, stateTypeName);
+                        MetaLog.Info($"[ClientDispatcher] Re-subscribed to {entityId} on fresh session");
+                    }
+                    catch (Exception ex)
+                    {
+                        MetaLog.Error($"[ClientDispatcher] Failed to re-subscribe to {entityId}: {ex.Message}");
+                    }
+                }
+
+                MetaLog.Info("[ClientDispatcher] Session recovery via Reconnect complete");
+                OnConnectionStatusChanged?.Invoke(ConnectionStatus.Connected, "Reconnected (new session)");
+            }
+            catch (Exception ex)
+            {
+                MetaLog.Error($"[ClientDispatcher] Reconnect recovery failed: {ex.Message}");
                 OnConnectionStatusChanged?.Invoke(ConnectionStatus.Failed, ex.Message);
             }
         }
@@ -930,6 +1253,7 @@ namespace SharedMeta.Client
 
                 MetaLog.Warning($"[ClientDispatcher] Session terminated: {reason}");
                 _subscribedEntities.Clear();
+                _lastKnownEntitySeq.Clear();
                 _ordering.Reset(1);
                 IsSessionConnected = false;
 
@@ -999,6 +1323,21 @@ namespace SharedMeta.Client
         public int PendingRequestCount { get { lock (_lock) return _pendingRequests.Count; } }
 
         /// <summary>
+        /// 0.24.0+ Highest per-entity broadcast sequence the client has observed for the given
+        /// entity. Used by generated <c>*ApiClient</c> desync diagnostics to compare against the
+        /// server-stamped seq in <c>response.Debug</c>. Returns 0 when no broadcast has been
+        /// observed yet (cold subscribe + no broadcast since).
+        /// </summary>
+        public long GetLastKnownEntitySequence(string? entityId)
+        {
+            if (string.IsNullOrEmpty(entityId)) return 0;
+            lock (_lock)
+            {
+                return _lastKnownEntitySeq.TryGetValue(entityId, out var seq) ? seq : 0;
+            }
+        }
+
+        /// <summary>
         /// Reset dispatcher state for session restart (after supersede).
         /// Clears all subscriptions, handlers, buffer, and pending requests.
         /// </summary>
@@ -1008,6 +1347,7 @@ namespace SharedMeta.Client
             lock (_lock)
             {
                 _subscribedEntities.Clear();
+                _lastKnownEntitySeq.Clear();
                 _broadcastHandlers.Clear();
                 _ordering.Reset(1);
                 pendingToFail = _pendingRequests.Values.ToList();
@@ -1072,6 +1412,19 @@ namespace SharedMeta.Client
                     _dispatcher.RemoveBroadcastHandler(_entityId, _handler);
                 }
             }
+        }
+
+        // 0.24.0+ Handshake-tracing helper: scan the Statuses array once and report
+        // (rejected, force-patch) counts for the connect-time log lines.
+        private static (int rejected, int forcePatch) CountStatuses(MethodStatus[] statuses)
+        {
+            int rej = 0, fp = 0;
+            for (int i = 0; i < statuses.Length; i++)
+            {
+                if (statuses[i] == MethodStatus.Rejected) rej++;
+                else if (statuses[i] == MethodStatus.ForceServerPatch) fp++;
+            }
+            return (rej, fp);
         }
     }
 }

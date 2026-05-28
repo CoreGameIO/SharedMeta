@@ -17,7 +17,7 @@ namespace ClanWars.Shared
     {
         /// <summary>Award bonus power to the player. Forwarded to the clan (if any).</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task GainPoints(int amount);
+        void GainPoints(int amount);
 
         /// <summary>Spend money + create a new clan grain. Returns the new clan id on success.</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
@@ -59,39 +59,39 @@ namespace ClanWars.Shared
 
         /// <summary>Buy a new item of the given tier — adds an InventoryItem.</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task<bool> BuyItem(int tier);
+        bool BuyItem(int tier);
 
         /// <summary>Sell an inventory item by index — removes it, refunds money.</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task<bool> SellItem(int inventoryIndex);
+        bool SellItem(int inventoryIndex);
 
         /// <summary>Hire a new hero of the given class.</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task<bool> HireHero(string heroClass);
+        bool HireHero(string heroClass);
 
         /// <summary>Spend money + XP, bump hero level by 1.</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task<bool> LevelUpHero(int heroId);
+        bool LevelUpHero(int heroId);
 
         /// <summary>Equip a stored inventory item onto a hero's slot.</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task<bool> EquipItem(int heroId, int inventoryIndex);
+        bool EquipItem(int heroId, int inventoryIndex);
 
         /// <summary>Move an equipped item from a hero back to the inventory.</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task<bool> UnequipItem(int heroId, string slot);
+        bool UnequipItem(int heroId, string slot);
 
         /// <summary>Mark a campaign level as completed (or improved).</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task CompleteCampaignLevel(string levelId, int stars, int score);
+        void CompleteCampaignLevel(string levelId, int stars, int score);
 
         /// <summary>Open a chest — adds a record + a handful of inventory items.</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task OpenChest(int tier);
+        void OpenChest(int tier);
 
         /// <summary>Award daily login bonus — adds money + a resource bump.</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task ClaimDailyReward();
+        void ClaimDailyReward();
 
         /// <summary>
         /// Cross-entity Notification from <see cref="IClanService.AcceptApplication"/>. Tells
@@ -112,6 +112,6 @@ namespace ClanWars.Shared
 
         /// <summary>Drop a parked invitation without switching.</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task<bool> DeclineInvitation(string clanId);
+        bool DeclineInvitation(string clanId);
     }
 }

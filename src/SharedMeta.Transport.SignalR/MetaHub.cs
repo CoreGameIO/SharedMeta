@@ -300,5 +300,10 @@ namespace SharedMeta.Transport.SignalR
         {
             _ = _client.EntityDeactivating(entityId);
         }
+
+        public void SendRequireSessionReconnect(string reason)
+        {
+            _ = _client.RequireSessionReconnect(reason);
+        }
     }
 }

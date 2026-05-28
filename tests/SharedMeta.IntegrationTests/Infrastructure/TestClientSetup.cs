@@ -20,6 +20,9 @@ public class TestClientSetup : IAsyncDisposable
     public IConnection Connection => _client.Connection;
     public string PlayerId => _client.PlayerId;
     public string ConnectionId => _client.ConnectionId;
+    /// <summary>0.24.0+ Expose the underlying MetaClient so tests can inspect dispatcher
+    /// state (e.g. <c>Dispatcher.Annotated</c> after the signature handshake).</summary>
+    public MetaClient MetaClient => _client;
 
     /// <summary>
     /// Issues detected during test execution (desyncs, errors, etc.)

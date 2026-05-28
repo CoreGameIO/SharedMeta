@@ -606,7 +606,7 @@ internal class ExpeditionDesyncDiagnostics : SharedMeta.Core.Diagnostics.IDesync
         _pendingMessage = msg;
     }
 
-    public void OnCrossEntityResult(string entityId, string serviceName, string methodName, byte[] resultBytes) { }
+    public void OnCrossEntityResult(string entityId, ushort methodId, byte[] resultBytes) { }
 
     public void OnRandomDesync(string serviceName, string methodName, long serverDelta, long localDelta)
     {

@@ -404,9 +404,10 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
             sb.AppendLine();
 
-            sb.AppendLine("        private void SetError(Exception ex, ushort methodId)");
+            sb.AppendLine("        private void SetError(Exception ex, ushort methodId, string methodName = \"\")");
             sb.AppendLine("        {");
-            sb.AppendLine("            MetaLog.Error($\"[{ServiceName} methodId={methodId}] Service error\", ex);");
+            sb.AppendLine("            var label = string.IsNullOrEmpty(methodName) ? $\"methodId={methodId}\" : $\"{methodName} (methodId={methodId})\";");
+            sb.AppendLine("            MetaLog.Error($\"[{ServiceName}.{label}] Service error\", ex);");
             sb.AppendLine("            _errorException = ex;");
             sb.AppendLine("            OnServiceError?.Invoke(ServiceName, ex);");
             sb.AppendLine("        }");
@@ -621,19 +622,18 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
                 if (capabilitiesEnabled)
                 {
-                    // 0.22.0 capabilities gate. Short-circuits server-rejected methods before any
-                    // local work or wire round trip. Two layers checked:
-                    //   * session-level _network.Capabilities (signature-level method versioning)
-                    //   * per-entity _network.EntityCapabilities (config-boundary overlay)
-                    // Both are allocation-free on the common path (null / empty lists).
-                    sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(_network.Capabilities, ServiceName, \"{methodAlias}\", {methodVersion})");
+                    // 0.24.0 capabilities gate. Two layers checked:
+                    //   * session-level _network.Annotated.Statuses[methodId] (O(1) array index)
+                    //   * per-entity _network.EntityCapabilities (config-boundary overlay,
+                    //     still by ServiceName — per-entity granularity isn't folded yet).
+                    // Allocation-free on the common path (null annotation, empty entity caps).
+                    var methodIdConst = $"global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}";
+                    sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(_network.Annotated, {methodIdConst})");
                     sb.AppendLine($"                || global::SharedMeta.Core.Transport.CapabilitiesGate.IsServiceRejectedByEntity(_network.EntityCapabilities, ServiceName))");
                     sb.AppendLine($"                throw global::SharedMeta.Core.Transport.CapabilitiesGate.RejectedException(ServiceName, \"{methodAlias}\", {methodVersion});");
-                    // 0.22.0 force-ServerPatch downgrade — server flagged this method (or its whole
-                    // service) as incompatible with optimistic local execution. The generator already
-                    // emits a _ServerPatch variant for every method, so the downgrade is a direct
-                    // route, no extra plumbing needed.
-                    sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsForcedServerPatch(_network.Capabilities, ServiceName, \"{methodAlias}\", {methodVersion})");
+                    // 0.24.0 force-ServerPatch downgrade — server folded service-level rules into
+                    // per-method Statuses, so the session-level check is also a single array index.
+                    sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsForcedServerPatch(_network.Annotated, {methodIdConst})");
                     sb.AppendLine($"                || global::SharedMeta.Core.Transport.CapabilitiesGate.IsServiceForcedServerPatchByEntity(_network.EntityCapabilities, ServiceName))");
                     sb.AppendLine($"                return {methodName}Async_ServerPatch({callArgs});");
                 }
@@ -670,8 +670,9 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
                 if (capabilitiesEnabled)
                 {
-                    // 0.22.0 capabilities gate — same contract as the async overload (session + per-entity).
-                    sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(_network.Capabilities, ServiceName, \"{methodAlias}\", {methodVersion})");
+                    // 0.24.0 capabilities gate — same contract as the async overload (session + per-entity).
+                    var methodIdConst = $"global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}";
+                    sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(_network.Annotated, {methodIdConst})");
                     sb.AppendLine($"                || global::SharedMeta.Core.Transport.CapabilitiesGate.IsServiceRejectedByEntity(_network.EntityCapabilities, ServiceName))");
                     sb.AppendLine($"                throw global::SharedMeta.Core.Transport.CapabilitiesGate.RejectedException(ServiceName, \"{methodAlias}\", {methodVersion});");
                 }
@@ -878,6 +879,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"                if (!{fieldName}.AreEqual(serverResult, localResult))");
                     sb.AppendLine("                {");
                     sb.AppendLine($"                    _diagnostics?.OnResultMismatch(ServiceName, \"{methodAlias}\", serverResult, localResult);");
+                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult}} local={{localResult}} serverSeq={{response.Debug ?? \"<none>\"}} clientSeq={{_network.LastKnownEntitySequence}}\");");
                     if (serializer == DetectedSerializer.MemoryPack)
                         sb.AppendLine($"                    var localResultBytes = MemoryPackSerializer.Serialize(localResult);");
                     else
@@ -892,6 +894,7 @@ namespace SharedMeta.Generator.Generators
                     GenerateResultByteComparison(sb, returnType, serializer, "response.ResultBytes", "                ");
                     sb.AppendLine("                {");
                     sb.AppendLine($"                    _diagnostics?.OnResultMismatch(ServiceName, \"{methodAlias}\", serverResult, localResult);");
+                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult}} local={{localResult}} serverSeq={{response.Debug ?? \"<none>\"}} clientSeq={{_network.LastKnownEntitySequence}}\");");
                     GenerateResultMismatchReport(sb, methodAlias, "response.ResultBytes", "localResultBytes", "                    ");
                     sb.AppendLine($"                    throw new DesyncException(ServiceName, \"{methodAlias}\", serverResult, localResult);");
                     sb.AppendLine("                }");
@@ -914,7 +917,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                _stateContainer.NotifyMutated();");
             }
             sb.AppendLine("                }");
-            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
+            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, \"{methodAlias}\"); throw; }}");
 
             sb.AppendLine("            }");
             sb.AppendLine("            finally");
@@ -955,12 +958,17 @@ namespace SharedMeta.Generator.Generators
             {
                 // Generic serializer — always use writer for consistent length-prefixed format.
                 // Server dispatcher reads with CreateReader() which expects length-prefixed data.
-                sb.AppendLine("            using var writer = _serializer.CreateWriter();");
+                // No `using` — writer is pool-owned, Reset() between uses. Materialize to byte[]
+                // here so argsBytes has the same type across both serializer branches: downstream
+                // sites (DesyncReportRequest.ArgsBytes — byte[] field) avoid an extra .ToArray() copy,
+                // and INetwork.CallAsync takes ROM which accepts byte[] via implicit conversion.
+                sb.AppendLine("            var writer = _serializer.CreateWriter();");
+                sb.AppendLine("            writer.Reset();");
                 foreach (var param in method.ParameterList.Parameters)
                 {
                     sb.AppendLine($"            writer.Write({param.Identifier.Text});");
                 }
-                sb.AppendLine("            var argsBytes = writer.Complete();");
+                sb.AppendLine("            var argsBytes = writer.Complete().ToArray();");
             }
         }
 
@@ -1071,7 +1079,7 @@ namespace SharedMeta.Generator.Generators
             }
 
             sb.AppendLine("            }");
-            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
+            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            _stateContainer.NotifyMutated();");
@@ -1231,7 +1239,7 @@ namespace SharedMeta.Generator.Generators
             }
 
             sb.AppendLine("            }");
-            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
+            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            _stateContainer.NotifyMutated();");
@@ -1388,7 +1396,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                localResult = {awaitPrefix}{coServiceRef}.{methodName}({callArgs});");
             }
             sb.AppendLine("            }");
-            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
+            sb.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, \"{methodAlias}\"); throw; }}");
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            _stateContainer.NotifyMutated();");
@@ -1561,7 +1569,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                _tracker.FlushAndNotify();");
             sb.AppendLine("                _stateContainer.NotifyMutated();");
             sb.AppendLine("                }");
-            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
+            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, \"{methodAlias}\"); throw; }}");
 
             // Return server result
             if (!isVoidReturn)
@@ -1641,7 +1649,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                _tracker.FlushAndNotify();");
             sb.AppendLine($"                OnStateRefreshed?.Invoke(_state);");
             sb.AppendLine("                }");
-            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}); throw; }}");
+            sb.AppendLine($"                catch (Exception ex) {{ _tracker.Discard(); SetError(ex, global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, \"{methodAlias}\"); throw; }}");
 
             // Return server result
             if (!isVoidReturn)
@@ -2431,7 +2439,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}        MethodName = \"{methodAlias}\",");
             sb.AppendLine($"{indent}        ArgsBytes = argsBytes,");
             sb.AppendLine($"{indent}        ClientPatchBytes = _ddLocalPatchBytes,");
-            sb.AppendLine($"{indent}        MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Patch");
+            sb.AppendLine($"{indent}        MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Patch,");
             sb.AppendLine($"{indent}    }});");
             sb.AppendLine($"{indent}}}");
         }
@@ -2451,7 +2459,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}    ArgsBytes = argsBytes,");
             sb.AppendLine($"{indent}    ServerResultBytes = {serverBytesExpr} ?? System.Array.Empty<byte>(),");
             sb.AppendLine($"{indent}    LocalResultBytes = {localBytesExpr} ?? System.Array.Empty<byte>(),");
-            sb.AppendLine($"{indent}    MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Result");
+            sb.AppendLine($"{indent}    MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Result,");
             sb.AppendLine($"{indent}}});");
         }
 
@@ -2468,7 +2476,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}    ArgsBytes = argsBytes,");
             sb.AppendLine($"{indent}    ServerRandomDelta = {serverDeltaExpr},");
             sb.AppendLine($"{indent}    LocalRandomDelta = {localDeltaExpr},");
-            sb.AppendLine($"{indent}    MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Random");
+            sb.AppendLine($"{indent}    MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Random,");
             sb.AppendLine($"{indent}}});");
         }
 

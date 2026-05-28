@@ -25,6 +25,11 @@ namespace Expedition.Shared
             return Task.FromResult(target);
         }
 
+        public Task<string> DummyChange()
+        {
+            return Task.FromResult("DummyChange");
+        }
+
         public async Task<bool> BuyEnergy()
         {
             if (state.Money < Config.BuyEnergyCost)

@@ -5,7 +5,7 @@ namespace SharedMeta.Core.Transport
     /// <summary>
     /// Server-side mirror of <see cref="MetaClientSignature"/>: the full set of methods the
     /// server exposes plus the per-method compatibility metadata needed to compute
-    /// <see cref="ClientCapabilities"/> for an incoming client signature.
+    /// <see cref="ClientSignatureAnnotated"/> for an incoming client signature.
     /// <para>
     /// Emitted as a generated <c>public static readonly</c> singleton on
     /// <c>GameServiceDiscoveryBase</c> by the source generator. Plain C# class — never goes
@@ -71,6 +71,20 @@ namespace SharedMeta.Core.Transport
         /// Empty when no config declares breakpoints.
         /// </summary>
         public IReadOnlyList<ConfigBoundaryEntry> ConfigBoundaries { get; init; } = new List<ConfigBoundaryEntry>();
+
+        /// <summary>
+        /// 0.24.0+ FNV-1a over the canonical server-surface string. Distinct from the client
+        /// signature hash because it folds in server-only fields that influence the verdict
+        /// (<see cref="ServerMethodEntry.MinCompatibleVersion"/>,
+        /// <see cref="ServerMethodEntry.GenerateClientApi"/>,
+        /// <see cref="ServerMethodEntry.ConfigTypeFullName"/>, plus
+        /// <see cref="ConfigBoundaries"/>). Any server-side change that should invalidate
+        /// previously-shipped <c>ClientSignatureAnnotated</c> entries MUST contribute to this
+        /// hash, otherwise client caches stay stale. Emitted as a compile-time constant by
+        /// <c>GameServiceDiscoveryGenerator</c>; defaults to 0 for synthetic test instances
+        /// (the hash field is only load-bearing in the wire/cache flow).
+        /// </summary>
+        public ulong SignatureHash { get; init; }
     }
 
     /// <summary>

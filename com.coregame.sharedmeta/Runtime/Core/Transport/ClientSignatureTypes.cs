@@ -7,23 +7,22 @@ using MessagePack;
 namespace SharedMeta.Core.Transport
 {
     // ════════════════════════════════════════════════════════════════════════════
-    //  0.22.0 client-signature & capabilities wire types.
+    //  0.22.0 / 0.24.0 client-signature & annotation wire types.
     //
-    //  Purpose: let the server compute — once per distinct client build — what
-    //  methods and services the client may legitimately use, and which must be
-    //  force-downgraded to ServerPatch. The result is a ClientCapabilities object
-    //  cached by SignatureHash on the server; subsequent connections from clients
-    //  with the same signature skip recomputation.
+    //  Purpose: let the server compute — once per distinct client build × server
+    //  build pair — what methods the client may legitimately use, and which must be
+    //  force-downgraded to ServerPatch. The result is a ClientSignatureAnnotated
+    //  object (verdict array + id translation table) cached by SignatureHash on
+    //  the server AND on the client; steady-state connects ship < 100 B.
     //
-    //  Two-phase handshake (drives the wire flow, but the actual fill-in lives
-    //  in Stages 4–6):
-    //   1. Client sends SessionConnectRequest with SignatureHash (quick key).
+    //  Two-phase handshake:
+    //   1. Client sends SessionConnectRequest with ClientSignatureHash (8 B key).
     //   2. Server checks the registry:
-    //      a. Known → reply with Capabilities populated.
-    //      b. Unknown → reply with NeedsSignatureRegistration = true; client
-    //         follows up with RegisterClientSignatureRequest carrying the full
-    //         MetaClientSignature (KnownMethods + per-method ArgHashes). Server
-    //         computes capabilities, stores by SignatureHash, returns them.
+    //      a. Known + server-hash matches client cache → reply with Annotated populated.
+    //      b. Unknown OR hashes mismatched → reply with NeedsSignatureRegistration = true;
+    //         client follows up with RegisterClientSignatureRequest carrying the full
+    //         MetaClientSignature. Server computes annotation, stores the signature
+    //         keyed by SignatureHash, returns the annotation.
     // ════════════════════════════════════════════════════════════════════════════
 
     /// <summary>
@@ -98,73 +97,7 @@ namespace SharedMeta.Core.Transport
     }
 
     /// <summary>
-    /// Stable identity of a single dispatchable method — used as the granular
-    /// addressing unit inside <see cref="ClientCapabilities"/>.
-    /// </summary>
-    [MemoryPackable, MessagePackObject, GenerateSerializer]
-    public partial class MethodIdentity
-    {
-        [Id(0), Key(0), MemoryPackOrder(0)] public string ServiceName { get; set; } = "";
-        [Id(1), Key(1), MemoryPackOrder(1)] public string Alias { get; set; } = "";
-        [Id(2), Key(2), MemoryPackOrder(2)] public int Version { get; set; }
-    }
-
-    /// <summary>
-    /// The server's verdict on what THIS client may do. Computed once per
-    /// distinct <see cref="MetaClientSignature.SignatureHash"/> on the server and
-    /// shipped back inside <see cref="SessionConnectResponse"/>. The client's
-    /// generated <c>{Service}ApiClient</c> consults this object on every call:
-    /// <list type="bullet">
-    ///   <item>If the call's identity is in <see cref="RejectedMethods"/> →
-    ///     throw <see cref="SharedMeta.Core.IncompatibleFeatureException"/>
-    ///     locally without going to the wire (UX: no wasted round trip).</item>
-    ///   <item>If the call's identity is in <see cref="ForceServerPatchMethods"/>
-    ///     OR its service is in <see cref="ForceServerPatchServices"/> →
-    ///     downgrade execution mode to ServerPatch regardless of the method's
-    ///     declared <see cref="ExecutionMode"/>.</item>
-    /// </list>
-    /// Empty lists = no restrictions (the common case for an up-to-date client).
-    /// </summary>
-    [MemoryPackable, MessagePackObject, GenerateSerializer, Immutable]
-    public partial class ClientCapabilities
-    {
-        /// <summary>
-        /// Methods the server has on its surface that the client must not call.
-        /// Populated when the server method has <c>MinCompatibleVersion</c> above
-        /// the client's declared <c>Version</c>, or when the method has been
-        /// removed entirely from the server's surface but is still in the
-        /// client's <see cref="MetaClientSignature.KnownMethods"/>.
-        /// </summary>
-        [Id(0), Key(0), MemoryPackOrder(0)] public List<MethodIdentity> RejectedMethods { get; set; } = new();
-
-        /// <summary>
-        /// Methods the client may still call but must execute as ServerPatch —
-        /// the server-side body has diverged enough that optimistic local
-        /// execution would desync. Used by Case 3 (method body changed).
-        /// </summary>
-        [Id(1), Key(1), MemoryPackOrder(1)] public List<MethodIdentity> ForceServerPatchMethods { get; set; } = new();
-
-        /// <summary>
-        /// Entire services that must be force-downgraded to ServerPatch. Used by
-        /// Case 2 (config structure changed for the service's bound config) where
-        /// the granularity is one whole service, not per-method.
-        /// </summary>
-        [Id(2), Key(2), MemoryPackOrder(2)] public List<string> ForceServerPatchServices { get; set; } = new();
-
-        /// <summary>
-        /// Per-signature method-id mapping from server-side global index → client-side
-        /// global index. Length = server's <c>Methods.Count</c>; value <c>ushort.MaxValue</c>
-        /// = sentinel "client does not know this method" (used for server-only methods or
-        /// methods removed in the client's build — client ignores broadcasts/triggers
-        /// referencing such ids). Built once on phase-2 <c>RegisterClientSignature</c>
-        /// by the server, cached per signatureHash, shipped to client unchanged so the
-        /// client can translate incoming wire ids into its local dispatch table.
-        /// </summary>
-        [Id(3), Key(3), MemoryPackOrder(3)] public ushort[] ServerToClientMethodIds { get; set; } = System.Array.Empty<ushort>();
-    }
-
-    /// <summary>
-    /// 0.22.0+ Per-entity capability deltas on top of session-level <see cref="ClientCapabilities"/>.
+    /// 0.22.0+ Per-entity capability deltas on top of session-level <see cref="ClientSignatureAnnotated"/>.
     /// Returned by <c>EntityGrain.SubscribeAsync</c> via <c>SubscribeResponse.AugmentedCapabilities</c>.
     /// <para>
     /// Session-level caps describe what's stable per build (method versioning, arg-hash drift).
@@ -175,7 +108,7 @@ namespace SharedMeta.Core.Transport
     /// produce different per-entity verdicts for the same client.
     /// </para>
     /// <para>
-    /// Combines with <see cref="ClientCapabilities"/> at dispatch / broadcast / gate time —
+    /// Combines with <see cref="ClientSignatureAnnotated"/> at dispatch / broadcast / gate time —
     /// EntityGrain refcounts these alongside session-level force-patch methods, the client's
     /// generated <c>*ApiClient</c> consults them at the gate for per-entity rejection /
     /// forced-ServerPatch decisions.
@@ -214,7 +147,7 @@ namespace SharedMeta.Core.Transport
     }
 
     /// <summary>
-    /// Phase-2 response: the server's verdict for the just-registered signature.
+    /// Phase-2 response: the server's annotated verdict for the just-registered signature.
     /// </summary>
     [MemoryPackable, MessagePackObject, GenerateSerializer]
     public partial class RegisterClientSignatureResponse
@@ -222,7 +155,80 @@ namespace SharedMeta.Core.Transport
         [Id(0), Key(0)] public bool Success { get; set; }
         [Id(1), Key(1)] public string? Error { get; set; }
 
-        /// <summary>Capabilities computed for the registered signature.</summary>
-        [Id(2), Key(2)] public ClientCapabilities Capabilities { get; set; } = new();
+        /// <summary>0.24.0+ Annotated form of the registered signature — verdict + id mapping.
+        /// Null when the host hasn't wired an <c>IClientSignatureRegistry</c> (no negotiation).</summary>
+        [Id(2), Key(2)] public ClientSignatureAnnotated? Annotated { get; set; }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════════
+    //  0.24.0 annotated signature. Server computes
+    //  once per (clientHash, serverHash) pair; ships verdict + id mapping as flat
+    //  arrays. Client caches by clientHash; invalidates on serverHash mismatch.
+    //  See docs/adr/0.24.0-server-signature-handshake.md.
+    // ════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Per-method verdict written into <see cref="ClientSignatureAnnotated.Statuses"/>.
+    /// Consulted by <c>CapabilitiesGate</c> on every outgoing RPC.
+    /// </summary>
+    [GenerateSerializer]
+    public enum MethodStatus : byte
+    {
+        /// <summary>Default — method exists on both sides with matching signature; call proceeds normally.</summary>
+        Ok = 0,
+        /// <summary>Method body diverged or service config-boundary changed; execute as ServerPatch.</summary>
+        ForceServerPatch = 1,
+        /// <summary>Method removed / arg-shape mismatch / below MinCompatibleVersion; client must not call.</summary>
+        Rejected = 2,
+    }
+
+    /// <summary>
+    /// Server's verdict + id-mapping shipped to the client. Deterministic output of
+    /// <c>(MetaClientSignature.SignatureHash, MetaServerSignature.SignatureHash)</c>.
+    /// <para>
+    /// <b>Cache key</b> on the client is <see cref="ClientSignatureHash"/>; entry is invalidated
+    /// when the server's reported <see cref="ServerSignatureHash"/> diverges from the cached one.
+    /// On a steady-state connect (both hashes unchanged), the client supplies its hash, the
+    /// server confirms its hash, the cached annotation is reused — phase-2 is skipped entirely.
+    /// </para>
+    /// <para>
+    /// <b>Wire arithmetic</b> on a 1000-method surface: HIT ≈ &lt; 100 B (only hashes on the
+    /// wire), MISS ≈ 3 KB (full annotation) cached forever for that hash pair.
+    /// </para>
+    /// </summary>
+    [MemoryPackable, MessagePackObject, GenerateSerializer]
+    public partial class ClientSignatureAnnotated
+    {
+        /// <summary>Identity of the client signature this annotation was computed against.</summary>
+        [Id(0), Key(0), MemoryPackOrder(0)] public ulong ClientSignatureHash { get; set; }
+
+        /// <summary>Identity of the server signature this annotation was computed against.
+        /// Carried by the entry so the client can detect cache staleness when the server
+        /// returns a different hash on a later connect.</summary>
+        [Id(1), Key(1), MemoryPackOrder(1)] public ulong ServerSignatureHash { get; set; }
+
+        /// <summary>
+        /// server method id → client method id translation. Indexed by
+        /// <c>serverMethodId</c> (= server's <c>GlobalIndex</c>); length =
+        /// server's method count. Value <see cref="UnknownClientMethodId"/>
+        /// (0xFFFF) means "client doesn't know this method" — used for
+        /// server-only methods or methods the client retired. Client uses this on
+        /// inbound broadcasts to translate the server's id into its own dispatch
+        /// table id.
+        /// </summary>
+        [Id(2), Key(2), MemoryPackOrder(2)] public ushort[] ServerToClient { get; set; } = System.Array.Empty<ushort>();
+
+        /// <summary>
+        /// Per-method verdict indexed by client method id (= client's
+        /// <c>GlobalIndex</c>); length = client's method count. Consulted by
+        /// <c>CapabilitiesGate</c> at every RPC: O(1) array index replaces the old
+        /// <c>HashSet&lt;MethodIdentity&gt;</c> lookup over four parallel lists.
+        /// <c>ForceServerPatchServices</c> (service-level) is folded in here per
+        /// method at compute time — there is no separate service-level wire flag.
+        /// </summary>
+        [Id(3), Key(3), MemoryPackOrder(3)] public MethodStatus[] Statuses { get; set; } = System.Array.Empty<MethodStatus>();
+
+        /// <summary>Sentinel value in <see cref="ServerToClient"/> for "client does not know this server method".</summary>
+        public const ushort UnknownClientMethodId = 0xFFFF;
     }
 }

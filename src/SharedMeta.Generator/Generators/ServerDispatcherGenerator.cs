@@ -172,7 +172,7 @@ namespace SharedMeta.Generator.Generators
                     SignatureHashGenerator.MakeMethodIdConstName(symbol, info.Alias, info.Version);
                 sb.AppendLine($"                case {idConst}:");
                 sb.AppendLine("                {");
-                EmitSignalBody(sb, method, info, symbol);
+                EmitSignalBody(sb, method, info, symbol, serializer);
                 sb.AppendLine("                    break;");
                 sb.AppendLine("                }");
             }
@@ -188,7 +188,7 @@ namespace SharedMeta.Generator.Generators
         /// the synchronous void call. No return value, no DispatchResult — signals run read-only
         /// by contract. Mirrors <see cref="EmitMethodBody"/> for the regular dispatcher.
         /// </summary>
-        private static void EmitSignalBody(StringBuilder sb, MethodDeclarationSyntax method, MetaMethodInfo info, string symbol)
+        private static void EmitSignalBody(StringBuilder sb, MethodDeclarationSyntax method, MetaMethodInfo info, string symbol, DetectedSerializer serializer)
         {
             var methodName = method.Identifier.Text;
             var paramCount = method.ParameterList.Parameters.Count;
@@ -202,6 +202,17 @@ namespace SharedMeta.Generator.Generators
             if (paramCount == 0)
             {
                 sb.AppendLine($"                    service.{methodName}();");
+            }
+            else if (serializer == DetectedSerializer.MemoryPack)
+            {
+                // Mirror the client's GenerateArgumentSerialization MemoryPack branch — single-arg
+                // ships raw `MemoryPackSerializer.Serialize(value)` bytes; multi-arg uses
+                // MemoryPackWriter into an ArrayBufferWriter, which the multi-arity UnpackArgs
+                // helper reads back via MemoryPackReader. CreateReader/Read<T>() expects a
+                // length-prefixed envelope and would misread either form.
+                GenerateMemoryPackArgumentUnpacking(sb, method, out var argNames);
+                var callArgs = string.Join(", ", argNames);
+                sb.AppendLine($"                    service.{methodName}({callArgs});");
             }
             else
             {
@@ -546,12 +557,12 @@ namespace SharedMeta.Generator.Generators
             if (returnType == "int" || returnType == "System.Int32" || returnType == "Int32")
             {
                 if (canCacheStruct)
-                    return $"((uint){resultVar} < (uint)DispatchResult.Int.Length ? DispatchResult.Int[{resultVar}] : new DispatchResult {{ ResultBytes = serializer.Pack({resultVar}) }})";
-                return $"new DispatchResult {{ ResultBytes = ((uint){resultVar} < (uint)DispatchResult.Int.Length ? DispatchResult.Int[{resultVar}].ResultBytes : serializer.Pack({resultVar})){triggersPart}{forcePersistPart} }}";
+                    return $"((uint){resultVar} < (uint)DispatchResult.Int.Length ? DispatchResult.Int[{resultVar}] : new DispatchResult {{ ResultBytes = serializer.PackForExternalUsage({resultVar}) }})";
+                return $"new DispatchResult {{ ResultBytes = ((uint){resultVar} < (uint)DispatchResult.Int.Length ? DispatchResult.Int[{resultVar}].ResultBytes : serializer.PackForExternalUsage({resultVar})){triggersPart}{forcePersistPart} }}";
             }
 
             // Default: regular Pack.
-            return $"new DispatchResult {{ ResultBytes = serializer.Pack({resultVar}){triggersPart}{forcePersistPart} }}";
+            return $"new DispatchResult {{ ResultBytes = serializer.PackForExternalUsage({resultVar}){triggersPart}{forcePersistPart} }}";
         }
 
         /// <summary>

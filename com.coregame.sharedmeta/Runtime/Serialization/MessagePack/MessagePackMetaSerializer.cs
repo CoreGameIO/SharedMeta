@@ -12,8 +12,8 @@ namespace SharedMeta.Serialization.MessagePack
     /// </summary>
     public class MessagePackPayloadWriter : IPayloadWriter
     {
-        private readonly MemoryStream _stream = new();
-        private readonly BinaryWriter _writer;
+        private MemoryStream _stream = new();
+        private BinaryWriter _writer;
         private bool _completed;
 
         public MessagePackPayloadWriter()
@@ -30,21 +30,21 @@ namespace SharedMeta.Serialization.MessagePack
             _writer.Write(bytes);
         }
 
-        public byte[] Complete()
+        public ReadOnlyMemory<byte> Complete()
         {
             _completed = true;
             _writer.Flush();
-            return _stream.ToArray();
+            // MemoryStream's GetBuffer() returns the underlying buffer (may be larger than
+            // Length). Slicing by Position gives ROM over the actual content, no copy.
+            // Lifetime: valid until next Reset() or Dispose().
+            return new ReadOnlyMemory<byte>(_stream.GetBuffer(), 0, (int)_stream.Position);
         }
 
-        // MessagePack writer is MemoryStream-backed (not ArrayPool); zero-copy ownership
-        // transfer would require a separate buffer pool. The plan accepts the byte[] alloc
-        // on the MessagePack path — surfaced via the standard Complete() fallback.
-        public bool SupportsRentedComplete => false;
-        public void CompleteAsRented(out byte[] buffer, out int length)
+        public void Reset()
         {
-            buffer = Complete();
-            length = buffer.Length;
+            _stream.SetLength(0);
+            _stream.Position = 0;
+            _completed = false;
         }
 
         public void Dispose()
@@ -106,6 +106,11 @@ namespace SharedMeta.Serialization.MessagePack
         public ReadOnlyMemory<byte> Pack<T>(T value)
             => MessagePackSerializer.Serialize(value, Options);
 
+        // Stock codec already allocates fresh on Pack<T>(T) — forward directly to avoid the
+        // default interface impl's redundant .ToArray() copy.
+        public byte[] PackForExternalUsage<T>(T value)
+            => MessagePackSerializer.Serialize(value, Options);
+
         public T Unpack<T>(byte[] data)
             => MessagePackSerializer.Deserialize<T>(data, Options)!;
 
@@ -123,6 +128,14 @@ namespace SharedMeta.Serialization.MessagePack
 
         public T Unpack<T>(ReadOnlyMemory<byte> data)
             => MessagePackSerializer.Deserialize<T>(data, Options)!;
+
+        public T Unpack<T>(ReadOnlySpan<byte> data)
+        {
+            // MessagePack-CSharp's primary entry takes ReadOnlyMemory; pin via ToArray-less
+            // wrapper. Note: this still allocates a small ReadOnlySequence under the hood
+            // inside MessagePackSerializer, but no byte[] copy of the data itself.
+            return MessagePackSerializer.Deserialize<T>(new ReadOnlySequence<byte>(data.ToArray()), Options)!;
+        }
 
         public ReadOnlyMemory<byte> Pack(Type type, object value)
             => MessagePackSerializer.Serialize(type, value, Options);

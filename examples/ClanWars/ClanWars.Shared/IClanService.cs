@@ -3,6 +3,14 @@ using SharedMeta.Core;
 
 namespace ClanWars.Shared
 {
+
+    public enum OperationResult
+    {
+        Ok,
+        NoPlayer,
+        NoPermission,
+        PlayersLimit
+    }
     // Authorized: only clan members may subscribe (driven by IsAuthorized on ClanService).
     // Non-members can still call methods marked [MetaMethod(OpenAccess = true)] like
     // GetSummary — that's the preview-without-subscription path. Cross-entity entry points
@@ -29,7 +37,7 @@ namespace ClanWars.Shared
         Task AddPower(int delta);
 
         [MetaMethod(Mode = ExecutionMode.Server, GenerateClientApi = false)]
-        Task SubmitApplication(string playerId);
+        void SubmitApplication(string playerId);
 
         [MetaMethod(Mode = ExecutionMode.Server, GenerateClientApi = false)]
         Task<bool> RemoveMember(string playerId, int playerScore);
@@ -50,13 +58,13 @@ namespace ClanWars.Shared
         // ── Leader / member actions (client-callable) ────────────────────────────
 
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task<bool> AcceptApplication(string playerId);
+        OperationResult AcceptApplication(string playerId);
 
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task<bool> RejectApplication(string playerId);
+        OperationResult RejectApplication(string playerId);
 
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task<bool> KickMember(string playerId);
+        bool KickMember(string playerId);
 
         // ── v2-only mechanics ────────────────────────────────────────────────────
         // Declared on the interface so all clients compile; the
@@ -67,16 +75,16 @@ namespace ClanWars.Shared
         // the v2 method body runs server-side. v1's local body never fires.
 
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task<bool> PromoteToOfficer(string playerId);
+        bool PromoteToOfficer(string playerId);
 
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task<bool> SendFriendshipProposal(string otherClanId);
+        bool SendFriendshipProposal(string otherClanId);
 
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task<bool> AcceptFriendship(string otherClanId);
+        bool AcceptFriendship(string otherClanId);
 
         [MetaMethod(Mode = ExecutionMode.Server)]
-        Task<bool> RevokeFriendship(string otherClanId);
+        bool RevokeFriendship(string otherClanId);
 
         // OpenAccess: read-only preview that bypasses Authorized subscription gate.
         // Lets non-members window-shop clans without acquiring a subscription.
