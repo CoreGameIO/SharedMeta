@@ -2206,29 +2206,88 @@ Rules:
 ### Architecture
 
 One `SessionManagerGrain` per player. Manages:
-- Active session (SessionId)
-- Entity subscriptions
+- Active session (`SessionId`, `SequenceNumber`)
 - Broadcast ordering (per-entity sequence tracking)
-- Missed packet buffer for reconnection (max 1000 packets)
+- Missed packet buffer for reconnection (`PendingPackets`, max 1000 packets)
 - RPC response batching with broadcasts
+- Persisted RPC-ordering baseline (`LastDispatchedRequestId`) — survives silo restart
+
+Subscriptions are **client-owned** since 0.24.0 — the server no longer persists a parallel subscription list. The client claims its set on every `Resume`, the entity grain verifies each claim. The grain's own `Subscribers` dict is a soft cache rebuilt from claims, not the authoritative store.
 
 ### Session Lifecycle
 
-```
-1. New Connection
-   Client → SessionConnect(playerId, null) → New session, new SessionId
+Two explicit connect modes from 0.24.0 — `SessionConnectMode.Resume` (rehydrate the existing session) vs `SessionConnectMode.StartNew` (allocate a fresh session, supersede any existing). No silent fallback between them.
 
-2. Reconnection (same session)
-   Client → SessionConnect(playerId, sessionId, lastAcknowledgedSequence)
+```
+1. New connection (or explicit StartNew)
+   Client → SessionConnect(playerId, Mode=StartNew)
+   Server → Fresh SessionId, empty subscription set, supersedes any prior session
+
+2. Resume (same SessionId)
+   Client → SessionConnect(playerId, Mode=Resume, sessionId, lastAcknowledgedSequence,
+                           lastCompletedRequestId, ClaimedSubscriptions=[...])
    Server → Returns missed packets (sequence > lastAcknowledged)
-   Server → Re-subscribes to previously subscribed entities
+          → Per-claim verdict for every entity the client says it was subscribed to (see below)
+          → Mismatch on SessionId ⇒ SessionUnknown failure (no silent re-start)
 
-3. Session Supersede (another client connects)
-   New Client → SessionConnect(playerId, newSessionId)
+3. Session supersede (a fresh StartNew from the same player)
+   New Client → SessionConnect(playerId, Mode=StartNew)
    Server → Notifies old observer: "Session superseded"
-   Server → Unsubscribes old session from all entities
-   Old Client → OnSessionSuperseded event fires
+          → Unsubscribes old session from all entities
+   Old Client → OnSessionSuperseded fires
 ```
+
+### Client-Owned Subscriptions and Reclaim Verdicts (0.24.0+)
+
+The client tracks its own subscription set (entity id + state type + last known entity sequence). On every `Resume`, that set ships in `SessionConnectRequest.ClaimedSubscriptions`. The server forwards each claim to the entity grain (`EntityGrain.ReclaimSubscriptionAsync`) and returns a per-claim verdict in `SessionConnectResponse.Subscriptions`:
+
+| Verdict | When | What the response carries |
+|---|---|---|
+| `Continued` | Sequence matches; signature hash unchanged. The grain may need to repair its `Subscribers` entry (after silo restart) — done in place, no state ship. | No state bytes; client keeps its local view. |
+| `Refreshed` | Sequence gap, or signature hash changed (schema migration). | Full snapshot — state bytes, optimistic + named-random scrolls, config version. Client deserializes and fires `StateRefresher` hooks. |
+| `Failed` | Access denied, schema incompatible, unknown state type, or grain exception. | Failure reason. Any single `Failed` aborts the whole Resume with `SessionConnectFailureReason.SubscriptionReclaimFailed` — the client routes through `IMetaSessionRecoveryHandler`. |
+
+**Truth source for Continued is `EntitySequenceNumber` alone.** If the server's `state.Subscribers` lost the player's entry (e.g. silo crash without graceful deactivate) but the sequence number still matches, the cheap path repairs the entry in place — it does **not** force-push a Refreshed snapshot. Without this guarantee, a client that applied offline RPCs during a server outage would have its locally-applied state overwritten by the pre-outage snapshot on reconnect.
+
+**Client-side cross-entity tracking.** `_lastKnownEntitySeq` advances on every `CrossEntityOperations[i].TargetEntityId` in the response, not just the outer entity. Without this, a cross-entity call from entity A into entity B leaves B's client-side seq stale; the next Reclaim of B would report a gap and the server would force-push a Refreshed snapshot.
+
+### `IMetaSessionRecoveryHandler` — Game-Level Recovery Callback (0.24.0+)
+
+When the server reports `SessionUnknown` (Resume against a session the grain no longer remembers) or `SubscriptionReclaimFailed` (any subscription verdict was `Failed`), the client invokes a game-level callback so the game decides what to do:
+
+```csharp
+public interface IMetaSessionRecoveryHandler
+{
+    Task<SessionRecoveryAction> OnSessionLost(SessionLostContext ctx, CancellationToken ct);
+}
+
+public enum SessionRecoveryAction { Reconnect, Restart, Disconnect }
+```
+
+| Action | Behavior |
+|---|---|
+| `Reconnect` (default) | Dispatcher runs a fresh `StartNew` and re-subscribes to known entities. Pending RPCs from the lost session fail with `SessionLostException`. |
+| `Restart` | Full client restart — typical when the game wants to drop and reload local UI state. |
+| `Disconnect` | No automatic recovery — the game decides (e.g. show a logout prompt). |
+
+Wire it through `MetaClientOptions`:
+
+```csharp
+var client = new MetaClient(connection, serializer, new MetaClientOptions
+{
+    SessionRecoveryHandler = new MyRecoveryUi(),  // or omit for default Reconnect
+});
+```
+
+A single `TriggerRecovery` entry point handles both transport-reconnect (SignalR `Reconnected`) and server-pushed `RequireSessionReconnect` notifications. `Interlocked` debounce prevents concurrent `ConnectSessionAsync` calls racing inside SignalR's connection lock.
+
+### RPC Ordering Baseline Persistence (0.24.0+)
+
+After silo restart, the grain rehydrates the persisted `RpcOrderingBuffer.LastDispatchedRequestId` from `SessionManagerGrainState`. Without this baseline, the buffer would reset to 0 and the client's re-sent RequestIds would be misclassified `OutOfOrder` against a stale baseline, stashed forever, producing infinite client retry loops.
+
+The client additionally reports `SessionConnectRequest.LastCompletedRequestId` on Resume — the server advances its baseline to `max(persisted, clientReported)`, handling the case where the server lost cached responses (eviction or crash before persistence flush) but the client did receive them. Wire-additive; old clients send 0 (no-op).
+
+Stale + cache-miss returns an error op keyed to the original `RequestId` instead of silent re-execution — at-most-once semantics for non-idempotent operations whose prior responses the client already ack'd.
 
 ### Broadcast Ordering
 

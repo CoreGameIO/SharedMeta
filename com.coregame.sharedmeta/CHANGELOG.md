@@ -1,50 +1,21 @@
 # Changelog
 
-## [0.24.0] - 2026-05-24
+## [0.24.0] - 2026-05-27
 
-Two redesigns in one release. Wire-breaking on both: 0.23.x and 0.24.0 cannot mix.
+Two redesigns and a server-side allocation rework. Wire-breaking: 0.23.x ↔ 0.24.0 do not mix.
 
-### Signature handshake — annotated client signature replaces `ClientCapabilities`
+- **Signature handshake** — annotated client signature replaces `ClientCapabilities`. O(1) gate, < 100 B steady-state connect (vs ~5 KB). Client-side `IServerAnnotationCache` (in-memory + Unity PlayerPrefs); cache invalidation via `serverHash`.
+- **Client-owned subscriptions** — server no longer persists subscription list; client claims its set on Resume via `SessionConnectRequest.ClaimedSubscriptions`, entity grain verdicts `Continued` / `Refreshed` / `Failed` per claim. Any `Failed` routes through `IMetaSessionRecoveryHandler`.
+- **Session recovery** — explicit `SessionConnectMode.{Resume,StartNew}`; `IMetaSessionRecoveryHandler` game-level callback on `SessionUnknown`; unified `TriggerRecovery` (transport-reconnect + server-pushed). Persisted RPC-ordering baseline (`LastDispatchedRequestId` + `LastCompletedRequestId`) eliminates infinite retry loops after silo restart; stale + cache-miss returns an error op instead of silent re-execution.
+- **Server-side allocation rework** — `PooledPayloadRegistry` (0.23.1 opt-in, never engaged) removed (~1500 LOC, 9 files). Replaced by cached `IPayloadWriter` per grain returning `ReadOnlyMemory<byte>` over pool-rented scratch (`IServerRecordContext.AcquireWriter()`); `Immutable<ROM>` kept only at Orleans grain boundaries; `SessionManagerGrain` hot-path wrappers flipped class → struct; `_pendingPackets` aliased to persisted state; `CleanupPendingPackets*` rewritten (prefix-scan + single `RemoveRange`).
+- **Fixes** —
+  - `ReclaimSubscriptionAsync` truth source is `EntitySequenceNumber` alone; missing `Subscribers` entry is repaired in place (no more state-rollback after silo restart with offline-applied RPCs).
+  - Client `_lastKnownEntitySeq` advances on every `CrossEntityOperations[i]`, not just the outer entity (no more spurious Refreshed after cross-entity activity).
+  - `ResendPendingRequestsAsync` now awaits `Task.WhenAll(resends)` — was fire-and-forget, racing with new user actions during recovery.
+  - `CleanupPendingPacketsByCount` — leftover empty `for` loop caused N-times `RemoveRange` → broadcasts lost. Fixed.
+  - Unity Expedition example — server projects switched from NuGet to `ProjectReference`.
 
-- **`ClientSignatureAnnotated` wire shape** — server computes verdicts + id mapping once per `(clientHash × serverHash)`, ships flat arrays. O(1) `CapabilitiesGate.IsRejected(annotated, methodId)` replaces N-list `HashSet<MethodIdentity>.Contains`. Steady-state connect: < 100 B vs ~5 KB in 0.23.x.
-- **Client-side annotation cache** — `IServerAnnotationCache` (in-memory default + Unity PlayerPrefs `SharedMeta.Client.PlayerPrefs.asmdef`). Cache key = `clientHash`; invalidation on `serverHash` mismatch returned by the server on every connect.
-- **`MetaServerSignature.SignatureHash`** — generator emits FNV-1a over server-specific fields (`MinCompatibleVersion`, `GenerateClientApi`, `ConfigTypeFullName`, `ConfigBoundaries`); any change that should invalidate previously-shipped annotations contributes.
-- **Removals** — `ClientCapabilities`, `MethodIdentity`, `SessionConnectRequest.MethodSignatures`, `SessionConnectResponse.SignatureMismatches`, `SignatureValidator` delegate + ctor params, `MetaMethodSignatureValidator` generator emit, `CapabilitiesGate.TailorBroadcastPayload` (no production callers).
-- **Generator** — `*ApiClient` emits `CapabilitiesGate.IsRejected(_network.Annotated, GameMethodIds.X)` against the annotated form; legacy alias-based overloads removed.
-
-### Subscriptions are client-owned — server reclaims on Resume
-
-Architecture inversion: server no longer persists the per-player subscription list and replays it on Resume. The client owns its subscription set (single source of truth), claims it on every Resume via `SessionConnectRequest.ClaimedSubscriptions`, and the server verifies each claim against the entity grain.
-
-- **`SubscriptionClaim { EntityId, StateTypeName, LastKnownEntitySequence }`** — sent on Resume. Field added at `[Id(8), Key(8)]` on `SessionConnectRequest`, optional/null on StartNew and first connect.
-- **`SubscriptionResult { EntityId, Status, EntitySequenceNumber, StateBytes?, …, FailureReason? }`** — server's per-claim verdict, returned on `SessionConnectResponse.Subscriptions` at `[Id(16), Key(16)]`. Three statuses:
-  - `Continued` — entity grain confirms subscriber + sequence match, no state shipped, client keeps local view.
-  - `Refreshed` — subscriber missing or sequence gap; full snapshot attached (state bytes, optimistic+named randoms, config version).
-  - `Failed` — access denied / schema incompatible / unknown state type. Any single `Failed` aborts the whole Resume with new `SessionConnectFailureReason.SubscriptionReclaimFailed` — client routes through `IMetaSessionRecoveryHandler` (same path as `SessionUnknown`), fresh session via StartNew.
-- **`EntityGrain.ReclaimSubscriptionAsync(playerId, sessionRef, lastKnownEntitySeq, clientVersion, signatureHash)`** — new entity-grain API. Cheap path (Continued) when state.Subscribers has playerId AND seq matches AND signature hash unchanged. Otherwise delegates to `SubscribeAsync` (full path: migration, schema gate, force-patch refs, snapshot) and reports Refreshed. Exceptions become Failed verdicts.
-- **`SessionManagerGrain` simplification**: removed `_savedSubscriptions` field, removed `SavedSubscription` private type, removed `PersistSessionStateAsync` write of `SubscribedEntities` (still persisted are `CurrentSessionId`, `SequenceNumber`, `PendingPackets`, `LastDispatchedRequestId`). `OnDisconnectedAsync` no longer saves a parallel subscription stash — just unsubscribes from entity grains. `OnDeactivateAsync` with `reason=ShuttingDown` skips the unsubscribe loop so `state.Subscribers` survives silo restart → Reclaim hits Continued.
-- **`ClientDispatcher`**: builds `ClaimedSubscriptions` from locally-tracked `_subscribedEntities` (entityId+stateTypeName) on Resume; `OnSubscriptionsReclaimed` event fires per verdict (replaces `OnEntitiesResubscribed`). `MetaServiceResolver.ApplySubscriptionVerdicts` deserializes Refreshed snapshots into shared state containers and fires `StateRefresher` hooks.
-- **Wire-breaking**: `SessionConnectRequest`/`SessionConnectResponse` field additions + removal of old `ResubscribedEntities` field. Old clients hitting the new server land in StartNew or get empty `Subscriptions` on Resume.
-
-Why: server-side subscription persistence was the source of repeated bugs (`_savedSubscriptions` vs `_subscribedEntities` vs `State.SubscribedEntities` — three forms of the same data drifting between disconnect/deactivate/reactivate events). The new flow has exactly one owner of subscription state (the client) and a verifier (entity grain) — failure modes collapse to a single recovery path.
-
-### Session recovery — explicit Resume/StartNew + game callback + grain persistence
-
-- **`SessionConnectMode { Resume, StartNew }`** on the wire. StartNew always allocates a fresh session (supersedes existing). Resume requires matching `SessionId` on the grain — mismatch returns `SessionConnectFailureReason.SessionUnknown` without silent fallback.
-- **`IMetaSessionRecoveryHandler`** — game-level callback fired when the server reports `SessionUnknown`. Returns `SessionRecoveryAction { Reconnect, Restart, Disconnect }`. Default handler picks Reconnect: dispatcher runs a fresh `StartNew` and re-subscribes to known entities. Pending RPCs from the lost session fail with `SessionLostException`.
-- **Unified recovery flow.** Single `TriggerRecovery` entry point for both transport-reconnect (SignalR `Reconnected`) and server-pushed `RequireSessionReconnect`. Interlocked debounce; no more concurrent `ConnectSessionAsync` racing inside SignalR's connection lock.
-- **`SessionManagerGrain` persistent state** — `CurrentSessionId`, `SequenceNumber`, `SubscribedEntities`, `PendingPackets` written only on `GracefulDisconnectAsync` and `OnDeactivateAsync`. Hot path stays in-memory. Reactivation restores enough state for a Resume to succeed within the persistence window.
-- **`EntityGrain.PersistedSubscriberInfo`** gains `ClientVersion` + `ClientSignatureHash`. Grain rehydrates force-patch refcounts from the silo-local `IClientSignatureRegistry` on `OnActivateAsync` — broadcast-tailoring stays correct without client re-subscribe.
-- **`GracefulDisconnectAsync(Guid sessionId)`** — handler passes its bound session id; grain ignores stale invocations (defends against superseded-session race).
-- **Persisted RPC ordering baseline** — `SessionManagerGrainState.LastDispatchedRequestId` written alongside session state. Without this, grain reactivation reset the in-memory `RpcOrderingBuffer.LastDispatchedRequestId` to 0; the client's re-sent RequestIds were then classified `OutOfOrder` against a stale baseline and stashed forever, producing infinite client retry loops after server restart. New `RpcOrderingBuffer.AdvanceLastDispatched(long)` restores the baseline on `OnActivateAsync`.
-- **Gap fix: `SessionConnectRequest.LastCompletedRequestId`** — client reports its highest fully-completed RequestId on `Resume`. Server advances `_orderingBuffer.LastDispatched` to `max(persisted, clientReported)`. This handles the case where the server lost cached responses (eviction or crash before persistence flush) but the client did receive them — the next-new RequestId would otherwise be misclassified as `OutOfOrder` and stashed. Wire-additive (new `[Id(7), Key(7)]` on `SessionConnectRequest`); old clients send 0, which is a no-op.
-- **Stale + cache-miss → SessionOp{RequestId, Error}** — when an RPC arrives with a `Stale` `RequestId` and the idempotency cache misses (response evicted or grain reactivated without it), the server now returns an error op keyed to that RequestId instead of silently re-executing or returning an empty response. The client resolves its pending TCS with a server-side error and stops the retry loop. Re-execution was unsafe: at-most-once semantics could be violated for non-idempotent operations whose prior responses the client already ack'd.
-- **`Expedition.Server` `/stop` endpoint** — push `SessionTerminated` to all clients before `StopApplication()`, then `HostOptions.ShutdownTimeout = 60s`. Without the push, Kestrel's WebSocket-drain ate the entire shutdown budget waiting for SignalR connections, leaving Orleans 0 ms for graceful grain deactivation (state never persisted, sockets dropped abruptly).
-
-References:
-- [docs/adr/0.24.0-server-signature-handshake.md](../docs/adr/0.24.0-server-signature-handshake.md)
-- [docs/adr/0.24.0-session-recovery-flow.md](../docs/adr/0.24.0-session-recovery-flow.md)
-- [SharedMeta-AI.md](SharedMeta-AI.md) — AI-assistant context
+See [docs/GUIDE.md](../docs/GUIDE.md) and [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) for the integration details and rationale. [SharedMeta-AI.md](SharedMeta-AI.md) — AI-assistant context.
 
 ## [0.23.1] - 2026-05-22
 
