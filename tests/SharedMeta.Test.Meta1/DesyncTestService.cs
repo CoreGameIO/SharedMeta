@@ -30,8 +30,9 @@ namespace SharedMeta.Test.Meta1
         {
             // System.Random is non-deterministic across platforms!
             // Should use Context.Random instead.
-            var rng = new System.Random();
-            state.Value += rng.Next(1, 100);
+            var seed = Context.IsServer ? 234352323 + DateTime.UtcNow.Second : 879842398 + DateTime.UtcNow.Second;
+            var rng = new System.Random(seed);
+            state.Value += rng.Next(1, 10000);
             state.Counter++;
             return 0; // always returns 0 — result comparison passes
         }
