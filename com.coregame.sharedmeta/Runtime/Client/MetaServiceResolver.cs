@@ -41,6 +41,18 @@ namespace SharedMeta.Client
         // generic Register{Try}ConfigProvider<TConfig> methods build at registration time so the
         // hot path stays reflection-free.
         private readonly Dictionary<Type, Func<MetaConfigVersion, Task<object?>>> _configProviders = new();
+        // Per-TConfig cache-wipe hook, populated when a registered provider implements
+        // IClearableConfigProvider (DownloadingConfigProvider / CompositeConfigProvider).
+        // Invoked by ClearConfigCaches() — the client-side debug/dev command. Keyed by type so
+        // re-registration replaces rather than accumulates.
+        private readonly Dictionary<Type, Action> _configCacheClearHooks = new();
+        // Within-session memo of resolved configs, keyed by (TConfig type, version). A config is
+        // immutable per (type, version), and several entities commonly share one config type
+        // (e.g. ProfileState + ExpeditionState both use ExpeditionConfig). Without this, each
+        // entity subscribe re-invokes the provider — a cache-less DownloadingConfigProvider then
+        // re-downloads the same bytes once per entity. This dedups across entities (and dedups
+        // concurrent in-flight subscribes by sharing the Task); cleared by ClearConfigCaches.
+        private readonly Dictionary<(Type, MetaConfigVersion), Task<object?>> _resolvedConfigByVersion = new();
         private readonly object _lock = new();
         private List<CrossEntityLocalResult>? _recordedResults;
 
@@ -93,13 +105,56 @@ namespace SharedMeta.Client
         {
             if (provider == null) throw new ArgumentNullException(nameof(provider));
             _configProviders[typeof(TConfig)] = BuildInvoker(provider);
+            CaptureClearHook<TConfig>(provider);
         }
 
         public void TryRegisterConfigProvider<TConfig>(IClientMetaConfigProvider<TConfig> provider) where TConfig : class
         {
             if (provider == null) throw new ArgumentNullException(nameof(provider));
             if (!_configProviders.ContainsKey(typeof(TConfig)))
+            {
                 _configProviders[typeof(TConfig)] = BuildInvoker(provider);
+                CaptureClearHook<TConfig>(provider);
+            }
+        }
+
+        // Record the provider's cache-wipe entry point if it opted in. Keyed by TConfig so a
+        // later Register for the same type replaces the hook rather than leaving a stale one.
+        private void CaptureClearHook<TConfig>(IClientMetaConfigProvider<TConfig> provider) where TConfig : class
+        {
+            if (provider is IClearableConfigProvider clearable)
+                _configCacheClearHooks[typeof(TConfig)] = clearable.ClearCache;
+            else
+                _configCacheClearHooks.Remove(typeof(TConfig));
+        }
+
+        /// <summary>
+        /// Debug/dev command: wipe every registered config provider's cache (e.g. the on-disk
+        /// <see cref="FileConfigCache{TConfig}"/>). The next entity subscribe re-downloads the
+        /// config. Handy when a config was re-published under the same version during
+        /// development — the version-keyed cache would otherwise serve the stale copy.
+        /// Providers without a clearable cache (e.g. <see cref="StaticConfigProvider{TConfig}"/>)
+        /// are skipped.
+        /// </summary>
+        public void ClearConfigCaches()
+        {
+            Action[] hooks;
+            lock (_lock)
+            {
+                hooks = new Action[_configCacheClearHooks.Count];
+                _configCacheClearHooks.Values.CopyTo(hooks, 0);
+                // Drop the within-session memo too, so a re-published same-version config is
+                // re-resolved on the next subscribe rather than served from this dictionary.
+                _resolvedConfigByVersion.Clear();
+            }
+            foreach (var hook in hooks)
+            {
+                try { hook(); }
+                catch (Exception ex)
+                {
+                    Core.Logging.MetaLog.Warning($"[MetaServiceResolver] ClearConfigCaches hook threw: {ex.Message}");
+                }
+            }
         }
 
         // Closure built once per Register call — captures TConfig statically so the resolver's
@@ -717,9 +772,9 @@ namespace SharedMeta.Client
         /// downloading, and fallback logic — the resolver just hands it the server-pinned
         /// version and awaits the materialized config.
         /// </summary>
-        private async Task<object?> ResolveConfigAsync(MetaServiceConfig config, NetworkSubscribeResult subResult, string entityId)
+        private Task<object?> ResolveConfigAsync(MetaServiceConfig config, NetworkSubscribeResult subResult, string entityId)
         {
-            if (config.ConfigType == null) return null;
+            if (config.ConfigType == null) return Task.FromResult<object?>(null);
 
             if (!_configProviders.TryGetValue(config.ConfigType, out var invoker))
             {
@@ -748,7 +803,38 @@ namespace SharedMeta.Client
                     $"acceptable as a fallback.");
             }
 
-            return await invoker(subResult.ConfigVersion).ConfigureAwait(false);
+            // Memoize per (TConfig, version): share one provider invocation across every entity
+            // that uses this config at this version, and across concurrent in-flight subscribes.
+            var key = (config.ConfigType, subResult.ConfigVersion);
+            Task<object?> task;
+            lock (_lock)
+            {
+                if (!_resolvedConfigByVersion.TryGetValue(key, out task!))
+                {
+                    task = invoker(subResult.ConfigVersion);
+                    _resolvedConfigByVersion[key] = task;
+                }
+            }
+            return AwaitConfigEvictingOnFailure(key, task);
+        }
+
+        // Evict a failed resolution so a transient download error doesn't poison the memo —
+        // the next subscribe retries instead of replaying the cached failed Task.
+        private async Task<object?> AwaitConfigEvictingOnFailure((Type, MetaConfigVersion) key, Task<object?> task)
+        {
+            try
+            {
+                return await task.ConfigureAwait(false);
+            }
+            catch
+            {
+                lock (_lock)
+                {
+                    if (_resolvedConfigByVersion.TryGetValue(key, out var current) && ReferenceEquals(current, task))
+                        _resolvedConfigByVersion.Remove(key);
+                }
+                throw;
+            }
         }
 
         public void Dispose()

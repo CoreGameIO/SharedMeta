@@ -40,6 +40,11 @@ namespace SharedMeta.Generator.Generators
         /// <summary>True if [MetaServiceImpl(DeepDesync = true)].</summary>
         public bool DeepDesync { get; set; }
 
+        /// <summary>0.24.2+ True when the <c>{Impl}_PatchTracked</c> copy is generated — either
+        /// DeepDesync requested it or the service is force-patch-able and opted in. Drives the
+        /// dispatch fork and the lazy getter. See <c>PatchTrackingPolicy</c>.</summary>
+        public bool GeneratePatchTrackedCopy { get; set; }
+
         /// <summary>
         /// Named randoms declared via [NamedRandom] on the state class, in attribute declaration order.
         /// </summary>
@@ -240,6 +245,12 @@ namespace SharedMeta.Generator.Generators
             var deepDesyncArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "DeepDesync");
             info.DeepDesync = !deepDesyncArg.Value.IsNull && deepDesyncArg.Value.Value is true;
 
+            // 0.24.2+ Per-STATE decision (must match PatchTrackedClassGenerator's gate exactly so
+            // the dispatch fork / sibling resolver never reference a copy that wasn't emitted):
+            // the copy exists for every service on a state if any sibling on that state needs patch
+            // tracking. Both generators call StateNeedsPatchCopy with the same state symbol.
+            info.GeneratePatchTrackedCopy = info.DeepDesync || PatchTrackingPolicy.StateNeedsPatchCopy(stateType);
+
             // Collect [NamedRandom] attributes from the state type (positional — declaration order matters)
             foreach (var stateAttr in stateType.GetAttributes())
             {
@@ -389,11 +400,20 @@ namespace SharedMeta.Generator.Generators
 
                 // GenerateClientApi defaults to true; only false explicitly opts out of client RPC.
                 bool generateClientApi = true;
+                int methodVersion = 0;
                 if (metaMethodAttr != null)
                 {
                     var genApiArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "GenerateClientApi");
                     if (!genApiArg.Value.IsNull && genApiArg.Value.Value is false)
                         generateClientApi = false;
+
+                    // [MetaMethod(Version = N)] — must match what GameServiceDiscoveryGenerator
+                    // bakes into the GameMethodIds constant name (I{Svc}_{Alias}_v{Version}).
+                    // Omitting it left Version=0 here, so DispatchCall / signal / migration switches
+                    // emitted "_v0" constants that don't exist once a method declares Version != 0.
+                    var versionArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Version");
+                    if (!versionArg.Value.IsNull && versionArg.Value.Value is int v)
+                        methodVersion = v;
                 }
 
                 var signatureString = SignatureHashGenerator.BuildSignatureString(info.InterfaceName, methodAlias, member);
@@ -417,6 +437,7 @@ namespace SharedMeta.Generator.Generators
                 {
                     ServiceName = info.InterfaceName,
                     MethodAlias = methodAlias,
+                    Version = methodVersion,
                     SignatureString = signatureString,
                     SignatureHash = signatureHash,
                     IsQuery = isQuery,
@@ -1109,7 +1130,7 @@ namespace SharedMeta.Generator.Generators
                 foreach (var ms in service.MethodSignatures.Where(m => !m.IsSignal))
                 {
                     var idConst = "global::" + service.Namespace + ".Generated.GameMethodIds." + SignatureHashGenerator.MakeMethodIdConstName(ms.ServiceName, ms.MethodAlias, ms.Version);
-                    if (service.DeepDesync)
+                    if (service.GeneratePatchTrackedCopy)
                     {
                         sb.AppendLine($"                {idConst} => MetaContext!.PatchWrapper != null");
                         sb.AppendLine($"                    ? {service.InterfaceName}Dispatcher.Dispatch(Get{baseName}PatchTracked(), methodId, payload, Context.Serializer)");
@@ -1801,7 +1822,7 @@ namespace SharedMeta.Generator.Generators
                 var baseName = GetBaseName(service.InterfaceName);
                 var fieldName = GetFieldName(service.InterfaceName);
                 sb.AppendLine($"        private {service.InterfaceName} Get{baseName}() => {fieldName} ??= new {service.ImplClassFullName}() {{ Context = MetaContext! }};");
-                if (service.DeepDesync)
+                if (service.GeneratePatchTrackedCopy)
                 {
                     var ptFieldName = fieldName + "PT";
                     sb.AppendLine($"        private {service.ImplClassFullName}_PatchTracked? {ptFieldName};");
@@ -1820,7 +1841,18 @@ namespace SharedMeta.Generator.Generators
             foreach (var service in services)
             {
                 var baseName = GetBaseName(service.InterfaceName);
-                sb.AppendLine($"            if (interfaceType == typeof({service.InterfaceName})) return Get{baseName}();");
+                if (service.GeneratePatchTrackedCopy)
+                {
+                    // When patch tracking is active (force-patch / ServerPatch / deep desync), hand
+                    // out the sibling's PatchTracked copy so its mutations to the shared state route
+                    // through the wrapper and land in the diff — otherwise a sibling call from a
+                    // force-patched method would write the raw state and go missing from the patch.
+                    sb.AppendLine($"            if (interfaceType == typeof({service.InterfaceName})) return MetaContext!.PatchWrapper != null ? Get{baseName}PatchTracked() : Get{baseName}();");
+                }
+                else
+                {
+                    sb.AppendLine($"            if (interfaceType == typeof({service.InterfaceName})) return Get{baseName}();");
+                }
             }
             sb.AppendLine("            return null;");
             sb.AppendLine("        }");

@@ -233,6 +233,8 @@ Server-only execution. Instead of replay payload, server sends a state diff patc
 
 **Use case:** Hotfixing server logic when clients can't be updated.
 
+**Patch-tracking copy (0.24.2+):** to produce a diff the server runs a generated `{Impl}_PatchTracked` copy of the service where `State` is rebound to the typed `{State}PatchWrapper` — so ordinary `State.X = …` writes track without manual `PatchState`. The copy is auto-generated (decoupled from `DeepDesync`) for any **force-patch-able** service: a client-callable `Optimistic`/`Server`/`CrossOptimistic` method with `Version > MinCompatibleVersion`, or a `[MetaConfigStructureBoundary]` config, or any `ServerPatch` method. Generation is **per state, including siblings** — every service on a force-patch-able state gets the copy, and `ResolveSiblingByType` returns the sibling's copy under patch tracking, so a force-patched call fanning out to a sibling (`BuyEnergy → EnergyService.AddPurchasedEnergy`) tracks the sibling's mutations too. Opt out with `[MetaService(PatchTracking = false)]`: no copy, and force-patch clients are **rejected** at negotiation (method-level → `Rejected`) or subscribe (config-boundary → `FeatureRequirement`) instead of being served an empty patch. Bodies must be copy-compatible (mutate via `State`, wrapper-typed helpers, no `wrapper→raw` collection leaks — the type system enforces it; see *DeepDesync*).
+
 ### ServerReplace
 
 Server-only execution. Server sends the full serialized state. Client replaces state wholesale.
@@ -1219,6 +1221,7 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `DefaultConfig` | bool | false | Use config class with `[MetaConfig(Default = true)]`. Also opts the service into the generator's auto-`StaticConfigProvider<T>(new T())` fallback on the client (0.17.0+); without this flag, an explicit `RegisterConfigProvider<T>` is required and a missing one throws at first subscribe |
 | `AccessPolicy` | EntityAccessPolicy | Open | Subscribe access control |
 | `SubscriberInterfaces` | Type[] | empty | Framework event subscriptions (e.g. ILobbySubscriber) |
+| `PatchTracking` | bool | true | (0.24.2+) Allow the auto-generated `{Impl}_PatchTracked` copy for force-patch. `false` = opt out: no copy, force-patch clients rejected at negotiation/subscribe instead of served an empty patch. Set false only when the body can't be copy-compatible. See *ServerPatch → Patch-tracking copy* |
 
 ---
 
@@ -1426,7 +1429,7 @@ public interface IDesyncDiagnostics
 
 ## Granular Collection Patches (0.9.0+)
 
-When a service has `[MetaServiceImpl(DeepDesync = true)]`, list-typed fields use a fine-grained patch representation instead of dumping the whole list on every mutation.
+When a service has a `{Impl}_PatchTracked` copy (via `[MetaServiceImpl(DeepDesync = true)]` **or**, since 0.24.2, because it's force-patch-able — see *ServerPatch → Patch-tracking copy*), list-typed fields use a fine-grained patch representation instead of dumping the whole list on every mutation. The compile-time tracking guard below (wrapper-typed helpers, no reverse `wrapper→raw` operator) applies to both.
 
 ### List of sub-wrappable elements
 

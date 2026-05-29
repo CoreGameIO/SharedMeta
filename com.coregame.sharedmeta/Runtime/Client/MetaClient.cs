@@ -329,6 +329,15 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
+        /// Debug/dev command: wipe every registered config provider's cache (e.g. the on-disk
+        /// <see cref="FileConfigCache{TConfig}"/>). The next entity subscribe re-downloads the
+        /// config. Use after re-publishing a config under the same version during development —
+        /// the version-keyed cache would otherwise serve the stale copy. Safe to call anytime;
+        /// no-op when no clearable config provider is registered.
+        /// </summary>
+        public void ClearConfigCaches() => _resolver.ClearConfigCaches();
+
+        /// <summary>
         /// 0.20.3: read-only snapshot of every currently subscribed entity for debug
         /// inspection. See <see cref="MetaServiceResolver.GetSubscribedEntities"/>.
         /// </summary>

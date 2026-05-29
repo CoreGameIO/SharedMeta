@@ -846,6 +846,16 @@ public void Attack(Card card)
 
 `PatchState` is always available in service code. When the server is NOT in ServerPatch mode, it creates a non-tracking wrapper (null PatchNode) — mutations go through to `State` but no patch tree is built. This means methods can be pre-prepared for patching before it's needed.
 
+##### Auto-generated patch-tracking copy (0.24.2+)
+
+You usually **don't** need to write `PatchState` by hand. When a service is **force-patch-able**, the generator emits a `{Impl}_PatchTracked` copy of the impl where `State` is rebound to the wrapper — so ordinary `State.X = …` writes (and `private TState s => State;` aliases) track transparently. The server dispatcher routes to the copy whenever patch tracking is active (`MetaContext.PatchWrapper != null`): force-patch, `ServerPatch` mode, or deep desync.
+
+A service is force-patch-able when it declares a client-callable `Optimistic` / `Server` / `CrossOptimistic` method with `Version > MinCompatibleVersion`, or its bound config carries `[MetaConfigStructureBoundary]`, or any `ServerPatch` method. (All those modes run a divergent local/replay body on the client; `Query` / `Signal` / `Notification` / `Local` / `ServerReplace` don't, so a config boundary alone doesn't make an all-server service force-patch-able.)
+
+- **Per-state, including siblings.** The copy is emitted for *every* service on a force-patch-able state, because a force-patched call fans out across sibling services on the same state (e.g. `ProfileService.BuyEnergy` → `EnergyService.AddPurchasedEnergy` via `GetIEnergyServiceSiblingAsync`). `ResolveSiblingByType` hands out the sibling's copy under patch tracking, so the sibling's mutations to the shared state land in the diff instead of bypassing the wrapper.
+- **Opt out** with `[MetaService(PatchTracking = false)]` when a body can't be expressed in the copy-compatible style (see the wrapper-typed-helper rule under *Deep Desync*). Opting out generates no copy and **rejects** force-patch clients at negotiation (method-level → `Rejected`; config-boundary → subscribe rejected with a `FeatureRequirement`) rather than shipping an empty patch. Opt-out does not suppress the copy when a *sibling* on the same state forces tracking — the copy is still needed to track that service; opt-out only governs the per-method negotiation verdict.
+- **Body must be copy-compatible:** mutate via `State` (or a `State` alias), avoid leaking wrapper collections into raw `List<>` fields, and type helper returns as `{State}PatchWrapper.{Dto}PatchWrapper` (see *Deep Desync → compile-time tracking guard*). Incompatible bodies fail to compile on the generated `_PatchTracked.g.cs` — a visible error, never a silent empty patch.
+
 **Property types:**
 - **Value types** (int, bool, enum, string): get/set with automatic tracking
 - **Nested state objects** (types with `[Id]` properties): sub-wrappers with recursive tracking. Both get and set are supported — `state.Profile = new Profile { ... }` assigns via the implicit operator; assign-then-mutate in the same call works (`state.Profile = new Profile { Level = 1 }; state.Profile.Level += 5`)
@@ -3237,6 +3247,8 @@ public partial class ExpeditionService : IExpeditionService { … }
 
 The generator produces a `_PatchTracked` copy of the service class where every `State.X = …` write routes through a generated `{State}PatchWrapper`, recording the field id and serialized value into a `PatchNode` tree. Server computes FNV-1a CRC of the serialized tree after each call; client does the same for its local execution; the CRCs are compared in the existing `OnResult/OnRandom` validation pipeline. Mismatch fires `OnPatchDesync`.
 
+> **0.24.2+:** the `_PatchTracked` copy is no longer DeepDesync-exclusive. It is also auto-generated (per state, including siblings) for **force-patch-able** services so force-patch produces a real diff — see *ServerPatch Mode → Auto-generated patch-tracking copy*. `DeepDesync = true` still forces the copy (for CRC detection) even when the service isn't force-patch-able. The compile-time tracking guard below applies to both.
+
 **Runtime activation** is independent of the compile-time flag:
 
 ```csharp
@@ -3599,12 +3611,12 @@ public enum MethodStatus : byte { Ok, ForceServerPatch, Rejected }
 
 **What goes into the signature hashes:**
 - `MetaClientSignature.SignatureHash` = FNV-1a over canonical `{ServiceName}.{MethodAlias}@{Version}#{ArgHash}` lines, sorted.
-- `MetaServerSignature.SignatureHash` = same, plus per-method server-only fields (`MinCompatibleVersion`, `GenerateClientApi`, `ConfigTypeFullName`) and `[MetaConfigStructureBoundary]` declarations.
+- `MetaServerSignature.SignatureHash` = same, plus per-method server-only fields (`MinCompatibleVersion`, `GenerateClientApi`, `ConfigTypeFullName`, `PatchTrackingAvailable`) and `[MetaConfigStructureBoundary]` declarations.
 
 **What the per-method `Statuses[clientId]` verdict can be:**
-- `Ok` (default) — call proceeds normally on the wire.
-- `ForceServerPatch` — server-side body diverged enough that optimistic local execution would desync; client downgrades to ServerPatch.
-- `Rejected` — method missing on the server (or flagged `GenerateClientApi = false`, or its `ArgHash` doesn't match, or the client's `Version` is below the server's `MinCompatibleVersion`); client gate throws `IncompatibleFeatureException` locally without going to the wire.
+- `Ok` (default) — the client's `Version` exactly matches a version the server still declares; call proceeds normally on the wire.
+- `ForceServerPatch` — the client's `Version` isn't declared on the server but falls back to a higher arg-compatible body at/above `MinCompatibleVersion`, **and the service can produce a patch** (`PatchTrackingAvailable`); the client's local body would diverge, so it downgrades to ServerPatch (server runs the authoritative body, ships a diff). Self-clears once the client ships at the declared version.
+- `Rejected` — method missing on the server, flagged `GenerateClientApi = false`, no arg-compatible body (`ArgHash` mismatch), the client's `Version` is below the fallback entry's `MinCompatibleVersion`, **or** the fallback would force ServerPatch but the service opted out of patch tracking (`[MetaService(PatchTracking = false)]` → `PatchTrackingAvailable = false`, no copy, can't ship a diff). Client gate throws `IncompatibleFeatureException` locally without going to the wire. (Config-boundary force-patch on a patch-tracking-disabled service rejects at *subscribe* instead — `EntityGrain` throws `IncompatibleFeatureException` with a `FeatureRequirement` before any state mutation.)
 
 **Tracing the handshake:** both sides log INFO entries at every phase transition. Run client + server with logging enabled to verify they understand each other:
 ```

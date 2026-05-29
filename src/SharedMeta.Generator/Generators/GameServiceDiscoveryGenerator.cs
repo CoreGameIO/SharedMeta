@@ -54,6 +54,12 @@ namespace SharedMeta.Generator.Generators
         /// <c>EntityGrain</c>'s per-entity boundary compute to find services affected by a
         /// <c>[MetaConfigStructureBoundary]</c> trigger.</summary>
         public string ConfigTypeFullName { get; set; } = "";
+
+        /// <summary>0.24.2+ Service-level: the server can produce a patch for this method under
+        /// force-patch (the <c>{Impl}_PatchTracked</c> copy exists). Projected from
+        /// <see cref="DiscoveredServiceInfo.PatchTrackingAvailable"/>; emitted onto
+        /// <c>ServerMethodEntry.PatchTrackingAvailable</c>.</summary>
+        public bool PatchTrackingAvailable { get; set; }
     }
 
     /// <summary>
@@ -80,6 +86,10 @@ namespace SharedMeta.Generator.Generators
         /// the service's bound config class (when one is resolvable from <c>[MetaService]</c>
         /// attribute args). Each entry contributes a row to <c>MetaServerSignature.ConfigBoundaries</c>.</summary>
         public List<ConfigBoundaryInfo> ConfigBoundaries { get; set; } = new();
+
+        /// <summary>0.24.2+ Service is force-patch-able and did not opt out of patch tracking, so
+        /// the server can serve a state diff for force-patch clients. See <c>PatchTrackingPolicy</c>.</summary>
+        public bool PatchTrackingAvailable { get; set; }
     }
 
     /// <summary>
@@ -164,6 +174,11 @@ namespace SharedMeta.Generator.Generators
                 }
             }
 
+            // 0.24.2+ Force-patch-able services get a {Impl}_PatchTracked copy (unless opted out)
+            // so the server can emit a real diff under force-patch. The same flag tells negotiation
+            // whether a ForceServerPatch verdict is serveable or must degrade to Reject.
+            info.PatchTrackingAvailable = PatchTrackingPolicy.PatchTrackingAvailable(symbol);
+
             // Collect method signatures for hash validation
             foreach (var member in symbol.GetMembers().OfType<IMethodSymbol>())
             {
@@ -213,6 +228,7 @@ namespace SharedMeta.Generator.Generators
                     ArgHash = argHash,
                     GenerateClientApi = generateClientApi,
                     ConfigTypeFullName = info.ConfigTypeFullName,
+                    PatchTrackingAvailable = info.PatchTrackingAvailable,
                 });
             }
 
@@ -541,7 +557,8 @@ namespace SharedMeta.Generator.Generators
                     .Append('#').Append(s.ArgHash.ToString("X16"))
                     .Append('!').Append(s.MinCompatibleVersion)
                     .Append('?').Append(s.GenerateClientApi ? '1' : '0')
-                    .Append('~').Append(s.ConfigTypeFullName ?? "");
+                    .Append('~').Append(s.ConfigTypeFullName ?? "")
+                    .Append('^').Append(s.PatchTrackingAvailable ? '1' : '0');
             }
             // Boundary tuples folded in after method list, sorted same as we emit them below.
             var serverBoundariesForHash = services
@@ -577,6 +594,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                        ArgHash = {SignatureHashGenerator.FormatHashLiteral(s.ArgHash)},");
                 sb.AppendLine($"                        GenerateClientApi = {(s.GenerateClientApi ? "true" : "false")},");
                 sb.AppendLine($"                        ConfigTypeFullName = \"{s.ConfigTypeFullName}\",");
+                sb.AppendLine($"                        PatchTrackingAvailable = {(s.PatchTrackingAvailable ? "true" : "false")},");
                 sb.AppendLine($"                        GlobalIndex = {gIdx},");
                 sb.AppendLine("                    },");
                 gIdx++;

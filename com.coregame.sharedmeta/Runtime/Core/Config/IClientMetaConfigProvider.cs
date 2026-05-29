@@ -40,6 +40,32 @@ namespace SharedMeta.Client
     }
 
     /// <summary>
+    /// Opt-in capability: a config cache that can be wiped. Implemented by
+    /// <see cref="FileConfigCache{TConfig}"/>. Surfaced to the app through
+    /// <c>MetaClient.ClearConfigCaches()</c> as a debug/dev command — after a config is
+    /// re-published under the same version (typical dev workflow), clearing the cache forces
+    /// a fresh download on the next subscribe. Separate non-generic marker (not a method on
+    /// <see cref="IClientMetaConfigCache{TConfig}"/>) so existing cache implementations keep
+    /// compiling unchanged and we avoid default-interface-methods (Unity IL2CPP friendliness).
+    /// </summary>
+    public interface IClearableConfigCache
+    {
+        void Clear();
+    }
+
+    /// <summary>
+    /// Opt-in capability: a config provider whose backing cache can be wiped. Implemented by
+    /// <see cref="DownloadingConfigProvider{TConfig}"/> and <see cref="CompositeConfigProvider{TConfig}"/>.
+    /// The resolver collects these at registration and invokes them from
+    /// <c>IMetaServiceResolver.ClearConfigCaches()</c>. Cache-less providers (e.g.
+    /// <see cref="StaticConfigProvider{TConfig}"/>) simply don't implement it.
+    /// </summary>
+    public interface IClearableConfigProvider
+    {
+        void ClearCache();
+    }
+
+    /// <summary>
     /// Returns a fixed preloaded instance regardless of the requested version. Useful when
     /// the client already has the config in hand (loaded from disk, bundled with the app,
     /// fetched outside of SharedMeta) — versioning is handled implicitly by the caller's
@@ -65,7 +91,7 @@ namespace SharedMeta.Client
     /// supplied <see cref="IMetaSerializer"/>. An optional <see cref="IClientMetaConfigCache{TConfig}"/>
     /// avoids re-downloading the same version on subsequent sessions.
     /// </summary>
-    public sealed class DownloadingConfigProvider<TConfig> : IClientMetaConfigProvider<TConfig>
+    public sealed class DownloadingConfigProvider<TConfig> : IClientMetaConfigProvider<TConfig>, IClearableConfigProvider
         where TConfig : class
     {
         private readonly Func<MetaConfigVersion, Task<string?>> _urlResolver;
@@ -104,6 +130,9 @@ namespace SharedMeta.Client
             _cache?.Put(version, config);
             return config;
         }
+
+        /// <summary>Wipe the backing cache (if it supports clearing). No-op otherwise.</summary>
+        public void ClearCache() => (_cache as IClearableConfigCache)?.Clear();
     }
 
     /// <summary>
@@ -111,7 +140,7 @@ namespace SharedMeta.Client
     /// Typical use: <c>new CompositeConfigProvider(downloading, static)</c> — try the network,
     /// fall back to a bundled snapshot if the server is unreachable.
     /// </summary>
-    public sealed class CompositeConfigProvider<TConfig> : IClientMetaConfigProvider<TConfig>
+    public sealed class CompositeConfigProvider<TConfig> : IClientMetaConfigProvider<TConfig>, IClearableConfigProvider
         where TConfig : class
     {
         private readonly IClientMetaConfigProvider<TConfig> _primary;
@@ -139,6 +168,13 @@ namespace SharedMeta.Client
                 _onPrimaryFailed?.Invoke(ex);
                 return await _fallback.GetConfigAsync(version).ConfigureAwait(false);
             }
+        }
+
+        /// <summary>Forward the wipe to whichever of primary/fallback can be cleared.</summary>
+        public void ClearCache()
+        {
+            (_primary as IClearableConfigProvider)?.ClearCache();
+            (_fallback as IClearableConfigProvider)?.ClearCache();
         }
     }
 }

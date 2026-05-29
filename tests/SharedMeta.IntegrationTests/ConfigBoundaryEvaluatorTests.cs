@@ -28,6 +28,9 @@ public class ConfigBoundaryEvaluatorTests
     private static ServerMethodEntry ServerMethod(string service, string configType)
         => new() { ServiceName = service, Alias = "X", Version = 0, ConfigTypeFullName = configType };
 
+    private static ServerMethodEntry ServerMethod(string service, string configType, bool patchTracking)
+        => new() { ServiceName = service, Alias = "X", Version = 0, ConfigTypeFullName = configType, PatchTrackingAvailable = patchTracking };
+
     [Fact]
     public void EntityAndClientBothOnOldConfig_NoForcePatch()
     {
@@ -112,5 +115,46 @@ public class ConfigBoundaryEvaluatorTests
             new[] { ServerMethod("IService", "Cfg") },
             pinned: V(3, 0), clientCode: V(2, 0));
         Assert.Empty(result);
+    }
+
+    // ── SplitByPatchTrackability: boundary force-patch is only serveable when the service has
+    //    a patch-tracking copy; an opted-out service must be rejected, not empty-patched. ──
+
+    [Fact]
+    public void Split_PatchTrackableService_GoesToForcePatch()
+    {
+        SharedMeta.Server.Core.Session.ConfigBoundaryEvaluator.SplitByPatchTrackability(
+            new[] { "IService" },
+            new[] { ServerMethod("IService", "Cfg", patchTracking: true) },
+            out var forcePatch, out var rejected);
+        Assert.Equal(new[] { "IService" }, forcePatch);
+        Assert.Empty(rejected);
+    }
+
+    [Fact]
+    public void Split_OptedOutService_GoesToRejected()
+    {
+        // PatchTracking = false → no {Impl}_PatchTracked copy → can't ship a diff → reject.
+        SharedMeta.Server.Core.Session.ConfigBoundaryEvaluator.SplitByPatchTrackability(
+            new[] { "IService" },
+            new[] { ServerMethod("IService", "Cfg", patchTracking: false) },
+            out var forcePatch, out var rejected);
+        Assert.Empty(forcePatch);
+        Assert.Equal(new[] { "IService" }, rejected);
+    }
+
+    [Fact]
+    public void Split_MixedServices_PartitionedByTrackability()
+    {
+        SharedMeta.Server.Core.Session.ConfigBoundaryEvaluator.SplitByPatchTrackability(
+            new[] { "ITrackable", "IOptedOut" },
+            new[]
+            {
+                ServerMethod("ITrackable", "Cfg", patchTracking: true),
+                ServerMethod("IOptedOut", "Cfg", patchTracking: false),
+            },
+            out var forcePatch, out var rejected);
+        Assert.Equal(new[] { "ITrackable" }, forcePatch);
+        Assert.Equal(new[] { "IOptedOut" }, rejected);
     }
 }

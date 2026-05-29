@@ -12,7 +12,7 @@ namespace SharedMeta.Client
     /// version files for this config type are deleted so the cache directory doesn't grow
     /// unbounded across releases.
     /// </summary>
-    public sealed class FileConfigCache<TConfig> : IClientMetaConfigCache<TConfig> where TConfig : class
+    public sealed class FileConfigCache<TConfig> : IClientMetaConfigCache<TConfig>, IClearableConfigCache where TConfig : class
     {
         private readonly string _cacheDir;
         private readonly IMetaSerializer _serializer;
@@ -61,6 +61,29 @@ namespace SharedMeta.Client
             catch (Exception ex)
             {
                 MetaLog.Warning($"[FileConfigCache<{typeof(TConfig).Name}>] Write error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Debug/dev command: delete every cached file for this config type so the next
+        /// subscribe re-downloads. Used by <c>MetaClient.ClearConfigCaches()</c> — handy after
+        /// re-publishing a config under the same version during development.
+        /// </summary>
+        public void Clear()
+        {
+            try
+            {
+                int removed = 0;
+                foreach (var file in Directory.GetFiles(_cacheDir, $"{_safeName}.v*.bin"))
+                {
+                    File.Delete(file);
+                    removed++;
+                }
+                MetaLog.Debug($"[FileConfigCache<{typeof(TConfig).Name}>] Cleared {removed} cached file(s)");
+            }
+            catch (Exception ex)
+            {
+                MetaLog.Warning($"[FileConfigCache<{typeof(TConfig).Name}>] Clear error: {ex.Message}");
             }
         }
 

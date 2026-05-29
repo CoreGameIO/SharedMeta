@@ -495,6 +495,32 @@ namespace SharedMeta.Server.Core.Grains
                 }
             }
 
+            // Per-entity [MetaConfigStructureBoundary] overlay for this subscriber. Computed once
+            // here (before any state mutation) so a hard rejection can short-circuit cleanly, then
+            // reused below for the force-patch contributions.
+            var augmentedCaps = ComputePerEntityCapabilities(clientVersion);
+            if (augmentedCaps is { RejectedServices.Count: > 0 })
+            {
+                // A structural boundary force-patches these services for this old client, but they
+                // can't produce a patch (PatchTracking = false). There is no safe way to serve the
+                // diverged body — reject the subscription so the client updates, rather than
+                // shipping an empty patch / letting it replay a diverged body and desync.
+                var rejectedCsv = string.Join(",", augmentedCaps.RejectedServices);
+                _logger.LogWarning(
+                    "[EntityGrain] Subscribe rejected (config boundary, no patch tracking): entity={EntityId} " +
+                    "player={PlayerId} services={Services} — client config is below a structural boundary and " +
+                    "the service opted out of patch tracking.",
+                    _entityId, playerId, rejectedCsv);
+                throw new IncompatibleFeatureException(new FeatureRequirement
+                {
+                    FeatureKind = "Service",
+                    Identifier = rejectedCsv,
+                    MinRequiredVersion = _provider!.ResolveClientConfigVersion(clientVersion).ToString(),
+                    Reason = "A config structural boundary requires ServerPatch for these services, but they " +
+                             "opted out of patch tracking ([MetaService(PatchTracking = false)]). Update the client.",
+                });
+            }
+
             state.Subscribers[playerId] = new PersistedSubscriberInfo
             {
                 PlayerId = playerId,
@@ -543,12 +569,11 @@ namespace SharedMeta.Server.Core.Grains
                     _subscriberForcePatchContributions[playerId] = contributions;
             }
 
-            // Compute per-entity capability overlay from [MetaConfigStructureBoundary]:
-            // which services on this entity need force-patch for this specific subscriber.
-            // Stored in the local refcount (HandleCallAsync activates patch tracking) AND
-            // shipped on the snapshot (client gates the call locally without round trip).
-            // Same unconditional-drop pattern as method-level above.
-            var augmentedCaps = ComputePerEntityCapabilities(clientVersion);
+            // Apply the per-entity force-patch overlay computed above (non-trackable services
+            // already rejected the subscription before any state mutation). Stored in the local
+            // refcount (HandleCallAsync activates patch tracking) AND shipped on the snapshot
+            // (client gates the call locally without round trip). Same unconditional-drop pattern
+            // as method-level above.
             if (_subscriberForcePatchServiceContributions.Remove(playerId, out var priorSvc))
             {
                 foreach (var svc in priorSvc)
@@ -735,11 +760,16 @@ namespace SharedMeta.Server.Core.Grains
                 _serverSignature.ConfigBoundaries, _serverSignature.Methods, pinned, clientCode);
             if (services.Count == 0) return null;
 
+            // Split by whether the server can actually produce a patch: a boundary force-patching a
+            // service that opted out of patch tracking (no copy → no diff) goes to RejectedServices,
+            // and the subscribe path rejects rather than mis-serving an empty patch.
+            SharedMeta.Server.Core.Session.ConfigBoundaryEvaluator.SplitByPatchTrackability(
+                services, _serverSignature.Methods, out var forcePatch, out var rejected);
+
             return new SharedMeta.Core.Transport.EntityAugmentedCapabilities
             {
-                ForceServerPatchServices = services
-                // RejectedServices stays empty — boundaries only trigger force-patch, not reject.
-                // A future severity enum on [MetaConfigStructureBoundary] could populate this.
+                ForceServerPatchServices = forcePatch,
+                RejectedServices = rejected,
             };
         }
 

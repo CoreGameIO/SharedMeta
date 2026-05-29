@@ -246,6 +246,33 @@ namespace SharedMeta.Core
         /// If multiple services share the same state type, the most restrictive policy wins.
         /// </summary>
         public EntityAccessPolicy AccessPolicy { get; set; } = EntityAccessPolicy.Open;
+
+        /// <summary>
+        /// Whether the framework may auto-generate a patch-tracking copy of this service so the
+        /// server can produce a state diff for clients force-downgraded to ServerPatch. Default
+        /// <c>true</c>.
+        /// <para>
+        /// A service is "force-patch-able" when it declares a client-callable
+        /// <c>Optimistic</c>/<c>Server</c>/<c>CrossOptimistic</c> method whose
+        /// <c>Version &gt; MinCompatibleVersion</c> (version-fallback band) or whose bound config
+        /// carries <c>[MetaConfigStructureBoundary]</c>, or any client-callable <c>ServerPatch</c>
+        /// method (always emits a diff). All three of those modes run the body on the client
+        /// (<c>Server</c> replays it from the recorded buffer after the server responds), so all
+        /// diverge from a changed server body; <c>Query</c>/<c>Signal</c>/<c>Notification</c>/
+        /// <c>Local</c>/<c>ServerReplace</c> do not. For such services the generator emits a
+        /// <c>{Impl}_PatchTracked</c> copy whose <c>State</c> routes through the typed
+        /// <c>{State}PatchWrapper</c>, so a normal <c>State.X = …</c> write transparently records
+        /// a patch when the server runs under force-patch — no manual <c>PatchState</c> needed.
+        /// </para>
+        /// <para>
+        /// Set <c>false</c> to opt out: no copy is generated, and a client that would otherwise be
+        /// force-downgraded to ServerPatch for one of this service's methods is instead
+        /// <b>rejected</b> at negotiation (it has no safe way to run the diverged method).
+        /// Independent of <c>[MetaServiceImpl(DeepDesync = true)]</c>, which generates the same
+        /// copy for CRC desync detection; opting out here still rejects force-patch clients.
+        /// </para>
+        /// </summary>
+        public bool PatchTracking { get; set; } = true;
     }
 
 
@@ -379,13 +406,30 @@ namespace SharedMeta.Core
         public int Version { get; set; }
 
         /// <summary>
-        /// Minimum client method-version that can still run this method body locally
-        /// (Optimistic / CrossOptimistic) without diverging from server execution (0.22.0+).
+        /// Lowest client method-version the server will still serve for this method (0.23.0+).
+        /// Default <c>0</c> = serve everyone.
         /// <para>
-        /// Default <c>0</c>. Bump when a server-side change to the method body would
-        /// produce different results from an old client's local execution — the framework
-        /// then force-downgrades clients below this floor to <see cref="ExecutionMode.ServerPatch"/>
-        /// for this specific method.
+        /// Works together with the version-fallback matching in the compatibility handshake:
+        /// </para>
+        /// <list type="bullet">
+        ///   <item>A client whose declared <see cref="Version"/> exactly matches a version the
+        ///     server still declares runs the method <b>locally</b> (its body matches a live
+        ///     server surface). <c>MinCompatibleVersion</c> does NOT gate exact matches.</item>
+        ///   <item>A client whose version isn't declared on the server but is <c>&gt;=
+        ///     MinCompatibleVersion</c> (and arg-shape-compatible) is force-downgraded to
+        ///     <see cref="ExecutionMode.ServerPatch"/> — the server runs the authoritative body
+        ///     and ships a state diff, so the stale client body never executes.</item>
+        ///   <item>A client whose version is <c>&lt; MinCompatibleVersion</c> is <b>rejected</b>
+        ///     for this method (per-method <see cref="System.InvalidOperationException"/> on
+        ///     call) — too old to serve even via patch; force the client to update.</item>
+        /// </list>
+        /// <para>
+        /// Typical hotfix: you changed a method body in a way that diverges from deployed
+        /// clients. Bump <see cref="Version"/> (the new body's version) and leave
+        /// <c>MinCompatibleVersion = 0</c> — deployed clients (below the new version) auto-patch,
+        /// freshly-built clients at the new version run locally, and once everyone updates the
+        /// patch path naturally stops. Raise <c>MinCompatibleVersion</c> only when you want to
+        /// hard-block clients below a floor rather than patch them.
         /// </para>
         /// </summary>
         public int MinCompatibleVersion { get; set; }

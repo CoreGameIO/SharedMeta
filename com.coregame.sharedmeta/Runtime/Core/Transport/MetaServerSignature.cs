@@ -77,7 +77,8 @@ namespace SharedMeta.Core.Transport
         /// signature hash because it folds in server-only fields that influence the verdict
         /// (<see cref="ServerMethodEntry.MinCompatibleVersion"/>,
         /// <see cref="ServerMethodEntry.GenerateClientApi"/>,
-        /// <see cref="ServerMethodEntry.ConfigTypeFullName"/>, plus
+        /// <see cref="ServerMethodEntry.ConfigTypeFullName"/>,
+        /// <see cref="ServerMethodEntry.PatchTrackingAvailable"/>, plus
         /// <see cref="ConfigBoundaries"/>). Any server-side change that should invalidate
         /// previously-shipped <c>ClientSignatureAnnotated</c> entries MUST contribute to this
         /// hash, otherwise client caches stay stale. Emitted as a compile-time constant by
@@ -126,9 +127,12 @@ namespace SharedMeta.Core.Transport
         public ushort GlobalIndex { get; init; }
 
         /// <summary>
-        /// <c>[MetaMethod(MinCompatibleVersion = N)]</c>. When a client's KnownMethod for
-        /// the same <c>(ServiceName, Alias)</c> reports a <c>Version</c> below this value,
-        /// the method is added to <c>RejectedMethods</c> in the client's capabilities.
+        /// <c>[MetaMethod(MinCompatibleVersion = N)]</c>. Lowest client method-version the
+        /// server will still serve for this method via the version-fallback path. A client
+        /// whose version isn't declared on the server falls back to the highest arg-compatible
+        /// entry: <c>Version &gt;= MinCompatibleVersion</c> → <c>ForceServerPatch</c>;
+        /// <c>Version &lt; MinCompatibleVersion</c> → <c>Rejected</c>. Does NOT gate exact-version
+        /// matches (those run locally regardless). Default <c>0</c> = never blocks.
         /// </summary>
         public int MinCompatibleVersion { get; init; }
 
@@ -144,5 +148,16 @@ namespace SharedMeta.Core.Transport
         /// FQN of the config class this service is bound to. Empty when no config bound.
         /// </summary>
         public string ConfigTypeFullName { get; init; } = "";
+
+        /// <summary>
+        /// True when the server can produce a state diff for this method under force-patch — i.e.
+        /// the service's <c>{Impl}_PatchTracked</c> copy is generated (service is force-patch-able
+        /// and did not opt out via <c>[MetaService(PatchTracking = false)]</c>). When false, a
+        /// client that would otherwise resolve to <see cref="MethodStatus.ForceServerPatch"/> via
+        /// the version-fallback path is instead <see cref="MethodStatus.Rejected"/> — the server
+        /// has no safe way to serve the diverged body. Folds into the server signature hash so an
+        /// opt-out flip invalidates cached annotations.
+        /// </summary>
+        public bool PatchTrackingAvailable { get; init; }
     }
 }

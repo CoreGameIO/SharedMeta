@@ -60,6 +60,15 @@ namespace SharedMeta.Core
         void TryRegisterConfigProvider<TConfig>(SharedMeta.Client.IClientMetaConfigProvider<TConfig> provider) where TConfig : class;
 
         /// <summary>
+        /// Debug/dev command: wipe every registered config provider's cache (e.g. the on-disk
+        /// <see cref="SharedMeta.Client.FileConfigCache{TConfig}"/>) so the next entity subscribe
+        /// re-downloads. Use after re-publishing a config under the same version during
+        /// development. Providers without a clearable cache are skipped. No-op when no clearable
+        /// provider is registered.
+        /// </summary>
+        void ClearConfigCaches();
+
+        /// <summary>
         /// Get the resolved config for a connected entity.
         /// Returns null if the entity is not connected or has no config.
         /// </summary>

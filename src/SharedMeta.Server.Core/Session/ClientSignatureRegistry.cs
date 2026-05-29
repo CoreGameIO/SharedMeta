@@ -166,53 +166,120 @@ namespace SharedMeta.Server.Core.Session
             for (int i = 0; i < serverToClient.Length; i++)
                 serverToClient[i] = ClientSignatureAnnotated.UnknownClientMethodId;
 
-            // Index server methods by (Service, Alias, Version) for O(1) lookup.
+            // Index server methods two ways:
+            //  - serverByKey: exact (Service, Alias, Version) → entry. An exact match means the
+            //    client's declared method version IS a surface the server still exposes, so the
+            //    client may run it locally (its body matches a known server body).
+            //  - serverByAlias: (Service, Alias) → entries ordered by Version DESC. Used for the
+            //    version-fallback path: when the client's exact version isn't on the server, the
+            //    client's local body is a different (older or newer) version than anything the
+            //    server runs, so it must NOT run locally — the server runs the authoritative body
+            //    and ships a ServerPatch diff. The fallback target is the highest-version entry
+            //    whose ArgHash matches (same wire call-shape).
             var serverByKey = new Dictionary<(string, string, int), ServerMethodEntry>(_serverSignature.Methods.Count);
+            var serverByAlias = new Dictionary<(string, string), List<ServerMethodEntry>>();
             foreach (var s in _serverSignature.Methods)
+            {
                 serverByKey[(s.ServiceName, s.Alias, s.Version)] = s;
+                var aliasKey = (s.ServiceName, s.Alias);
+                if (!serverByAlias.TryGetValue(aliasKey, out var list))
+                    serverByAlias[aliasKey] = list = new List<ServerMethodEntry>();
+                list.Add(s);
+            }
+            foreach (var list in serverByAlias.Values)
+                list.Sort((a, b) => b.Version.CompareTo(a.Version)); // highest version first
 
             foreach (var clientMethod in signature.KnownMethods)
             {
                 var clientIdx = clientMethod.GlobalIndex;
-                var key = (clientMethod.ServiceName, clientMethod.Alias, clientMethod.Version);
-                if (!serverByKey.TryGetValue(key, out var serverMethod))
+                var exactKey = (clientMethod.ServiceName, clientMethod.Alias, clientMethod.Version);
+
+                // ── Exact match: client's declared version is a live server surface ──────────
+                if (serverByKey.TryGetValue(exactKey, out var exact))
+                {
+                    if (!exact.GenerateClientApi)
+                    {
+                        // GenerateClientApi=false forbids the CLIENT-INITIATED direction only:
+                        // leave clientToServer[clientIdx] at the sentinel so RpcCallAsync rejects
+                        // forged invocations. BUT the server may still broadcast this method to
+                        // subscribers (Notification mode is the canonical case — server-only
+                        // mutation that fans out as a broadcast for clients to replay). The client
+                        // has the local handler generated for it (GenerateClientApi=false suppresses
+                        // only the callable, not the broadcast/replay handler) — without the
+                        // server→client map entry, the broadcast would arrive with sentinel
+                        // methodId and silently drop, causing a downstream desync on any
+                        // subsequent Server-mode RPC that relies on the mutation being applied.
+                        serverToClient[exact.GlobalIndex] = clientIdx;
+                        statuses[clientIdx] = MethodStatus.Rejected;
+                        continue;
+                    }
+
+                    if (clientMethod.ArgHash != exact.ArgHash)
+                    {
+                        // Same (Service, Alias, Version) but the wire arg-shape drifted (build
+                        // skew / hash collision) — can't safely round-trip. Reject.
+                        statuses[clientIdx] = MethodStatus.Rejected;
+                        continue;
+                    }
+
+                    // Exact version + arg-compatible + client-callable → run locally as declared.
+                    // No MinCompatibleVersion gate here: declaring this exact version IS the
+                    // statement "clients at this version run it locally." The floor only governs
+                    // the fallback path below.
+                    clientToServer[clientIdx] = exact.GlobalIndex;
+                    serverToClient[exact.GlobalIndex] = clientIdx;
+                    statuses[clientIdx] = MethodStatus.Ok;
+                    continue;
+                }
+
+                // ── Version fallback: no exact version, find the newest arg-compatible body ──
+                ServerMethodEntry? fallback = null;
+                if (serverByAlias.TryGetValue((clientMethod.ServiceName, clientMethod.Alias), out var candidates))
+                {
+                    foreach (var cand in candidates) // highest Version first
+                    {
+                        if (!cand.GenerateClientApi) continue;
+                        if (cand.ArgHash != clientMethod.ArgHash) continue;
+                        fallback = cand;
+                        break;
+                    }
+                }
+
+                if (fallback == null)
+                {
+                    // No (Service, Alias) at all, or none with a compatible arg-shape — the call
+                    // can't be served against any server body. Reject.
+                    statuses[clientIdx] = MethodStatus.Rejected;
+                    continue;
+                }
+
+                if (clientMethod.Version < fallback.MinCompatibleVersion)
+                {
+                    // Explicitly too old to serve even via ServerPatch — blocked by policy.
+                    // Client must update. Leave serverToClient at sentinel: a blocked method
+                    // has no client-side handler we're willing to feed.
+                    statuses[clientIdx] = MethodStatus.Rejected;
+                    continue;
+                }
+
+                // Arg-compatible, at/above the floor, but a different version than any declared
+                // server surface → the client's local body would diverge. The fallback wants
+                // ServerPatch — but the server can only ship a diff if the service's
+                // {Impl}_PatchTracked copy exists. When the service opted out of patch tracking
+                // (PatchTrackingAvailable == false) there is no safe way to serve the diverged
+                // body, so reject instead of silently shipping an empty patch (which would desync).
+                if (!fallback.PatchTrackingAvailable)
                 {
                     statuses[clientIdx] = MethodStatus.Rejected;
                     continue;
                 }
 
-                if (!serverMethod.GenerateClientApi)
-                {
-                    // GenerateClientApi=false forbids the CLIENT-INITIATED direction only:
-                    // leave clientToServer[clientIdx] at the sentinel so RpcCallAsync rejects
-                    // forged invocations. BUT the server may still broadcast this method to
-                    // subscribers (Notification mode is the canonical case — server-only
-                    // mutation that fans out as a broadcast for clients to replay). The client
-                    // has the local handler generated for it (GenerateClientApi=false suppresses
-                    // only the callable, not the broadcast/replay handler) — without the
-                    // server→client map entry, the broadcast would arrive with sentinel
-                    // methodId and silently drop, causing a downstream desync on any
-                    // subsequent Server-mode RPC that relies on the mutation being applied.
-                    serverToClient[serverMethod.GlobalIndex] = clientIdx;
-                    statuses[clientIdx] = MethodStatus.Rejected;
-                    continue;
-                }
-
-                if (clientMethod.ArgHash != serverMethod.ArgHash)
-                {
-                    statuses[clientIdx] = MethodStatus.Rejected;
-                    continue;
-                }
-
-                // Method is callable — map both directions.
-                clientToServer[clientIdx] = serverMethod.GlobalIndex;
-                serverToClient[serverMethod.GlobalIndex] = clientIdx;
-
-                if (serverMethod.MinCompatibleVersion > 0
-                    && clientMethod.Version < serverMethod.MinCompatibleVersion)
-                {
-                    statuses[clientIdx] = MethodStatus.ForceServerPatch;
-                }
+                // Force ServerPatch: route the client's RPC to the fallback (authoritative) body
+                // and translate its broadcasts back to the client's local handler, which applies
+                // the patch.
+                clientToServer[clientIdx] = fallback.GlobalIndex;
+                serverToClient[fallback.GlobalIndex] = clientIdx;
+                statuses[clientIdx] = MethodStatus.ForceServerPatch;
             }
 
             return (new ClientSignatureAnnotated

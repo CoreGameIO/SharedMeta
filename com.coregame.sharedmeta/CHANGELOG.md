@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.24.2] - 2026-05-29
+
+Version-fallback for `MinCompatibleVersion` — server-side only, no wire change.
+
+- A client whose method `Version` isn't declared on the server now falls back to the highest arg-compatible `(Service, Alias)` body: at/above `MinCompatibleVersion` → force `ServerPatch`, below → reject. Exact-version matches still run locally (floor no longer gates them). Lets a single server declaration force old clients to patch and auto-stop once they update — no per-method override list.
+- `MinCompatibleVersion` semantics redefined accordingly (was: force-patch on exact match below floor).
+- `MetaClient.ClearConfigCaches()` debug command — wipes registered config providers' caches (e.g. on-disk `FileConfigCache`) so the next subscribe re-downloads. Handy after re-publishing a config under the same version in dev. New opt-in markers `IClearableConfigProvider` / `IClearableConfigCache`.
+- Fix (regression since 0.24.0): `[MetaMethod(Version = N)]` with `N != 0` broke the server build — generated `ServerMetaConfiguration.g.cs` referenced a non-existent `GameMethodIds.I..._v0` constant (`CS0117`). `ServerMetaConfigurationGenerator` now reads `Version` for the dispatch/signal/migration switches, matching the emitted `GameMethodIds`.
+- Patch-tracking copy auto-generation decoupled from `DeepDesync`. The `{Impl}_PatchTracked` copy (where `State` writes route through the patch wrapper) is now emitted for any force-patch-able service — a client-callable `Optimistic`/`Server`/`CrossOptimistic` method with `Version > MinCompatibleVersion` or a `[MetaConfigStructureBoundary]` config, or any `ServerPatch` method. (All three of those modes run the body on the client — `Server` replays it from the recorded buffer — so all diverge from a changed server body.) Previously only `DeepDesync` services got the copy, so force-patched clients silently received empty patches. Service bodies must be copy-compatible (wrapper-typed helpers, no `wrapper → raw` collection leaks — see `PartyService`); incompatible bodies opt out via `[MetaService(PatchTracking = false)]`. Opt-out rejects force-patch clients instead of mis-serving them, at both force-patch entry points: method-level version-fallback (negotiation → `Rejected`) and service-level `[MetaConfigStructureBoundary]` (subscribe rejected with a `FeatureRequirement` before any state mutation). Copy generation is per-**state**: every service on a force-patch-able state gets the copy (and `ResolveSiblingByType` hands out the copy under patch tracking), so a force-patched call that fans out to a sibling service on the same state (e.g. `BuyEnergy` → `EnergyService`) tracks the sibling's mutations too instead of writing the raw state and dropping them from the diff.
+
 ## [0.24.1] - 2026-05-28
 
 Unity BestHTTP/JSON compatibility patch for the 0.24.0 handshake. No wire change — interoperates with 0.24.0.

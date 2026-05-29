@@ -79,5 +79,32 @@ namespace SharedMeta.Server.Core.Session
             return result;
         }
 
+        /// <summary>
+        /// Partition boundary-affected services by whether the server can actually produce a patch
+        /// for them. A service is patch-trackable when its <c>{Impl}_PatchTracked</c> copy exists —
+        /// surfaced as <see cref="ServerMethodEntry.PatchTrackingAvailable"/> on every method of a
+        /// force-patch-able, opted-in service. A boundary that force-patches a service which opted
+        /// out (<c>[MetaService(PatchTracking = false)]</c>) has no copy → no diff: such services
+        /// land in <paramref name="rejected"/> so the caller can reject the subscription rather than
+        /// ship an empty patch or let the old client replay a diverged body.
+        /// </summary>
+        public static void SplitByPatchTrackability(
+            IReadOnlyList<string> affectedServices,
+            IReadOnlyList<ServerMethodEntry> methods,
+            out List<string> forcePatch,
+            out List<string> rejected)
+        {
+            forcePatch = new List<string>();
+            rejected = new List<string>();
+            foreach (var svc in affectedServices)
+            {
+                bool trackable = false;
+                foreach (var m in methods)
+                {
+                    if (m.ServiceName == svc && m.PatchTrackingAvailable) { trackable = true; break; }
+                }
+                (trackable ? forcePatch : rejected).Add(svc);
+            }
+        }
     }
 }

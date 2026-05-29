@@ -8,35 +8,45 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 namespace SharedMeta.Generator.Generators
 {
     /// <summary>
-    /// Generates a _PatchTracked copy of a [MetaServiceImpl(DeepDesync = true)] class.
-    /// The copy is identical to the original but routes State access through PatchWrapper,
-    /// enabling field-level mutation tracking for deep desync detection.
+    /// Generates a _PatchTracked copy of a [MetaServiceImpl] class. The copy is identical to the
+    /// original but routes State access through PatchWrapper, so a normal <c>State.X = …</c> write
+    /// transparently records a field-level mutation.
     ///
     /// Original: protected GameState State => Context.State;
     /// Copy:     protected GameStatePatchWrapper State => PatchState;
     ///
-    /// The server/client dispatcher chooses which class to use at runtime:
-    /// - Normal mode: original class (direct State access, zero overhead)
-    /// - Deep desync mode: _PatchTracked class (PatchWrapper tracks all mutations → CRC)
+    /// Emitted when the service is force-patch-able (version-fallback band or config boundary) and
+    /// opted in, OR when [MetaServiceImpl(DeepDesync = true)] requests it — see PatchTrackingPolicy.
+    /// The server dispatcher routes to this copy whenever MetaContext.PatchWrapper != null (force
+    /// patch, ServerPatch, or deep desync); otherwise it uses the original (zero overhead).
     /// </summary>
     public static class PatchTrackedClassGenerator
     {
         public static string? Generate(ClassDeclarationSyntax node, INamedTypeSymbol symbol, Compilation compilation)
         {
-            // Check for DeepDesync = true
             var attr = symbol.GetAttributes().FirstOrDefault(a =>
                 a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaServiceImplAttribute");
             if (attr == null) return null;
-
-            var deepDesyncArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "DeepDesync");
-            if (deepDesyncArg.Value.IsNull || deepDesyncArg.Value.Value is not true)
-                return null;
 
             // Get state type
             if (attr.ConstructorArguments.Length < 2) return null;
             var stateTypeSymbol = attr.ConstructorArguments[1].Value as INamedTypeSymbol;
             if (stateTypeSymbol == null) return null;
             var stateTypeName = stateTypeSymbol.ToDisplayString();
+
+            // Get the service interface from the attribute
+            var serviceInterfaceSymbol = attr.ConstructorArguments[0].Value as INamedTypeSymbol;
+            var serviceInterfaceName = serviceInterfaceSymbol?.ToDisplayString() ?? "";
+
+            // 0.24.2+ Decoupled from DeepDesync, evaluated at STATE level: emit the copy for every
+            // service on a state if any service on that state needs patch tracking (force-patch-able
+            // or DeepDesync). This covers siblings — a force-patched call fanning out to a sibling
+            // service on the same state must run the sibling's tracked copy too, or its mutations
+            // bypass the wrapper and go missing from the diff.
+            var deepDesyncArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "DeepDesync");
+            bool deepDesync = !deepDesyncArg.Value.IsNull && deepDesyncArg.Value.Value is true;
+            bool shouldGenerate = deepDesync || PatchTrackingPolicy.StateNeedsPatchCopy(stateTypeSymbol);
+            if (!shouldGenerate) return null;
 
             var namespaceName = symbol.ContainingNamespace.ToDisplayString();
             var originalClassName = symbol.Name;
@@ -46,10 +56,6 @@ namespace SharedMeta.Generator.Generators
             var methods = node.Members.OfType<MethodDeclarationSyntax>().ToList();
             var fields = node.Members.OfType<FieldDeclarationSyntax>().ToList();
             var properties = node.Members.OfType<PropertyDeclarationSyntax>().ToList();
-
-            // Get the service interface from the attribute
-            var serviceInterfaceSymbol = attr.ConstructorArguments[0].Value as INamedTypeSymbol;
-            var serviceInterfaceName = serviceInterfaceSymbol?.ToDisplayString() ?? "";
 
             // Collect using directives from the source file
             var root = node.SyntaxTree.GetRoot();
@@ -158,21 +164,24 @@ namespace SharedMeta.Generator.Generators
             }
             if (fields.Count > 0) sb.AppendLine();
 
-            // Copy properties — replace state accessors to use PatchWrapper
+            // Copy properties — rewrite any expression-bodied property that returns the State
+            // accessor to return the wrapper type. Covers both the canonical
+            // `protected GameState State => Context.State;` and user aliases like
+            // `private ClanState S => State;`. Without this the copy fails to compile: the body
+            // `State` resolves to the wrapper but the declared type is the concrete state. Routing
+            // the alias through the wrapper also keeps `S.Field = …` writes tracked.
             foreach (var prop in properties)
             {
                 var propName = prop.Identifier.Text;
-                // Replace "state => Context.State" with PatchWrapper version
-                if (propName == "state" || propName == "State")
+                var exprBody = prop.ExpressionBody?.Expression.ToString().Trim();
+                bool returnsStateAccessor =
+                    exprBody == "State" || exprBody == "state" || exprBody == "Context.State";
+                if (returnsStateAccessor)
                 {
-                    // Replace state accessor to use PatchWrapper
-                    // Handles both "=> Context.State" and "=> State" patterns
-                    var propText = prop.ToFullString().Trim();
-                    if (propText.Contains("Context.State") || (propName == "state" && propText.Contains("=> State")))
-                    {
-                        sb.AppendLine($"        private {stateTypeName}PatchWrapper {propName} => State;");
-                        continue;
-                    }
+                    var modifiers = prop.Modifiers.ToString();
+                    var mod = string.IsNullOrEmpty(modifiers) ? "private" : modifiers;
+                    sb.AppendLine($"        {mod} {stateTypeName}PatchWrapper {propName} => State;");
+                    continue;
                 }
                 sb.AppendLine("        " + prop.ToFullString().Trim());
             }
@@ -189,6 +198,20 @@ namespace SharedMeta.Generator.Generators
                         if (dep.Value is INamedTypeSymbol depSymbol)
                         {
                             GenerateDependencyGetter(sb, depSymbol);
+
+                            // Sibling = an entity service hosted on the SAME state. The original
+                            // impl gets a Get{Iface}SiblingAsync() accessor from ContextInjection;
+                            // the copied method bodies may call it, so emit the same accessor here
+                            // (the copy is a separate class and doesn't inherit the original's
+                            // generated members). Reuses ContextInjectionGenerator so both stay
+                            // byte-identical (incl. the #if SHAREDMETA_SERVER / client branches).
+                            var depState = ContextInjectionGenerator.ReadDepStateType(depSymbol);
+                            if (depState != null && depState == stateTypeName)
+                            {
+                                ContextInjectionGenerator.GenerateSiblingAsyncGetter(
+                                    sb, depSymbol, stateTypeName,
+                                    ContextInjectionGenerator.ReadDepConfigType(depSymbol));
+                            }
                         }
                     }
                 }

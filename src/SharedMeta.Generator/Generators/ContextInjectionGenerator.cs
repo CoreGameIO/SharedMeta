@@ -369,7 +369,10 @@ namespace SharedMeta.Generator.Generators
         /// its own <c>IMetaConfigProvider&lt;TConfig&gt;</c>, then gets back a sibling instance
         /// ready to use with sync/async methods as declared in the interface.
         /// </summary>
-        private static void GenerateSiblingAsyncGetter(
+        // internal so PatchTrackedClassGenerator can emit the same sibling accessor into the
+        // {Impl}_PatchTracked copy — the copy is a separate class and doesn't inherit the
+        // original impl's generated members.
+        internal static void GenerateSiblingAsyncGetter(
             StringBuilder sb, INamedTypeSymbol depSymbol, string callerStateTypeName, string? depConfigTypeName)
         {
             var interfaceName = depSymbol.Name;
@@ -413,7 +416,11 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"            var policyResolver = SharedMeta.Core.MetaConfigVersionResolver.ForType(typeof({depConfigTypeName}));");
                 sb.AppendLine($"            var resolvedVersion = configProvider.ResolveForClient(Context.CallerClientVersion, policyResolver);");
                 sb.AppendLine($"            var typedConfig = await configProvider.GetConfigAsync(resolvedVersion);");
-                sb.AppendLine($"            (({implFqn})sibling).Config = typedConfig;");
+                // The resolver may hand back the sibling's {Impl}_PatchTracked copy (when patch
+                // tracking is active) — a distinct type with a read-only Config sourced from
+                // Context.Config. Only the raw impl has a settable Config, so guard the set; the
+                // copy uses Context.Config (correct when the sibling shares the caller's config).
+                sb.AppendLine($"            if (sibling is {implFqn} __siblingImpl) __siblingImpl.Config = typedConfig;");
             }
             sb.AppendLine($"            {returnExprServer}");
             sb.AppendLine("        }");
@@ -437,7 +444,7 @@ namespace SharedMeta.Generator.Generators
         /// generated <c>Get{Iface}SiblingAsync()</c> in that case skips the async config refresh
         /// and returns the bare sibling instance.
         /// </summary>
-        private static string? ReadDepConfigType(INamedTypeSymbol depInterface)
+        internal static string? ReadDepConfigType(INamedTypeSymbol depInterface)
         {
             var metaServiceAttr = depInterface.GetAttributes().FirstOrDefault(a =>
                 a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaServiceAttribute");
@@ -1308,7 +1315,7 @@ namespace SharedMeta.Generator.Generators
         /// must succeed for any well-formed entity service. Returns null only when the attribute
         /// is missing or doesn't set <c>StateType</c> — caller emits a generator error.
         /// </summary>
-        private static string? ReadDepStateType(INamedTypeSymbol depInterface)
+        internal static string? ReadDepStateType(INamedTypeSymbol depInterface)
         {
             var metaServiceAttr = depInterface.GetAttributes().FirstOrDefault(a =>
                 a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaServiceAttribute");
