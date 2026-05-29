@@ -208,8 +208,10 @@ public class ExpeditionGameManager : MonoBehaviour
             var currentExpId = ProfileState?.CurrentExpeditionEntityId;
             if (!string.IsNullOrEmpty(currentExpId))
             {
+                // Subscribe before publishing the id — see ConnectAsync note (avoids the
+                // per-frame RefreshUI "Not connected to entity" during the subscribe await).
+                _expApi = await Client.GetServiceAsync<ExpeditionServiceApiClient>(currentExpId);
                 _expeditionEntityId = currentExpId;
-                _expApi = await Client.GetServiceAsync<ExpeditionServiceApiClient>(_expeditionEntityId);
                 ui.SetStatus("Reconnected!");
             }
             else
@@ -276,9 +278,13 @@ public class ExpeditionGameManager : MonoBehaviour
 
                 if (active)
                 {
-                    // Resume — subscribe to existing expedition
+                    // Resume — subscribe to existing expedition. Assign _expeditionEntityId only
+                    // AFTER the subscribe await completes: the per-frame Update()→RefreshUI() reads
+                    // the ExpeditionState getter, which calls GetState(_expeditionEntityId) and
+                    // throws "Not connected to entity" if the id is set before the subscription
+                    // lands. Subscribe first, publish the id second.
+                    _expApi = await Client.GetServiceAsync<ExpeditionServiceApiClient>(currentExpId);
                     _expeditionEntityId = currentExpId;
-                    _expApi = await Client.GetServiceAsync<ExpeditionServiceApiClient>(_expeditionEntityId);
                     ui.SetStatus("Expedition resumed!");
                     _pendingRender = true;
                     return;
@@ -426,8 +432,9 @@ public class ExpeditionGameManager : MonoBehaviour
             ui.SetStatus("Creating expedition...");
 
             var entityId = await _profileApi.StartNewExpeditionAsync();
+            // Subscribe before publishing the id — see ConnectAsync note.
+            _expApi = await Client.GetServiceAsync<ExpeditionServiceApiClient>(entityId);
             _expeditionEntityId = entityId;
-            _expApi = await Client.GetServiceAsync<ExpeditionServiceApiClient>(_expeditionEntityId);
 
             switch (mode)
             {

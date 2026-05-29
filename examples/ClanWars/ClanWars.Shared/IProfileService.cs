@@ -12,7 +12,14 @@ namespace ClanWars.Shared
         Contains
     }
 
-    [MetaService(StateType = typeof(ProfileState), ConfigType = typeof(ClanConfig))]
+    // PatchTracking = false: this service's impl body isn't patch-copy-compatible (FindHero
+    // returns raw HeroData, and EquipItem/UnequipItem do `Affixes = item.Affixes`, leaking a
+    // wrapper collection into a raw List<> field — which the deliberate no-wrapper→raw rule
+    // forbids). Rather than write it in the copy-compatible style (wrapper-typed helpers + no
+    // raw-field leaks, see PartyService), the example opts out: force-patch clients are rejected
+    // at negotiation instead of mis-served. (The ClanConfig 2.0 boundary still force-patches
+    // IClanService, whose body IS copy-compatible.)
+    [MetaService(StateType = typeof(ProfileState), ConfigType = typeof(ClanConfig), PatchTracking = false)]
     public interface IProfileService : IMetaService
     {
         /// <summary>Award bonus power to the player. Forwarded to the clan (if any).</summary>
