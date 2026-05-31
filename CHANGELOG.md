@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.25.1] - 2026-05-30
+
+- Generated typed convenience helper for **non-UserOwned** services. Was: only UserOwned services got the no-arg `client.Get{Service}Async()` shortcut; every other service forced callers into the generic `client.GetServiceAsync<{Service}ApiClient>(entityId)`. Now Open / Authorized / OwnerOnly services also get `client.Get{Service}Async(string entityId)` — same name pattern, just typed at the call site (no generic, no ApiClient class name). Emitted by `ClientServiceAggregateGenerator` next to the existing UserOwned helper.
+
 ## [0.25.0] - 2026-05-30
 
 Removed the legacy client `SignalRConnection` from `CoreGame.SharedMeta.Transport.SignalR`. **Wire-compatible, NuGet-API-breaking** for consumers that referenced the server SignalR package for their *client* transport.

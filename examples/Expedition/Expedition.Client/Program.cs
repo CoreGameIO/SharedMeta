@@ -200,7 +200,7 @@ async Task<bool> RunGameAsync()
 
     var expeditionResult = await profileApi.ResumeOrStartExpeditionAsync();
     var expeditionEntityId = expeditionResult.EntityId;
-    var expApi = await client.GetServiceAsync<ExpeditionServiceApiClient>(expeditionEntityId);
+    var expApi = await client.GetExpeditionServiceAsync(expeditionEntityId);
 
     Console.WriteLine(expeditionResult.IsNew
         ? $"New expedition: {expeditionEntityId}"
@@ -289,7 +289,7 @@ async Task<bool> RunGameAsync()
                 {
                     expeditionResult = await profileApi.ResumeOrStartExpeditionAsync();
                     expeditionEntityId = expeditionResult.EntityId;
-                    expApi = await client.GetServiceAsync<ExpeditionServiceApiClient>(expeditionEntityId);
+                    expApi = await client.GetExpeditionServiceAsync(expeditionEntityId);
                     statusMessage = $"New expedition: {expeditionEntityId}";
                 }
                 else if (key.Key == ConsoleKey.Q) return false;
