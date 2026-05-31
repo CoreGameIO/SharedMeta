@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.0] - 2026-05-30
+
+Removed the legacy client `SignalRConnection` from `CoreGame.SharedMeta.Transport.SignalR`. **Wire-compatible, NuGet-API-breaking** for consumers that referenced the server SignalR package for their *client* transport.
+
+- `src/SharedMeta.Transport.SignalR/SignalRConnection.cs` and `MetaHubProxy.cs` are deleted. The server package now contains only the server-side `MetaHub` (+ `MetaMessagePackServerExtensions`). The duplicate client `SignalRConnection` had drifted behind the `.Client` variant for several releases (no `configureBuilder`, no `clientVersion`, missing the 0.24.1 phase-2 `RegisterClientSignatureAsync` override — `NotSupportedException` on connect).
+- **Migration** for non-Unity .NET clients (Godot, console, load tests) that used `CoreGame.SharedMeta.Transport.SignalR` as their client transport: switch the package reference to **`CoreGame.SharedMeta.Transport.SignalR.Client`**. Same namespace (`SharedMeta.Transport.SignalR`), same class name (`SignalRConnection`), same basic constructor (`new SignalRConnection(url, accessToken)`) — typically a one-line `.csproj` change. The `.Client` constructor additionally accepts `configureBuilder` and `clientVersion` (use them for MessagePack/version-gate). Unity clients are unaffected (their `SignalRConnection` comes from the UPM package). Server hosts are unaffected (they referenced the package only for `MetaHub`).
+
 ## [0.24.2] - 2026-05-29
 
 Version-fallback for `MinCompatibleVersion` — server-side only, no wire change.

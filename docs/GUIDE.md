@@ -1937,12 +1937,12 @@ void RawMove([SkipTransform] Vector3 position); // No transformation
 
 ## 11. Transport Configuration
 
-Transport is split into **server** and **client** packages. Server packages include both endpoints and connection classes; client-only packages have no server dependencies (no Orleans, no ASP.NET FrameworkReference) and work with Godot, console apps, and other .NET clients.
+Transport is split into **server** and **client** packages. Server packages host the endpoints/hub only; client-only packages have no server dependencies (no Orleans, no ASP.NET FrameworkReference) and work with Godot, console apps, and other .NET clients.
 
 | Package | Type | Dependencies |
 |---------|------|-------------|
-| `SharedMeta.Transport.SignalR` | Server + client | Orleans, Server.Core, ASP.NET, MessagePack protocol |
-| `SharedMeta.Transport.SignalR.Client` | Client only | Core, SignalR.Client (JSON protocol by default) |
+| `SharedMeta.Transport.SignalR` | Server only (`MetaHub`) | Orleans, Server.Core, ASP.NET |
+| `SharedMeta.Transport.SignalR.Client` | Client only (`SignalRConnection`) | Core, SignalR.Client (JSON protocol by default) |
 | `SharedMeta.Transport.SignalR.MessagePack` | Protocol extension | Serialization.MessagePack, SignalR.Protocols.MessagePack |
 | `SharedMeta.Transport.HttpPolling` | Server + client | Orleans, Server.Core, ASP.NET |
 | `SharedMeta.Transport.HttpPolling.Client` | Client only | Core only (uses System.Net.Http.HttpClient) |
@@ -1964,7 +1964,7 @@ builder.Services.AddSignalR().AddMetaMessagePackProtocol();
 app.MapHub<MetaHub>("/meta");
 ```
 
-**Client (JSON protocol — default, no extra packages):**
+**Client (JSON protocol — default, no extra packages):** reference `CoreGame.SharedMeta.Transport.SignalR.Client` (.NET / Godot / console; Unity gets `SignalRConnection` from the UPM package).
 ```csharp
 var connection = new SignalRConnection(
     serverUrl: "https://localhost:5001/meta",

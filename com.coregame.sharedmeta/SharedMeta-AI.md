@@ -1235,8 +1235,10 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `CoreGame.SharedMeta.Server` | ServerMetaContext, cross-entity calls |
 | `CoreGame.SharedMeta.Server.Core` | EntityGrain, MetaProviderBase, storage |
 | `CoreGame.SharedMeta.Orleans` | Orleans integration (LobbyGrain) |
-| `CoreGame.SharedMeta.Transport.SignalR` | SignalR WebSocket transport |
-| `CoreGame.SharedMeta.Transport.HttpPolling` | HTTP long-polling transport |
+| `CoreGame.SharedMeta.Transport.SignalR` | SignalR WebSocket — **server-side `MetaHub`** (needs ASP.NET / Server.Core) |
+| `CoreGame.SharedMeta.Transport.SignalR.Client` | SignalR WebSocket — **client `SignalRConnection`** for .NET / Godot / console (no server deps; Unity uses the UPM SignalRConnection instead) |
+| `CoreGame.SharedMeta.Transport.SignalR.MessagePack` | Optional MessagePack protocol extension for SignalR |
+| `CoreGame.SharedMeta.Transport.HttpPolling` | HTTP long-polling — server endpoints + client (.NET) |
 | `CoreGame.SharedMeta.Serialization.MemoryPack` | MemoryPack serializer |
 | `CoreGame.SharedMeta.Serialization.MessagePack` | MessagePack serializer |
 | `CoreGame.SharedMeta.Auth` | JWT authentication |
