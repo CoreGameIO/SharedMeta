@@ -636,23 +636,25 @@ namespace SharedMeta.Core
 
         /// <summary>
         /// 0.22.0+: Fire-and-forget cross-entity call. Used by generated EntityCaller wrappers
-        /// for methods marked <c>[MetaMethod(OneWay = true)]</c>. The source grain returns
-        /// immediately; the target grain processes asynchronously via an Orleans <c>[OneWay]</c>
-        /// invocation. No result is recorded into the replay payload — the client-side replayer
+        /// for methods marked <c>[MetaMethod(Mode = ExecutionMode.Notification)]</c>. Dispatches
+        /// the target grain via an Orleans <c>[OneWay]</c> invocation; the returned Task completes
+        /// on send-flush (when the call lands in the target silo's task pool), NOT on receiver
+        /// completion. Callers may <c>await</c> to sequence subsequent local work after the
+        /// dispatch. No result is recorded into the replay payload — the client-side replayer
         /// for the same call site consumes nothing.
         /// <para>
-        /// <b>Lifetime contract:</b> the source does NOT await the OneWay, so the underlying
-        /// bytes MUST outlive the target's wire-serialization. Callers passing scratch-backed
-        /// ROM must <c>.ToArray()</c> before handing it in — for GC-managed <c>byte[]</c> (e.g.
-        /// <c>MemoryPackSerializer.Serialize</c> output), the byte[] is already independent and
-        /// can be passed as-is.
+        /// <b>Lifetime contract:</b> the receiver runs after the source returns (the awaited Task
+        /// finishes on send-flush, not on receive), so the underlying bytes MUST outlive the
+        /// target's wire-serialization. Callers passing scratch-backed ROM must <c>.ToArray()</c>
+        /// before handing it in — for GC-managed <c>byte[]</c> (e.g. <c>MemoryPackSerializer.Serialize</c>
+        /// output), the byte[] is already independent and can be passed as-is.
         /// </para>
         /// <para>
         /// Default implementation throws — implementations that don't support OneWay (e.g.
         /// <see cref="NullServerRecordContext"/>) can remain on the default.
         /// </para>
         /// </summary>
-        void CallEntityOneWay(string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes)
+        Task CallEntityOneWay(string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes)
             => throw new NotSupportedException(
                 "This IServerRecordContext does not support OneWay cross-entity calls.");
 

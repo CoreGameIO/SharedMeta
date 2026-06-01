@@ -58,6 +58,12 @@ namespace SharedMeta.Server.Core.Grains
 
         private IMetaProvider<TState>? _provider;
 
+        // 0.25.1+: typed alias for _provider when it's a MetaProviderBase<TState>, set once in
+        // OnActivateAsync. The cross-entity instance-method handlers (HandleCrossEntityCallAsync
+        // etc.) read it to short-circuit self-targeting calls via HandleNestedCallAsync without
+        // re-casting on every cross-entity hop.
+        private MetaProviderBase<TState>? _activeProviderBase;
+
         // Per-activation scratch pool + grain-scoped serializer. All intermediate Pack(value)
         // calls inside HandleCallAsync / HandleExternalEventAsync / SubscribeAsync write into
         // this pool's byte[] and return ROM slices — no per-call GC alloc. Reset before each
@@ -194,138 +200,18 @@ namespace SharedMeta.Server.Core.Grains
             // Create and initialize provider with persisted state
             _provider = _providerFactory.Create();
 
-            // Wire execution mode provider and cross-entity call handler
+            // Wire execution mode provider and cross-entity call handlers.
+            // 0.25.1+: extracted from local lambdas to instance method-group references so each
+            // OnActivateAsync skips the four delegate-closure allocations and stack traces show
+            // named frames (HandleCrossEntityCallAsync etc.) instead of `<>c__DisplayClass…`.
             if (_provider is MetaProviderBase<TState> providerBase)
             {
                 providerBase.ExecutionModeProvider = _executionModeProvider;
-                providerBase.EntityCallHandler = async (targetEntityId, methodId, argsBytes, serverTimeTicks) =>
-                {
-                    var serviceName = _serverSignature.GetMethodEntry(methodId)?.ServiceName;
-                    if (serviceName == null) {
-                        throw new InvalidOperationException($"Cannot resolve entity grain service name for method {methodId}, entity {targetEntityId}");
-                    }
-                    // Self-targeting cross-entity call (gift-to-self, sibling service on the
-                    // same state): dispatch locally as a nested op instead of routing through
-                    // Orleans. EntityGrain is non-reentrant — a self-call through the grain
-                    // reference would deadlock against the outer call's held scheduler turn.
-                    if (targetEntityId == _entityId)
-                    {
-                        var resolved = _entityGrainResolver.GetEntityGrainByService(
-                            GrainFactory, serviceName, targetEntityId);
-                        if (resolved is IEntityGrain<TState>)
-                        {
-                            // Self-call short-circuit doesn't go through Orleans — pass ROM bytes
-                            // directly (no copy). HandleNestedCallAsync still uses byte[] for now
-                            // to keep its internal recorder/replay shape stable; cheap .ToArray()
-                            // copy here is the only allocation on this very-rare path.
-                            return await providerBase.HandleNestedCallAsync(targetEntityId, methodId, argsBytes.ToArray());
-                        }
-                    }
-
-                    var targetGrain = _entityGrainResolver.GetEntityGrainByService(
-                        GrainFactory, serviceName, targetEntityId);
-                    if (targetGrain == null)
-                        throw new InvalidOperationException(
-                            $"Cannot resolve entity grain for service {serviceName}, entity {targetEntityId}");
-
-                    // Propagate the originating client's app version so the target resolves
-                    // schema cap against the same version as the session-level call. Fall back
-                    // to the resolver when no MetaContext is present (server-internal call from
-                    // a timer / background job / server-only service).
-                    var callerClientVersion = SharedMeta.Core.MetaContextAccessor.Current?.CallerClientVersion
-                        ?? _configVersionResolver?.CurrentClientVersion;
-                    // Propagate CrossOptimistic flag so the target excludes the originating
-                    // caller from its broadcast — the effect is already inlined in the outer's
-                    // replay payload; a duplicate would double-apply.
-                    var callerCtx = SharedMeta.Core.MetaContextAccessor.Current;
-                    var callerId = callerCtx?.CallerId;
-                    var isCrossOptimistic = callerCtx?.IsCrossOptimistic ?? false;
-                    var result = await targetGrain.HandleCallFromEntityAsync(new RpcCall
-                    {
-                        MethodId = methodId,
-                        Payload = argsBytes,
-                        ServerTimeTicks = serverTimeTicks,
-                        CallerClientVersion = callerClientVersion,
-                        CallerId = callerId,
-                        IsCrossOptimistic = isCrossOptimistic
-                    });
-
-                    if (result.HasError)
-                        throw new InvalidOperationException(
-                            $"Cross-entity call failed: {result.Error}");
-
-                    // Cross-entity result: target grain produced ResultBytes as GC byte[]
-                    // (PackForExternalUsage on the wire-exit boundary). The Orleans [Immutable]
-                    // marker on CrossEntityCallReturn shared the ROM by reference on this
-                    // in-silo hop; we can use the bytes as-is.
-                    return new CrossEntityOperationInfo
-                    {
-                        EntityId = targetEntityId,
-                        EntitySequenceNumber = result.EntitySequenceNumber,
-                        MethodId = methodId,
-                        ResultBytes = result.ResultBytes
-                    };
-                };
-
-                // Fire-and-forget cross-entity dispatch for [MetaMethod(OneWay = true)] —
-                // routes through the [OneWay]-marked grain entry so the source doesn't wait
-                // for the reply envelope.
-                providerBase.EntityCallOneWayHandler = (targetEntityId, methodId, argsBytes, serverTimeTicks) =>
-                {
-                    var serviceName = _serverSignature.GetMethodEntry(methodId)?.ServiceName;
-                    if (serviceName == null) {
-                        _logger.LogWarning("[EntityGrain] OneWay for {MethodId} dropped: cannot resolve service Name for entity {EntityId}",
-                            methodId, targetEntityId);
-                        return;
-                    }
-                    var targetGrain = _entityGrainResolver.GetEntityGrainByService(GrainFactory, serviceName, targetEntityId);
-                    if (targetGrain == null)
-                    {
-                        _logger.LogWarning("[EntityGrain] OneWay {Service}.{MethodId} dropped: cannot resolve grain for entity {EntityId}",
-                            serviceName, methodId, targetEntityId);
-                        return;
-                    }
-
-                    var callerClientVersion = SharedMeta.Core.MetaContextAccessor.Current?.CallerClientVersion
-                        ?? _configVersionResolver?.CurrentClientVersion;
-                    // Propagate the outer's CrossOptimistic flag so the target excludes the
-                    // originating caller from its broadcast (effect is already inlined in the
-                    // outer call's replay payload, would double-apply on duplicate).
-                    var callerCtx = MetaContextAccessor.Current;
-                    var callerId = callerCtx?.CallerId;
-                    var isCrossOptimistic = callerCtx?.IsCrossOptimistic ?? false;
-                    var rpcCall = new RpcCall
-                    {
-                        MethodId = methodId,
-                        Payload = argsBytes,
-                        ServerTimeTicks = serverTimeTicks,
-                        CallerClientVersion = callerClientVersion,
-                        CallerId = callerId,
-                        IsCrossOptimistic = isCrossOptimistic
-                    };
-
-                    // Discard is intentional — [OneWay] on the target's entry suppresses the
-                    // reply envelope; the Task returned here is for the local dispatch only.
-                    _ = targetGrain.HandleCallFromEntityOneWayAsync(rpcCall);
-                };
-
-                providerBase.EntityStateHandler = async (targetEntityId, stateTypeName) =>
-                {
-                    var targetGrain = _entityGrainResolver.GetEntityGrain(
-                        GrainFactory, stateTypeName, targetEntityId);
-                    if (targetGrain == null)
-                        return null;
-
-                    return await targetGrain.GetEntityStateAsync();
-                };
-
-                providerBase.SaveStateHandler = async () =>
-                {
-                    PersistRandomBytes();
-                    await _persistentState.WriteStateAsync();
-                    ResetPersistenceTracking();
-                    _logger.PersistenceForced(entityId, _requestsSinceLastSave);
-                };
+                _activeProviderBase = providerBase;
+                providerBase.EntityCallHandler = HandleCrossEntityCallAsync;
+                providerBase.EntityCallOneWayHandler = HandleCrossEntityOneWayAsync;
+                providerBase.EntityStateHandler = LoadCrossEntityStateAsync;
+                providerBase.SaveStateHandler = ForcePersistStateAsync;
 
                 // 0.24.0+ Forward the server signature so the provider can do reverse
                 // methodId → (Service, Alias, Version) resolution for diagnostics. Trigger
@@ -1247,6 +1133,139 @@ namespace SharedMeta.Server.Core.Grains
             if (System.Runtime.CompilerServices.Unsafe.IsNullRef(ref count)) return;
             if (count <= 1) _forcePatchServiceRefs.Remove(serviceName);
             else count--;
+        }
+
+        // 0.25.1+ Cross-entity handler instance methods. Assigned as method-group references to
+        // the provider's delegate properties in OnActivateAsync — replaces four per-activation
+        // lambda closures. Logic preserved verbatim from the previous lambda bodies.
+
+        private async Task<CrossEntityOperationInfo> HandleCrossEntityCallAsync(
+            string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes, long serverTimeTicks)
+        {
+            var serviceName = _serverSignature.GetMethodEntry(methodId)?.ServiceName;
+            if (serviceName == null)
+                throw new InvalidOperationException(
+                    $"Cannot resolve entity grain service name for method {methodId}, entity {targetEntityId}");
+
+            // Self-targeting cross-entity call (gift-to-self, sibling service on the same state):
+            // dispatch locally as a nested op instead of routing through Orleans. EntityGrain is
+            // non-reentrant — a self-call through the grain reference would deadlock against the
+            // outer call's held scheduler turn.
+            if (targetEntityId == _entityId && _activeProviderBase != null)
+            {
+                var resolved = _entityGrainResolver.GetEntityGrainByService(
+                    GrainFactory, serviceName, targetEntityId);
+                if (resolved is IEntityGrain<TState>)
+                {
+                    // Self-call short-circuit doesn't go through Orleans — pass ROM bytes directly
+                    // (no copy). HandleNestedCallAsync still uses byte[] for now to keep its
+                    // internal recorder/replay shape stable; cheap .ToArray() copy here is the
+                    // only allocation on this very-rare path.
+                    return await _activeProviderBase.HandleNestedCallAsync(targetEntityId, methodId, argsBytes.ToArray());
+                }
+            }
+
+            var targetGrain = _entityGrainResolver.GetEntityGrainByService(
+                GrainFactory, serviceName, targetEntityId);
+            if (targetGrain == null)
+                throw new InvalidOperationException(
+                    $"Cannot resolve entity grain for service {serviceName}, entity {targetEntityId}");
+
+            // Propagate the originating client's app version so the target resolves schema cap
+            // against the same version as the session-level call. Fall back to the resolver when
+            // no MetaContext is present (server-internal call from a timer / background job /
+            // server-only service).
+            var callerCtx = MetaContextAccessor.Current;
+            var callerClientVersion = callerCtx?.CallerClientVersion ?? _configVersionResolver?.CurrentClientVersion;
+            // Propagate CrossOptimistic flag so the target excludes the originating caller from
+            // its broadcast — the effect is already inlined in the outer's replay payload; a
+            // duplicate would double-apply.
+            var callerId = callerCtx?.CallerId;
+            var isCrossOptimistic = callerCtx?.IsCrossOptimistic ?? false;
+
+            var result = await targetGrain.HandleCallFromEntityAsync(new RpcCall
+            {
+                MethodId = methodId,
+                Payload = argsBytes,
+                ServerTimeTicks = serverTimeTicks,
+                CallerClientVersion = callerClientVersion,
+                CallerId = callerId,
+                IsCrossOptimistic = isCrossOptimistic,
+            });
+
+            if (result.HasError)
+                throw new InvalidOperationException($"Cross-entity call failed: {result.Error}");
+
+            // Cross-entity result: target grain produced ResultBytes as GC byte[]
+            // (PackForExternalUsage on the wire-exit boundary). The Orleans [Immutable] marker on
+            // CrossEntityCallReturn shared the ROM by reference on this in-silo hop; we can use
+            // the bytes as-is.
+            return new CrossEntityOperationInfo
+            {
+                EntityId = targetEntityId,
+                EntitySequenceNumber = result.EntitySequenceNumber,
+                MethodId = methodId,
+                ResultBytes = result.ResultBytes,
+            };
+        }
+
+        // Fire-and-forget cross-entity dispatch for [MetaMethod(Mode = ExecutionMode.Notification)].
+        // Routes through the [OneWay]-marked grain entry, then RETURNS the Orleans-dispatch Task —
+        // so the source can `await` to ensure the call left this silo before continuing (send-flush
+        // semantics), while still not waiting for the receiver's processing.
+        private Task HandleCrossEntityOneWayAsync(
+            string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes, long serverTimeTicks)
+        {
+            var serviceName = _serverSignature.GetMethodEntry(methodId)?.ServiceName;
+            if (serviceName == null)
+            {
+                _logger.LogWarning("[EntityGrain] OneWay for {MethodId} dropped: cannot resolve service Name for entity {EntityId}",
+                    methodId, targetEntityId);
+                return Task.CompletedTask;
+            }
+            var targetGrain = _entityGrainResolver.GetEntityGrainByService(GrainFactory, serviceName, targetEntityId);
+            if (targetGrain == null)
+            {
+                _logger.LogWarning("[EntityGrain] OneWay {Service}.{MethodId} dropped: cannot resolve grain for entity {EntityId}",
+                    serviceName, methodId, targetEntityId);
+                return Task.CompletedTask;
+            }
+
+            var callerCtx = MetaContextAccessor.Current;
+            var callerClientVersion = callerCtx?.CallerClientVersion ?? _configVersionResolver?.CurrentClientVersion;
+            // Propagate the outer's CrossOptimistic flag so the target excludes the originating
+            // caller from its broadcast (effect is already inlined in the outer call's replay
+            // payload, would double-apply on duplicate).
+            var callerId = callerCtx?.CallerId;
+            var isCrossOptimistic = callerCtx?.IsCrossOptimistic ?? false;
+
+            // Return the [OneWay] grain-call Task — Orleans completes it on dispatch (not on
+            // receiver completion), giving callers await-the-send semantics without waiting for
+            // the reply envelope (which [OneWay] suppresses anyway).
+            return targetGrain.HandleCallFromEntityOneWayAsync(new RpcCall
+            {
+                MethodId = methodId,
+                Payload = argsBytes,
+                ServerTimeTicks = serverTimeTicks,
+                CallerClientVersion = callerClientVersion,
+                CallerId = callerId,
+                IsCrossOptimistic = isCrossOptimistic,
+            });
+        }
+
+        private async Task<byte[]?> LoadCrossEntityStateAsync(string targetEntityId, string stateTypeName)
+        {
+            var targetGrain = _entityGrainResolver.GetEntityGrain(GrainFactory, stateTypeName, targetEntityId);
+            if (targetGrain == null) return null;
+            return await targetGrain.GetEntityStateAsync();
+        }
+
+        private async Task ForcePersistStateAsync()
+        {
+            PersistRandomBytes();
+            await _persistentState.WriteStateAsync();
+            ResetPersistenceTracking();
+            _logger.PersistenceForced(_entityId, _requestsSinceLastSave);
         }
 
         private void PersistRandomBytes()

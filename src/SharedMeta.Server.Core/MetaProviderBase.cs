@@ -97,20 +97,22 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// by the recorder (<c>0</c> = legacy / unknown, the target grain resolves from strings).
     /// Set via constructor or before Initialize is called.
     /// </summary>
-    public Func<string, ushort, ReadOnlyMemory<byte>, long, Task<CrossEntityOperationInfo>>? EntityCallHandler { get; set; }
+    public EntityCallHandler? EntityCallHandler { get; set; }
 
-    // Fire-and-forget cross-entity dispatch for [MetaMethod(OneWay = true)] — routes through
-    // Orleans [OneWay] so the source doesn't wait for a reply envelope. Same MethodId
-    // semantics as EntityCallHandler. Caller is responsible for ensuring the underlying byte
-    // storage outlives the target's wire-serialization (see CallEntityOneWay docstring).
-    public Action<string, ushort, ReadOnlyMemory<byte>, long>? EntityCallOneWayHandler { get; set; }
+    // Fire-and-forget cross-entity dispatch for [MetaMethod(Mode = ExecutionMode.Notification)]
+    // — routes through Orleans [OneWay] so the source doesn't wait for the receiver's reply,
+    // but the returned Task DOES await send-flush so the source can sequence subsequent work.
+    // Same MethodId semantics as EntityCallHandler. Caller is responsible for ensuring the
+    // underlying byte storage outlives the target's wire-serialization (see CallEntityOneWay
+    // docstring).
+    public EntityCallOneWayHandler? EntityCallOneWayHandler { get; set; }
 
     /// <summary>
     /// Handler for read-only cross-entity state access.
     /// Returns serialized state bytes of the target entity, or null if not found.
     /// Set via constructor or before Initialize is called.
     /// </summary>
-    public Func<string, string, Task<byte[]?>>? EntityStateHandler { get; set; }
+    public EntityStateHandler? EntityStateHandler { get; set; }
 
     /// <summary>
     /// 0.24.0+ Server-side signature for reverse <c>MethodId → ServerMethodEntry</c> lookup.

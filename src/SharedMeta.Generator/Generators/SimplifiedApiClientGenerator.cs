@@ -617,7 +617,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"        /// {methodName} - Default mode: {defaultMode}");
                 sb.AppendLine($"        /// </summary>");
                 sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{namespaceName}.{interfaceName}), \"{methodName}\")]");
-                sb.AppendLine($"        public {asyncReturnType} {methodName}Async({parameters})");
+                sb.AppendLine($"        public {asyncReturnType} {ContextInjectionGenerator.AsyncMethodName(methodName)}({parameters})");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
                 if (capabilitiesEnabled)
@@ -635,18 +635,18 @@ namespace SharedMeta.Generator.Generators
                     // per-method Statuses, so the session-level check is also a single array index.
                     sb.AppendLine($"            if (global::SharedMeta.Core.Transport.CapabilitiesGate.IsForcedServerPatch(_network.Annotated, {methodIdConst})");
                     sb.AppendLine($"                || global::SharedMeta.Core.Transport.CapabilitiesGate.IsServiceForcedServerPatchByEntity(_network.EntityCapabilities, ServiceName))");
-                    sb.AppendLine($"                return {methodName}Async_ServerPatch({callArgs});");
+                    sb.AppendLine($"                return {ContextInjectionGenerator.AsyncMethodName(methodName)}_ServerPatch({callArgs});");
                 }
                 sb.AppendLine($"            var mode = _modeProvider.GetMode(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, ExecutionMode.{defaultMode});");
                 sb.AppendLine($"            if (mode == ExecutionMode.ServerPatch)");
-                sb.AppendLine($"                return {methodName}Async_ServerPatch({callArgs});");
+                sb.AppendLine($"                return {ContextInjectionGenerator.AsyncMethodName(methodName)}_ServerPatch({callArgs});");
                 sb.AppendLine($"            if (mode == ExecutionMode.ServerReplace)");
-                sb.AppendLine($"                return {methodName}Async_ServerReplace({callArgs});");
+                sb.AppendLine($"                return {ContextInjectionGenerator.AsyncMethodName(methodName)}_ServerReplace({callArgs});");
                 sb.AppendLine($"            if (mode == ExecutionMode.Server)");
-                sb.AppendLine($"                return {methodName}Async_Server({callArgs});");
+                sb.AppendLine($"                return {ContextInjectionGenerator.AsyncMethodName(methodName)}_Server({callArgs});");
                 sb.AppendLine($"            if (mode == ExecutionMode.CrossOptimistic)");
-                sb.AppendLine($"                return {methodName}Async_CrossOptimistic({callArgs});");
-                sb.AppendLine($"            return {methodName}Async_Optimistic({callArgs});");
+                sb.AppendLine($"                return {ContextInjectionGenerator.AsyncMethodName(methodName)}_CrossOptimistic({callArgs});");
+                sb.AppendLine($"            return {ContextInjectionGenerator.AsyncMethodName(methodName)}_Optimistic({callArgs});");
                 sb.AppendLine("        }");
                 sb.AppendLine();
             }
@@ -690,7 +690,7 @@ namespace SharedMeta.Generator.Generators
                 }
                 else // Throw (default)
                 {
-                    sb.AppendLine($"                throw new InvalidOperationException($\"[{{ServiceName}}.{methodAlias}] Sync invocation blocked: effective mode is {{mode}} (overridden by IExecutionModeProvider). Use {methodName}Async, or set SyncPolicy = SyncPolicy.Warn/Silent on [MetaMethod].\");");
+                    sb.AppendLine($"                throw new InvalidOperationException($\"[{{ServiceName}}.{methodAlias}] Sync invocation blocked: effective mode is {{mode}} (overridden by IExecutionModeProvider). Use {ContextInjectionGenerator.AsyncMethodName(methodName)}, or set SyncPolicy = SyncPolicy.Warn/Silent on [MetaMethod].\");");
                 }
                 sb.AppendLine("            }");
                 if (isVoidReturn)
@@ -796,7 +796,7 @@ namespace SharedMeta.Generator.Generators
             // Use await for service call if the service method is async
             string awaitPrefix = isAsyncServiceMethod ? "await " : "";
 
-            sb.AppendLine($"        private async {asyncReturnType} {methodName}Async_Server({parameters})");
+            sb.AppendLine($"        private async {asyncReturnType} {ContextInjectionGenerator.AsyncMethodName(methodName)}_Server({parameters})");
             sb.AppendLine("        {");
 
             // Capture server time before the call
@@ -1026,7 +1026,7 @@ namespace SharedMeta.Generator.Generators
             // Optimistic always needs async for context cleanup
             string awaitPrefix = isAsyncServiceMethod ? "await " : "";
 
-            sb.AppendLine($"        private async {asyncReturnType} {methodName}Async_Optimistic({parameters})");
+            sb.AppendLine($"        private async {asyncReturnType} {ContextInjectionGenerator.AsyncMethodName(methodName)}_Optimistic({parameters})");
             sb.AppendLine("        {");
 
             // Capture server time before local execution
@@ -1344,7 +1344,7 @@ namespace SharedMeta.Generator.Generators
             string asyncReturnType = isVoidReturn ? "Task" : $"Task<{returnType}>";
             string awaitPrefix = isAsyncServiceMethod ? "await " : "";
 
-            sb.AppendLine($"        private async {asyncReturnType} {methodName}Async_CrossOptimistic({parameters})");
+            sb.AppendLine($"        private async {asyncReturnType} {ContextInjectionGenerator.AsyncMethodName(methodName)}_CrossOptimistic({parameters})");
             sb.AppendLine("        {");
 
             // Capture server time before local execution
@@ -1510,7 +1510,7 @@ namespace SharedMeta.Generator.Generators
             // Compute PatchApplier full name: stateTypeName + "PatchApplier"
             var applierName = stateTypeName + "PatchApplier";
 
-            sb.AppendLine($"        private async {asyncReturnType} {methodName}Async_ServerPatch({parameters})");
+            sb.AppendLine($"        private async {asyncReturnType} {ContextInjectionGenerator.AsyncMethodName(methodName)}_ServerPatch({parameters})");
             sb.AppendLine("        {");
 
             // Capture server time before the call
@@ -1598,7 +1598,7 @@ namespace SharedMeta.Generator.Generators
             string asyncReturnType = isVoidReturn ? "Task" : $"Task<{returnType}>";
             string awaitPrefix = isAsyncServiceMethod ? "await " : "";
 
-            sb.AppendLine($"        private async {asyncReturnType} {methodName}Async_ServerReplace({parameters})");
+            sb.AppendLine($"        private async {asyncReturnType} {ContextInjectionGenerator.AsyncMethodName(methodName)}_ServerReplace({parameters})");
             sb.AppendLine("        {");
 
             // Capture server time before the call

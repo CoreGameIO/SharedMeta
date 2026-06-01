@@ -6,6 +6,25 @@ using SharedMeta.Core.Packets;
 
 namespace SharedMeta.Server
 {
+    // 0.25.1+ Named delegates for the cross-entity handler triad on ServerMetaContext /
+    // MetaProviderBase. Replaces repeated `Func<string, ushort, ReadOnlyMemory<byte>, long, …>`
+    // signatures: easier to read, parameters carry their names through IntelliSense, and a
+    // signature change touches one place. Method group references from EntityGrain (e.g.
+    // `provider.EntityCallHandler = HandleCrossEntityCall;`) bind directly — no closure alloc.
+
+    /// <summary>Server-side handler that routes a request/response cross-entity call to the target grain.</summary>
+    public delegate Task<CrossEntityOperationInfo> EntityCallHandler(string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes, long serverTimeTicks);
+
+    /// <summary>Server-side handler that dispatches a fire-and-forget (Orleans <c>[OneWay]</c>)
+    /// cross-entity call. The returned Task completes when the call has been dispatched to the
+    /// target silo's task pool (send-flushed) — no wait for the receiver to process. Callers may
+    /// <c>await</c> to ensure send-flush ordering.</summary>
+    public delegate Task EntityCallOneWayHandler(string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes, long serverTimeTicks);
+
+    /// <summary>Server-side handler that fetches another entity's serialized state for read-only
+    /// access (<c>Context.GetState&lt;T&gt;</c>). Returns <c>null</c> when the entity doesn't exist.</summary>
+    public delegate Task<byte[]?> EntityStateHandler(string targetEntityId, string stateTypeName);
+
     public class ServerMetaContext<TState> : MetaContext<TState>, IServerRecordContext where TState : class, ISharedState, new()
     {
         private readonly TState _state;
@@ -221,20 +240,21 @@ namespace SharedMeta.Server
         /// Set by the MetaProvider to enable calling other entities.
         /// Returns CrossEntityCallInfo with EntitySequenceNumber and ResultBytes.
         /// </summary>
-        public Func<string, ushort, ReadOnlyMemory<byte>, long, Task<CrossEntityOperationInfo>>? EntityCallHandler { get; set; }
+        public EntityCallHandler? EntityCallHandler { get; set; }
 
         /// <summary>
-        /// 0.22.0+: Handler for fire-and-forget cross-entity calls. Source grain dispatches
-        /// without waiting; <see cref="CallEntityOneWay"/> returns immediately.
+        /// 0.22.0+: Handler for fire-and-forget cross-entity calls (Orleans <c>[OneWay]</c>).
+        /// The returned Task completes on send-flush, not on receiver completion — callers may
+        /// <c>await</c> to ensure the call left the local silo before continuing.
         /// </summary>
-        public Action<string, ushort, ReadOnlyMemory<byte>, long>? EntityCallOneWayHandler { get; set; }
+        public EntityCallOneWayHandler? EntityCallOneWayHandler { get; set; }
 
         /// <summary>
         /// Handler for read-only cross-entity state access.
         /// Returns serialized state bytes, or null if entity doesn't exist.
         /// Set by the MetaProvider to enable cross-entity state reading.
         /// </summary>
-        public Func<string, string, Task<byte[]?>>? EntityStateHandler { get; set; }
+        public EntityStateHandler? EntityStateHandler { get; set; }
 
         /// <summary>
         /// Handler for mid-method state persistence.
@@ -286,11 +306,13 @@ namespace SharedMeta.Server
         }
 
         /// <summary>
-        /// 0.22.0+: Fire-and-forget variant. Returns immediately; the target grain is invoked
-        /// via an Orleans <c>[OneWay]</c> entry point. No <see cref="CrossEntityOperationInfo"/> is
-        /// recorded (nothing to replay client-side), and no result is observed by the caller.
+        /// 0.22.0+: Fire-and-forget variant. The target grain is invoked via an Orleans
+        /// <c>[OneWay]</c> entry; the returned Task completes on send-flush (dispatch to the
+        /// target silo's task pool), NOT on receiver completion. No
+        /// <see cref="CrossEntityOperationInfo"/> is recorded (nothing to replay client-side),
+        /// and no result is observed by the caller.
         /// </summary>
-        public void CallEntityOneWay(string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes)
+        public async Task CallEntityOneWay(string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes)
         {
             if (EntityCallOneWayHandler == null)
             {
@@ -299,7 +321,7 @@ namespace SharedMeta.Server
                     "The MetaProvider must set EntityCallOneWayHandler to enable fire-and-forget cross-entity calls.");
             }
 
-            EntityCallOneWayHandler(targetEntityId, methodId, argsBytes, ServerTimeTicks);
+            await EntityCallOneWayHandler(targetEntityId, methodId, argsBytes, ServerTimeTicks);
         }
 
         // EntityId is inherited from MetaContext base class

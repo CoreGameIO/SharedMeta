@@ -15,7 +15,7 @@ namespace ClanWars.Shared
         private ProfileState S => State;
         private ClanConfig C => (ClanConfig)Config!;
 
-        public void GainPoints(int amount)
+        public async ValueTask GainPoints(int amount)
         {
             if (amount <= 0) return;
             S.Score += amount;
@@ -26,7 +26,7 @@ namespace ClanWars.Shared
             // clan state after this call. Saves one grain-to-grain await on the hot path.
             if (!string.IsNullOrEmpty(S.ClanId))
             {
-                GetIClanService(S.ClanId).AddPower(amount);
+                await GetIClanService(S.ClanId).AddPowerAsync(amount);
             }
         }
 
@@ -44,7 +44,7 @@ namespace ClanWars.Shared
             S.ClanId = clanId;
 
             var clan = GetIClanService(clanId);
-            var ok = await clan.Initialize(Context.CallerId ?? "anon", name);
+            var ok = await clan.InitializeAsync(Context.CallerId ?? "anon", name);
             if (!ok)
             {
                 // Rollback if the clan grain rejected the initialize (e.g. concurrent create).
@@ -55,7 +55,7 @@ namespace ClanWars.Shared
             // Seed initial clan power with the player's current score (OneWay — see GainPoints
             // commentary; same reasoning applies here).
             if (S.Score > 0)
-                clan.AddPower(S.Score);
+                clan.AddPowerAsync(S.Score);
 
             return clanId;
         }
@@ -78,7 +78,7 @@ namespace ClanWars.Shared
             if (string.IsNullOrEmpty(clanId)) return false;
 
             var clan = GetIClanService(clanId);
-            var removed = await clan.RemoveMember(Context.CallerId ?? "anon", S.Score);
+            var removed = await clan.RemoveMemberAsync(Context.CallerId ?? "anon", S.Score);
             if (!removed) return false;
 
             S.ClanId = null;
@@ -133,7 +133,7 @@ namespace ClanWars.Shared
                 // returns false and we leave S.ClanId null. This also closes the race window
                 // that previously caused ResolveClan failures (subscribe before IsAuthorized
                 // saw the new Member).
-                var joined = await GetIClanService(clanId).ConfirmJoin(playerId, S.Score);
+                var joined = await GetIClanService(clanId).ConfirmJoinAsync(playerId, S.Score);
                 if (joined)
                 {
                     S.ClanId = clanId;
@@ -166,7 +166,7 @@ namespace ClanWars.Shared
             if (!string.IsNullOrEmpty(S.ClanId) && S.ClanId != clanId)
             {
                 var current = GetIClanService(S.ClanId);
-                var removed = await current.RemoveMember(playerId, S.Score);
+                var removed = await current.RemoveMemberAsync(playerId, S.Score);
                 if (!removed) return false;
                 S.ClanId = null;
             }
@@ -175,7 +175,7 @@ namespace ClanWars.Shared
             // Subsequent ResolveClan would otherwise race the fire-and-forget and fail
             // IsAuthorized. If ConfirmJoin returns false (roster full), drop the invitation
             // and leave the player clan-less.
-            var joined = await GetIClanService(clanId).ConfirmJoin(playerId, S.Score);
+            var joined = await GetIClanService(clanId).ConfirmJoinAsync(playerId, S.Score);
             S.ApprovedInvitations.Remove(clanId);
             if (!joined) return false;
             S.ClanId = clanId;

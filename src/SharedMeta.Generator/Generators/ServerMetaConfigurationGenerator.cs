@@ -811,7 +811,7 @@ namespace SharedMeta.Generator.Generators
             // Constructor
             sb.AppendLine($"        public {className}(");
             sb.AppendLine("            Func<Type, object>? serviceResolver = null,");
-            sb.AppendLine("            Func<string, ushort, ReadOnlyMemory<byte>, long, Task<SharedMeta.Core.Packets.CrossEntityOperationInfo>>? entityCallHandler = null)");
+            sb.AppendLine("            global::SharedMeta.Server.EntityCallHandler? entityCallHandler = null)");
             sb.AppendLine("        {");
             sb.AppendLine("            ServiceResolver = serviceResolver;");
             sb.AppendLine("            EntityCallHandler = entityCallHandler;");
@@ -1871,11 +1871,11 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"    public sealed class {factoryName} : IMetaProviderFactory<{stateTypeFullName}>");
             sb.AppendLine("    {");
             sb.AppendLine("        private readonly Func<Type, object>? _serviceResolver;");
-            sb.AppendLine("        private readonly Func<string, ushort, ReadOnlyMemory<byte>, long, Task<SharedMeta.Core.Packets.CrossEntityOperationInfo>>? _entityCallHandler;");
+            sb.AppendLine("        private readonly global::SharedMeta.Server.EntityCallHandler? _entityCallHandler;");
             sb.AppendLine();
             sb.AppendLine($"        public {factoryName}(");
             sb.AppendLine("            Func<Type, object>? serviceResolver = null,");
-            sb.AppendLine("            Func<string, ushort, ReadOnlyMemory<byte>, long, Task<SharedMeta.Core.Packets.CrossEntityOperationInfo>>? entityCallHandler = null)");
+            sb.AppendLine("            global::SharedMeta.Server.EntityCallHandler? entityCallHandler = null)");
             sb.AppendLine("        {");
             sb.AppendLine("            _serviceResolver = serviceResolver;");
             sb.AppendLine("            _entityCallHandler = entityCallHandler;");

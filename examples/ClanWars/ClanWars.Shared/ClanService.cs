@@ -61,7 +61,7 @@ namespace ClanWars.Shared
             if (S.Members.Count >= C.MaxMembers) return OperationResult.PlayersLimit;
             // Don't add to Members yet — player may already be in another clan and decline.
             // Fire-and-forget the offer; profile will call back ConfirmJoin if they accept.
-            GetIProfileService(playerId).OfferMembership(Context.EntityId ?? "");
+            GetIProfileService(playerId).OfferMembershipAsync(Context.EntityId ?? "");
             return OperationResult.Ok;
         }
 

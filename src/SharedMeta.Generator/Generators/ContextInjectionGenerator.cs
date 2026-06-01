@@ -516,24 +516,27 @@ namespace SharedMeta.Generator.Generators
             // 0.22.0+: Notification sibling — same-grain self-target. Just call the impl and
             // discard the Task. No grain RPC, no recording. The impl mutates this entity's state
             // in place; subscribers of this entity get the broadcast as part of the outer op.
+            // 0.25.1+: Notification keeps the standard Task-returning shape (no Async-suffix shift,
+            // matches Mode = Server) so swapping modes never touches the call site. For a SIBLING
+            // caller (same grain), there's no OneWay hop — just direct in-process invocation; the
+            // returned Task is the impl's own Task (or Task.CompletedTask for a sync void impl).
             if (IsNotificationMode(method))
             {
+                // 0.26.0+ Always-Async naming: method exposed as `XAsync(…)` regardless of source
+                // void vs Task, with dedup so a source already named `XAsync` doesn't double-suffix.
+                var siblingNotifyName = AsyncMethodName(methodName);
                 sb.AppendLine();
                 sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
-                sb.AppendLine($"        public void {methodName}({parameters})");
+                sb.AppendLine($"        public System.Threading.Tasks.Task {siblingNotifyName}({parameters})");
                 sb.AppendLine("        {");
                 if (isAsync)
                 {
-                    // Original returns Task — discard so we behave like a fire-and-forget.
-                    sb.AppendLine($"            _ = _impl.{methodName}({callArgs});");
-                }
-                else if (returnType == "void")
-                {
-                    sb.AppendLine($"            _impl.{methodName}({callArgs});");
+                    sb.AppendLine($"            return _impl.{methodName}({callArgs});");
                 }
                 else
                 {
                     sb.AppendLine($"            _impl.{methodName}({callArgs});");
+                    sb.AppendLine("            return System.Threading.Tasks.Task.CompletedTask;");
                 }
                 sb.AppendLine("        }");
                 return;
@@ -546,17 +549,17 @@ namespace SharedMeta.Generator.Generators
             if (isAsync)
             {
                 asyncReturnType = returnType;
-                asyncMethodName = methodName;
+                asyncMethodName = AsyncMethodName(methodName);
             }
             else if (returnType == "void")
             {
                 asyncReturnType = "Task";
-                asyncMethodName = methodName + "Async";
+                asyncMethodName = AsyncMethodName(methodName);
             }
             else
             {
                 asyncReturnType = $"Task<{returnType}>";
-                asyncMethodName = methodName + "Async";
+                asyncMethodName = AsyncMethodName(methodName);
                 innerType = returnType;
             }
 
@@ -673,19 +676,18 @@ namespace SharedMeta.Generator.Generators
 
             var (isAsync, innerType) = ParseReturnType(returnType);
 
-            // 0.22.0+: Mode = ExecutionMode.Notification flips this to a void cross-entity call
-            // (entity → entity fire-and-forget, peer of Signal on the cross-entity axis). Async
-            // variant is suppressed — the caller pattern becomes `GetIClanService(id).AddPower(delta);`
-            // (no await), forcing any existing `await ...` call site to be updated.
-            if (IsNotificationMode(method))
+            // 0.25.1+: Mode = ExecutionMode.Notification keeps the standard Task-returning shape
+            // on the cross-entity caller — under the hood the source grain dispatches via Orleans
+            // [OneWay] and the returned Task completes on send-flush (not on receiver completion).
+            // Switching a method between Mode = Server and Mode = Notification therefore does not
+            // require touching the existing `await GetIClanService(id).AddPower(delta);` call site.
+            // The #error guard still rejects value-returning Notification methods (Task<T>) because
+            // OneWay has no return channel.
+            if (IsNotificationMode(method)
+                && innerType != null
+                && (isAsync == false || returnType != "System.Threading.Tasks.Task" && returnType != "Task"))
             {
-                if (innerType != null && (isAsync == false || returnType != "System.Threading.Tasks.Task" && returnType != "Task"))
-                {
-                    sb.AppendLine($"#error SharedMeta: '{interfaceFqn}.{methodName}' has Mode = ExecutionMode.Notification but returns a value. Notification methods must return Task or void.");
-                }
-                sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
-                sb.AppendLine($"        void {methodName}({parameters});");
-                return;
+                sb.AppendLine($"#error SharedMeta: '{interfaceFqn}.{methodName}' has Mode = ExecutionMode.Notification but returns a value. Notification methods must return Task or void.");
             }
 
             // Generate async version of the method
@@ -696,19 +698,19 @@ namespace SharedMeta.Generator.Generators
             {
                 // Already async - keep as is
                 asyncReturnType = returnType;
-                asyncMethodName = methodName;
+                asyncMethodName = AsyncMethodName(methodName);
             }
             else if (returnType == "void")
             {
                 // void -> Task, add Async suffix
                 asyncReturnType = "Task";
-                asyncMethodName = methodName + "Async";
+                asyncMethodName = AsyncMethodName(methodName);
             }
             else
             {
                 // T -> Task<T>, add Async suffix
                 asyncReturnType = $"Task<{returnType}>";
-                asyncMethodName = methodName + "Async";
+                asyncMethodName = AsyncMethodName(methodName);
             }
 
             sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
@@ -723,6 +725,19 @@ namespace SharedMeta.Generator.Generators
         /// ExecutionMode.Notification = 8 (after Local=0, Optimistic=1, Server=2, CrossOptimistic=3,
         /// ServerPatch=4, ServerReplace=5, Query=6, Signal=7).
         /// </summary>
+        /// <summary>
+        /// 0.26.0+: Single naming rule applied uniformly across every EntityCaller surface
+        /// (interface, sibling, recorder, replayer, LocalEntityCaller) AND the client ApiClient —
+        /// the .NET convention "an async method ends in <c>Async</c>". Appends the suffix unless
+        /// the source already has it (so <c>Task XAsync()</c> source doesn't become
+        /// <c>XAsyncAsync</c>). Replaces the prior split rule that preserved Task-source names on
+        /// EntityCaller surfaces and forced Async on the client — switching a method between
+        /// <c>void</c> ↔ <c>Task</c> or <c>Server</c> ↔ <c>Notification</c> no longer changes the
+        /// generated name.
+        /// </summary>
+        internal static string AsyncMethodName(string sourceMethodName)
+            => sourceMethodName.EndsWith("Async") ? sourceMethodName : sourceMethodName + "Async";
+
         private static bool IsNotificationMode(IMethodSymbol method)
         {
             var attr = method.GetAttributes().FirstOrDefault(a =>
@@ -812,22 +827,28 @@ namespace SharedMeta.Generator.Generators
 
             var (isAsync, innerType) = ParseReturnType(returnType);
 
-            // 0.22.0+: OneWay variant — emit void method that packs args and fires
-            // _context.CallEntityOneWay(...) without awaiting or recording any result.
+            // 0.25.1+: OneWay variant — pack args and chain-return the Task from
+            // _context.CallEntityOneWay(...). That Task completes on Orleans-dispatch (the
+            // [OneWay] grain entry resolves when the call lands in the target silo's task pool,
+            // not when the receiver processes it), so awaiting it gives send-flush semantics
+            // without waiting for the reply envelope. Signature matches the non-Notification
+            // EntityCaller (Task / Task with Async suffix for void source) so swapping
+            // Mode = Server ↔ Mode = Notification doesn't touch the call site.
             if (IsNotificationMode(method))
             {
+                var notifyMethodName = AsyncMethodName(methodName);
                 sb.AppendLine();
                 sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
-                sb.AppendLine($"        public void {methodName}({parameters})");
+                sb.AppendLine($"        public System.Threading.Tasks.Task {notifyMethodName}({parameters})");
                 sb.AppendLine("        {");
                 GenerateArgumentPacking(sb, method.Parameters, paramNames, serializer);
                 sb.AppendLine();
-                // OneWay: source doesn't await, so the bytes MUST be independent of any
-                // scratch/pool the source might reset before the target completes wire-serialize.
-                // Single-param MemoryPack path already returns a fresh byte[]; multi-param path
-                // pulls from the context's cached ArrayBufferWriter — we force a copy via .ToArray()
-                // on the ROM wrap so the OneWay carrier is GC-independent.
-                sb.AppendLine($"            _context.CallEntityOneWay(_entityId, {methodIdConst}, ((System.ReadOnlyMemory<byte>)argsBytes).ToArray());");
+                // OneWay carrier bytes MUST be independent of any scratch/pool the source might
+                // reset before the target finishes wire-serialize. Single-param MemoryPack path
+                // already returns a fresh byte[]; multi-param path pulls from the context's
+                // cached ArrayBufferWriter — we force a copy via .ToArray() on the ROM wrap so
+                // the OneWay carrier is GC-independent.
+                sb.AppendLine($"            return _context.CallEntityOneWay(_entityId, {methodIdConst}, ((System.ReadOnlyMemory<byte>)argsBytes).ToArray());");
                 sb.AppendLine("        }");
                 return;
             }
@@ -839,17 +860,17 @@ namespace SharedMeta.Generator.Generators
             if (isAsync)
             {
                 asyncReturnType = returnType;
-                asyncMethodName = methodName;
+                asyncMethodName = AsyncMethodName(methodName);
             }
             else if (returnType == "void")
             {
                 asyncReturnType = "Task";
-                asyncMethodName = methodName + "Async";
+                asyncMethodName = AsyncMethodName(methodName);
             }
             else
             {
                 asyncReturnType = $"Task<{returnType}>";
-                asyncMethodName = methodName + "Async";
+                asyncMethodName = AsyncMethodName(methodName);
                 innerType = returnType; // For non-async methods with return value
             }
 
@@ -954,11 +975,16 @@ namespace SharedMeta.Generator.Generators
             // replay simply skips. Generated body intentionally consumes no payload bytes.
             if (IsNotificationMode(method))
             {
+                // 0.25.1+: Task-returning to match the EntityCaller contract (see interface emit).
+                // OneWay records nothing server-side, so the client-side replay is a no-op that
+                // returns a completed Task.
+                var notifyMethodName = AsyncMethodName(methodName);
                 sb.AppendLine();
                 sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
-                sb.AppendLine($"        public void {methodName}({parameters})");
+                sb.AppendLine($"        public System.Threading.Tasks.Task {notifyMethodName}({parameters})");
                 sb.AppendLine("        {");
                 sb.AppendLine("            // OneWay: nothing recorded server-side → nothing to replay.");
+                sb.AppendLine("            return System.Threading.Tasks.Task.CompletedTask;");
                 sb.AppendLine("        }");
                 return;
             }
@@ -970,17 +996,17 @@ namespace SharedMeta.Generator.Generators
             if (isAsync)
             {
                 asyncReturnType = returnType;
-                asyncMethodName = methodName;
+                asyncMethodName = AsyncMethodName(methodName);
             }
             else if (returnType == "void")
             {
                 asyncReturnType = "Task";
-                asyncMethodName = methodName + "Async";
+                asyncMethodName = AsyncMethodName(methodName);
             }
             else
             {
                 asyncReturnType = $"Task<{returnType}>";
-                asyncMethodName = methodName + "Async";
+                asyncMethodName = AsyncMethodName(methodName);
                 innerType = returnType;
             }
 
@@ -1095,12 +1121,16 @@ namespace SharedMeta.Generator.Generators
             // as a soft-fail (no exception, no state mutation).
             if (IsNotificationMode(method))
             {
+                // 0.25.1+: Task-returning to match the EntityCaller contract (see interface emit).
+                // OneWay + CrossOptimistic: no local execution, returns a completed Task.
+                var notifyMethodName = AsyncMethodName(methodName);
                 sb.AppendLine();
                 sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
-                sb.AppendLine($"        public void {methodName}({parameters})");
+                sb.AppendLine($"        public System.Threading.Tasks.Task {notifyMethodName}({parameters})");
                 sb.AppendLine("        {");
                 sb.AppendLine("            // OneWay + CrossOptimistic: no local execution. The server-side path");
                 sb.AppendLine("            // fires the cross-entity OneWay; the client observes nothing here.");
+                sb.AppendLine("            return System.Threading.Tasks.Task.CompletedTask;");
                 sb.AppendLine("        }");
                 return;
             }
@@ -1111,17 +1141,17 @@ namespace SharedMeta.Generator.Generators
             if (isAsync)
             {
                 asyncReturnType = returnType;
-                asyncMethodName = methodName;
+                asyncMethodName = AsyncMethodName(methodName);
             }
             else if (returnType == "void")
             {
                 asyncReturnType = "Task";
-                asyncMethodName = methodName + "Async";
+                asyncMethodName = AsyncMethodName(methodName);
             }
             else
             {
                 asyncReturnType = $"Task<{returnType}>";
-                asyncMethodName = methodName + "Async";
+                asyncMethodName = AsyncMethodName(methodName);
                 innerType = returnType;
             }
 

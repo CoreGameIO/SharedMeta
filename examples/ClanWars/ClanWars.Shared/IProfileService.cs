@@ -24,7 +24,7 @@ namespace ClanWars.Shared
     {
         /// <summary>Award bonus power to the player. Forwarded to the clan (if any).</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
-        void GainPoints(int amount);
+        ValueTask GainPoints(int amount);
 
         /// <summary>Spend money + create a new clan grain. Returns the new clan id on success.</summary>
         [MetaMethod(Mode = ExecutionMode.Server)]
