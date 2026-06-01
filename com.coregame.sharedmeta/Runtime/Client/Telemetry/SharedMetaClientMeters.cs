@@ -1,3 +1,10 @@
+// 0.26.1+: Telemetry types live in the System.Diagnostics.DiagnosticSource NuGet, which
+// isn't part of Unity's bundled netstandard reference assemblies. Hosts that need client
+// telemetry (typically .NET-side wrappers feeding OpenTelemetry) opt in by defining
+// SHAREDMETA_CLIENT_TELEMETRY *and* providing the NuGet (e.g. via NuGetForUnity). Unity
+// clients without OpenTelemetry pipelines pay zero compile-cost; all use-sites in
+// MetaClient are guarded by the same symbol.
+#if SHAREDMETA_CLIENT_TELEMETRY
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 
@@ -85,3 +92,4 @@ namespace SharedMeta.Client.Telemetry
         public const string SpanClientConnect   = "sharedmeta.client.connect";
     }
 }
+#endif

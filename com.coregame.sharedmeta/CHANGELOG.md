@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.26.1] - 2026-06-01
+
+- Client telemetry (`SharedMetaClientMeters` / `SharedMetaClientActivities`) gated behind `SHAREDMETA_CLIENT_TELEMETRY`, off by default. Unity builds without `System.Diagnostics.DiagnosticSource` no longer fail to compile.
+
 ## [0.26.0] - 2026-06-01
 
 Generator cleanup + cross-entity OneWay fix. Source-breaking for server-side cross-entity calls.
