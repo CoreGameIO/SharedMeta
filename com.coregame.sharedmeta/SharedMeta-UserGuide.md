@@ -357,6 +357,8 @@ public class MyResolver : IConfigVersionResolver
 
 Each `[MetaConfig]` type is materialized by an `IClientMetaConfigProvider<TConfig>` registered on the resolver. The generator-emitted `Add{Service}Services()` extension installs a `StaticConfigProvider<TConfig>(new TConfig())` by default — out of the box, the client receives the bundled config compiled into shared code.
 
+> **Common mistake:** assuming `StaticConfigProvider` auto-updates on subscribe. It does not — `GetConfigAsync(version)` ignores the version argument and always returns the instance passed at construction. The server reports the pinned version, but the static provider returns the bundled object regardless. Server-side config changes only reach the client through `DownloadingConfigProvider` (or `CompositeConfigProvider` with a downloading primary).
+
 To override (download from server with disk caching), register a custom provider **before** `RegisterAllServices()`:
 
 ```csharp

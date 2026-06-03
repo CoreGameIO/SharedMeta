@@ -515,6 +515,14 @@ Client access: `client.GetEntityConfig<GameConfig>(entityId)` — returns resolv
 
 The client materializes config via an `IClientMetaConfigProvider<TConfig>` registered on the resolver. **Failing to register one for any service that declares `ConfigType = typeof(X)` (without `DefaultConfig = true`) throws `InvalidOperationException` at the first subscribe.** Pre-0.17.0 the generator silently auto-registered `StaticConfigProvider<T>(new T())` for everyone — that hid wiring bugs and was removed; auto-register is now opt-in via `[MetaService(..., DefaultConfig = true)]`.
 
+> **Critical mental model.** The server reports the `MetaConfigVersion` it pinned for the entity; the client provider then materialises that version. `StaticConfigProvider` **ignores the requested version and always returns the instance passed at construction** — it does NOT consult the server. Picking (A) freezes the client to build-time values; server-side config changes do NOT reach a (A)-only client without a new build. For live-ops, use (B) or (C).
+>
+> | Provider | Server can push a new config without rebuilding the client? | Offline / first-launch | Best for |
+> |---|---|---|---|
+> | `StaticConfigProvider` | **No** — version arg ignored, bundled instance always returned. | Always uses the bundled instance. | LocalBackend, single-player, bundled snapshot, tests. |
+> | `DownloadingConfigProvider` | **Yes** — fetches bytes for the pinned version, optional disk cache. | Throws if no network and no cache hit. | Live-ops, balance-driven games, content-team-driven config. |
+> | `CompositeConfigProvider(downloading, static)` | **Yes** on the primary path; falls back to bundled when primary throws. | Bundled snapshot when offline. | Shipping clients — default recommendation. |
+
 Three built-in providers cover all flows:
 
 ```csharp
@@ -536,6 +544,24 @@ client.Resolver.RegisterConfigProvider<GameConfig>(new CompositeConfigProvider<G
 ```
 
 `RegisterConfigProvider<T>` (without "Try") clobbers any auto-emitted default — order relative to `client.Resolver.RegisterAllServices()` doesn't matter. One provider per `TConfig` type covers all services that share that config.
+
+#### Server-side download endpoint (0.26.2+)
+
+`DownloadingConfigProvider` on the client asks the server for a URL per version via `GetConfigDownloadUrl`; the host must answer **and** serve bytes at that URL. Two paired helpers in `SharedMeta.Server` (from `CoreGame.SharedMeta.Transport.SignalR`) drop ~25 lines of boilerplate:
+
+```csharp
+// ASP.NET DI — NOT inside siloBuilder.ConfigureServices(...)
+builder.Services.AddMetaConfigPublicUrl(publicBaseUrl, routePrefix: "/meta/config");
+app.MapMetaConfigDownload();   // non-generic — recommended; serves every [MetaConfig]
+```
+
+`AddMetaConfigPublicUrl` registers an `IConfigDownloadUrlResolver` that emits `{publicBaseUrl}{routePrefix}/{stateType}/{major}.{minor}.{patch}`. The non-generic `MapMetaConfigDownload()` uses the generator-emitted `IConfigByteSource` (auto-routing `stateType` → right `IMetaConfigProvider<TConfig>`), so adding a new `[MetaConfig]` type later requires zero endpoint changes — just `AddSharedMetaConfigProvider<NewConfig>()` on `builder.Services`.
+
+**Generic overload** `MapMetaConfigDownload<TConfig>(routePrefix)` is kept for single-config dedicated routes; multiple generic calls require distinct route prefixes to avoid collisions. Prefer the non-generic form for typical multi-config setups.
+
+**DI-container boundary trap.** `MetaHub` and minimal endpoints resolve from **ASP.NET DI** (`builder.Services`). The silo's `services.ConfigureMeta(svc => ...)` block populates the **Orleans silo container** — invisible to ASP.NET-side resolution. If you need the same provider on both sides, register on both: `builder.Services.AddSharedMetaConfigProvider<T>()` AND inside `ConfigureMeta(...)`.
+
+**0.26.2 unblocks host-overrides for free.** Generator-emitted `GeneratedConfigDownloadUrlResolver` is now registered with `TryAddSingleton`, so a host-side `AddSingleton<IConfigDownloadUrlResolver>(...)` wins without `RemoveAll`/ordering tricks. Pre-0.26.2 hosts that customized the resolver had to `services.RemoveAll<IConfigDownloadUrlResolver>()` first.
 
 Set `DefaultConfig = true` on `[MetaService]` only when `new TConfig()` produces gameplay-correct fallback values; for typical configs (item registries, balance numbers, level data) leave it off and register an explicit provider.
 

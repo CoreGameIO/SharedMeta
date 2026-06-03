@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.26.2] - 2026-06-01
+
+Server-side config-download wiring shrinks to 2 lines, supports multi-config out of the box; generator-emitted default resolver no longer fights user registrations.
+
+- New `IConfigByteSource` + generator-emitted `GeneratedConfigByteSource` — non-generic source that auto-routes `(stateType, version)` → bytes by picking the right `IMetaConfigProvider<TConfig>`.
+- New `app.MapMetaConfigDownload()` (non-generic, recommended) — one endpoint serves every `[MetaConfig]` declared in the assembly. Generic `MapMetaConfigDownload<TConfig>(routePrefix)` overload kept for single-config dedicated-route cases.
+- New `builder.Services.AddMetaConfigPublicUrl(publicBaseUrl, routePrefix)` — registers an `IConfigDownloadUrlResolver` that emits URLs matching the paired endpoint. Removes the need for custom URL-builder classes.
+- Generator switched `IConfigDownloadUrlResolver` and `IConfigByteSource` registrations to `TryAddSingleton` — host-side `AddSingleton<...>(...)` wins without `RemoveAll` or ordering tricks.
+- New extensions live in `SharedMeta.Server` namespace, shipped from `CoreGame.SharedMeta.Transport.SignalR`.
+- Docs: `StaticConfigProvider` ignores the requested version and never consults the server — clarified in `GUIDE.md`, `SharedMeta-AI.md`, `SharedMeta-UserGuide.md` with a Static / Downloading / Composite comparison table.
+
 ## [0.26.1] - 2026-06-01
 
 - Client telemetry (`SharedMetaClientMeters` / `SharedMetaClientActivities`) gated behind `SHAREDMETA_CLIENT_TELEMETRY`, off by default. Unity builds without `System.Diagnostics.DiagnosticSource` no longer fail to compile.

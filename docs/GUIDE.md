@@ -649,6 +649,40 @@ The pin is *runtime grain state*, not persisted on `EntityGrainState`. It dies w
 
 **Why `[EntityScope(Global)]` rejects `Optimistic`:** the server normalizes to `CurrentClientVersion` for dispatch, so the client's local-first optimistic execution runs under a different config branch than the server's — a guaranteed desync. Use `Server` / `ServerPatch` / `ServerReplace` / `Query` / `Signal` / `Local` on Global entities. (Compile-time `SHMETA_OPT_GLOBAL` diagnostic ships in a follow-up; today the mismatch is observable only at runtime via desync diagnostics.)
 
+### Server-Side Config Download Endpoint (0.26.2+)
+
+When the client's `DownloadingConfigProvider<TConfig>` fetches bytes, it asks the server "what URL do I hit for this version?" via the SignalR call `GetConfigDownloadUrl`. The host has to (a) answer that question with an `IConfigDownloadUrlResolver` and (b) actually serve the bytes at the URL it advertised. Two paired helpers (in the `SharedMeta.Server` namespace, shipped from `CoreGame.SharedMeta.Transport.SignalR`) eliminate the boilerplate:
+
+```csharp
+// (1) Register the URL resolver. Builds URLs in the form
+//     {publicBaseUrl}{routePrefix}/{stateType}/{major}.{minor}.{patch}
+builder.Services.AddMetaConfigPublicUrl(
+    publicBaseUrl: builder.Configuration["Server:PublicBaseUrl"]!,   // e.g. "https://api.example.com"
+    routePrefix:   "/meta/config");                                   // default
+
+// (2) Map the matching HTTP endpoint. Non-generic overload uses generator-emitted
+//     IConfigByteSource — auto-routes by stateType to the right IMetaConfigProvider<T>,
+//     so every [MetaConfig] declared in the assembly is served from a single endpoint.
+app.MapMetaConfigDownload();   // recommended for multi-config / future-proof setups
+```
+
+Both calls accept the same `routePrefix` — keep them in sync. The endpoint responds to `GET {routePrefix}/{stateType}/{version}`; the non-generic overload picks the right config type per request based on `stateType`.
+
+**Single-config dedicated-route variant** — if you want one config served from its own unique route (e.g. to gate behind separate auth):
+
+```csharp
+app.MapMetaConfigDownload<SessionConfig>("/meta/config/session");   // route prefix must differ per TConfig
+app.MapMetaConfigDownload<BalanceConfig>("/meta/config/balance");
+```
+
+The generic form binds one TConfig per route. Use the non-generic overload (default) for the typical case where one endpoint covers everything.
+
+> **Critical DI boundary.** Both helpers register on **ASP.NET DI** (`builder.Services`), not on the silo's `services.ConfigureMeta(...)`. `MetaHub` resolves `IConfigDownloadUrlResolver` from ASP.NET DI; the minimal endpoint resolves `IMetaConfigProvider<TConfig>` and `IMetaSerializer` from there too. Registrations placed inside `siloBuilder.ConfigureServices(...)` go into the **Orleans silo's** independent container and are invisible to ASP.NET-side resolution. The two containers don't share singletons.
+>
+> If you need the provider on both sides (Orleans grain DI for server-side meta logic, ASP.NET DI for the download endpoint), register the same instance / call the same `AddSharedMetaConfigProvider<T>()` extension in both places.
+
+Prior to 0.26.2 the framework registered the generated `GeneratedConfigDownloadUrlResolver` with `AddSingleton` — it won over any host registration unless you used `RemoveAll<IConfigDownloadUrlResolver>` first. As of 0.26.2 it uses `TryAddSingleton`; a host-side `AddSingleton<IConfigDownloadUrlResolver>(...)` (whether via `AddMetaConfigPublicUrl` or a custom class) wins automatically.
+
 ### Client-Side Config Flow (0.15.0+)
 
 1. Client subscribes to entity → server includes `ConfigVersion` in the response.
@@ -663,6 +697,14 @@ The pin is *runtime grain state*, not persisted on `EntityGrainState`. It dies w
 > Services with `[MetaService(..., DefaultConfig = true)]` retain the auto-default — that flag is now the explicit "an empty `new TConfig()` is acceptable as a fallback" contract.
 
 `RegisterConfigProvider<T>` (without "Try") clobbers any auto-emitted default, so order relative to `RegisterAllServices()` doesn't matter — the explicit call always wins.
+
+> **Pick by who owns the config values, not by what looks simplest.** The choice fixes how live-ops updates reach the client — not just bootstrap convenience.
+>
+> | Provider | Server can push a new config without rebuilding the client? | Offline / first-launch behaviour | Best for |
+> |---|---|---|---|
+> | `StaticConfigProvider` | **No** — `GetConfigAsync(version)` ignores the version argument and always returns the instance passed at construction. The server reports the version it pinned for the entity, but this provider hands back the bundled object regardless. | Always uses the bundled instance. | Bundled snapshot, LocalBackend, single-player, tests. |
+> | `DownloadingConfigProvider` | **Yes** — fetches bytes for the version the server pinned, deserialises, optionally caches to disk. | Throws on first launch with no network and no cache hit. | Live-ops servers, balance-driven games, anything where a content team ships config without app updates. |
+> | `CompositeConfigProvider(downloading, static)` | **Yes** for the primary path; falls back to the bundled snapshot when the primary throws. | Bundled snapshot when offline / pre-cache. | Real shipping clients — the default recommendation when both server delivery and offline robustness matter. |
 
 ```csharp
 // (A) Preloaded instance — LocalBackend / single-player / bundled ScriptableObject.

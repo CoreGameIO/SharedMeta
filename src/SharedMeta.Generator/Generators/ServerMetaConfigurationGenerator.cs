@@ -617,6 +617,11 @@ namespace SharedMeta.Generator.Generators
             GenerateConfigDownloadUrlResolver(sb, byStateType);
             sb.AppendLine();
 
+            // 3c. Generate IConfigByteSource (0.26.2+): non-generic byte source paired with
+            //     app.MapMetaConfigDownload() (no generic) — auto-routes by stateTypeName.
+            GenerateConfigByteSource(sb, byStateType);
+            sb.AppendLine();
+
             // 4. Generate ConfigureMeta extension method
             GenerateConfigureMetaExtension(sb, byStateType, allServerDeps, rootNamespace);
             sb.AppendLine();
@@ -710,6 +715,11 @@ namespace SharedMeta.Generator.Generators
 
             // 3b. Generate ConfigDownloadUrlResolver
             GenerateConfigDownloadUrlResolver(sb, byStateType);
+            sb.AppendLine();
+
+            // 3c. Generate IConfigByteSource (0.26.2+): non-generic byte source paired with
+            //     app.MapMetaConfigDownload() (no generic) — auto-routes by stateTypeName.
+            GenerateConfigByteSource(sb, byStateType);
             sb.AppendLine();
 
             // 4. Generate ConfigureMeta extension method
@@ -1955,8 +1965,18 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            // 0.22.0+ Per-silo client-signature registry — idempotent (TryAddSingleton).");
             sb.AppendLine("            SharedMeta.Server.Core.Session.ClientSignatureRegistryExtensions.AddSharedMetaClientSignatureRegistry(services);");
             sb.AppendLine();
-            sb.AppendLine("            // Register config download URL resolver");
-            sb.AppendLine("            services.AddSingleton<SharedMeta.Server.Core.IConfigDownloadUrlResolver>(sp => new GeneratedConfigDownloadUrlResolver(sp));");
+            sb.AppendLine("            // 0.26.2+: Register config download URL resolver as fallback only — TryAdd lets a host-side");
+            sb.AppendLine("            // AddSingleton<IConfigDownloadUrlResolver>(...) win without RemoveAll/ordering tricks. The");
+            sb.AppendLine("            // default GeneratedConfigDownloadUrlResolver delegates to IMetaConfigProvider<T>.GetDownloadUrl");
+            sb.AppendLine("            // which defaults to null; hosts that serve real download URLs ship their own resolver.");
+            sb.AppendLine("            Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions");
+            sb.AppendLine("                .TryAddSingleton<SharedMeta.Server.Core.IConfigDownloadUrlResolver>(services, sp => new GeneratedConfigDownloadUrlResolver(sp));");
+            sb.AppendLine();
+            sb.AppendLine("            // 0.26.2+: Register IConfigByteSource — non-generic source that materializes config bytes");
+            sb.AppendLine("            // for any stateTypeName declared in this assembly. Used by app.MapMetaConfigDownload() to");
+            sb.AppendLine("            // serve all configs from a single endpoint.");
+            sb.AppendLine("            Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions");
+            sb.AppendLine("                .TryAddSingleton<SharedMeta.Server.Core.IConfigByteSource>(services, sp => new GeneratedConfigByteSource(sp));");
             sb.AppendLine();
             sb.AppendLine("            // Register patch schema registry (used by diagnostic / desync paths to render PatchNode trees as readable JSON)");
             sb.AppendLine("            services.AddSingleton<SharedMeta.Core.Patch.IPatchSchemaRegistry>(sp =>");
@@ -2081,6 +2101,84 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                _ => null");
             sb.AppendLine("            };");
             sb.AppendLine("        }");
+            sb.AppendLine("    }");
+        }
+
+        /// <summary>
+        /// 0.26.2+: Generate IConfigByteSource implementation — non-generic,
+        /// auto-routes (stateTypeName, version) to the right IMetaConfigProvider&lt;TConfig&gt;
+        /// using the same state→config map as GeneratedConfigDownloadUrlResolver, serializes
+        /// via the supplied IMetaSerializer.
+        /// </summary>
+        private static void GenerateConfigByteSource(
+            StringBuilder sb,
+            Dictionary<string, List<ServiceImplInfo>> byStateType)
+        {
+            var statesWithConfig = byStateType
+                .Where(kvp => kvp.Value.Any(s => s.ConfigTypeFullName != null))
+                .Select(kvp => new
+                {
+                    StateTypeFullName = kvp.Key,
+                    StateTypeName = kvp.Value.First().StateTypeName,
+                    ConfigTypeFullName = kvp.Value.Select(s => s.ConfigTypeFullName).First(c => c != null)!
+                })
+                .ToList();
+
+            sb.AppendLine("    /// <summary>");
+            sb.AppendLine("    /// Generated non-generic config byte source. Pair with app.MapMetaConfigDownload()");
+            sb.AppendLine("    /// (no generic parameter) to serve all configs from a single endpoint, routed by");
+            sb.AppendLine("    /// stateTypeName at request time.");
+            sb.AppendLine("    /// </summary>");
+            sb.AppendLine("    public sealed class GeneratedConfigByteSource : SharedMeta.Server.Core.IConfigByteSource");
+            sb.AppendLine("    {");
+
+            if (statesWithConfig.Count > 0)
+            {
+                foreach (var entry in statesWithConfig)
+                {
+                    var fieldName = $"_{char.ToLower(entry.StateTypeName[0])}{entry.StateTypeName.Substring(1)}ConfigProvider";
+                    sb.AppendLine($"        private readonly SharedMeta.Server.Core.IMetaConfigProvider<{entry.ConfigTypeFullName}>? {fieldName};");
+                }
+                sb.AppendLine();
+
+                sb.AppendLine("        public GeneratedConfigByteSource(System.IServiceProvider sp)");
+                sb.AppendLine("        {");
+                foreach (var entry in statesWithConfig)
+                {
+                    var fieldName = $"_{char.ToLower(entry.StateTypeName[0])}{entry.StateTypeName.Substring(1)}ConfigProvider";
+                    sb.AppendLine($"            {fieldName} = sp.GetService<SharedMeta.Server.Core.IMetaConfigProvider<{entry.ConfigTypeFullName}>>();");
+                }
+                sb.AppendLine("        }");
+                sb.AppendLine();
+
+                sb.AppendLine("        public byte[]? GetBytes(SharedMeta.Core.IMetaSerializer serializer, string stateTypeName, SharedMeta.Core.MetaConfigVersion version)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            switch (stateTypeName)");
+                sb.AppendLine("            {");
+
+                foreach (var entry in statesWithConfig)
+                {
+                    var fieldName = $"_{char.ToLower(entry.StateTypeName[0])}{entry.StateTypeName.Substring(1)}ConfigProvider";
+                    sb.AppendLine($"                case \"{entry.StateTypeName}\":");
+                    sb.AppendLine($"                case \"{entry.StateTypeFullName}\":");
+                    sb.AppendLine($"                {{");
+                    sb.AppendLine($"                    if ({fieldName} == null) return null;");
+                    sb.AppendLine($"                    var cfg = {fieldName}.GetConfig(version);");
+                    sb.AppendLine($"                    return cfg == null ? null : serializer.PackForExternalUsage(cfg);");
+                    sb.AppendLine($"                }}");
+                }
+
+                sb.AppendLine("                default: return null;");
+                sb.AppendLine("            }");
+                sb.AppendLine("        }");
+            }
+            else
+            {
+                sb.AppendLine("        public GeneratedConfigByteSource(System.IServiceProvider sp) { }");
+                sb.AppendLine();
+                sb.AppendLine("        public byte[]? GetBytes(SharedMeta.Core.IMetaSerializer serializer, string stateTypeName, SharedMeta.Core.MetaConfigVersion version) => null;");
+            }
+
             sb.AppendLine("    }");
         }
 
