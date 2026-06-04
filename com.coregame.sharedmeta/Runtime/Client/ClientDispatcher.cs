@@ -82,6 +82,12 @@ namespace SharedMeta.Client
         // (transport event + RPC error can both detect supersede)
         private bool _terminated;
 
+        // 0.26.3+: Tracks Reconnecting → ? transition so HandleDisconnected can tell whether
+        // the transport gave up retrying (Reconnecting → Disconnected with reason != ClientRequested)
+        // versus a clean close (Disconnected with no prior Reconnecting). The former gets an
+        // extra Failed event so UI can show a permanent Reconnect button.
+        private bool _wasReconnecting;
+
         // Server time synchronization
         private long _lastServerTimeTicks;
         private long _localTimeAtLastSync;
@@ -1015,6 +1021,7 @@ namespace SharedMeta.Client
 
         private void HandleDisconnected(TransportDisconnectReason reason)
         {
+            bool transportGaveUp;
             lock (_lock)
             {
                 MetaLog.Info($"[ClientDispatcher] Disconnected: {reason}, keeping {_pendingRequests.Count} pending requests for reconnect");
@@ -1024,22 +1031,42 @@ namespace SharedMeta.Client
                 // (which continue numbering from lastAcknowledgedSequence+1) drain correctly.
                 _ordering.Clear();
                 IsSessionConnected = false;
+
+                // 0.26.3+: Capture-and-reset under lock so a Reconnecting → Disconnected
+                // race can't be seen by two threads simultaneously.
+                transportGaveUp = _wasReconnecting && reason != TransportDisconnectReason.ClientRequested;
+                _wasReconnecting = false;
             }
 
             // Keep pending requests - they will be re-sent on reconnect
             OnConnectionStatusChanged?.Invoke(ConnectionStatus.Disconnected, reason.ToString());
+
+            // 0.26.3+: Transport ran out of reconnect attempts (e.g. BestHTTP
+            // "No more reconnect attempt!" after Negotiation/transport errors). Emit Failed
+            // as a follow-up signal so UI can show a permanent Reconnect button instead of
+            // waiting for an event that the dispatcher would only emit from its own recovery
+            // path (ResumeSessionAsync / RestartSessionAsync). Clean closes — server-initiated
+            // or ClientRequested via DisconnectAsync — stay Disconnected only.
+            if (transportGaveUp)
+            {
+                OnConnectionStatusChanged?.Invoke(
+                    ConnectionStatus.Failed,
+                    $"Transport reconnect exhausted ({reason})");
+            }
         }
 
         private void HandleReconnecting()
         {
             MetaLog.Info("[ClientDispatcher] Transport reconnecting...");
             IsSessionConnected = false;
+            lock (_lock) { _wasReconnecting = true; }
             OnConnectionStatusChanged?.Invoke(ConnectionStatus.Reconnecting, null);
         }
 
         private void HandleTransportReconnected()
         {
             MetaLog.Info("[ClientDispatcher] Transport reconnected, re-establishing session...");
+            lock (_lock) { _wasReconnecting = false; }
             OnConnectionStatusChanged?.Invoke(ConnectionStatus.Reconnected, "Re-establishing session...");
             TriggerRecovery("transport-reconnected");
         }

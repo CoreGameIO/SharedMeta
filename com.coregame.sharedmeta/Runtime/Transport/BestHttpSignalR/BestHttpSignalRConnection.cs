@@ -106,6 +106,12 @@ namespace SharedMeta.Transport.BestHttp
         protected HubConnection? Hub => _hub;
         private string _connectionId = "";
 
+        // 0.26.3+: Tracks whether DisconnectAsync was called. BestHTTP fires _hub.OnClosed
+        // both on user-requested close AND when its internal reconnect-retry budget runs out
+        // ("No more reconnect attempt!"); without this flag the two cases are indistinguishable
+        // at the SharedMeta surface and TransportDisconnectReason was hardcoded to ClientRequested.
+        private bool _disconnectRequested;
+
         public string ConnectionId => _connectionId;
         public bool IsConnected => _hub != null && _hub.State == ConnectionStates.Connected;
 
@@ -175,8 +181,14 @@ namespace SharedMeta.Transport.BestHttp
 
             _hub.OnClosed += hub =>
             {
-                MetaLog.Info("[BestHttpSignalR] Connection closed");
-                OnDisconnected?.Invoke(TransportDisconnectReason.ClientRequested);
+                // 0.26.3+: BestHTTP fires OnClosed for both user-initiated DisconnectAsync
+                // and transport-give-up (after its internal reconnect-retry budget is exhausted).
+                // Only the _disconnectRequested flag distinguishes them.
+                var reason = _disconnectRequested
+                    ? TransportDisconnectReason.ClientRequested
+                    : TransportDisconnectReason.NetworkError;
+                MetaLog.Info($"[BestHttpSignalR] Connection closed: {reason}");
+                OnDisconnected?.Invoke(reason);
             };
 
             _hub.OnReconnecting += (hub, error) =>
@@ -199,6 +211,8 @@ namespace SharedMeta.Transport.BestHttp
         public Task DisconnectAsync()
         {
             if (_hub == null) return Task.CompletedTask;
+
+            _disconnectRequested = true;   // ← so OnClosed handler reports ClientRequested
 
             var tcs = new TaskCompletionSource<bool>();
 

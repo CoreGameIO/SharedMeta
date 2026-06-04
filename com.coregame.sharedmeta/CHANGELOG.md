@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.26.3] - 2026-06-01
+
+- `ConnectionStatus.Failed` now fires when the transport gives up retrying (BestHTTP "No more reconnect attempt!"). Previously the dispatcher only emitted `Disconnected`, leaving no terminal signal for UI to gate a "Reconnect" button on.
+- `BestHttpSignalRConnection` no longer hardcodes `TransportDisconnectReason.ClientRequested` on `OnClosed` — distinguishes user-initiated disconnect (`ClientRequested`) from transport give-up (`NetworkError`) via a `_disconnectRequested` flag set in `DisconnectAsync`.
+
 ## [0.26.2] - 2026-06-01
 
 Server-side config-download wiring shrinks to 2 lines, supports multi-config out of the box; generator-emitted default resolver no longer fights user registrations.
