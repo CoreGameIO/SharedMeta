@@ -3,7 +3,7 @@
 ## [0.26.3] - 2026-06-01
 
 - `ConnectionStatus.Failed` now fires when the transport gives up retrying (BestHTTP "No more reconnect attempt!"). Previously the dispatcher only emitted `Disconnected`, leaving no terminal signal for UI to gate a "Reconnect" button on.
-- `BestHttpSignalRConnection` no longer hardcodes `TransportDisconnectReason.ClientRequested` on `OnClosed` — distinguishes user-initiated disconnect (`ClientRequested`) from transport give-up (`NetworkError`) via a `_disconnectRequested` flag set in `DisconnectAsync`.
+- `BestHttpSignalRConnection` no longer hardcodes `TransportDisconnectReason.ClientRequested` on `OnClosed` — distinguishes user-initiated disconnect from transport give-up via a `_disconnectRequested` flag. Also emits `OnDisconnected(NetworkError)` from the `OnError` path when the hub state is already `Closed` — some BestHTTP versions don't fire `OnClosed` after retry-budget exhaustion, only `OnError`, leaving the UI hung in `Reconnecting`.
 
 ## [0.26.2] - 2026-06-01
 

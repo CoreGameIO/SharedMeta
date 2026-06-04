@@ -112,6 +112,12 @@ namespace SharedMeta.Transport.BestHttp
         // at the SharedMeta surface and TransportDisconnectReason was hardcoded to ClientRequested.
         private bool _disconnectRequested;
 
+        // 0.26.3+: Dedupes the OnDisconnected emission. Some BestHTTP versions DON'T fire
+        // _hub.OnClosed after retry-budget exhaustion — they leave the hub in ConnectionStates.Closed
+        // and only fire _hub.OnError. We use OnError as a safety net (see ConnectAsync), and this
+        // flag prevents double-emit if a later OnClosed does fire.
+        private bool _disconnectedEmitted;
+
         public string ConnectionId => _connectionId;
         public bool IsConnected => _hub != null && _hub.State == ConnectionStates.Connected;
 
@@ -177,13 +183,25 @@ namespace SharedMeta.Transport.BestHttp
             {
                 MetaLog.Error($"[BestHttpSignalR] Error: {error}");
                 tcs.TrySetException(new Exception($"SignalR connection failed: {error}"));
+
+                // 0.26.3+: Safety net — BestHTTP's "No more reconnect attempt!" path doesn't
+                // always fire OnClosed; the hub transitions to ConnectionStates.Closed and only
+                // OnError runs. Without this check the dispatcher never sees Disconnected/Failed
+                // and the UI hangs in Reconnecting forever.
+                if (hub.State == ConnectionStates.Closed && !_disconnectedEmitted && !_disconnectRequested)
+                {
+                    _disconnectedEmitted = true;
+                    MetaLog.Info("[BestHttpSignalR] Hub state == Closed after error — emitting NetworkError (BestHTTP did not fire OnClosed)");
+                    OnDisconnected?.Invoke(TransportDisconnectReason.NetworkError);
+                }
             };
 
             _hub.OnClosed += hub =>
             {
+                if (_disconnectedEmitted) return;     // safety-net path already fired from OnError
+                _disconnectedEmitted = true;
                 // 0.26.3+: BestHTTP fires OnClosed for both user-initiated DisconnectAsync
-                // and transport-give-up (after its internal reconnect-retry budget is exhausted).
-                // Only the _disconnectRequested flag distinguishes them.
+                // and transport-give-up. Only the _disconnectRequested flag distinguishes them.
                 var reason = _disconnectRequested
                     ? TransportDisconnectReason.ClientRequested
                     : TransportDisconnectReason.NetworkError;
