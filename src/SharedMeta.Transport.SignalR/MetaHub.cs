@@ -178,7 +178,13 @@ namespace SharedMeta.Transport.SignalR
         {
             try
             {
-                var url = _configUrlResolver?.GetDownloadUrl(request.StateTypeName, new Core.MetaConfigVersion(request.ConfigMajorVersion, request.ConfigMinorVersion));
+                // 0.26.4 bug-fix: include request.ConfigPatchVersion. Pre-fix the patch was
+                // dropped, so a client asking for v0.1.870 ended up calling
+                // resolver.GetDownloadUrl(..., 0.1.0) — yielding /meta/config/{state}/0.1.0
+                // and downloading stale bytes. Same fix landed in HttpPollingEndpoints + MuxHub.
+                var url = _configUrlResolver?.GetDownloadUrl(
+                    request.StateTypeName,
+                    new Core.MetaConfigVersion(request.ConfigMajorVersion, request.ConfigMinorVersion, request.ConfigPatchVersion));
                 return Task.FromResult(new ConfigDownloadUrlResponse { Success = true, DownloadUrl = url });
             }
             catch (Exception ex)

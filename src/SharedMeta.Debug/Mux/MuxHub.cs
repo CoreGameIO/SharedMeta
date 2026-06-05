@@ -141,9 +141,10 @@ namespace SharedMeta.Debug.Mux
         {
             try
             {
+                // 0.26.4 bug-fix: include request.ConfigPatchVersion (was dropped — see MetaHub).
                 var url = _configUrlResolver?.GetDownloadUrl(
                     request.StateTypeName,
-                    new MetaConfigVersion(request.ConfigMajorVersion, request.ConfigMinorVersion));
+                    new MetaConfigVersion(request.ConfigMajorVersion, request.ConfigMinorVersion, request.ConfigPatchVersion));
                 return Task.FromResult(new ConfigDownloadUrlResponse { Success = true, DownloadUrl = url });
             }
             catch (Exception ex)
