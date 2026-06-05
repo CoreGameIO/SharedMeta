@@ -87,5 +87,92 @@ namespace SharedMeta.Server.Core.Config
             this IConfigRegistry registry, MetaConfigVersion version, TConfig config, IMetaSerializer serializer)
             where TConfig : class
             => registry.PublishAsync(typeof(TConfig), version, serializer.Pack(config).ToArray());
+
+        /// <summary>
+        /// 0.26.4+: Publish only if the bytes actually differ from what's already stored for
+        /// the same (configType, version). Returns an outcome enum so the caller can
+        /// distinguish "first-time publish", "no-op same content", and "overwrote drifted
+        /// content". When <paramref name="failOnDrift"/> is true, throws
+        /// <see cref="ConfigContentDriftException"/> on drift instead of overwriting — use this
+        /// in production / CI to enforce "content changes require a version bump"; leave
+        /// false in dev for the convenience of editing YAML and restarting without bumping.
+        /// <para>
+        /// Diagnostic helper for startup-time bootstrap (manifest → registry republish): the
+        /// raw <see cref="IConfigRegistry.PublishAsync"/> always overwrites silently, which
+        /// hides workflow errors like "edited YAML but forgot to bump the version".
+        /// </para>
+        /// </summary>
+        public static async Task<ConfigPublishOutcome> PublishIfChangedAsync(
+            this IConfigRegistry registry,
+            Type configType,
+            MetaConfigVersion version,
+            byte[] configBytes,
+            bool failOnDrift = false)
+        {
+            if (registry is null) throw new ArgumentNullException(nameof(registry));
+            if (configType is null) throw new ArgumentNullException(nameof(configType));
+            if (configBytes is null) throw new ArgumentNullException(nameof(configBytes));
+
+            var existing = await registry.GetAsync(configType, version).ConfigureAwait(false);
+            if (existing is null)
+            {
+                await registry.PublishAsync(configType, version, configBytes).ConfigureAwait(false);
+                return ConfigPublishOutcome.PublishedNew;
+            }
+
+            if (existing.Length == configBytes.Length
+                && new ReadOnlySpan<byte>(existing).SequenceEqual(configBytes))
+            {
+                return ConfigPublishOutcome.Unchanged;
+            }
+
+            if (failOnDrift)
+            {
+                throw new ConfigContentDriftException(configType, version, existing.Length, configBytes.Length);
+            }
+
+            await registry.PublishAsync(configType, version, configBytes).ConfigureAwait(false);
+            return ConfigPublishOutcome.OverwrittenAfterDrift;
+        }
+    }
+
+    /// <summary>
+    /// 0.26.4+: Outcome of <see cref="ConfigRegistryExtensions.PublishIfChangedAsync"/>.
+    /// </summary>
+    public enum ConfigPublishOutcome
+    {
+        /// <summary>The (configType, version) pair was not in the registry — bytes stored as new.</summary>
+        PublishedNew,
+        /// <summary>The version existed with byte-identical content — no write was performed.</summary>
+        Unchanged,
+        /// <summary>The version existed with different content — bytes were overwritten (drift detected and accepted).</summary>
+        OverwrittenAfterDrift,
+    }
+
+    /// <summary>
+    /// 0.26.4+: Thrown by <see cref="ConfigRegistryExtensions.PublishIfChangedAsync"/> when
+    /// <c>failOnDrift</c> is true and the supplied bytes differ from what's already
+    /// published under the same (configType, version). Signals a workflow error — content
+    /// was edited without bumping the version, which would silently change the published
+    /// snapshot under an already-distributed version label.
+    /// </summary>
+    public sealed class ConfigContentDriftException : Exception
+    {
+        public Type ConfigType { get; }
+        public MetaConfigVersion Version { get; }
+        public int ExistingBytesLength { get; }
+        public int NewBytesLength { get; }
+
+        public ConfigContentDriftException(
+            Type configType, MetaConfigVersion version, int existingBytesLength, int newBytesLength)
+            : base($"Config content drift for {configType.FullName} v{version.Major}.{version.Minor}.{version.Patch}: " +
+                   $"published is {existingBytesLength} bytes, new is {newBytesLength} bytes. " +
+                   "Bump the config version (Major/Minor/Patch) instead of mutating the content for an already-published version.")
+        {
+            ConfigType = configType;
+            Version = version;
+            ExistingBytesLength = existingBytesLength;
+            NewBytesLength = newBytesLength;
+        }
     }
 }

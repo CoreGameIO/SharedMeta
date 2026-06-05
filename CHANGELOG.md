@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.26.4] - 2026-06-01
+
+- New `IConfigRegistry.PublishIfChangedAsync(configType, version, bytes, failOnDrift)` extension — diagnostic publish that compares against existing bytes and returns `PublishedNew` / `Unchanged` / `OverwrittenAfterDrift`. `failOnDrift: true` throws `ConfigContentDriftException` (typed) — use in CI/prod to enforce "content changes require a version bump". Raw `PublishAsync` still silently overwrites; this helper makes drift visible.
+- `FileConfigCache<TConfig>` filename now includes `Patch`: `{Name}.v{Major}.{Minor}.{Patch}.bin` (was `v{Major}.{Minor}.bin`). Pre-0.26.4 cache collapsed every patch of the same Major.Minor into one file — broken for hotfix patches and for content-derived dev-version workflows. Old-format files auto-evicted by the existing `v*.bin` cleanup glob on next `Put`.
+
 ## [0.26.3] - 2026-06-01
 
 - `ConnectionStatus.Failed` now fires when the transport gives up retrying (BestHTTP "No more reconnect attempt!"). Previously the dispatcher only emitted `Disconnected`, leaving no terminal signal for UI to gate a "Reconnect" button on.
