@@ -54,5 +54,16 @@ namespace SharedMeta.Core.Transport
         /// in the index, and (service, method) is resolved server-side via the signature.
         /// </summary>
         [Id(9), Key(9)] public ushort MethodId { get; set; }
+
+        /// <summary>
+        /// 0.26.6+ Optional <see cref="SharedMeta.Core.PayloadDebug"/> piggybacked from the
+        /// client. The framework uses this slot to carry per-method debug-channel data
+        /// (currently: deep-state-check <c>PreStateCrc</c>/<c>PostStateCrc</c> for methods
+        /// annotated <c>[MetaMethod(DeepStateCheck = SnapshotTiming.X)]</c>). The handler
+        /// copies this onto <see cref="SharedMeta.Core.RpcCall.Debug"/> before dispatch so
+        /// server-side <c>MetaProviderBase.HandleCallAsync</c> can compare CRCs. Default
+        /// <c>null</c> keeps the wire identical for unannotated methods.
+        /// </summary>
+        [Id(10), Key(10)] public SharedMeta.Core.PayloadDebug? Debug { get; set; }
     }
 }

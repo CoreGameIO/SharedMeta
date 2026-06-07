@@ -22,6 +22,9 @@ namespace SharedMeta.Client
         public ReadOnlyMemory<byte> Payload { get; init; }
         public bool IsCrossOptimistic { get; init; }
         public long ServerTimeTicks { get; init; }
+        // 0.26.6+ piggybacked debug-channel data (PayloadDebug); carries deep-state CRCs
+        // for methods annotated [MetaMethod(DeepStateCheck = SnapshotTiming.X)].
+        public SharedMeta.Core.PayloadDebug? Debug { get; init; }
         public TaskCompletionSource<SessionOp> Tcs { get; } = new();
         public DateTime CreatedAt { get; } = DateTime.UtcNow;
     }
@@ -264,7 +267,8 @@ namespace SharedMeta.Client
                     MethodId = call.MethodId,
                     Payload = payloadBytes,
                     IsCrossOptimistic = call.IsCrossOptimistic,
-                    ServerTimeTicks = call.ServerTimeTicks
+                    ServerTimeTicks = call.ServerTimeTicks,
+                    Debug = call.Debug
                 };
                 _pendingRequests[requestId] = pending;
             }
@@ -1325,7 +1329,8 @@ namespace SharedMeta.Client
             Payload = pending.Payload,
             LastAcknowledgedSequence = _lastAcknowledgedSequence,
             IsCrossOptimistic = pending.IsCrossOptimistic,
-            ServerTimeTicks = pending.ServerTimeTicks
+            ServerTimeTicks = pending.ServerTimeTicks,
+            Debug = pending.Debug
         };
 
         /// <summary>

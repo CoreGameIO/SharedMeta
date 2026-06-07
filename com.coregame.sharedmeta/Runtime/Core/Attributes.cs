@@ -382,6 +382,52 @@ namespace SharedMeta.Core
         Silent = 2
     }
 
+    /// <summary>
+    /// 0.26.6+ Per-method opt-in for deep state comparison between client and server.
+    /// Used via <c>[MetaMethod(DeepStateCheck = SnapshotTiming.X)]</c>.
+    /// <para>
+    /// Mechanism: when set on a method, the client serializes the entity state at the
+    /// chosen moment(s), computes an FNV-1a CRC, and stamps it on
+    /// <c>RpcCallRequest.PreStateCrc</c>. The server (real Orleans <c>MetaProviderBase</c>
+    /// or local <c>LocalConnection</c>) re-serializes its own state at the same moments,
+    /// compares CRCs, and on mismatch ships its own full serialized state back via
+    /// <c>MetaOperation.DesyncStateBytes</c>. The client's generated <c>*ApiClient</c>
+    /// fires <c>IDesyncDiagnostics.OnDeepStateDesync</c> with both binaries so a user
+    /// callback can deserialize and diff (e.g. via JSON conversion).
+    /// </para>
+    /// <para>
+    /// Zero-cost when not used: methods without this attribute property compile with no
+    /// snapshot / CRC / wire overhead — the generator emits the wrap path only for
+    /// annotated methods.
+    /// </para>
+    /// <para>
+    /// Only meaningful for <see cref="ExecutionMode.Optimistic"/> and
+    /// <see cref="ExecutionMode.CrossOptimistic"/> — modes where both client and server
+    /// actually execute the method. Server-only modes (Server / ServerPatch / ServerReplace)
+    /// don't run the method on the client, so a "diff" before reaching the server is
+    /// expected, not a desync.
+    /// </para>
+    /// </summary>
+    public enum SnapshotTiming : byte
+    {
+        /// <summary>Default — no deep state check on this method. Generator emits no wrap.</summary>
+        None = 0,
+
+        /// <summary>Snapshot the state BEFORE the method runs on each side. Catches state
+        /// drift that accumulated from prior calls — the current call's body never gets to
+        /// diverge if pre-states already disagree.</summary>
+        Before = 1,
+
+        /// <summary>Snapshot the state AFTER the method runs on each side. Catches divergence
+        /// in the method's own execution (e.g. non-deterministic ordering, missed
+        /// <see cref="Context.Random"/> path).</summary>
+        After = 2,
+
+        /// <summary>Snapshot at BOTH moments. Identifies whether divergence existed before
+        /// the call or was introduced by it.</summary>
+        Both = 3,
+    }
+
     [AttributeUsage(AttributeTargets.Method)]
     public class MetaMethodAttribute : Attribute
     {
@@ -487,6 +533,23 @@ namespace SharedMeta.Core
         /// </summary>
         [System.Obsolete("Use Mode = ExecutionMode.Signal instead. This bool flag will be removed in a future major version.")]
         public bool Signal { get; set; }
+
+        /// <summary>
+        /// 0.26.6+ Per-method opt-in for deep state comparison between client and server. When
+        /// set to anything other than <see cref="SnapshotTiming.None"/>, the generator emits
+        /// snapshot + FNV-1a CRC logic on the client *ApiClient for THIS method only — other
+        /// methods are unaffected. The client stamps the resulting CRC on
+        /// <c>RpcCallRequest.PreStateCrc</c>; the server (real or local) re-computes its own
+        /// CRC at the matching moment and ships full serialized state back via
+        /// <c>MetaOperation.DesyncStateBytes</c> on mismatch. Client fires
+        /// <c>IDesyncDiagnostics.OnDeepStateDesync</c> with both binaries.
+        /// <para>
+        /// Only meaningful for <see cref="ExecutionMode.Optimistic"/> /
+        /// <see cref="ExecutionMode.CrossOptimistic"/> — modes where both sides execute the
+        /// method body.
+        /// </para>
+        /// </summary>
+        public SnapshotTiming DeepStateCheck { get; set; } = SnapshotTiming.None;
     }
 
     /// <summary>

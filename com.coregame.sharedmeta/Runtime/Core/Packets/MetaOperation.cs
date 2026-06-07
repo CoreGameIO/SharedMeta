@@ -72,8 +72,10 @@ namespace SharedMeta.Core.Packets
         // ── Nested triggers (replaces TriggerBroadcasts / TriggerOperations) ──
         [Id(14), Key(14)] public List<MetaOperation>? Triggers { get; set; }
 
-        // ── Debug (rarely used, optional payload-debug info) ──────────────
-        [Id(15), Key(15)] public string? Debug { get; set; }
+        // ── Debug (rarely used, optional payload-debug info; 0.26.6+ carries deep-state
+        // desync state bytes + timing when a [MetaMethod(DeepStateCheck = X)] check
+        // detects a CRC mismatch — see SharedMeta.Core.PayloadDebug) ──────────────
+        [Id(15), Key(15)] public SharedMeta.Core.PayloadDebug? Debug { get; set; }
 
         [IgnoreMember] public bool HasError => Error != null;
         [IgnoreMember] public bool Success => Error == null;

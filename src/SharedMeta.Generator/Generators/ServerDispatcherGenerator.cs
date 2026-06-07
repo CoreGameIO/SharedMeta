@@ -33,6 +33,22 @@ namespace SharedMeta.Generator.Generators
             // Detect serializer type
             var serializer = compilation != null ? SerializerDetector.Detect(compilation) : DetectedSerializer.Generic;
 
+            // 0.26.6+ Resolve the service's state type from [MetaService(StateType = typeof(TState))].
+            // Required by the deep-state-check emit (per-method snapshot of MetaContext<TState>.State).
+            // Null when interfaceSymbol is unavailable — DeepStateCheck emit is skipped in that case.
+            string? stateTypeFullName = null;
+            if (interfaceSymbol != null)
+            {
+                var msAttr = interfaceSymbol.GetAttributes().FirstOrDefault(a =>
+                    a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaServiceAttribute");
+                if (msAttr != null)
+                {
+                    var stArg = msAttr.NamedArguments.FirstOrDefault(a => a.Key == "StateType");
+                    if (!stArg.Value.IsNull && stArg.Value.Value is INamedTypeSymbol stSym)
+                        stateTypeFullName = stSym.ToDisplayString();
+                }
+            }
+
             // Collect triggers from interface and implementation
             var triggersByMethod = CollectTriggers(interfaceSymbol, compilation);
 
@@ -111,7 +127,7 @@ namespace SharedMeta.Generator.Generators
                 var idConst = "global::" + namespaceName + ".Generated.GameMethodIds." + SignatureHashGenerator.MakeMethodIdConstName(symbol, alias, version);
                 sbServer.AppendLine($"                case {idConst}:");
                 sbServer.AppendLine("                {");
-                EmitMethodBody(sbServer, asyncTails, entry.Method, entry.Info, symbol, namespaceName, triggersByMethod, serializer);
+                EmitMethodBody(sbServer, asyncTails, entry.Method, entry.Info, symbol, namespaceName, triggersByMethod, serializer, stateTypeFullName);
                 sbServer.AppendLine("                }");
             }
             sbServer.AppendLine($"                default: throw new MissingMethodException($\"Method id {{methodId}} not registered on {symbol}\");");
@@ -453,7 +469,8 @@ namespace SharedMeta.Generator.Generators
         /// </summary>
         private static void GenerateMethodCallWithTriggers(StringBuilder sb, StringBuilder asyncTails, string symbol, MetaMethodInfo info, string methodName, string callArgs, string returnType, Dictionary<string, List<TriggerInfo>> triggersByMethod,
             string interfaceName, string namespaceName,
-            DetectedSerializer serializer = DetectedSerializer.Generic, bool forcePersist = false)
+            DetectedSerializer serializer = DetectedSerializer.Generic, bool forcePersist = false,
+            int deepStateCheck = 0, string? stateTypeFullName = null)
         {
             const string indent = "                    ";
 
@@ -462,24 +479,49 @@ namespace SharedMeta.Generator.Generators
             bool isTaskOfT = returnType.StartsWith("System.Threading.Tasks.Task<") || returnType.StartsWith("Task<");
             bool isVoid = returnType == "void";
 
+            // 0.26.6+ Deep-state-check emit gating. When the method is annotated
+            // [MetaMethod(DeepStateCheck = SnapshotTiming.X)] and we know the state type,
+            // we wrap the impl call with a pre/post snapshot + CRC compare against
+            // context.ClientDebug, then thread Debug onto DispatchResult.
+            bool emitDsc = deepStateCheck != 0 && !string.IsNullOrEmpty(stateTypeFullName);
+            string dsDebugPart = emitDsc ? ", Debug = _dsDebug" : "";
+
             if (isVoid)
             {
-                // Pure sync void return. No Task involvement at all.
-                sb.AppendLine($"{indent}service.{methodName}({callArgs});");
+                if (emitDsc)
+                {
+                    EmitDeepStateCheckBlockOpen(sb, indent, deepStateCheck, stateTypeFullName!);
+                    sb.AppendLine($"{indent}service.{methodName}({callArgs});");
+                    EmitDeepStateCheckBlockPost(sb, indent, deepStateCheck);
+                }
+                else
+                {
+                    sb.AppendLine($"{indent}service.{methodName}({callArgs});");
+                }
                 var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent, interfaceName, namespaceName);
-                EmitSyncDispatchReturn(sb, indent, resultVar: null, returnType: null, triggersVar, forcePersistPart);
+                EmitSyncDispatchReturn(sb, indent, resultVar: null, returnType: null, triggersVar, forcePersistPart, dsDebugPart);
             }
             else if (isTask)
             {
                 // async Task — sync-completion check, async tail fallback.
                 sb.AppendLine($"{indent}{{");
+                if (emitDsc)
+                    EmitDeepStateCheckBlockOpen(sb, indent + "    ", deepStateCheck, stateTypeFullName!);
                 sb.AppendLine($"{indent}    var __t = service.{methodName}({callArgs});");
                 sb.AppendLine($"{indent}    if (__t.IsCompletedSuccessfully)");
                 sb.AppendLine($"{indent}    {{");
+                if (emitDsc)
+                    EmitDeepStateCheckBlockPost(sb, indent + "        ", deepStateCheck);
                 var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent + "        ", interfaceName, namespaceName);
-                EmitSyncDispatchReturn(sb, indent + "        ", resultVar: null, returnType: null, triggersVar, forcePersistPart);
+                EmitSyncDispatchReturn(sb, indent + "        ", resultVar: null, returnType: null, triggersVar, forcePersistPart, dsDebugPart);
                 sb.AppendLine($"{indent}    }}");
                 var tailName = AsyncTailName(info);
+                // Async-tail path: deep-state-check is intentionally skipped for genuinely-suspending
+                // calls (would require thread-state plumbing into the per-method tail). The async-tail
+                // route is rare in practice; if a DeepStateCheck-annotated method goes async, the
+                // server emits a compile-time warning so the user can decide.
+                if (emitDsc)
+                    sb.AppendLine($"{indent}    #warning SharedMeta: [MetaMethod(DeepStateCheck)] on async '{interfaceName}.{methodName}' — snapshot fires only when the impl completes synchronously. Convert to a sync return type for full coverage.");
                 sb.AppendLine($"{indent}    return {tailName}(service, __t, serializer);");
                 sb.AppendLine($"{indent}}}");
                 EmitAsyncTail(asyncTails, symbol, info, methodName, triggersByMethod, interfaceName, namespaceName, taskGenericType: null, resultVar: null, forcePersistPart);
@@ -489,14 +531,20 @@ namespace SharedMeta.Generator.Generators
                 // async Task<T> — sync-completion check, async tail fallback.
                 var taskGenericType = ExtractTaskGenericType(returnType);
                 sb.AppendLine($"{indent}{{");
+                if (emitDsc)
+                    EmitDeepStateCheckBlockOpen(sb, indent + "    ", deepStateCheck, stateTypeFullName!);
                 sb.AppendLine($"{indent}    var __t = service.{methodName}({callArgs});");
                 sb.AppendLine($"{indent}    if (__t.IsCompletedSuccessfully)");
                 sb.AppendLine($"{indent}    {{");
                 sb.AppendLine($"{indent}        var result = __t.Result;");
+                if (emitDsc)
+                    EmitDeepStateCheckBlockPost(sb, indent + "        ", deepStateCheck);
                 var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent + "        ", interfaceName, namespaceName);
-                EmitSyncDispatchReturn(sb, indent + "        ", resultVar: "result", returnType: taskGenericType, triggersVar, forcePersistPart);
+                EmitSyncDispatchReturn(sb, indent + "        ", resultVar: "result", returnType: taskGenericType, triggersVar, forcePersistPart, dsDebugPart);
                 sb.AppendLine($"{indent}    }}");
                 var tailName = AsyncTailName(info);
+                if (emitDsc)
+                    sb.AppendLine($"{indent}    #warning SharedMeta: [MetaMethod(DeepStateCheck)] on async '{interfaceName}.{methodName}' — snapshot fires only when the impl completes synchronously. Convert to a sync return type for full coverage.");
                 sb.AppendLine($"{indent}    return {tailName}(service, __t, serializer);");
                 sb.AppendLine($"{indent}}}");
                 EmitAsyncTail(asyncTails, symbol, info, methodName, triggersByMethod, interfaceName, namespaceName, taskGenericType, resultVar: "__result", forcePersistPart);
@@ -504,10 +552,48 @@ namespace SharedMeta.Generator.Generators
             else
             {
                 // Synchronous T return (e.g. int, MyDto). No Task wrapping.
-                sb.AppendLine($"{indent}var result = service.{methodName}({callArgs});");
+                if (emitDsc)
+                {
+                    EmitDeepStateCheckBlockOpen(sb, indent, deepStateCheck, stateTypeFullName!);
+                    sb.AppendLine($"{indent}var result = service.{methodName}({callArgs});");
+                    EmitDeepStateCheckBlockPost(sb, indent, deepStateCheck);
+                }
+                else
+                {
+                    sb.AppendLine($"{indent}var result = service.{methodName}({callArgs});");
+                }
                 var triggersVar = GenerateTriggerCollection(sb, methodName, triggersByMethod, indent, interfaceName, namespaceName);
-                EmitSyncDispatchReturn(sb, indent, resultVar: "result", returnType: returnType, triggersVar, forcePersistPart);
+                EmitSyncDispatchReturn(sb, indent, resultVar: "result", returnType: returnType, triggersVar, forcePersistPart, dsDebugPart);
             }
+        }
+
+        /// <summary>
+        /// 0.26.6+ Emit pre-dispatch part of deep-state-check: declare locals, capture client
+        /// debug, and (if Before-flag set) snapshot State and seed _dsDebug on Before mismatch.
+        /// </summary>
+        private static void EmitDeepStateCheckBlockOpen(StringBuilder sb, string indent, int deepStateCheck, string stateTypeFullName)
+        {
+            sb.AppendLine($"{indent}var _dsCtxTyped = (global::SharedMeta.Core.MetaContext<{stateTypeFullName}>)context;");
+            sb.AppendLine($"{indent}var _dsClientDebug = _dsCtxTyped.ClientDebug;");
+            sb.AppendLine($"{indent}global::SharedMeta.Core.PayloadDebug? _dsDebug = null;");
+            // 0.26.6+ Helper-call form so a breakpoint inside DeepStateHashing.CheckBefore/After
+            // works for users debugging in Unity / IL2CPP where stepping into .g.cs is awkward.
+            if ((deepStateCheck & 1) != 0)
+            {
+                sb.AppendLine($"{indent}_dsDebug = global::SharedMeta.Core.Diagnostics.DeepStateHashing.CheckBefore(serializer, _dsCtxTyped.State, _dsClientDebug);");
+            }
+        }
+
+        /// <summary>
+        /// 0.26.6+ Emit post-dispatch part of deep-state-check: invoke <c>CheckAfter</c> helper
+        /// when (After-flag) is set AND no Before mismatch was already captured. Subsequent
+        /// <c>EmitSyncDispatchReturn</c> picks up the resulting <c>_dsDebug</c>.
+        /// </summary>
+        private static void EmitDeepStateCheckBlockPost(StringBuilder sb, string indent, int deepStateCheck)
+        {
+            if ((deepStateCheck & 2) == 0) return;
+            sb.AppendLine($"{indent}if (_dsDebug == null)");
+            sb.AppendLine($"{indent}    _dsDebug = global::SharedMeta.Core.Diagnostics.DeepStateHashing.CheckAfter(serializer, _dsCtxTyped.State, _dsClientDebug);");
         }
 
         /// <summary>
@@ -515,13 +601,13 @@ namespace SharedMeta.Generator.Generators
         /// DispatchResult in a sync-completed <see cref="ValueTask{T}"/> so the non-async outer
         /// <c>Dispatch</c> method skips any state-machine allocation.
         /// </summary>
-        private static void EmitSyncDispatchReturn(StringBuilder sb, string indent, string? resultVar, string? returnType, string? triggersVar, string forcePersistPart)
+        private static void EmitSyncDispatchReturn(StringBuilder sb, string indent, string? resultVar, string? returnType, string? triggersVar, string forcePersistPart, string dsDebugPart = "")
         {
             // Result serialization goes through Context.Serializer (GrainScopedSerializer);
             // BuildDispatchResultExpr fast-paths bool / int / void returns to the cached
             // DispatchResult tables (DispatchResult.True / False / Int / Void) when there
             // are no triggers + no ForcePersist, sidestepping the Pack call entirely.
-            var expr = BuildDispatchResultExpr(resultVar, returnType, triggersVar, forcePersistPart);
+            var expr = BuildDispatchResultExpr(resultVar, returnType, triggersVar, forcePersistPart, dsDebugPart);
             sb.AppendLine($"{indent}return new ValueTask<DispatchResult>({expr});");
         }
 
@@ -532,17 +618,19 @@ namespace SharedMeta.Generator.Generators
         /// directly. Otherwise falls back to constructing a fresh struct with
         /// <c>serializer.Pack(value)</c> (the regular per-call scratch write).
         /// </summary>
-        private static string BuildDispatchResultExpr(string? resultVar, string? returnType, string? triggersVar, string forcePersistPart)
+        private static string BuildDispatchResultExpr(string? resultVar, string? returnType, string? triggersVar, string forcePersistPart, string dsDebugPart = "")
         {
             string triggersPart = triggersVar != null ? $", TriggersToExecute = {triggersVar}.Count > 0 ? {triggersVar} : null" : "";
-            bool canCacheStruct = triggersVar == null && string.IsNullOrEmpty(forcePersistPart);
+            // 0.26.6+ When deep-state-check is in play (dsDebugPart non-empty), we can't return
+            // a cached static — the Debug field would be lost. Force fresh struct construction.
+            bool canCacheStruct = triggersVar == null && string.IsNullOrEmpty(forcePersistPart) && string.IsNullOrEmpty(dsDebugPart);
 
             // Void / no-result
             if (resultVar == null)
             {
                 return canCacheStruct
                     ? "DispatchResult.Void"
-                    : $"new DispatchResult {{ ResultBytes = default{triggersPart}{forcePersistPart} }}";
+                    : $"new DispatchResult {{ ResultBytes = default{triggersPart}{forcePersistPart}{dsDebugPart} }}";
             }
 
             // bool fast-path
@@ -550,7 +638,7 @@ namespace SharedMeta.Generator.Generators
             {
                 if (canCacheStruct)
                     return $"({resultVar} ? DispatchResult.True : DispatchResult.False)";
-                return $"new DispatchResult {{ ResultBytes = ({resultVar} ? DispatchResult.True.ResultBytes : DispatchResult.False.ResultBytes){triggersPart}{forcePersistPart} }}";
+                return $"new DispatchResult {{ ResultBytes = ({resultVar} ? DispatchResult.True.ResultBytes : DispatchResult.False.ResultBytes){triggersPart}{forcePersistPart}{dsDebugPart} }}";
             }
 
             // int fast-path with range check; out-of-range falls back to Pack.
@@ -558,11 +646,11 @@ namespace SharedMeta.Generator.Generators
             {
                 if (canCacheStruct)
                     return $"((uint){resultVar} < (uint)DispatchResult.Int.Length ? DispatchResult.Int[{resultVar}] : new DispatchResult {{ ResultBytes = serializer.PackForExternalUsage({resultVar}) }})";
-                return $"new DispatchResult {{ ResultBytes = ((uint){resultVar} < (uint)DispatchResult.Int.Length ? DispatchResult.Int[{resultVar}].ResultBytes : serializer.PackForExternalUsage({resultVar})){triggersPart}{forcePersistPart} }}";
+                return $"new DispatchResult {{ ResultBytes = ((uint){resultVar} < (uint)DispatchResult.Int.Length ? DispatchResult.Int[{resultVar}].ResultBytes : serializer.PackForExternalUsage({resultVar})){triggersPart}{forcePersistPart}{dsDebugPart} }}";
             }
 
             // Default: regular Pack.
-            return $"new DispatchResult {{ ResultBytes = serializer.PackForExternalUsage({resultVar}){triggersPart}{forcePersistPart} }}";
+            return $"new DispatchResult {{ ResultBytes = serializer.PackForExternalUsage({resultVar}){triggersPart}{forcePersistPart}{dsDebugPart} }}";
         }
 
         /// <summary>
@@ -630,6 +718,10 @@ namespace SharedMeta.Generator.Generators
             public int Version { get; set; }
             public bool ForcePersist { get; set; }
             public bool GenerateClientApi { get; set; } = true;
+            // 0.26.6+ SnapshotTiming bitmask (1 = Before, 2 = After, 3 = Both, 0 = None).
+            // Parsed from [MetaMethod(DeepStateCheck = SnapshotTiming.X)]; drives per-case
+            // emit of state pre/post snapshot + CRC compare against context.ClientDebug.
+            public int DeepStateCheck { get; set; }
         }
 
         /// <summary>
@@ -667,6 +759,23 @@ namespace SharedMeta.Generator.Generators
                         if (arg.Expression is LiteralExpressionSyntax gaLit && gaLit.Token.ValueText == "false")
                             info.GenerateClientApi = false;
                         break;
+                    case "DeepStateCheck":
+                        if (arg.Expression is MemberAccessExpressionSyntax dscAccess)
+                        {
+                            info.DeepStateCheck = dscAccess.Name.Identifier.Text switch
+                            {
+                                "Before" => 1,
+                                "After" => 2,
+                                "Both" => 3,
+                                _ => 0,
+                            };
+                        }
+                        else if (arg.Expression is LiteralExpressionSyntax dscLit
+                            && int.TryParse(dscLit.Token.ValueText, out var dscInt))
+                        {
+                            info.DeepStateCheck = dscInt & 3;
+                        }
+                        break;
                 }
             }
             return info;
@@ -681,7 +790,7 @@ namespace SharedMeta.Generator.Generators
         /// remains the same — C# tolerates extra leading whitespace.
         /// </summary>
         private static void EmitMethodBody(StringBuilder sb, StringBuilder asyncTails, MethodDeclarationSyntax method, MetaMethodInfo info,
-            string symbol, string namespaceName, Dictionary<string, List<TriggerInfo>> triggersByMethod, DetectedSerializer serializer)
+            string symbol, string namespaceName, Dictionary<string, List<TriggerInfo>> triggersByMethod, DetectedSerializer serializer, string? stateTypeFullName)
         {
             var methodName = method.Identifier.Text;
             var returnType = method.ReturnType.ToString();
@@ -706,7 +815,7 @@ namespace SharedMeta.Generator.Generators
                 {
                     GenerateMemoryPackArgumentUnpacking(sb, method, out var argNames);
                     var callArgs = string.Join(", ", argNames);
-                    GenerateMethodCallWithTriggers(sb, asyncTails, symbol, info, methodName, callArgs, returnType, triggersByMethod, symbol, namespaceName, serializer, info.ForcePersist);
+                    GenerateMethodCallWithTriggers(sb, asyncTails, symbol, info, methodName, callArgs, returnType, triggersByMethod, symbol, namespaceName, serializer, info.ForcePersist, info.DeepStateCheck, stateTypeFullName);
                 }
                 else
                 {
@@ -749,7 +858,7 @@ namespace SharedMeta.Generator.Generators
                         argNames.Add(paramName);
                     }
                     var callArgs = string.Join(", ", argNames);
-                    GenerateMethodCallWithTriggers(sb, asyncTails, symbol, info, methodName, callArgs, returnType, triggersByMethod, symbol, namespaceName, serializer, info.ForcePersist);
+                    GenerateMethodCallWithTriggers(sb, asyncTails, symbol, info, methodName, callArgs, returnType, triggersByMethod, symbol, namespaceName, serializer, info.ForcePersist, info.DeepStateCheck, stateTypeFullName);
                 }
             }
             else

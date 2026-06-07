@@ -159,5 +159,14 @@ namespace SharedMeta.Core.Transport
         /// opt-out flip invalidates cached annotations.
         /// </summary>
         public bool PatchTrackingAvailable { get; init; }
+
+        /// <summary>
+        /// 0.26.6+ Mirror of <c>[MetaMethod(DeepStateCheck = SnapshotTiming.X)]</c>. Drives the
+        /// per-method opt-in deep state comparison: server reads this entry by methodId and
+        /// runs pre / post / both snapshot CRC checks only when this is non-<c>None</c>.
+        /// Unannotated methods stay at <see cref="SharedMeta.Core.SnapshotTiming.None"/> and
+        /// pay zero overhead on the dispatch path.
+        /// </summary>
+        public SharedMeta.Core.SnapshotTiming DeepStateCheck { get; init; }
     }
 }

@@ -56,9 +56,12 @@ namespace SharedMeta.Core.Network
         /// </summary>
         public MetaConfigVersion ExecutedConfigVersion { get; set; }
 
-        /// <summary>0.24.0+ Server-stamped diagnostic string from <c>MetaOperation.Debug</c>
-        /// (currently carries entity-seq as <c>"seq=N"</c>). See <c>ByteCallResponse.Debug</c>.</summary>
-        public string? Debug { get; set; }
+        /// <summary>0.26.6+ Server-stamped <see cref="PayloadDebug"/> from <c>MetaOperation.Debug</c>.
+        /// Carries entity-seq info, and (when a method is annotated
+        /// <c>[MetaMethod(DeepStateCheck = SnapshotTiming.X)]</c> and the server detected a CRC
+        /// mismatch) <see cref="PayloadDebug.DesyncStateBytes"/> + <see cref="PayloadDebug.DesyncTiming"/>.
+        /// </summary>
+        public PayloadDebug? Debug { get; set; }
     }
 
     /// <summary>
@@ -108,9 +111,12 @@ namespace SharedMeta.Core.Network
         /// </summary>
         public MetaConfigVersion ExecutedConfigVersion { get; set; }
 
-        /// <summary>0.24.0+ Server-stamped diagnostic string from <c>MetaOperation.Debug</c>
-        /// (currently carries entity-seq as <c>"seq=N"</c>). See <c>ByteCallResponse.Debug</c>.</summary>
-        public string? Debug { get; set; }
+        /// <summary>0.26.6+ Server-stamped <see cref="PayloadDebug"/> from <c>MetaOperation.Debug</c>.
+        /// Carries entity-seq info, and (when a method is annotated
+        /// <c>[MetaMethod(DeepStateCheck = SnapshotTiming.X)]</c> and the server detected a CRC
+        /// mismatch) <see cref="PayloadDebug.DesyncStateBytes"/> + <see cref="PayloadDebug.DesyncTiming"/>.
+        /// </summary>
+        public PayloadDebug? Debug { get; set; }
     }
 
     /// <summary>
@@ -166,12 +172,12 @@ namespace SharedMeta.Core.Network
         public MetaConfigVersion ExecutedConfigVersion { get; set; }
 
         /// <summary>
-        /// 0.24.0+ Server-stamped diagnostic string from <c>MetaOperation.Debug</c>. Currently
-        /// carries the entity sequence number the server ran the body under (<c>"seq=N"</c>).
-        /// Surfaced in desync error reports so client-side ordering races against preceding
-        /// broadcasts can be diagnosed by comparing this against the client's locally-tracked
-        /// per-entity seq.
+        /// 0.26.6+ Server-stamped <see cref="PayloadDebug"/> from <c>MetaOperation.Debug</c>.
+        /// Carries <see cref="PayloadDebug.Info"/> (e.g. <c>"seq=N"</c>) plus, when a method
+        /// is annotated <c>[MetaMethod(DeepStateCheck = SnapshotTiming.X)]</c> and the server
+        /// detected a CRC mismatch, <see cref="PayloadDebug.DesyncStateBytes"/> +
+        /// <see cref="PayloadDebug.DesyncTiming"/>.
         /// </summary>
-        public string? Debug { get; set; }
+        public PayloadDebug? Debug { get; set; }
     }
 }

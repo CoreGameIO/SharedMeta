@@ -72,5 +72,16 @@ namespace SharedMeta.Core
         /// Set by the generated dispatcher when [MetaMethod(ForcePersist = true)].
         /// </summary>
         public bool ForcePersist { get; set; }
+
+        /// <summary>
+        /// 0.26.6+ Optional <see cref="PayloadDebug"/> populated by the generated dispatcher
+        /// when a method annotated <c>[MetaMethod(DeepStateCheck = SnapshotTiming.X)]</c>
+        /// detected a CRC mismatch against the client's <see cref="PayloadDebug.PreStateCrc"/> /
+        /// <see cref="PayloadDebug.PostStateCrc"/>. Carries the server's serialized state at
+        /// the failing timing — <see cref="MetaProviderBase"/> / LocalBackend copy it onto
+        /// <c>MetaOperation.Debug</c> for delivery to the client's
+        /// <c>IDesyncDiagnostics.OnDeepStateDesync</c>. Null on the common (matching) path.
+        /// </summary>
+        public PayloadDebug? Debug { get; set; }
     }
 }

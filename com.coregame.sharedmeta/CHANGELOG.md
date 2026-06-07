@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.26.6] - 2026-06-07
+
+### Added — deep state check debugging
+
+Per-method opt-in CRC comparison between client and server state, with full serialized binaries surfaced to a user callback on mismatch.
+
+```csharp
+[MetaMethod(Alias = "Move", Mode = ExecutionMode.Optimistic,
+            DeepStateCheck = SnapshotTiming.After)]   // Before | After | Both
+bool Move(int dx, int dy);
+```
+
+The generator emits the snapshot/CRC wrap only for annotated methods — unannotated methods compile with zero overhead.
+
+On mismatch the framework invokes:
+
+```csharp
+void IDesyncDiagnostics.OnDeepStateDesync<TState>(
+    string entityId,
+    byte[] clientStateBytes,
+    byte[] serverStateBytes,
+    SnapshotTiming timing,
+    long timestampTicks)
+    where TState : class;
+```
+
+`TState` is typed at compile time so user diff code can `Unpack<TState>` both binaries directly. Default impl is empty — existing `IDesyncDiagnostics` impls compile unchanged.
+
+See `docs/GUIDE.md` for usage.
+
 ## [0.26.5] - 2026-06-06
 
 - **Critical bug fix**: `MetaHub`, `HttpPollingEndpoints`, and `MuxHub` `GetConfigDownloadUrl` handlers dropped `request.ConfigPatchVersion` when constructing the `MetaConfigVersion` for the `IConfigDownloadUrlResolver` — a client asking for `v0.1.870` ended up downloading `/meta/config/{state}/0.1.0` (silently stale bytes). Now passes all three components. `InProcessServer` was already correct; only the wire transports leaked the bug.

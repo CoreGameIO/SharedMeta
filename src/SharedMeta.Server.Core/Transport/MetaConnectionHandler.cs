@@ -545,7 +545,8 @@ namespace SharedMeta.Server.Core.Transport
                     Payload = request.Payload,
                     IsCrossOptimistic = request.IsCrossOptimistic,
                     ServerTimeTicks = request.ServerTimeTicks,
-                    DeepDesyncRequested = DeepDesyncRequested
+                    DeepDesyncRequested = DeepDesyncRequested,
+                    Debug = request.Debug  // 0.26.6+ piggybacked PayloadDebug (deep-state CRCs)
                 };
 
                 var grain = SessionManagerGrainOrThrow;

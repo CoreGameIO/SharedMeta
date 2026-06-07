@@ -819,6 +819,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                 MetaContext.PatchWrapper = CreatePatchWrapper(patchRoot);
             }
 
+            // 0.26.6+ Surface the client's PayloadDebug to the generated dispatcher so the
+            // per-method DeepStateCheck wrap (emitted by ServerDispatcherGenerator) can read
+            // PreStateCrc / PostStateCrc and stamp DispatchResult.Debug on mismatch. The
+            // attribute-driven snapshot+compare is fully in codegen — no runtime branch here.
+            MetaContext.ClientDebug = call.Debug;
+
             // Begin recording for replay
             MetaContext.BeginOperation();
 
@@ -908,9 +914,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             _pooledResponseOp.NamedRandomScrollDeltas = namedRandomScrollDeltas;
             _pooledResponseOp.DeepDesyncCrc = deepDesyncCrc;
             _pooledResponseOp.ServerTimeTicks = call.ServerTimeTicks;
-            // Debug field intentionally left null — mirroring entity-seq + originating caller
-            // on every wire packet was a per-RPC string allocation regardless of debug state.
-            _pooledResponseOp.Debug = null;
+            // 0.26.6+ Debug field carries the deep-state-check desync payload populated by the
+            // generated dispatcher (DispatchResult.Debug) — null on the common path. The client's
+            // ApiClient continuation reads this from MetaOperation.Debug to invoke OnDeepStateDesync.
+            _pooledResponseOp.Debug = result.Debug;
+            // Clear context.ClientDebug so the next call doesn't see stale data.
+            MetaContext.ClientDebug = null;
             // Caller's optimistic replay materializes the same config branch the server used —
             // decoupling replay from session-resolved versions (Global scope, mid-rollout).
             _pooledResponseOp.ExecutedConfigVersion = MetaContext.ConfigVersion;

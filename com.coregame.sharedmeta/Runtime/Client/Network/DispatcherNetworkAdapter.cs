@@ -132,7 +132,7 @@ namespace SharedMeta.Client.Network
             OnDisconnected?.Invoke(reason.ToString());
         }
 
-        public async Task<CallResponse<T>> CallAsync<T>(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
+        public async Task<CallResponse<T>> CallAsync<T>(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0, PayloadDebug? debug = null)
         {
             // 0.24.0+ RpcCall no longer carries ServiceName/MethodName/MethodVersion — only
             // MethodId addresses the dispatch. ServiceName/methodName/methodVersion are still
@@ -145,7 +145,8 @@ namespace SharedMeta.Client.Network
                 Payload = args,
                 CallerId = PlayerId,
                 IsCrossOptimistic = isCrossOptimistic,
-                ServerTimeTicks = serverTimeTicks
+                ServerTimeTicks = serverTimeTicks,
+                Debug = debug
             };
 
             var sessionOp = await _dispatcher.SendAsync(_entityId, call, _stateTypeName);
@@ -180,7 +181,7 @@ namespace SharedMeta.Client.Network
             };
         }
 
-        public async Task<VoidCallResponse> CallVoidAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
+        public async Task<VoidCallResponse> CallVoidAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0, PayloadDebug? debug = null)
         {
             var call = new RpcCall
             {
@@ -188,7 +189,8 @@ namespace SharedMeta.Client.Network
                 Payload = args,
                 CallerId = PlayerId,
                 IsCrossOptimistic = isCrossOptimistic,
-                ServerTimeTicks = serverTimeTicks
+                ServerTimeTicks = serverTimeTicks,
+                Debug = debug
             };
 
             var sessionOp = await _dispatcher.SendAsync(_entityId, call, _stateTypeName);
@@ -210,11 +212,12 @@ namespace SharedMeta.Client.Network
                 PatchBytes = op.PatchBytes.IsEmpty ? null : op.PatchBytes.ToArray(),
                 StateBytes = op.StateBytes.IsEmpty ? null : op.StateBytes.ToArray(),
                 DeepDesyncCrc = op.DeepDesyncCrc,
-                ExecutedConfigVersion = op.ExecutedConfigVersion
+                ExecutedConfigVersion = op.ExecutedConfigVersion,
+                Debug = op.Debug,
             };
         }
 
-        public async Task<ByteCallResponse> CallBytesAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0)
+        public async Task<ByteCallResponse> CallBytesAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0, PayloadDebug? debug = null)
         {
             var call = new RpcCall
             {
@@ -222,7 +225,8 @@ namespace SharedMeta.Client.Network
                 Payload = args,
                 CallerId = PlayerId,
                 IsCrossOptimistic = isCrossOptimistic,
-                ServerTimeTicks = serverTimeTicks
+                ServerTimeTicks = serverTimeTicks,
+                Debug = debug
             };
 
             var sessionOp = await _dispatcher.SendAsync(_entityId, call, _stateTypeName);

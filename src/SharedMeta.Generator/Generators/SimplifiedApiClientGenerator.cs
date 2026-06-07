@@ -493,6 +493,12 @@ namespace SharedMeta.Generator.Generators
             string syncApi = "None";
             string syncPolicy = "Throw";
             bool skipServerOnFalse = false;
+            // 0.26.6+ [MetaMethod(DeepStateCheck = SnapshotTiming.X)]. 0 = None, 1 = Before,
+            // 2 = After, 3 = Both. When non-zero, the generated client body snapshots
+            // _state at the matching moment(s), computes FNV-1a CRC, and ships them on
+            // RpcCall.Debug (PayloadDebug). Server compares and stamps op.Debug.DesyncStateBytes /
+            // DesyncTiming on mismatch.
+            int deepStateCheck = 0;
 
             var attributes = method.AttributeLists.SelectMany(a => a.Attributes);
             var metaMethod = attributes.FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
@@ -521,6 +527,27 @@ namespace SharedMeta.Generator.Generators
                         if (name == "SkipServerOnFalse" && arg.Expression is LiteralExpressionSyntax skipLit
                             && skipLit.Token.Text == "true")
                             skipServerOnFalse = true;
+                        // 0.26.6+ DeepStateCheck = SnapshotTiming.Before|After|Both — accept either
+                        // a member access expression (DeepStateCheck = SnapshotTiming.X) or the
+                        // legacy integer-literal form.
+                        if (name == "DeepStateCheck")
+                        {
+                            if (arg.Expression is MemberAccessExpressionSyntax dscAccess)
+                            {
+                                deepStateCheck = dscAccess.Name.Identifier.Text switch
+                                {
+                                    "Before" => 1,
+                                    "After" => 2,
+                                    "Both" => 3,
+                                    _ => 0,
+                                };
+                            }
+                            else if (arg.Expression is LiteralExpressionSyntax dscLit
+                                && int.TryParse(dscLit.Token.ValueText, out var dscInt))
+                            {
+                                deepStateCheck = dscInt & 3;
+                            }
+                        }
                     }
                 }
             }
@@ -706,7 +733,7 @@ namespace SharedMeta.Generator.Generators
             if (!onlySync)
             {
                 GenerateServerMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, resultComparer);
-                GenerateOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer);
+                GenerateOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer, deepStateCheck);
                 GenerateCrossOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, resultComparer);
                 GenerateServerPatchMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName);
                 GenerateServerReplaceMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, interfaceName, namespaceName);
@@ -715,7 +742,7 @@ namespace SharedMeta.Generator.Generators
             // Private sync-optimistic body — only emitted when the public sync method was emitted above.
             if (wantsSync && !isAsync && (defaultMode == "Optimistic" || defaultMode == "Local"))
             {
-                GenerateOptimisticMethodSync(sb, method, methodAlias, innerReturnType, isVoidReturn, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer);
+                GenerateOptimisticMethodSync(sb, method, methodAlias, innerReturnType, isVoidReturn, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer, deepStateCheck);
             }
         }
 
@@ -879,7 +906,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"                if (!{fieldName}.AreEqual(serverResult, localResult))");
                     sb.AppendLine("                {");
                     sb.AppendLine($"                    _diagnostics?.OnResultMismatch(ServiceName, \"{methodAlias}\", serverResult, localResult);");
-                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult}} local={{localResult}} serverSeq={{response.Debug ?? \"<none>\"}} clientSeq={{_network.LastKnownEntitySequence}}\");");
+                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult}} local={{localResult}} serverSeq={{response.Debug?.Info ?? \"<none>\"}} clientSeq={{_network.LastKnownEntitySequence}}\");");
                     if (serializer == DetectedSerializer.MemoryPack)
                         sb.AppendLine($"                    var localResultBytes = MemoryPackSerializer.Serialize(localResult);");
                     else
@@ -894,7 +921,7 @@ namespace SharedMeta.Generator.Generators
                     GenerateResultByteComparison(sb, returnType, serializer, "response.ResultBytes", "                ");
                     sb.AppendLine("                {");
                     sb.AppendLine($"                    _diagnostics?.OnResultMismatch(ServiceName, \"{methodAlias}\", serverResult, localResult);");
-                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult}} local={{localResult}} serverSeq={{response.Debug ?? \"<none>\"}} clientSeq={{_network.LastKnownEntitySequence}}\");");
+                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult}} local={{localResult}} serverSeq={{response.Debug?.Info ?? \"<none>\"}} clientSeq={{_network.LastKnownEntitySequence}}\");");
                     GenerateResultMismatchReport(sb, methodAlias, "response.ResultBytes", "localResultBytes", "                    ");
                     sb.AppendLine($"                    throw new DesyncException(ServiceName, \"{methodAlias}\", serverResult, localResult);");
                     sb.AppendLine("                }");
@@ -1014,9 +1041,28 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}if (!{serverBytesExpr}.AsSpan().SequenceEqual(localResultBytes))");
         }
 
+        /// <summary>
+        /// 0.26.6+ Emit the OnDeepStateDesync callback wiring inside an Optimistic/CrossOptimistic
+        /// continuation. No-op when the method isn't annotated DeepStateCheck. Picks the matching
+        /// pre/post client bytes by the server-reported timing and invokes the diagnostics callback.
+        /// </summary>
+        private static void EmitDeepStateDesyncCallback(StringBuilder sb, string methodAlias, string? stateTypeName, int deepStateCheck, string indent)
+        {
+            if (deepStateCheck == 0) return;
+            sb.AppendLine($"{indent}if (t.Result.Debug != null && t.Result.Debug.DesyncTiming != SharedMeta.Core.SnapshotTiming.None)");
+            sb.AppendLine($"{indent}{{");
+            sb.AppendLine($"{indent}    var _dsTiming = t.Result.Debug.DesyncTiming;");
+            sb.AppendLine($"{indent}    var _dsClientBytesForCallback = _dsTiming == SharedMeta.Core.SnapshotTiming.Before ? _dsClientPreBytes : _dsClientPostBytes;");
+            // 0.26.6+ Generic OnDeepStateDesync<TState> — caller's diagnostic gets TState typed
+            // (no runtime switch on Type stateType). The generator binds {stateTypeName} from
+            // [MetaService(StateType = typeof(TState))].
+            sb.AppendLine($"{indent}    _diagnostics?.OnDeepStateDesync<{stateTypeName}>(_network.EntityId ?? string.Empty, _dsClientBytesForCallback ?? System.Array.Empty<byte>(), t.Result.Debug.DesyncStateBytes.ToArray(), _dsTiming, _network.ServerTimeTicks);");
+            sb.AppendLine($"{indent}}}");
+        }
+
         private static void GenerateOptimisticMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
-            DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null)
+            DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null, int deepStateCheck = 0)
         {
             var methodName = method.Identifier.Text;
             var methodVersion = GetMethodVersion(method);
@@ -1059,6 +1105,18 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            var namedScrollsBefore = CaptureNamedScrollSnapshot();");
             sb.AppendLine("            var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
 
+            // 0.26.6+ [MetaMethod(DeepStateCheck = X)] — pre snapshot of client state.
+            if (deepStateCheck != 0)
+            {
+                sb.AppendLine("            byte[]? _dsClientPreBytes = null; uint _dsClientPreCrc = 0;");
+                sb.AppendLine("            byte[]? _dsClientPostBytes = null; uint _dsClientPostCrc = 0;");
+                if ((deepStateCheck & 1) != 0)
+                {
+                    sb.AppendLine("            _dsClientPreBytes = _serializer.Pack(_state).ToArray();");
+                    sb.AppendLine("            _dsClientPreCrc = SharedMeta.Core.Diagnostics.DeepStateHashing.Fnv1a32(_dsClientPreBytes);");
+                }
+            }
+
             sb.AppendLine("            try");
             sb.AppendLine("            {");
 
@@ -1083,6 +1141,16 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            _stateContainer.NotifyMutated();");
+            // 0.26.6+ Post snapshot of client state + build PayloadDebug for the upcoming RPC.
+            if (deepStateCheck != 0)
+            {
+                if ((deepStateCheck & 2) != 0)
+                {
+                    sb.AppendLine("            _dsClientPostBytes = _serializer.Pack(_state).ToArray();");
+                    sb.AppendLine("            _dsClientPostCrc = SharedMeta.Core.Diagnostics.DeepStateHashing.Fnv1a32(_dsClientPostBytes);");
+                }
+                sb.AppendLine("            var _dsDebug = new SharedMeta.Core.PayloadDebug { PreStateCrc = _dsClientPreCrc, PostStateCrc = _dsClientPostCrc };");
+            }
             // Capture local deltas synchronously — MUST happen before the fire-and-forget ContinueWith
             // or subsequent Optimistic calls on the same ApiClient will race and advance the random
             // state further by the time this continuation runs, producing a phantom desync.
@@ -1109,10 +1177,12 @@ namespace SharedMeta.Generator.Generators
             GenerateArgumentSerialization(sb, method, paramCount, serializer);
             sb.AppendLine();
 
+            var dsDebugArg = deepStateCheck != 0 ? ", debug: _dsDebug" : "";
+
             // Fire-and-forget to server with background validation
             if (isVoidReturn)
             {
-                sb.AppendLine($"            _ = _network.CallVoidAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks)");
+                sb.AppendLine($"            _ = _network.CallVoidAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks{dsDebugArg})");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1126,6 +1196,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                        }");
                 sb.AppendLine($"                        CompareAndReportNamedScrollDesync(\"{methodAlias}\", t.Result.NamedRandomScrollDeltas, localNamedScrollDeltas);");
                 GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", hasDeepDesync);
+                EmitDeepStateDesyncCallback(sb, methodAlias, stateTypeName, deepStateCheck, "                        ");
                 sb.AppendLine("                    }");
                 sb.AppendLine("                    }");
                 sb.AppendLine($"                    catch (Exception _ddEx) {{ SharedMeta.Core.Logging.MetaLog.Error(\"[Optimistic-Continuation] {methodAlias}: \" + _ddEx, _ddEx); }}");
@@ -1144,7 +1215,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"            if (!System.Collections.Generic.EqualityComparer<{returnType}>.Default.Equals(localResult, default!))");
                     sb.AppendLine("            {");
                 }
-                sb.AppendLine($"            _ = _network.CallBytesAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks)");
+                sb.AppendLine($"            _ = _network.CallBytesAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks{dsDebugArg})");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1160,6 +1231,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                        }");
                 sb.AppendLine($"                        CompareAndReportNamedScrollDesync(\"{methodAlias}\", t.Result.NamedRandomScrollDeltas, localNamedScrollDeltas);");
                 GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", hasDeepDesync);
+                EmitDeepStateDesyncCallback(sb, methodAlias, stateTypeName, deepStateCheck, "                        ");
                 sb.AppendLine("                    }");
                 sb.AppendLine("                    }");
                 sb.AppendLine($"                    catch (Exception _ddEx) {{ SharedMeta.Core.Logging.MetaLog.Error(\"[Optimistic-Continuation] {methodAlias}: \" + _ddEx, _ddEx); }}");
@@ -1183,7 +1255,7 @@ namespace SharedMeta.Generator.Generators
         // continuation. Only differences: no `async`/`Task<>` wrapper, no `await` on impl call.
         private static void GenerateOptimisticMethodSync(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, int paramCount, string callArgs,
-            DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null)
+            DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null, int deepStateCheck = 0)
         {
             var methodName = method.Identifier.Text;
             var methodVersion = GetMethodVersion(method);
@@ -1220,6 +1292,18 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            var namedScrollsBefore = CaptureNamedScrollSnapshot();");
             sb.AppendLine("            var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
 
+            // 0.26.6+ [MetaMethod(DeepStateCheck = X)] — pre snapshot of client state.
+            if (deepStateCheck != 0)
+            {
+                sb.AppendLine("            byte[]? _dsClientPreBytes = null; uint _dsClientPreCrc = 0;");
+                sb.AppendLine("            byte[]? _dsClientPostBytes = null; uint _dsClientPostCrc = 0;");
+                if ((deepStateCheck & 1) != 0)
+                {
+                    sb.AppendLine("            _dsClientPreBytes = _serializer.Pack(_state).ToArray();");
+                    sb.AppendLine("            _dsClientPreCrc = SharedMeta.Core.Diagnostics.DeepStateHashing.Fnv1a32(_dsClientPreBytes);");
+                }
+            }
+
             sb.AppendLine("            try");
             sb.AppendLine("            {");
 
@@ -1243,6 +1327,16 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            MetaContextAccessor.Current = null;");
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            _stateContainer.NotifyMutated();");
+            // 0.26.6+ Post snapshot of client state + build PayloadDebug for the upcoming RPC.
+            if (deepStateCheck != 0)
+            {
+                if ((deepStateCheck & 2) != 0)
+                {
+                    sb.AppendLine("            _dsClientPostBytes = _serializer.Pack(_state).ToArray();");
+                    sb.AppendLine("            _dsClientPostCrc = SharedMeta.Core.Diagnostics.DeepStateHashing.Fnv1a32(_dsClientPostBytes);");
+                }
+                sb.AppendLine("            var _dsDebug = new SharedMeta.Core.PayloadDebug { PreStateCrc = _dsClientPreCrc, PostStateCrc = _dsClientPostCrc };");
+            }
             // Capture local deltas synchronously — MUST happen before the fire-and-forget ContinueWith
             // or subsequent Optimistic calls on the same ApiClient will race and advance the random
             // state further by the time this continuation runs, producing a phantom desync.
@@ -1268,12 +1362,14 @@ namespace SharedMeta.Generator.Generators
             GenerateArgumentSerialization(sb, method, paramCount, serializer);
             sb.AppendLine();
 
+            var dsDebugArg = deepStateCheck != 0 ? ", debug: _dsDebug" : "";
+
             // Fire-and-forget to server. Identical to the async variant — the Task is discarded
             // and never awaited, so the server round-trip happens in the background while the
             // sync method returns immediately.
             if (isVoidReturn)
             {
-                sb.AppendLine($"            _ = _network.CallVoidAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks)");
+                sb.AppendLine($"            _ = _network.CallVoidAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks{dsDebugArg})");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1287,6 +1383,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                        }");
                 sb.AppendLine($"                        CompareAndReportNamedScrollDesync(\"{methodAlias}\", t.Result.NamedRandomScrollDeltas, localNamedScrollDeltas);");
                 GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", hasDeepDesync);
+                EmitDeepStateDesyncCallback(sb, methodAlias, stateTypeName, deepStateCheck, "                        ");
                 sb.AppendLine("                    }");
                 sb.AppendLine("                    }");
                 sb.AppendLine($"                    catch (Exception _ddEx) {{ SharedMeta.Core.Logging.MetaLog.Error(\"[Optimistic-Continuation] {methodAlias}: \" + _ddEx, _ddEx); }}");
@@ -1302,7 +1399,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"            if (!System.Collections.Generic.EqualityComparer<{returnType}>.Default.Equals(localResult, default!))");
                     sb.AppendLine("            {");
                 }
-                sb.AppendLine($"            _ = _network.CallBytesAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks)");
+                sb.AppendLine($"            _ = _network.CallBytesAsync(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, argsBytes, serverTimeTicks: serverTimeTicks{dsDebugArg})");
                 sb.AppendLine("                .ContinueWith(t =>");
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
@@ -1318,6 +1415,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                        }");
                 sb.AppendLine($"                        CompareAndReportNamedScrollDesync(\"{methodAlias}\", t.Result.NamedRandomScrollDeltas, localNamedScrollDeltas);");
                 GenerateDeepDesyncCheck(sb, methodAlias, "t.Result", "                        ", hasDeepDesync);
+                EmitDeepStateDesyncCallback(sb, methodAlias, stateTypeName, deepStateCheck, "                        ");
                 sb.AppendLine("                    }");
                 sb.AppendLine("                    }");
                 sb.AppendLine($"                    catch (Exception _ddEx) {{ SharedMeta.Core.Logging.MetaLog.Error(\"[Optimistic-Continuation] {methodAlias}: \" + _ddEx, _ddEx); }}");

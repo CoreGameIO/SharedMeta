@@ -60,6 +60,11 @@ namespace SharedMeta.Generator.Generators
         /// <see cref="DiscoveredServiceInfo.PatchTrackingAvailable"/>; emitted onto
         /// <c>ServerMethodEntry.PatchTrackingAvailable</c>.</summary>
         public bool PatchTrackingAvailable { get; set; }
+
+        /// <summary>0.26.6+ <c>[MetaMethod(DeepStateCheck = SnapshotTiming.X)]</c>.
+        /// Stored as int (matches enum byte value) for codegen purposes; emitted onto
+        /// <c>ServerMethodEntry.DeepStateCheck</c> as the typed enum.</summary>
+        public int DeepStateCheck { get; set; }
     }
 
     /// <summary>
@@ -192,6 +197,7 @@ namespace SharedMeta.Generator.Generators
                 int methodVersion = 0;
                 int minCompatibleVersion = 0;
                 bool generateClientApi = true;
+                int deepStateCheck = 0; // SnapshotTiming.None
                 if (metaMethodAttr != null)
                 {
                     var aliasArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Alias");
@@ -205,6 +211,9 @@ namespace SharedMeta.Generator.Generators
                     if (!minCompatArg.Value.IsNull && minCompatArg.Value.Value is int mcv) minCompatibleVersion = mcv;
                     var genApiArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "GenerateClientApi");
                     if (!genApiArg.Value.IsNull && genApiArg.Value.Value is bool g) generateClientApi = g;
+                    // 0.26.6+: SnapshotTiming enum value comes through as int from attribute args.
+                    var deepCheckArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "DeepStateCheck");
+                    if (!deepCheckArg.Value.IsNull && deepCheckArg.Value.Value is int dsc) deepStateCheck = dsc;
                 }
 
                 var signatureString = SignatureHashGenerator.BuildSignatureString(info.InterfaceName, methodAlias, member);
@@ -229,6 +238,7 @@ namespace SharedMeta.Generator.Generators
                     GenerateClientApi = generateClientApi,
                     ConfigTypeFullName = info.ConfigTypeFullName,
                     PatchTrackingAvailable = info.PatchTrackingAvailable,
+                    DeepStateCheck = deepStateCheck,
                 });
             }
 
@@ -595,6 +605,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                        GenerateClientApi = {(s.GenerateClientApi ? "true" : "false")},");
                 sb.AppendLine($"                        ConfigTypeFullName = \"{s.ConfigTypeFullName}\",");
                 sb.AppendLine($"                        PatchTrackingAvailable = {(s.PatchTrackingAvailable ? "true" : "false")},");
+                sb.AppendLine($"                        DeepStateCheck = (global::SharedMeta.Core.SnapshotTiming){s.DeepStateCheck},");
                 sb.AppendLine($"                        GlobalIndex = {gIdx},");
                 sb.AppendLine("                    },");
                 gIdx++;

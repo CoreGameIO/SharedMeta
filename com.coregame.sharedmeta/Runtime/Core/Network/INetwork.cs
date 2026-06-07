@@ -75,18 +75,22 @@ namespace SharedMeta.Core.Network
         /// index from <c>GameMethodIds</c>, stamped on <c>RpcCall.MethodId</c> — the server
         /// translates it to its own server-side index via the signature mapping.</para>
         /// </summary>
-        Task<CallResponse<T>> CallAsync<T>(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
+        Task<CallResponse<T>> CallAsync<T>(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0, PayloadDebug? debug = null);
 
         /// <summary>
         /// Call a void method. See <see cref="CallAsync{T}"/> for the parameter contract.
+        /// <paramref name="debug"/>: optional <see cref="PayloadDebug"/> stamped onto
+        /// <c>RpcCall.Debug</c> — generated <c>*ApiClient</c> uses it to ship deep-state
+        /// CRCs (<c>PreStateCrc</c>/<c>PostStateCrc</c>) for
+        /// <c>[MetaMethod(DeepStateCheck = SnapshotTiming.X)]</c> methods.
         /// </summary>
-        Task<VoidCallResponse> CallVoidAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
+        Task<VoidCallResponse> CallVoidAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0, PayloadDebug? debug = null);
 
         /// <summary>
         /// Call a method and get raw bytes result (for serializer-specific deserialization).
         /// See <see cref="CallAsync{T}"/> for the parameter contract.
         /// </summary>
-        Task<ByteCallResponse> CallBytesAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0);
+        Task<ByteCallResponse> CallBytesAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0, PayloadDebug? debug = null);
 
         /// <summary>
         /// Send a desync follow-up report (deep desync detection).

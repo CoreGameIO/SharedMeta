@@ -78,6 +78,17 @@ namespace SharedMeta.Core
         public string? CallerClientVersion { get; set; }
 
         /// <summary>
+        /// 0.26.6+ Client-supplied <see cref="PayloadDebug"/> for the current call (piggybacked
+        /// on <c>RpcCall.Debug</c>). Read by generated server-side dispatchers when a method is
+        /// annotated <c>[MetaMethod(DeepStateCheck = SnapshotTiming.X)]</c> — they compare
+        /// <see cref="PayloadDebug.PreStateCrc"/> / <see cref="PayloadDebug.PostStateCrc"/>
+        /// against their own snapshots. Null = client didn't request a deep-state check.
+        /// Reset to null between calls by the host (<c>MetaProviderBase.HandleCallAsync</c> /
+        /// LocalBackend <c>LocalEntity.HandleCallAsync</c>).
+        /// </summary>
+        public PayloadDebug? ClientDebug { get; set; }
+
+        /// <summary>
         /// True when the active call is the server-side execution of a CrossOptimistic method
         /// (i.e. the client already executed it locally and the server is verifying/replaying).
         /// Propagated across cross-entity boundaries so the target's

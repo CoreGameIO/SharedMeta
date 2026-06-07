@@ -41,6 +41,49 @@ namespace SharedMeta.Core.Diagnostics
         void OnSyncPolicyViolation(string serviceName, string methodName, SharedMeta.Core.ExecutionMode effectiveMode) { }
 
         /// <summary>
+        /// 0.26.6+ Called when a method annotated with
+        /// <c>[MetaMethod(DeepStateCheck = SnapshotTiming.X)]</c> detected a CRC mismatch
+        /// between client- and server-side serialized state. The state type is a generic
+        /// parameter — callers know the type at compile-time (the generator emits an
+        /// explicit type argument), so user diagnostic code can deserialize without a
+        /// runtime <c>switch (stateType)</c>:
+        /// <code>
+        /// public void OnDeepStateDesync&lt;TState&gt;(string entityId, byte[] clientBytes,
+        ///     byte[] serverBytes, SnapshotTiming timing, long ticks) where TState : class
+        /// {
+        ///     var clientState = MemoryPackSerializer.Deserialize&lt;TState&gt;(clientBytes);
+        ///     var serverState = MemoryPackSerializer.Deserialize&lt;TState&gt;(serverBytes);
+        ///     // diff clientState vs serverState — TState is typed
+        /// }
+        /// </code>
+        /// <para>
+        /// <paramref name="timing"/> indicates which snapshot moment failed when
+        /// <see cref="SharedMeta.Core.SnapshotTiming.Both"/> was requested:
+        /// <see cref="SharedMeta.Core.SnapshotTiming.Before"/> = mismatch existed before the
+        /// method ran (drift accumulated from prior calls);
+        /// <see cref="SharedMeta.Core.SnapshotTiming.After"/> = the method's own body produced
+        /// divergence. Never <see cref="SharedMeta.Core.SnapshotTiming.None"/> or
+        /// <see cref="SharedMeta.Core.SnapshotTiming.Both"/> at the callback boundary —
+        /// the framework checks Before first and stops at the first mismatch.
+        /// </para>
+        /// </summary>
+        /// <typeparam name="TState">Compile-time state type the method operated on. Bound by
+        /// the generator from <c>[MetaService(StateType = typeof(TState))]</c>.</typeparam>
+        /// <param name="entityId">Entity whose state diverged.</param>
+        /// <param name="clientStateBytes">Serialized client-side state at the failing snapshot.</param>
+        /// <param name="serverStateBytes">Serialized server-side state at the failing snapshot.</param>
+        /// <param name="timing">Which snapshot timing failed (Before or After).</param>
+        /// <param name="timestampTicks">UTC ticks captured at the server moment the mismatch
+        /// was detected. Useful for correlating with other telemetry.</param>
+        void OnDeepStateDesync<TState>(
+            string entityId,
+            byte[] clientStateBytes,
+            byte[] serverStateBytes,
+            SharedMeta.Core.SnapshotTiming timing,
+            long timestampTicks)
+            where TState : class { }
+
+        /// <summary>
         /// Request full state comparison with server.
         /// </summary>
         Task<StateComparisonResult> CompareFullStateAsync(string entityId);
