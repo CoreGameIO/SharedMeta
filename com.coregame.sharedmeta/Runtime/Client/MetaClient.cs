@@ -93,6 +93,17 @@ namespace SharedMeta.Client
         /// disconnected, tap to reconnect").
         /// </summary>
         public IMetaSessionRecoveryHandler? SessionRecoveryHandler { get; set; }
+
+        /// <summary>
+        /// 0.26.7+ When true (default), <see cref="MetaClient"/> auto-subscribes a handler that
+        /// routes <see cref="SharedMeta.Core.Transport.IClientDispatcher.OnConnectionStatusChanged"/>
+        /// transitions to <see cref="SharedMeta.Core.Logging.MetaLog"/> at sensible levels
+        /// (<c>Reconnecting</c>/<c>Disconnected</c> → Warning, <c>Failed</c> → Error, others → Info).
+        /// Game-level handlers (UI overlays, reconnect modals) still cleanly subscribe alongside
+        /// — <c>OnConnectionStatusChanged</c> is a multicast event. Opt out by setting this to
+        /// false if your own handler does its own logging and you want a quiet console.
+        /// </summary>
+        public bool LogConnectionStatusToMetaLog { get; set; } = true;
     }
 
     /// <summary>
@@ -172,6 +183,33 @@ namespace SharedMeta.Client
                 _dispatcher.ConnectionHealthOptions = options.ConnectionHealthOptions;
             _dispatcher.OnSessionSuperseded += reason => OnSessionSuperseded?.Invoke(reason);
             _dispatcher.OnSubscriptionsReclaimed += verdicts => _resolver!.ApplySubscriptionVerdicts(verdicts);
+
+            // 0.26.7+ Default connection-status logger — routes Reconnecting/Disconnected/Failed
+            // transitions to MetaLog so noisy boilerplate doesn't show up in every game's startup
+            // code. Game-level handlers (UI overlay, reconnect modal) compose via the multicast
+            // event. Opt out via MetaClientOptions.LogConnectionStatusToMetaLog = false.
+            if (options.LogConnectionStatusToMetaLog)
+            {
+                _dispatcher.OnConnectionStatusChanged += (status, detail) =>
+                {
+                    var msg = string.IsNullOrEmpty(detail)
+                        ? $"Connection {status}"
+                        : $"Connection {status}: {detail}";
+                    switch (status)
+                    {
+                        case SharedMeta.Core.Transport.ConnectionStatus.Failed:
+                            SharedMeta.Core.Logging.MetaLog.Error(msg);
+                            break;
+                        case SharedMeta.Core.Transport.ConnectionStatus.Reconnecting:
+                        case SharedMeta.Core.Transport.ConnectionStatus.Disconnected:
+                            SharedMeta.Core.Logging.MetaLog.Warning(msg);
+                            break;
+                        default:
+                            SharedMeta.Core.Logging.MetaLog.Info(msg);
+                            break;
+                    }
+                };
+            }
 
             _resolver = new MetaServiceResolver(
                 async (entityId, stateTypeName) =>

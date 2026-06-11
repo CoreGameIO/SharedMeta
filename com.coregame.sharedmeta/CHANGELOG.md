@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.26.7] - 2026-06-07
+
+### Added — defaults so the Wizard doesn't need to emit them
+
+- `MetaClient` auto-logs `OnConnectionStatusChanged` transitions to `MetaLog` (Reconnecting/Disconnected → Warning, Failed → Error). Opt out with `MetaClientOptions.LogConnectionStatusToMetaLog = false`. Game-level handlers still cleanly subscribe alongside.
+- `MetaClient.RegisterDownloadingConfigProvider<TConfig, TState>(downloader?, cache?)` extension — one-liner around `DownloadingConfigProvider<TConfig>` + the connection's URL resolver. Defaults to `UnityConfigDownloader.DownloadAsync` on Unity builds.
+
+### Fixed — clean import on a fresh Unity project
+
+- `Shimz.cs` extended with `MemoryPackAllowSerializeAttribute`, `GenerateType` enum, and `MemoryPackable(GenerateType)` ctor so SharedMeta compiles in Unity projects without the NuGet `MemoryPack` package.
+- `ClientDispatcher.cs` / `DispatcherNetworkAdapter.cs` no longer reference `System.Collections.Immutable` (not shipped in Unity by default).
+
 ## [0.26.6] - 2026-06-07
 
 ### Added — deep state check debugging

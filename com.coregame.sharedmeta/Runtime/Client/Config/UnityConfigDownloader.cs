@@ -1,3 +1,4 @@
+#if UNITY_2018_1_OR_NEWER
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,6 +13,13 @@ namespace SharedMeta.Client
     /// Pass <see cref="DownloadAsync"/> as the <c>downloader</c> argument when constructing
     /// the provider — Unity projects can't use raw <see cref="System.Net.Http.HttpClient"/>
     /// reliably across all platforms (WebGL, IL2CPP), so this routes through Unity's HTTP stack.
+    ///
+    /// <para>
+    /// 0.26.7+ Moved out of <c>SharedMeta.Transport.Http</c> asmdef into the dedicated
+    /// <c>SharedMeta.Client.Config</c> asmdef so projects using SignalR / BestHTTP transports
+    /// don't have to pull in the HTTP-polling asmdef (and its Newtonsoft.Json constraint) just
+    /// to use the downloader.
+    /// </para>
     ///
     /// <see cref="UnityWebRequest.Get"/> and <see cref="DownloadHandlerBuffer"/> require the
     /// Unity main thread. Async config resolution may resume on a threadpool thread (after a
@@ -78,3 +86,4 @@ namespace SharedMeta.Client
         }
     }
 }
+#endif

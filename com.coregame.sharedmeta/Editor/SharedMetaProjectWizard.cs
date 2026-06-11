@@ -1524,6 +1524,9 @@ namespace SharedMeta.Editor
             else
                 sb.AppendLine("using SharedMeta.Transport.HttpPolling;");
 
+            // 0.26.7+ AddMetaConfigPublicUrl / MapMetaConfigDownload helpers
+            sb.AppendLine("using SharedMeta.Server;");
+
             if (_enableAuth)
                 sb.AppendLine("using SharedMeta.Auth;");
 
@@ -1585,20 +1588,7 @@ namespace SharedMeta.Editor
             sb.AppendLine("                // svc.AddTransient<IRandomService, RandomServiceImpl>();");
             sb.AppendLine("                svc.AddTransient<ILobbyRequester>(sp => new OrleansLobbyRequester(sp.GetRequiredService<IGrainFactory>()));");
             sb.AppendLine("            });");
-            sb.AppendLine();
-            sb.AppendLine("            // Optional: enable the per-silo PooledPayload registry for ref-counted broadcast fan-out.");
-            sb.AppendLine("            // Disabled by default — opt in when profiling shows the byte[] path is a bottleneck.");
-            sb.AppendLine("            // services.Configure<SharedMeta.Server.Core.Memory.PooledPayloadOptions>(o =>");
-            sb.AppendLine("            // {");
-            sb.AppendLine("            //     o.UsePoolPath = true;       // route broadcasts through ref-counted pool slots");
-            sb.AppendLine("            //     o.EnableHistory = false;    // diagnostic stack-trace capture (heavy)");
-            sb.AppendLine("            // });");
-            sb.AppendLine("            // services.AddSingleton<SharedMeta.Server.Core.Memory.PooledPayloadRegistry>();");
-            sb.AppendLine("        })");
-            sb.AppendLine("        // Required if PooledPayloadRegistry is registered above — assigns a unique SiloId");
-            sb.AppendLine("        // via the cluster-singleton coordinator grain before any grain activates.");
-            sb.AppendLine("        // .AddStartupTask<SharedMeta.Server.Core.Memory.PooledPayloadRegistryStartupTask>()");
-            sb.AppendLine("        ;");
+            sb.AppendLine("        });");
             sb.AppendLine("});");
             sb.AppendLine();
 
@@ -1650,6 +1640,13 @@ namespace SharedMeta.Editor
                 sb.AppendLine();
             }
 
+            // Config download URL resolver — emits absolute URLs back to this server's
+            // /meta/config/{stateType}/{M.m.p} endpoint mapped below. Required so clients
+            // receive working download URLs in SubscribeResponse / RpcResponse.
+            sb.AppendLine("// Config download URL resolver — pair with app.MapMetaConfigDownload() below.");
+            sb.AppendLine($"builder.Services.AddMetaConfigPublicUrl($\"http://localhost:{{port}}\");");
+            sb.AppendLine();
+
             // CORS
             sb.AppendLine("// CORS");
             sb.AppendLine("builder.Services.AddCors(options =>");
@@ -1686,14 +1683,13 @@ namespace SharedMeta.Editor
             sb.AppendLine($"app.MapGet(\"/\", () => \"{_serverProjectName} is running\");");
             sb.AppendLine();
 
-            // Config download endpoint
-            sb.AppendLine("// Config download endpoint — serves serialized config bytes for client-side caching.");
-            sb.AppendLine("// Register your IMetaConfigProvider<TConfig> and uncomment:");
-            sb.AppendLine("// app.MapGet(\"/meta/config/{major:int}/{minor:int}\", (int major, int minor, IMetaSerializer ser, IMetaConfigProvider<YourConfig> provider) =>");
-            sb.AppendLine("// {");
-            sb.AppendLine("//     var config = provider.GetConfig(\"\");");
-            sb.AppendLine("//     return Results.Bytes(ser.Pack(config).ToArray(), \"application/octet-stream\");");
-            sb.AppendLine("// });");
+            // Config download endpoint — auto-routes GET /meta/config/{stateType}/{M.m.p}
+            // to every IMetaConfigProvider<TConfig> registered via ConfigureMeta. Pair with
+            // AddMetaConfigPublicUrl above so the resolver shipped to clients points back here.
+            sb.AppendLine("// Config download endpoint — GET /meta/config/{stateType}/{M.m.p} for every");
+            sb.AppendLine("// registered IMetaConfigProvider<TConfig>. Register your providers via");
+            sb.AppendLine("// services.ConfigureMeta(svc => svc.AddSingleton<IMetaConfigProvider<MyConfig>>(...));");
+            sb.AppendLine("app.MapMetaConfigDownload();");
             sb.AppendLine();
 
             sb.AppendLine($"app.Logger.LogInformation(\"=== {_serverProjectName} ===\");");
@@ -1918,12 +1914,12 @@ namespace SharedMeta.Editor
             sb.AppendLine("        // For deep request-lifecycle tracing, assign Client.Dispatcher.DiagnosticsLog");
             sb.AppendLine("        // to a file writer — it emits SEND/RECV/BATCH/CONFIRMED per request.");
             sb.AppendLine();
-            sb.AppendLine("        Client.Resolver.RegisterAllServices();");
+            sb.AppendLine("        // Server-provided config: replace the auto-registered StaticConfigProvider<TConfig>");
+            sb.AppendLine("        // with a downloading provider so clients pick up the actual branch the server serves.");
+            sb.AppendLine("        // Pair with `app.MapMetaConfigDownload()` + `AddMetaConfigPublicUrl()` on the server.");
+            sb.AppendLine("        // Client.RegisterDownloadingConfigProvider<MyConfig, MyState>();");
             sb.AppendLine();
-            sb.AppendLine("        // Config download: enable file caching and download for server-provided configs.");
-            sb.AppendLine("        // var resolver = (MetaServiceResolver)Client.Resolver;");
-            sb.AppendLine("        // resolver.ConfigCache = new FileConfigCache(Application.persistentDataPath + \"/config-cache\", serializer);");
-            sb.AppendLine("        // resolver.ConfigDownloader = new UnityConfigDownloader();");
+            sb.AppendLine("        Client.Resolver.RegisterAllServices();");
             sb.AppendLine();
             sb.AppendLine("        Debug.Log(\"[SharedMeta] Connecting...\");");
             sb.AppendLine("        await Client.ConnectAsync();");
