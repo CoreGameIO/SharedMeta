@@ -1,3 +1,4 @@
+using System;
 using MemoryPack;
 using MessagePack;
 using Orleans;
@@ -19,7 +20,7 @@ namespace SharedMeta.Core
     /// back safely after the framework upgrade that introduced Patch.
     /// </summary>
     [MemoryPackable, MessagePackObject, GenerateSerializer]
-    public readonly partial struct MetaConfigVersion
+    public readonly partial struct MetaConfigVersion : IComparable<MetaConfigVersion>, IComparable, IEquatable<MetaConfigVersion>
     {
         [Id(0), Key(0), MemoryPackOrder(0)] public int Major { get; }
         [Id(1), Key(1), MemoryPackOrder(1)] public int Minor { get; }
@@ -55,6 +56,15 @@ namespace SharedMeta.Core
         /// </summary>
         public override string ToString() => $"{Major}.{Minor}.{Patch}";
 
+        /// <summary>
+        /// 0.27.0+ Two-component branch key <c>"Major.Minor"</c> — the grouping unit used by
+        /// admin UIs (config overview, version pickers) and by <c>[MetaConfigVersion]</c>
+        /// branch rules. Equivalent to <c>$"{Major}.{Minor}"</c>; provided as a method
+        /// for symmetry with <see cref="ToString"/> and to anchor the convention in one
+        /// place so projects don't reinvent it.
+        /// </summary>
+        public string GetBranchKey() => $"{Major}.{Minor}";
+
         public bool Equals(MetaConfigVersion other) =>
             Major == other.Major && Minor == other.Minor && Patch == other.Patch;
         public override bool Equals(object? obj) => obj is MetaConfigVersion other && Equals(other);
@@ -69,5 +79,27 @@ namespace SharedMeta.Core
         public static bool operator >(MetaConfigVersion l, MetaConfigVersion r) => r < l;
         public static bool operator <=(MetaConfigVersion l, MetaConfigVersion r) => !(l > r);
         public static bool operator >=(MetaConfigVersion l, MetaConfigVersion r) => !(l < r);
+
+        /// <summary>
+        /// 0.27.0+ <see cref="IComparable{T}"/> impl so <c>Comparer&lt;MetaConfigVersion&gt;.Default</c>
+        /// works for LINQ <c>OrderBy</c> / <c>SortedSet</c> / etc. Same lexicographic ordering as the
+        /// <c>&lt;</c>/<c>&gt;</c> operators above.
+        /// </summary>
+        public int CompareTo(MetaConfigVersion other)
+        {
+            var c = Major.CompareTo(other.Major);
+            if (c != 0) return c;
+            c = Minor.CompareTo(other.Minor);
+            if (c != 0) return c;
+            return Patch.CompareTo(other.Patch);
+        }
+
+        /// <summary>Non-generic <see cref="IComparable"/> shim. Throws on a type mismatch as the BCL convention requires.</summary>
+        public int CompareTo(object? obj)
+        {
+            if (obj is null) return 1;
+            if (obj is MetaConfigVersion other) return CompareTo(other);
+            throw new ArgumentException($"Cannot compare MetaConfigVersion to {obj.GetType().FullName}", nameof(obj));
+        }
     }
 }

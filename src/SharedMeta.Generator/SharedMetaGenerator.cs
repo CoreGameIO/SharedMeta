@@ -318,7 +318,12 @@ namespace SharedMeta.Generator
                 ServerMetaConfigurationGenerator.ResolveDefaultConfigs(validImpls!, compilation);
 
                 var rootNamespace = validImpls.First()!.Namespace;
-                var source = ServerMetaConfigurationGenerator.Generate(rootNamespace, validImpls!);
+                // 0.27.0+ Auto-emit AddSharedMetaConfigProvider<T>() only when the
+                // SharedMeta.Orleans assembly is referenced — pure SharedMeta.Server.Core hosts
+                // (tests, in-proc backends, alternative registries) don't see those calls.
+                var hasOrleansConfig = compilation.ReferencedAssemblyNames
+                    .Any(a => a.Name == "SharedMeta.Orleans");
+                var source = ServerMetaConfigurationGenerator.Generate(rootNamespace, validImpls!, hasOrleansConfig);
                 if (!string.IsNullOrEmpty(source))
                 {
                     spc.AddSource("ServerMetaConfiguration.g.cs", source!);
@@ -369,7 +374,9 @@ namespace SharedMeta.Generator
                 ServerMetaConfigurationGenerator.ResolveDefaultConfigs(implInfos, compilation);
 
                 var rootNamespace = implInfos.First().Namespace;
-                var source = ServerMetaConfigurationGenerator.GenerateForServerProject(rootNamespace, implInfos);
+                var hasOrleansConfig = compilation.ReferencedAssemblyNames
+                    .Any(a => a.Name == "SharedMeta.Orleans");
+                var source = ServerMetaConfigurationGenerator.GenerateForServerProject(rootNamespace, implInfos, hasOrleansConfig);
                 if (!string.IsNullOrEmpty(source))
                 {
                     spc.AddSource("ServerMetaConfiguration.g.cs", source!);

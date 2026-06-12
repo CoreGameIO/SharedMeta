@@ -538,7 +538,7 @@ namespace SharedMeta.Generator.Generators
         /// Generate all server-side configuration code for Server projects.
         /// This version does NOT use #if SHAREDMETA_SERVER since it runs directly in the Server project.
         /// </summary>
-        public static string? GenerateForServerProject(string rootNamespace, IEnumerable<ServiceImplInfo> serviceImpls)
+        public static string? GenerateForServerProject(string rootNamespace, IEnumerable<ServiceImplInfo> serviceImpls, bool hasOrleansConfig = true)
         {
             var allServices = serviceImpls.Where(s => s != null).ToList();
             if (allServices.Count == 0) return null;
@@ -623,7 +623,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
 
             // 4. Generate ConfigureMeta extension method
-            GenerateConfigureMetaExtension(sb, byStateType, allServerDeps, rootNamespace);
+            GenerateConfigureMetaExtension(sb, byStateType, allServerDeps, rootNamespace, hasOrleansConfig);
             sb.AppendLine();
 
             // 0.24.0+ legacy MetaMethodSignatureValidator emit removed — replaced by
@@ -637,7 +637,7 @@ namespace SharedMeta.Generator.Generators
         /// Generate all server-side configuration code.
         /// Uses #if SHAREDMETA_SERVER wrapper (legacy mode for Shared project generation).
         /// </summary>
-        public static string? Generate(string rootNamespace, IEnumerable<ServiceImplInfo> serviceImpls)
+        public static string? Generate(string rootNamespace, IEnumerable<ServiceImplInfo> serviceImpls, bool hasOrleansConfig = true)
         {
             var allServices = serviceImpls.Where(s => s != null).ToList();
             if (allServices.Count == 0) return null;
@@ -723,7 +723,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
 
             // 4. Generate ConfigureMeta extension method
-            GenerateConfigureMetaExtension(sb, byStateType, allServerDeps, rootNamespace);
+            GenerateConfigureMetaExtension(sb, byStateType, allServerDeps, rootNamespace, hasOrleansConfig);
             sb.AppendLine();
 
             // 0.24.0+ legacy MetaMethodSignatureValidator emit removed — replaced by
@@ -1906,7 +1906,8 @@ namespace SharedMeta.Generator.Generators
             StringBuilder sb,
             Dictionary<string, List<ServiceImplInfo>> byStateType,
             List<string> serverDeps,
-            string rootNamespace)
+            string rootNamespace,
+            bool hasOrleansConfig)
         {
             sb.AppendLine("    /// <summary>");
             sb.AppendLine("    /// Extension methods for configuring meta services.");
@@ -1978,6 +1979,30 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions");
             sb.AppendLine("                .TryAddSingleton<SharedMeta.Server.Core.IConfigByteSource>(services, sp => new GeneratedConfigByteSource(sp));");
             sb.AppendLine();
+            // 0.27.0+: Auto-register IConfigRegistry façade + a BroadcastingConfigProvider<T>
+            // per discovered [MetaConfig] type. Replaces per-type AddSharedMetaConfigProvider<T>()
+            // boilerplate that previously lived in user Program.cs. Emitted only when the host
+            // references SharedMeta.Orleans — pure SharedMeta.Server.Core hosts (tests, alt
+            // backends) skip the Orleans wiring.
+            if (hasOrleansConfig)
+            {
+                var configTypesForRegistration = byStateType
+                    .SelectMany(kvp => kvp.Value
+                        .Where(s => s.ConfigTypeFullName != null)
+                        .Select(s => s.ConfigTypeFullName!))
+                    .Distinct()
+                    .ToList();
+                if (configTypesForRegistration.Count > 0)
+                {
+                    sb.AppendLine("            // 0.27.0+ Auto-registered IConfigRegistry façade + BroadcastingConfigProvider<T> per [MetaConfig].");
+                    sb.AppendLine("            SharedMeta.Orleans.Config.ConfigVersioningExtensions.AddSharedMetaConfigVersioning(services);");
+                    foreach (var configFullName in configTypesForRegistration)
+                    {
+                        sb.AppendLine($"            SharedMeta.Orleans.Config.ConfigVersioningExtensions.AddSharedMetaConfigProvider<{configFullName}>(services);");
+                    }
+                    sb.AppendLine();
+                }
+            }
             sb.AppendLine("            // Register patch schema registry (used by diagnostic / desync paths to render PatchNode trees as readable JSON)");
             sb.AppendLine("            services.AddSingleton<SharedMeta.Core.Patch.IPatchSchemaRegistry>(sp =>");
             sb.AppendLine("            {");
@@ -2141,6 +2166,25 @@ namespace SharedMeta.Generator.Generators
                 }
                 sb.AppendLine();
 
+                // 0.27.0+ compile-time list of every [MetaConfig] type — used by the admin /
+                // bootstrap stack to iterate without reflection. Initialized once at ctor time.
+                sb.AppendLine("        private static readonly System.Collections.Generic.IReadOnlyList<SharedMeta.Server.Core.ConfigTypeEntry> _configs = new SharedMeta.Server.Core.ConfigTypeEntry[]");
+                sb.AppendLine("        {");
+                foreach (var entry in statesWithConfig)
+                {
+                    sb.AppendLine("            new SharedMeta.Server.Core.ConfigTypeEntry");
+                    sb.AppendLine("            {");
+                    sb.AppendLine($"                Name = typeof({entry.ConfigTypeFullName}).FullName!,");
+                    sb.AppendLine($"                DisplayName = typeof({entry.ConfigTypeFullName}).Name,");
+                    sb.AppendLine($"                ConfigType = typeof({entry.ConfigTypeFullName}),");
+                    sb.AppendLine($"                StateType = typeof({entry.StateTypeFullName}),");
+                    sb.AppendLine("            },");
+                }
+                sb.AppendLine("        };");
+                sb.AppendLine();
+                sb.AppendLine("        public System.Collections.Generic.IReadOnlyList<SharedMeta.Server.Core.ConfigTypeEntry> Configs => _configs;");
+                sb.AppendLine();
+
                 sb.AppendLine("        public GeneratedConfigByteSource(System.IServiceProvider sp)");
                 sb.AppendLine("        {");
                 foreach (var entry in statesWithConfig)
@@ -2174,6 +2218,7 @@ namespace SharedMeta.Generator.Generators
             }
             else
             {
+                sb.AppendLine("        public System.Collections.Generic.IReadOnlyList<SharedMeta.Server.Core.ConfigTypeEntry> Configs => System.Array.Empty<SharedMeta.Server.Core.ConfigTypeEntry>();");
                 sb.AppendLine("        public GeneratedConfigByteSource(System.IServiceProvider sp) { }");
                 sb.AppendLine();
                 sb.AppendLine("        public byte[]? GetBytes(SharedMeta.Core.IMetaSerializer serializer, string stateTypeName, SharedMeta.Core.MetaConfigVersion version) => null;");

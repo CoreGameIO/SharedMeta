@@ -248,6 +248,97 @@ services.AddSingleton<IMetaConfigProvider<GameConfig>>(new GameConfigProvider())
 
 `MetaConfigVersion` is `Major.Minor.Patch` as of 0.19.0. `ResolveLatestMatching` is called by the `[MetaConfigVersion]` resolver to materialize `Patch` captures (e.g. `1.6.x` → `1.6.17`).
 
+### 5. Config Admin & Bootstrap (0.27.0+)
+
+The framework now ships the full publish-side stack so a host wires it with one DI call instead of per-config registrations + a hand-rolled bootstrapper.
+
+```csharp
+siloBuilder.ConfigureServices(services =>
+{
+    services.ConfigureMeta(svc => { /* impls */ });
+
+    services.ConfigureConfigs(o =>
+    {
+        // Built-in seed source: scans {root}/{Type.Name}/{Major.Minor.Patch}.bin.
+        // FullName-folder fallback when short name isn't found.
+        o.UseDirectorySeed("data/drafts");
+
+        // LoadIfEmpty (default) — only seed when registry has nothing for that type.
+        // LoadIfNew — seed when the specific version isn't published yet.
+        // LoadAlways — always run the loader (idempotent re-publish on identical bytes).
+        o.Strategy = ConfigSeedStrategy.LoadIfEmpty;
+
+        // First-run convenience: writes Activator.CreateInstance defaults via
+        // IMetaSerializer.PackForExternalUsage for every [MetaConfig] type missing
+        // a .bin under root. Remove once you ship pre-baked bins via your own pipeline.
+        o.OnBeforeSeed = (sp, _) =>
+        {
+            DefaultBinSeeder.WriteMissingDefaults(sp, "data/drafts", "0.1.0");
+            return Task.CompletedTask;
+        };
+    });
+});
+```
+
+What this does, all in:
+
+- `services.AddSharedMetaConfigVersioning()` and per-`[MetaConfig]` `services.AddSharedMetaConfigProvider<T>()` registrations are emitted by the generator — no more hand-listing config types.
+- `ConfigBootstrapHostedService` runs on startup, calls your `IConfigBootstrapper` per type (strategy-gated), publishes via `IConfigRegistry.PublishIfChangedAsync`, records the audit row through `IConfigMetadataGrain`, and warms every `BroadcastingConfigProvider<TConfig>`.
+- `DefaultClientVersionService` is auto-registered as `IConfigVersionResolver` + `IHostedService` — see *Client App Version* below.
+- `IConfigAdminGrain` is auto-discovered by Orleans — admin tools join the cluster as a client and call it directly (no HTTP controller).
+
+**Custom bootstrapper.** Pick one form per project:
+
+```csharp
+o.UseBootstrapper<MyBootstrapper>();                 // typed
+o.UseBootstrapper(new MyInstance());                 // instance
+o.UseLoader((Type cfg, CancellationToken ct) => …);  // delegate inline
+o.UseDirectorySeed("data/drafts");                   // built-in (sets a factory)
+```
+
+**Admin operations from any project tool joined to the cluster as a client:**
+
+```csharp
+var admin = cluster.GetGrain<IConfigAdminGrain>(0);
+ConfigOverview[]  list      = await admin.ListConfigsAsync();
+byte[]            bytes     = await admin.DownloadAsync(name, version);
+ConfigOverview    afterPub  = await admin.UploadAsync(name, version, bytes, origin: "edit", publishedBy: user, notes: null);
+bool              dropped   = await admin.UnpublishAsync(name, version, deletedBy: user);
+```
+
+### 6. Client App Version (0.27.0+)
+
+Bind a `"ClientVersion"` section in `appsettings.json` and the framework's `DefaultClientVersionService` handles the three roles formerly stitched together project-side (current default, rejection gates, server build label):
+
+```json
+{
+  "ClientVersion": {
+    "Current": "0.1.0",
+    "Min":     "",
+    "Max":     "",
+    "Server":  ""
+  }
+}
+```
+
+| Field | Role |
+|---|---|
+| `Current` | Bootstrap value for `ICurrentClientVersionGrain` (the cluster-wide `IConfigVersionResolver.CurrentClientVersion`). Admin overrides survive restarts. |
+| `Min` / `Max` | Bootstrap mirror into `MetaTransportOptions.MinClientVersion` / `MaxClientVersion`. Runtime overrides flow through the existing `IVersionPolicyGrain` → `ClientVersionPolicy`. |
+| `Server` | One-shot mirror into `MetaTransportOptions.ServerVersion`. Not runtime-managed (a "new server version" is a redeploy). |
+
+Runtime control from admin tooling — one grain, four operations:
+
+```csharp
+var admin = cluster.GetGrain<IConfigAdminGrain>(0);
+ClientVersionSnapshot snap = await admin.GetClientVersionsAsync();
+await admin.SetCurrentClientVersionAsync("0.2.0", "release-bot");
+await admin.SetMinClientVersionAsync("0.1.5", "release-bot");
+await admin.SetMaxClientVersionAsync(null,    "release-bot");  // clear override
+```
+
+Cross-silo propagation: the admin grain pushes through to `ICurrentClientVersionGrain` / `IVersionPolicyGrain` and locally pokes `DefaultClientVersionService.SetCurrentLocally()` so the silo serving the admin request reflects the change immediately. Other silos pick it up via the 30-second background poll.
+
 ### Per-Client Config Branches & State Migration
 
 > **Added in 0.19.0**: route connecting clients to their own config branch and migrate entity state schema gradually as live config advances. See the [framework guide](https://github.com/CoreGameIO/SharedMeta/blob/main/docs/GUIDE.md#per-client-config-branches--state-migration) for the full treatment.
@@ -338,7 +429,7 @@ var client = new MetaClient(connection, serializer, new MetaClientOptions
 });
 ```
 
-Register `IConfigVersionResolver` (required when any config is used or any state declares `[EntityScope(Global)]`):
+**0.27.0+**: `services.ConfigureConfigs(...)` auto-registers `DefaultClientVersionService` as `IConfigVersionResolver`, backed by `ICurrentClientVersionGrain` and bootstrapped from `appsettings.json "ClientVersion:Current"`. Only register your own when you need a non-passthrough `ResolveVersion` (A/B routing, staged rollouts):
 
 ```csharp
 services.AddSingleton<IConfigVersionResolver>(new MyResolver());

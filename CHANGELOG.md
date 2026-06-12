@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.27.0] - 2026-06-12
+
+### Added
+
+- `services.ConfigureConfigs(o => …)` — one umbrella for the whole config subsystem (discovery, seeding, audit, admin grain, broadcasting providers). Replaces `AddSharedMetaConfig*` mix.
+- `DirectoryConfigBootstrapper` + `ConfigSeedStrategy` (`LoadIfEmpty` / `LoadIfNew` / `LoadAlways`) + `DefaultBinSeeder.WriteMissingDefaults` — fresh stand boots with default-instance bins, no project code.
+- `ClientVersionOptions` (`appsettings "ClientVersion"`) + `DefaultClientVersionService` + `ICurrentClientVersionGrain` — runtime Current/Min/Max via `IConfigAdminGrain.Set{Current,Min,Max}ClientVersionAsync`, no silo restart.
+
+### Wizard
+
+- Templates ship a `GameConfig`. Generated `Program.cs` wires `ConfigureConfigs` + `DefaultBinSeeder`, fixes `AddFileGrainStorage(UseOrleansSerializer=false)`, drops the shadowing `IMetaConnectionHandlerFactory` hand-reg. Generated `MetaGameClient.cs` pins `ClientAppVersion` + `ClientSignature`.
+
 ## [0.26.7] - 2026-06-07
 
 ### Added — defaults so the Wizard doesn't need to emit them

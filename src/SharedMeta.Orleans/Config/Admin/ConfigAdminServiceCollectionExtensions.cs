@@ -1,0 +1,211 @@
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using SharedMeta.Server.Core;
+using SharedMeta.Server.Core.Config.Admin;
+
+namespace SharedMeta.Orleans.Config.Admin
+{
+    /// <summary>
+    /// 0.27.0+ Single options bag covering the cold-start seed strategy, the loader,
+    /// the optional pre-seed hook, and the public download URL.
+    /// </summary>
+    public sealed class ConfigsOptions
+    {
+        /// <summary>
+        /// When the framework's hosted service should invoke the loader. Default:
+        /// <see cref="ConfigSeedStrategy.LoadIfNew"/>.
+        /// </summary>
+        public ConfigSeedStrategy Strategy { get; set; } = ConfigSeedStrategy.LoadIfNew;
+
+        /// <summary>
+        /// Optional pre-seed hook fired once at silo startup before any loader call.
+        /// Typical use: invoke a project-side dev YAML compiler that materializes
+        /// <c>{root}/{Name}/{version}.bin</c> the directory loader will then scan.
+        /// </summary>
+        public Func<IServiceProvider, CancellationToken, Task>? OnBeforeSeed { get; set; }
+
+        internal Type? BootstrapperType { get; private set; }
+        internal IConfigBootstrapper? BootstrapperInstance { get; private set; }
+        internal ServiceLifetime BootstrapperLifetime { get; private set; } = ServiceLifetime.Singleton;
+        internal Func<IServiceProvider, IConfigBootstrapper>? BootstrapperFactory { get; private set; }
+
+        /// <summary>Register a typed <see cref="IConfigBootstrapper"/> implementation.</summary>
+        public ConfigsOptions UseBootstrapper<TBootstrapper>(ServiceLifetime lifetime = ServiceLifetime.Singleton)
+            where TBootstrapper : class, IConfigBootstrapper
+        {
+            ResetBootstrapper();
+            BootstrapperType = typeof(TBootstrapper);
+            BootstrapperLifetime = lifetime;
+            return this;
+        }
+
+        /// <summary>Register a specific <see cref="IConfigBootstrapper"/> instance (singleton).</summary>
+        public ConfigsOptions UseBootstrapper(IConfigBootstrapper instance)
+        {
+            ResetBootstrapper();
+            BootstrapperInstance = instance ?? throw new ArgumentNullException(nameof(instance));
+            BootstrapperLifetime = ServiceLifetime.Singleton;
+            return this;
+        }
+
+        /// <summary>
+        /// Register a delegate-based <see cref="IConfigBootstrapper"/>. Shorthand for
+        /// implementing the interface — projects with a small inline loader can stay in
+        /// <c>Program.cs</c>:
+        /// <code>
+        /// o.UseLoader((Type cfg, CancellationToken ct) =>
+        /// {
+        ///     // return ConfigBootstrapSeed or null
+        /// });
+        /// </code>
+        /// </summary>
+        public ConfigsOptions UseLoader(Func<Type, CancellationToken, Task<ConfigBootstrapSeed?>> loader)
+        {
+            if (loader == null) throw new ArgumentNullException(nameof(loader));
+            ResetBootstrapper();
+            BootstrapperInstance = new DelegateConfigBootstrapper(loader);
+            BootstrapperLifetime = ServiceLifetime.Singleton;
+            return this;
+        }
+
+        /// <summary>
+        /// Use the built-in <see cref="DirectoryConfigBootstrapper"/>: scans
+        /// <c>{root}/{Type.Name}/{Major.Minor.Patch}.bin</c> and seeds the highest
+        /// matching version per config. Pair with <see cref="OnBeforeSeed"/> when the
+        /// project needs a dev-time YAML→bin compile pass to populate the folder.
+        /// </summary>
+        public ConfigsOptions UseDirectorySeed(string root)
+        {
+            if (string.IsNullOrWhiteSpace(root)) throw new ArgumentException("Seed directory root is required.", nameof(root));
+            ResetBootstrapper();
+            BootstrapperFactory = sp => new DirectoryConfigBootstrapper(
+                root, sp.GetService<ILogger<DirectoryConfigBootstrapper>>());
+            BootstrapperLifetime = ServiceLifetime.Singleton;
+            return this;
+        }
+
+        private void ResetBootstrapper()
+        {
+            BootstrapperType = null;
+            BootstrapperInstance = null;
+            BootstrapperFactory = null;
+        }
+
+        private sealed class DelegateConfigBootstrapper : IConfigBootstrapper
+        {
+            private readonly Func<Type, CancellationToken, Task<ConfigBootstrapSeed?>> _loader;
+            public DelegateConfigBootstrapper(Func<Type, CancellationToken, Task<ConfigBootstrapSeed?>> loader) => _loader = loader;
+            public Task<ConfigBootstrapSeed?> LoadAsync(Type configType, CancellationToken cancellationToken) => _loader(configType, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// 0.27.0+ DI wiring entry point for the SharedMeta config subsystem. Replaces the
+    /// previous mix of <c>AddSharedMetaConfigVersioning()</c> + <c>AddSharedMetaConfigProvider&lt;T&gt;()</c> +
+    /// <c>AddMetaConfigPublicUrl()</c> + <c>AddSharedMetaConfigAdmin()</c> with one
+    /// umbrella call. Per-type <c>BroadcastingConfigProvider&lt;T&gt;</c> registrations
+    /// are auto-emitted by the generated <c>ConfigureMeta()</c> for every <c>[MetaConfig]</c>
+    /// type — projects don't list them manually anymore.
+    /// </summary>
+    public static class ConfigsServiceCollectionExtensions
+    {
+        /// <summary>
+        /// Wire SharedMeta config registry + per-strategy bootstrap + optional public
+        /// download URL resolver. Typical use:
+        /// <code>
+        /// siloBuilder.ConfigureServices(services =>
+        /// {
+        ///     services.ConfigureMeta(svc => { /* impls */ });
+        ///     services.ConfigureConfigs(o =>
+        ///     {
+        ///         o.UseDirectorySeed("data/drafts");
+        ///         o.Strategy = ConfigSeedStrategy.LoadIfNew;
+        ///         o.OnBeforeSeed = (sp, _) =>
+        ///         {
+        ///             sp.GetRequiredService&lt;DevConfigCompiler&gt;().EnsureDrafts();
+        ///             return Task.CompletedTask;
+        ///         };
+        ///     });
+        ///     // Public download URL stays a separate one-liner — lives in
+        ///     // SharedMeta.Transport.SignalR to avoid a circular project ref:
+        ///     services.AddMetaConfigPublicUrl($"http://localhost:{port}");
+        /// });
+        /// </code>
+        /// </summary>
+        public static IServiceCollection ConfigureConfigs(
+            this IServiceCollection services,
+            Action<ConfigsOptions> configure)
+        {
+            if (services is null) throw new ArgumentNullException(nameof(services));
+            if (configure is null) throw new ArgumentNullException(nameof(configure));
+
+            var opts = new ConfigsOptions();
+            configure(opts);
+
+            // Registry façade. Idempotent (TryAdd inside AddSharedMetaConfigVersioning).
+            services.AddSharedMetaConfigVersioning();
+
+            // Push the options bag so the hosted service can read Strategy / OnBeforeSeed.
+            services.AddSingleton(Microsoft.Extensions.Options.Options.Create(opts));
+
+            // Register the bootstrapper IF the project supplied one. If not, hosted service
+            // wouldn't have anything to call — skip the service registration too.
+            var hasBootstrapper =
+                opts.BootstrapperType != null ||
+                opts.BootstrapperInstance != null ||
+                opts.BootstrapperFactory != null;
+
+            if (opts.BootstrapperInstance != null)
+            {
+                services.AddSingleton(opts.BootstrapperInstance);
+            }
+            else if (opts.BootstrapperFactory != null)
+            {
+                services.AddSingleton(opts.BootstrapperFactory);
+            }
+            else if (opts.BootstrapperType != null)
+            {
+                services.Add(new ServiceDescriptor(
+                    serviceType: typeof(IConfigBootstrapper),
+                    implementationType: opts.BootstrapperType,
+                    lifetime: opts.BootstrapperLifetime));
+            }
+
+            if (hasBootstrapper)
+                services.AddHostedService<ConfigBootstrapHostedService>();
+
+            // Bind appsettings "ClientVersion" section into ClientVersionOptions if the
+            // host has an IConfiguration in DI (true for any WebApplication / HostBuilder).
+            // Project pre-binds the same section (services.Configure<ClientVersionOptions>(...))
+            // to pre-empt — both registrations compose (last-wins on overlapping keys).
+            services.AddOptions<ClientVersionOptions>()
+                .Configure<IConfiguration>((opts, config) =>
+                {
+                    var section = config.GetSection(ClientVersionOptions.SectionName);
+                    if (!section.Exists()) return;
+                    var current = section[nameof(ClientVersionOptions.Current)];
+                    if (!string.IsNullOrWhiteSpace(current)) opts.Current = current;
+                    opts.Min = section[nameof(ClientVersionOptions.Min)] ?? opts.Min;
+                    opts.Max = section[nameof(ClientVersionOptions.Max)] ?? opts.Max;
+                    opts.Server = section[nameof(ClientVersionOptions.Server)] ?? opts.Server;
+                });
+
+            // Default IConfigVersionResolver: grain-backed Current + appsettings bootstrap.
+            // Project pre-registers its own IConfigVersionResolver before this call to pre-empt
+            // (TryAddSingleton no-ops on existing impl). The hosted service registration is
+            // unconditional — admin-driven Current changes need the poll loop on every silo.
+            services.TryAddSingleton<DefaultClientVersionService>();
+            services.TryAddSingleton<IConfigVersionResolver>(
+                sp => sp.GetRequiredService<DefaultClientVersionService>());
+            services.AddHostedService(sp => sp.GetRequiredService<DefaultClientVersionService>());
+
+            return services;
+        }
+    }
+}

@@ -668,6 +668,9 @@ namespace SharedMeta.Editor
             WriteFile(Path.Combine(dir, "State"), $"{stateName}State.cs", GenSimpleProfileState(ns, stateName));
             WriteFile(Path.Combine(dir, "Services"), $"I{stateName}Service.cs", GenSimpleProfileInterface(ns, stateName));
             WriteFile(Path.Combine(dir, "Impl"), $"{stateName}Service.cs", GenSimpleProfileImpl(ns, stateName));
+            WriteFile(Path.Combine(dir, "Config"), "GameConfig.cs",
+                GenGameConfig(ns, "int", "ExperiencePerLevel", "100",
+                    "How much raw experience grants one level — divisor in AddExperience."));
         }
 
         private string GenSimpleProfileState(string ns, string stateName)
@@ -697,7 +700,7 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine($"namespace {ns}");
             sb.AppendLine("{");
-            sb.AppendLine($"    [MetaService(StateType = typeof({stateName}State), AccessPolicy = EntityAccessPolicy.UserOwned)]");
+            sb.AppendLine($"    [MetaService(StateType = typeof({stateName}State), AccessPolicy = EntityAccessPolicy.UserOwned, DefaultConfig = true)]");
             sb.AppendLine($"    public interface I{stateName}Service : IMetaService");
             sb.AppendLine("    {");
             sb.AppendLine("        [MetaMethod(Alias = \"Init\", Mode = ExecutionMode.Server)]");
@@ -736,7 +739,7 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine("        public int AddExperience(int amount)");
             sb.AppendLine("        {");
-            sb.AppendLine("            State.Level += amount / 100;");
+            sb.AppendLine("            State.Level += amount / ((GameConfig)Config!).ExperiencePerLevel;");
             sb.AppendLine("            return State.Level;");
             sb.AppendLine("        }");
             sb.AppendLine("    }");
@@ -754,6 +757,9 @@ namespace SharedMeta.Editor
             WriteFile(Path.Combine(dir, "State"), "OthelloState.cs", GenOthelloGameState(ns));
             WriteFile(Path.Combine(dir, "Services"), "IOthelloService.cs", GenOthelloGameInterface(ns));
             WriteFile(Path.Combine(dir, "Impl"), "OthelloService.cs", GenOthelloGameImpl(ns));
+            WriteFile(Path.Combine(dir, "Config"), "GameConfig.cs",
+                GenGameConfig(ns, "int", "StartingPlayer", "1",
+                    "Which side moves first (1 = Black, 2 = White)."));
         }
 
         private string GenOthelloProfileState(string ns)
@@ -789,6 +795,7 @@ namespace SharedMeta.Editor
             sb.AppendLine($"namespace {ns}");
             sb.AppendLine("{");
             sb.AppendLine("    [MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned,");
+            sb.AppendLine("        DefaultConfig = true,");
             sb.AppendLine("        SubscriberInterfaces = new[] { typeof(ILobbySubscriber) })]");
             sb.AppendLine("    public interface IProfileService : IMetaService");
             sb.AppendLine("    {");
@@ -906,7 +913,7 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine($"namespace {ns}");
             sb.AppendLine("{");
-            sb.AppendLine("    [MetaService(StateType = typeof(OthelloState))]");
+            sb.AppendLine("    [MetaService(StateType = typeof(OthelloState), DefaultConfig = true)]");
             sb.AppendLine("    public interface IOthelloService : IMetaService");
             sb.AppendLine("    {");
             sb.AppendLine("        [MetaMethod(Alias = \"RegisterPlayer\", Mode = ExecutionMode.Server, GenerateClientApi = false)]");
@@ -945,7 +952,7 @@ namespace SharedMeta.Editor
             sb.AppendLine("            // Initial 4 pieces in the center");
             sb.AppendLine("            State.Board[27] = 2; State.Board[28] = 1;");
             sb.AppendLine("            State.Board[35] = 1; State.Board[36] = 2;");
-            sb.AppendLine("            State.CurrentPlayer = 1;");
+            sb.AppendLine("            State.CurrentPlayer = ((GameConfig)Config!).StartingPlayer;");
             sb.AppendLine("            State.Phase = GamePhase.Playing;");
             sb.AppendLine("            State.WinnerId = null;");
             sb.AppendLine("            UpdateScore();");
@@ -1042,6 +1049,9 @@ namespace SharedMeta.Editor
             WriteFile(Path.Combine(dir, "State"), "ExpeditionState.cs", GenExpeditionState(ns));
             WriteFile(Path.Combine(dir, "Services"), "IExpeditionService.cs", GenExpeditionInterface(ns));
             WriteFile(Path.Combine(dir, "Impl"), "ExpeditionService.cs", GenExpeditionImpl(ns));
+            WriteFile(Path.Combine(dir, "Config"), "GameConfig.cs",
+                GenGameConfig(ns, "int", "StartEnergyCost", "10",
+                    "Energy deducted when StartExpedition is called."));
         }
 
         private string GenExpeditionProfileState(string ns)
@@ -1077,7 +1087,7 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine($"namespace {ns}");
             sb.AppendLine("{");
-            sb.AppendLine("    [MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned)]");
+            sb.AppendLine("    [MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned, DefaultConfig = true)]");
             sb.AppendLine("    public interface IProfileService : IMetaService");
             sb.AppendLine("    {");
             sb.AppendLine("        [MetaMethod(Alias = \"InitProfile\", Mode = ExecutionMode.Server)]");
@@ -1146,7 +1156,7 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine("        public async Task<string> StartExpedition()");
             sb.AppendLine("        {");
-            sb.AppendLine("            if (!SpendEnergy(10)) return \"\";");
+            sb.AppendLine("            if (!SpendEnergy(((GameConfig)Config!).StartEnergyCost)) return \"\";");
             sb.AppendLine("            var expeditionId = $\"expedition:{State.PlayerId}:{Context.ServerTimeTicks}\";");
             sb.AppendLine("            var expeditionService = GetIExpeditionService(expeditionId);");
             sb.AppendLine("            await expeditionService.InitAsync(State.PlayerId);");
@@ -1207,7 +1217,7 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine($"namespace {ns}");
             sb.AppendLine("{");
-            sb.AppendLine("    [MetaService(StateType = typeof(ExpeditionState), AccessPolicy = EntityAccessPolicy.Authorized)]");
+            sb.AppendLine("    [MetaService(StateType = typeof(ExpeditionState), AccessPolicy = EntityAccessPolicy.Authorized, DefaultConfig = true)]");
             sb.AppendLine("    public interface IExpeditionService : IMetaService");
             sb.AppendLine("    {");
             sb.AppendLine("        [MetaMethod(Alias = \"Init\", Mode = ExecutionMode.Server, GenerateClientApi = false)]");
@@ -1331,6 +1341,55 @@ namespace SharedMeta.Editor
                 : "    [MessagePackObject]");
         }
 
+        /// <summary>
+        /// Emit a minimal <c>[MetaConfig(Default = true)]</c> POCO with a single
+        /// <paramref name="fieldType"/> <paramref name="fieldName"/> = <paramref name="defaultValue"/>
+        /// field. Generated under the template's namespace so the framework's
+        /// state→config map auto-binds it (Default-flagged means every state in the
+        /// assembly resolves to this class via <c>Context.Config</c>).
+        ///
+        /// <para>Why a partial class with serializer attrs: configs cross the wire via
+        /// the chosen <c>IMetaSerializer</c>; the attrs let MemoryPack / MessagePack
+        /// emit codecs at compile time. Adding fields later stays binary-compatible
+        /// when MemoryPack is in VersionTolerant mode (or with MessagePack's integer
+        /// keys).</para>
+        /// </summary>
+        private string GenGameConfig(string ns, string fieldType, string fieldName, string defaultValue, string fieldComment)
+        {
+            var sb = new StringBuilder();
+            AppendSerializerUsing(sb);
+            sb.AppendLine("using SharedMeta.Core;");
+            sb.AppendLine();
+            sb.AppendLine($"namespace {ns}");
+            sb.AppendLine("{");
+            sb.AppendLine("    /// <summary>");
+            sb.AppendLine("    /// Default config DTO — bound automatically to every state in this assembly via");
+            sb.AppendLine("    /// the [MetaConfig(Default = true)] flag. Access from service implementations");
+            sb.AppendLine("    /// with <c>((GameConfig)Config!).Field</c>.");
+            sb.AppendLine("    /// </summary>");
+            sb.AppendLine("    /// <remarks>");
+            sb.AppendLine("    /// The server-side <c>DefaultBinSeeder</c> hook in Program.cs writes a serialized");
+            sb.AppendLine("    /// default instance to <c>data/drafts/GameConfig/&lt;version&gt;.bin</c> on first run.");
+            sb.AppendLine("    /// Edit the property defaults below to change the seed, or publish a new version");
+            sb.AppendLine("    /// via <c>IConfigAdminGrain</c> at runtime.");
+            sb.AppendLine("    /// </remarks>");
+            sb.AppendLine("    [MetaConfig(Default = true)]");
+            // [MetaConfigVersion] maps client app version → config version branch. Wildcard
+            // "0.1.*" → "0.1.*" means any 0.1.x client picks the latest 0.1.x config the
+            // registry holds (DefaultBinSeeder writes 0.1.0; admin can publish 0.1.1, 0.1.2…
+            // and existing clients auto-upgrade). Bump both sides together when shipping
+            // a structurally different client (0.2.0 client → 0.2.x config branch).
+            sb.AppendLine("    [MetaConfigVersion(Client = \"0.1.*\", Config = \"0.1.*\")]");
+            AppendSerializerAttr(sb);
+            sb.AppendLine("    public partial class GameConfig");
+            sb.AppendLine("    {");
+            sb.AppendLine($"        /// <summary>{fieldComment}</summary>");
+            AppendProp(sb, 0, fieldType, fieldName, defaultValue);
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
+            return sb.ToString();
+        }
+
         private void AppendProp(StringBuilder sb, int id, string type, string name, string? defaultValue = null)
         {
             var attr = _serializerIndex == 0
@@ -1418,6 +1477,15 @@ namespace SharedMeta.Editor
                 GenerateServerProgram(),
                 Encoding.UTF8);
 
+            // appsettings.json — picked up automatically by WebApplication.CreateBuilder.
+            // The "ClientVersion" section binds to ClientVersionOptions and is consumed by
+            // SharedMeta 0.27.0+ DefaultClientVersionService: Current seeds ICurrentClientVersionGrain
+            // on first start; Min/Max mirror into MetaTransportOptions on startup.
+            File.WriteAllText(
+                Path.Combine(outputDir, "appsettings.json"),
+                GenerateServerAppsettings(),
+                new UTF8Encoding(false));
+
             // .gitignore
             File.WriteAllText(
                 Path.Combine(outputDir, ".gitignore"),
@@ -1443,6 +1511,36 @@ namespace SharedMeta.Editor
                 $"Solution: {Path.Combine(solutionDir, solutionName + ".sln")}\n\n" +
                 $"Open the .sln in your IDE, or run:\ndotnet run --project {_serverProjectName}/{_serverProjectName}.csproj",
                 "OK");
+        }
+
+        /// <summary>
+        /// Minimal <c>appsettings.json</c> for the generated server. Ships the
+        /// <c>"ClientVersion"</c> section that <c>DefaultClientVersionService</c> binds —
+        /// <c>Current</c> seeds the cluster grain on first activation, <c>Min</c>/<c>Max</c>
+        /// mirror into <c>MetaTransportOptions</c> as connect-time rejection gates.
+        /// Once the silo has run once, admin flips these at runtime via
+        /// <c>IConfigAdminGrain.SetCurrentClientVersionAsync</c> et al.
+        /// </summary>
+        private static string GenerateServerAppsettings()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("{");
+            sb.AppendLine("  \"Logging\": {");
+            sb.AppendLine("    \"LogLevel\": {");
+            sb.AppendLine("      \"Default\": \"Information\",");
+            sb.AppendLine("      \"Microsoft.AspNetCore\": \"Warning\",");
+            sb.AppendLine("      \"Orleans\": \"Warning\"");
+            sb.AppendLine("    }");
+            sb.AppendLine("  },");
+            sb.AppendLine("  \"AllowedHosts\": \"*\",");
+            sb.AppendLine("  \"ClientVersion\": {");
+            sb.AppendLine("    \"Current\": \"0.1.0\",");
+            sb.AppendLine("    \"Min\": \"\",");
+            sb.AppendLine("    \"Max\": \"\",");
+            sb.AppendLine("    \"Server\": \"\"");
+            sb.AppendLine("  }");
+            sb.AppendLine("}");
+            return sb.ToString();
         }
 
         private string GenerateServerCsproj(string sharedRelPath)
@@ -1513,6 +1611,9 @@ namespace SharedMeta.Editor
             sb.AppendLine("using SharedMeta.Server.Core.Storage;");
             sb.AppendLine("using SharedMeta.Core.Framework;");
             sb.AppendLine("using SharedMeta.Orleans.Framework;");
+            // 0.27.0+ config pipeline + ClientVersion subsystem.
+            sb.AppendLine("using SharedMeta.Orleans.Config.Admin;");
+            sb.AppendLine("using SharedMeta.Server.Core.Config.Admin;");
 
             if (_serializerIndex == 0)
                 sb.AppendLine("using SharedMeta.Serialization.MemoryPack;");
@@ -1576,7 +1677,14 @@ namespace SharedMeta.Editor
             sb.AppendLine($"            options.ClusterId = \"{_serverProjectName.ToLower()}-cluster\";");
             sb.AppendLine($"            options.ServiceId = \"{_serverProjectName.ToLower()}-server\";");
             sb.AppendLine("        })");
-            sb.AppendLine("        .AddFileGrainStorage(\"Default\", o => o.RootDirectory = \"./data\")");
+            sb.AppendLine("        .AddFileGrainStorage(\"Default\", o =>");
+            sb.AppendLine("        {");
+            sb.AppendLine("            o.RootDirectory = \"./data\";");
+            sb.AppendLine("            // Route persistence through IMetaSerializer (MemoryPack/MessagePack) instead of");
+            sb.AppendLine("            // the Orleans default — keeps EntityGrainState<TState> compatible with the");
+            sb.AppendLine("            // serializer attrs on your state classes, no extra [GenerateSerializer] required.");
+            sb.AppendLine("            o.UseOrleansSerializer = false;");
+            sb.AppendLine("        })");
             sb.AppendLine("        .ConfigureServices(services =>");
             sb.AppendLine("        {");
             sb.AppendLine("            services.AddSingleton<IMetaSerializer>(serializer);");
@@ -1587,6 +1695,28 @@ namespace SharedMeta.Editor
             sb.AppendLine("                // Register your server-side services here");
             sb.AppendLine("                // svc.AddTransient<IRandomService, RandomServiceImpl>();");
             sb.AppendLine("                svc.AddTransient<ILobbyRequester>(sp => new OrleansLobbyRequester(sp.GetRequiredService<IGrainFactory>()));");
+            sb.AppendLine();
+            sb.AppendLine("                // SharedMeta 0.27.0+ config pipeline:");
+            sb.AppendLine("                //   - UseDirectorySeed: framework scans data/drafts/{Name}/{Ver}.bin and publishes the");
+            sb.AppendLine("                //     highest version per config on cold-start.");
+            sb.AppendLine("                //   - Strategy=LoadIfEmpty: only seeds when the registry has no version yet (typical");
+            sb.AppendLine("                //     dev flow). Switch to LoadIfNew if seed bumps should auto-publish new versions.");
+            sb.AppendLine("                //   - OnBeforeSeed → DefaultBinSeeder.WriteMissingDefaults: for each [MetaConfig] type");
+            sb.AppendLine("                //     the generator discovered, writes data/drafts/{Name}/0.1.0.bin with the type's");
+            sb.AppendLine("                //     default-instance bytes when the file doesn't exist yet. Remove this hook once");
+            sb.AppendLine("                //     you ship hand-baked .bin files via your own pipeline.");
+            sb.AppendLine("                //   - ClientVersion (Current/Min/Max) is auto-bound from appsettings.json and runtime-");
+            sb.AppendLine("                //     mutable via IConfigAdminGrain.SetCurrentClientVersionAsync / SetMin / SetMax.");
+            sb.AppendLine("                svc.ConfigureConfigs(o =>");
+            sb.AppendLine("                {");
+            sb.AppendLine("                    o.UseDirectorySeed(\"data/drafts\");");
+            sb.AppendLine("                    o.Strategy = ConfigSeedStrategy.LoadIfEmpty;");
+            sb.AppendLine("                    o.OnBeforeSeed = (sp, _) =>");
+            sb.AppendLine("                    {");
+            sb.AppendLine("                        DefaultBinSeeder.WriteMissingDefaults(sp, \"data/drafts\", \"0.1.0\");");
+            sb.AppendLine("                        return Task.CompletedTask;");
+            sb.AppendLine("                    };");
+            sb.AppendLine("                });");
             sb.AppendLine("            });");
             sb.AppendLine("        });");
             sb.AppendLine("});");
@@ -1616,16 +1746,11 @@ namespace SharedMeta.Editor
             }
             sb.AppendLine();
 
-            // MetaConnectionHandler factory
-            sb.AppendLine("// MetaConnectionHandler factory");
-            sb.AppendLine("builder.Services.AddSingleton<IMetaConnectionHandlerFactory>(sp =>");
-            sb.AppendLine("{");
-            sb.AppendLine("    var grainFactory = sp.GetRequiredService<IGrainFactory>();");
-            sb.AppendLine("    var entityGrainResolver = sp.GetRequiredService<IEntityGrainResolver>();");
-            sb.AppendLine("    var loggerFactory = sp.GetRequiredService<ILoggerFactory>();");
-            sb.AppendLine("    return new MetaConnectionHandlerFactory(grainFactory, entityGrainResolver, loggerFactory);");
-            sb.AppendLine("});");
-            sb.AppendLine();
+            // IMetaConnectionHandlerFactory is registered by the generator's ConfigureMeta
+            // with the full DI graph (IClientSignatureRegistry, MetaServerSignature,
+            // ClientVersionPolicy, MetaTransportOptions, IMetaSerializer, IPatchSchemaRegistry).
+            // Hand-registering it here would shadow that with a 3-arg ctor and break client
+            // signature negotiation ("not negotiated" errors on the first RPC).
 
             // Auth
             if (_enableAuth)
@@ -1906,6 +2031,17 @@ namespace SharedMeta.Editor
                 sb.AppendLine("            PlayerId = playerId,");
             else
                 sb.AppendLine("            PlayerId = SystemInfo.deviceUniqueIdentifier,");
+            sb.AppendLine("            // Stamped on every SessionConnect / RPC as CallerClientVersion. Must match a config");
+            sb.AppendLine("            // version the server has published (or a branch covered by [MetaConfigVersion] rules) —");
+            sb.AppendLine("            // the wizard seeds data/drafts/GameConfig/0.1.0.bin on first run, so 0.1.0 is the");
+            sb.AppendLine("            // matching default. Update this when you ship a new client build with a bumped config.");
+            sb.AppendLine("            ClientAppVersion = \"0.1.0\",");
+            sb.AppendLine("            // 0.24.0+ Explicitly pin this assembly's MetaClientSignature so SessionConnect can");
+            sb.AppendLine("            // negotiate the per-signature method-id map before the first RPC dispatches.");
+            sb.AppendLine("            // RegisterAllServices() below also publishes ClientSignatureDefault.Value as a");
+            sb.AppendLine("            // fallback, but the explicit pin removes ordering surprises (and the need to rely");
+            sb.AppendLine("            // on the module-initializer path that doesn't run on Unity / IL2CPP).");
+            sb.AppendLine($"            ClientSignature = global::{_sharedProjectName}.GameServiceDiscoveryBase.ClientSignature,");
             sb.AppendLine("            // Optional hooks — implement and uncomment when needed:");
             sb.AppendLine("            // Diagnostics     = new MyDesyncDiagnostics(),     // IDesyncDiagnostics: OnRandomDesync/OnPatchDesync/OnResultMismatch callbacks");
             sb.AppendLine("            // ConnectionHealth = new MyConnectionHealth(),     // IConnectionHealth: Healthy ↔ Slow ↔ Unresponsive transitions for UI overlays");
