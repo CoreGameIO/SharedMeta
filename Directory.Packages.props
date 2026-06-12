@@ -6,7 +6,7 @@
   <ItemGroup>
     <!-- Serialization -->
     <PackageVersion Include="MemoryPack" Version="1.21.4" />
-    <PackageVersion Include="MessagePack" Version="3.1.4" />
+    <PackageVersion Include="MessagePack" Version="3.1.7" />
 
     <!-- Code Analysis (generators) -->
     <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0" />
