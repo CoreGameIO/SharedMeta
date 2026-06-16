@@ -248,9 +248,9 @@ services.AddSingleton<IMetaConfigProvider<GameConfig>>(new GameConfigProvider())
 
 `MetaConfigVersion` is `Major.Minor.Patch` as of 0.19.0. `ResolveLatestMatching` is called by the `[MetaConfigVersion]` resolver to materialize `Patch` captures (e.g. `1.6.x` → `1.6.17`).
 
-### 5. Config Admin & Bootstrap (0.27.0+)
+### 5. Config Admin & Bootstrap (0.27.0+ / 0.28.0)
 
-The framework ships the full publish-side stack so a host wires it with one DI call instead of per-config registrations + a hand-rolled bootstrapper. The bootstrapper is **two-phase** (0.27.1+) — the framework asks for a version first, gates against the registry, and only fetches bytes if a publish is needed.
+The framework ships the full publish-side stack so a host wires it with one DI call instead of per-config registrations + a hand-rolled bootstrapper. The bootstrapper is **typed two-phase** (0.28.0): `GetVersionAsync<TConfig>` / `GetBytesAsync<TConfig>` are dispatched per `[MetaConfig]` type by the generator-emitted `IConfigCatalog` — `TConfig` is closed at the compile-time call site, no reflection, no `Type` arguments.
 
 ```csharp
 siloBuilder.ConfigureServices(services =>
@@ -259,10 +259,10 @@ siloBuilder.ConfigureServices(services =>
 
     services.ConfigureConfigs(o =>
     {
-        // In-memory bootstrapper: Activator.CreateInstance per [MetaConfig] type,
-        // packed via IMetaSerializer, published at the given version. Pure code path —
-        // works in read-only Docker images, no filesystem reads or writes.
-        o.UseDefaultInstances("0.1.0");
+        // Project-side typed IConfigBootstrapper. Wizard emits ConfigBootstrapper.cs with one
+        // typed branch per [MetaConfig] in the template (default-instance pattern). Swap each
+        // branch for a real source (manifest, CDN, GDrive) when a content pipeline arrives.
+        o.UseBootstrapper<ConfigBootstrapper>();
 
         // LoadIfEmpty — only seed when registry has nothing for that type.
         // LoadIfNew (default) — seed when the specific version isn't published yet.
@@ -274,15 +274,15 @@ siloBuilder.ConfigureServices(services =>
 
 What this does, all in:
 
-- The generator emits per-`[MetaConfig]` `BroadcastingConfigProvider<T>` registrations — no hand-listing.
-- `ConfigBootstrapHostedService` runs on startup: `bootstrapper.GetVersionAsync(type)` → strategy gate → `bootstrapper.GetBytesAsync(type, version)` → `IConfigRegistry.PublishIfChangedAsync` → audit row through `IConfigMetadataGrain` → broadcast provider warm-up.
+- The generator emits per-`[MetaConfig]` `BroadcastingConfigProvider<T>` registrations + a `GeneratedConfigCatalog` typed dispatcher — no hand-listing, no reflection.
+- `ConfigBootstrapHostedService` runs on startup: catalog visits each entry typed, then `bootstrapper.GetVersionAsync<TConfig>` → strategy gate → `bootstrapper.GetBytesAsync<TConfig>(version)` → `IConfigRegistry.PublishIfChangedAsync<TConfig>` → audit row through `IConfigMetadataGrain` → broadcast provider warm-up.
 - `DefaultClientVersionService` is auto-registered as `IConfigVersionResolver` + `IHostedService` — see *Client App Version* below.
-- `IConfigAdminGrain` is auto-discovered by Orleans — admin tools join the cluster as a client and call it directly (no HTTP controller).
+- `IConfigAdminGrain` is auto-discovered by Orleans — admin tools join the cluster as a client and call it directly (no HTTP controller). Typed extensions (`admin.DownloadAsync<TConfig>(version)`, `admin.UploadAsync<TConfig>(...)`) live in `SharedMeta.Server.Core.Config.Admin.ConfigAdminGrainExtensions`.
 
 **Bootstrapper choice.** Pick one per project:
 
 ```csharp
-o.UseDefaultInstances("0.1.0");          // built-in, in-memory C# defaults (Wizard default)
+o.UseBootstrapper<ConfigBootstrapper>(); // project-side typed dispatcher (Wizard default)
 o.UseDirectorySeed("data/drafts");       // built-in, read-only scan {root}/{Type.Name}/{M.m.p}.bin
 o.UseBootstrapper<MyBootstrapper>();     // project-typed: implements IConfigBootstrapper
 o.UseBootstrapper(new MyInstance());     // project instance

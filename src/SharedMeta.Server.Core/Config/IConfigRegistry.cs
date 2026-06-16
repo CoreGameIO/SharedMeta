@@ -134,6 +134,34 @@ namespace SharedMeta.Server.Core.Config
             await registry.PublishAsync(configType, version, configBytes).ConfigureAwait(false);
             return ConfigPublishOutcome.OverwrittenAfterDrift;
         }
+
+        // 0.28.0+ Typed generic overloads. Project / framework code that already knows
+        // <c>TConfig</c> (typically inside an <c>IConfigCatalogHandler.HandleAsync&lt;TConfig&gt;</c>
+        // callback) skips the <c>typeof(...)</c> noise and reads naturally.
+
+        public static Task<byte[]?> GetAsync<TConfig>(this IConfigRegistry registry, MetaConfigVersion version)
+            where TConfig : class
+            => registry.GetAsync(typeof(TConfig), version);
+
+        public static Task<IReadOnlyList<MetaConfigVersion>> ListVersionsAsync<TConfig>(this IConfigRegistry registry)
+            where TConfig : class
+            => registry.ListVersionsAsync(typeof(TConfig));
+
+        public static Task PublishAsync<TConfig>(this IConfigRegistry registry, MetaConfigVersion version, byte[] configBytes)
+            where TConfig : class
+            => registry.PublishAsync(typeof(TConfig), version, configBytes);
+
+        public static Task UnpublishAsync<TConfig>(this IConfigRegistry registry, MetaConfigVersion version)
+            where TConfig : class
+            => registry.UnpublishAsync(typeof(TConfig), version);
+
+        public static Task<ConfigPublishOutcome> PublishIfChangedAsync<TConfig>(
+            this IConfigRegistry registry,
+            MetaConfigVersion version,
+            byte[] configBytes,
+            bool failOnDrift = false)
+            where TConfig : class
+            => PublishIfChangedAsync(registry, typeof(TConfig), version, configBytes, failOnDrift);
     }
 
     /// <summary>

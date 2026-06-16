@@ -55,10 +55,10 @@ namespace SharedMeta.UnitTests
         [Fact]
         public async Task IConfigBootstrapper_CanReturnNull()
         {
-            // Contract: returning null from GetVersionAsync is the documented "no seed
-            // available" signal — framework skips the type entirely.
+            // Contract: returning null from GetVersionAsync<TConfig> is the documented
+            // "no seed available" signal — framework skips the type entirely.
             IConfigBootstrapper b = new NullBootstrapper();
-            var version = await b.GetVersionAsync(typeof(object), default);
+            var version = await b.GetVersionAsync<object>(default);
             Assert.Null(version);
         }
 
@@ -76,9 +76,9 @@ namespace SharedMeta.UnitTests
 
         private sealed class NullBootstrapper : IConfigBootstrapper
         {
-            public Task<MetaConfigVersion?> GetVersionAsync(Type configType, System.Threading.CancellationToken ct)
+            public Task<MetaConfigVersion?> GetVersionAsync<TConfig>(System.Threading.CancellationToken ct) where TConfig : class
                 => Task.FromResult<MetaConfigVersion?>(null);
-            public Task<ConfigBootstrapBytes?> GetBytesAsync(Type configType, MetaConfigVersion version, System.Threading.CancellationToken ct)
+            public Task<ConfigBootstrapBytes?> GetBytesAsync<TConfig>(MetaConfigVersion version, System.Threading.CancellationToken ct) where TConfig : class
                 => Task.FromResult<ConfigBootstrapBytes?>(null);
         }
     }

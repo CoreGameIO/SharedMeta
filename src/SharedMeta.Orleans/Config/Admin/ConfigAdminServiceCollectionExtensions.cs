@@ -11,14 +11,19 @@ namespace SharedMeta.Orleans.Config.Admin
 {
     /// <summary>
     /// 0.27.0+ Options bag for <see cref="ConfigsServiceCollectionExtensions.ConfigureConfigs"/>.
-    /// Picks the bootstrapper (default-instance / directory / project-typed) and the cold-start
-    /// strategy.
+    /// Picks the bootstrapper (directory / project-typed) and the cold-start strategy.
     ///
     /// <para>
     /// 0.27.1: <c>OnBeforeSeed</c> and <c>UseLoader</c> were removed — projects that need
     /// pre-bootstrap work register their own <c>IHostedService</c> ahead of
     /// <c>ConfigureConfigs</c>; projects with inline custom seeds implement
     /// <see cref="IConfigBootstrapper"/> directly (it's two short methods).
+    /// </para>
+    /// <para>
+    /// 0.28.0: <c>UseDefaultInstances</c> removed — the wizard now emits a project-side
+    /// <c>ConfigBootstrapper</c> partial class instead. <c>IConfigBootstrapper</c> methods
+    /// are generic (typed <c>TConfig</c>) and dispatched via the generator-emitted
+    /// <see cref="IConfigCatalog"/>.
     /// </para>
     /// </summary>
     public sealed class ConfigsOptions
@@ -71,29 +76,6 @@ namespace SharedMeta.Orleans.Config.Admin
             return this;
         }
 
-        /// <summary>
-        /// 0.27.1+ Pure in-memory bootstrap: <see cref="Activator.CreateInstance"/> per
-        /// <c>[MetaConfig]</c> type, serialized via <see cref="IMetaSerializer"/>, published
-        /// under <paramref name="version"/>. No filesystem reads/writes — works in read-only
-        /// Docker images. The default for fresh projects: edit the C# field initializers,
-        /// restart, registry updates (under <see cref="ConfigSeedStrategy.LoadIfNew"/> /
-        /// <see cref="ConfigSeedStrategy.LoadAlways"/>).
-        /// </summary>
-        public ConfigsOptions UseDefaultInstances(MetaConfigVersion version)
-        {
-            ResetBootstrapper();
-            BootstrapperFactory = sp => new DefaultInstanceConfigBootstrapper(
-                version,
-                sp.GetRequiredService<IMetaSerializer>(),
-                sp.GetService<ILogger<DefaultInstanceConfigBootstrapper>>());
-            BootstrapperLifetime = ServiceLifetime.Singleton;
-            return this;
-        }
-
-        /// <summary>Convenience overload that parses a <c>"M.m.p"</c> string.</summary>
-        public ConfigsOptions UseDefaultInstances(string version = "0.1.0")
-            => UseDefaultInstances(MetaConfigVersion.Parse(version));
-
         private void ResetBootstrapper()
         {
             BootstrapperType = null;
@@ -123,7 +105,7 @@ namespace SharedMeta.Orleans.Config.Admin
         ///     services.ConfigureMeta(svc => { /* impls */ });
         ///     services.ConfigureConfigs(o =>
         ///     {
-        ///         o.UseDefaultInstances("0.1.0");                  // in-memory defaults from C#
+        ///         o.UseBootstrapper&lt;ConfigBootstrapper&gt;();     // project-emitted typed dispatcher
         ///         o.Strategy = ConfigSeedStrategy.LoadIfNew;
         ///     });
         ///     // Public download URL stays a separate one-liner — lives in

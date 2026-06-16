@@ -1979,6 +1979,11 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions");
             sb.AppendLine("                .TryAddSingleton<SharedMeta.Server.Core.IConfigByteSource>(services, sp => new GeneratedConfigByteSource(sp));");
             sb.AppendLine();
+            sb.AppendLine("            // 0.28.0+: Register IConfigCatalog — typed dispatcher (one HandleAsync<TConfig> per");
+            sb.AppendLine("            // [MetaConfig]) consumed by the admin grain and bootstrap hosted service.");
+            sb.AppendLine("            Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions");
+            sb.AppendLine("                .TryAddSingleton<SharedMeta.Server.Core.Config.Admin.IConfigCatalog, GeneratedConfigCatalog>(services);");
+            sb.AppendLine();
             // 0.27.0+: Auto-register IConfigRegistry façade + a BroadcastingConfigProvider<T>
             // per discovered [MetaConfig] type. Replaces per-type AddSharedMetaConfigProvider<T>()
             // boilerplate that previously lived in user Program.cs. Emitted only when the host
@@ -2166,25 +2171,6 @@ namespace SharedMeta.Generator.Generators
                 }
                 sb.AppendLine();
 
-                // 0.27.0+ compile-time list of every [MetaConfig] type — used by the admin /
-                // bootstrap stack to iterate without reflection. Initialized once at ctor time.
-                sb.AppendLine("        private static readonly System.Collections.Generic.IReadOnlyList<SharedMeta.Server.Core.ConfigTypeEntry> _configs = new SharedMeta.Server.Core.ConfigTypeEntry[]");
-                sb.AppendLine("        {");
-                foreach (var entry in statesWithConfig)
-                {
-                    sb.AppendLine("            new SharedMeta.Server.Core.ConfigTypeEntry");
-                    sb.AppendLine("            {");
-                    sb.AppendLine($"                Name = typeof({entry.ConfigTypeFullName}).FullName!,");
-                    sb.AppendLine($"                DisplayName = typeof({entry.ConfigTypeFullName}).Name,");
-                    sb.AppendLine($"                ConfigType = typeof({entry.ConfigTypeFullName}),");
-                    sb.AppendLine($"                StateType = typeof({entry.StateTypeFullName}),");
-                    sb.AppendLine("            },");
-                }
-                sb.AppendLine("        };");
-                sb.AppendLine();
-                sb.AppendLine("        public System.Collections.Generic.IReadOnlyList<SharedMeta.Server.Core.ConfigTypeEntry> Configs => _configs;");
-                sb.AppendLine();
-
                 sb.AppendLine("        public GeneratedConfigByteSource(System.IServiceProvider sp)");
                 sb.AppendLine("        {");
                 foreach (var entry in statesWithConfig)
@@ -2218,12 +2204,78 @@ namespace SharedMeta.Generator.Generators
             }
             else
             {
-                sb.AppendLine("        public System.Collections.Generic.IReadOnlyList<SharedMeta.Server.Core.ConfigTypeEntry> Configs => System.Array.Empty<SharedMeta.Server.Core.ConfigTypeEntry>();");
                 sb.AppendLine("        public GeneratedConfigByteSource(System.IServiceProvider sp) { }");
                 sb.AppendLine();
                 sb.AppendLine("        public byte[]? GetBytes(SharedMeta.Core.IMetaSerializer serializer, string stateTypeName, SharedMeta.Core.MetaConfigVersion version) => null;");
             }
 
+            sb.AppendLine("    }");
+
+            // 0.28.0+ Generated IConfigCatalog — typed dispatcher used by the admin grain and
+            // bootstrap hosted service. Closes TConfig at compile time per [MetaConfig] type;
+            // framework callers invoke HandleAsync<TConfig> through IConfigCatalogHandler.
+            GenerateConfigCatalog(sb, statesWithConfig.Select(e => (e.ConfigTypeFullName, e.StateTypeFullName)).ToList());
+        }
+
+        /// <summary>
+        /// 0.28.0+ Emits <c>GeneratedConfigCatalog : IConfigCatalog</c> with one
+        /// <c>HandleAsync&lt;TConfig&gt;</c> dispatch per <c>[MetaConfig]</c> type. Replaces
+        /// the runtime <c>IConfigByteSource.Configs</c> list — framework code consumes the
+        /// catalog through the visitor interface without ever touching <c>System.Type</c>.
+        /// </summary>
+        private static void GenerateConfigCatalog(StringBuilder sb, List<(string ConfigTypeFullName, string StateTypeFullName)> entries)
+        {
+            sb.AppendLine();
+            sb.AppendLine("    /// <summary>");
+            sb.AppendLine("    /// 0.28.0+ Generated typed dispatcher over every [MetaConfig] in this assembly.");
+            sb.AppendLine("    /// Closes TConfig at the compile-time callback sites — bootstrap + admin grain");
+            sb.AppendLine("    /// iterate without reflection or Type arguments.");
+            sb.AppendLine("    /// </summary>");
+            sb.AppendLine("    public sealed class GeneratedConfigCatalog : SharedMeta.Server.Core.Config.Admin.IConfigCatalog");
+            sb.AppendLine("    {");
+            sb.AppendLine("        private static readonly System.Collections.Generic.IReadOnlyList<SharedMeta.Server.Core.Config.Admin.ConfigCatalogEntry> _entries = new SharedMeta.Server.Core.Config.Admin.ConfigCatalogEntry[]");
+            sb.AppendLine("        {");
+            foreach (var e in entries)
+            {
+                sb.AppendLine("            new SharedMeta.Server.Core.Config.Admin.ConfigCatalogEntry");
+                sb.AppendLine("            {");
+                sb.AppendLine($"                FullName = typeof({e.ConfigTypeFullName}).FullName!,");
+                sb.AppendLine($"                DisplayName = typeof({e.ConfigTypeFullName}).Name,");
+                sb.AppendLine($"                OwnerStateType = typeof({e.StateTypeFullName}),");
+                sb.AppendLine("            },");
+            }
+            sb.AppendLine("        };");
+            sb.AppendLine();
+            sb.AppendLine("        public System.Collections.Generic.IReadOnlyList<SharedMeta.Server.Core.Config.Admin.ConfigCatalogEntry> Entries => _entries;");
+            sb.AppendLine();
+            sb.AppendLine("        public async System.Threading.Tasks.Task ForEachAsync(");
+            sb.AppendLine("            SharedMeta.Server.Core.Config.Admin.IConfigCatalogHandler handler,");
+            sb.AppendLine("            System.Threading.CancellationToken cancellationToken = default)");
+            sb.AppendLine("        {");
+            foreach (var e in entries)
+            {
+                sb.AppendLine($"            await handler.HandleAsync<{e.ConfigTypeFullName}>(typeof({e.ConfigTypeFullName}).FullName!, typeof({e.ConfigTypeFullName}).Name, cancellationToken).ConfigureAwait(false);");
+            }
+            if (entries.Count == 0)
+                sb.AppendLine("            await System.Threading.Tasks.Task.CompletedTask;");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+            sb.AppendLine("        public async System.Threading.Tasks.Task<bool> TryDispatchAsync(");
+            sb.AppendLine("            string name,");
+            sb.AppendLine("            SharedMeta.Server.Core.Config.Admin.IConfigCatalogHandler handler,");
+            sb.AppendLine("            System.Threading.CancellationToken cancellationToken = default)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            switch (name)");
+            sb.AppendLine("            {");
+            foreach (var e in entries)
+            {
+                sb.AppendLine($"                case var n when n == typeof({e.ConfigTypeFullName}).FullName || n == typeof({e.ConfigTypeFullName}).Name:");
+                sb.AppendLine($"                    await handler.HandleAsync<{e.ConfigTypeFullName}>(typeof({e.ConfigTypeFullName}).FullName!, typeof({e.ConfigTypeFullName}).Name, cancellationToken).ConfigureAwait(false);");
+                sb.AppendLine("                    return true;");
+            }
+            sb.AppendLine("                default: return false;");
+            sb.AppendLine("            }");
+            sb.AppendLine("        }");
             sb.AppendLine("    }");
         }
 

@@ -25,8 +25,12 @@ namespace SharedMeta.Orleans.Config.Admin
     /// </para>
     /// <para>
     /// 0.27.1: read-only — never writes to the filesystem. The two-phase contract caches the
-    /// resolved <c>(folder, latest path)</c> per type from <see cref="GetVersionAsync"/> so
-    /// <see cref="GetBytesAsync"/> doesn't rescan.
+    /// resolved <c>(folder, latest path)</c> per type from <c>GetVersionAsync</c> so
+    /// <c>GetBytesAsync</c> doesn't rescan.
+    /// </para>
+    /// <para>
+    /// 0.28.0: typed contract — <c>TConfig</c> closes the generic at the framework dispatch
+    /// site (<see cref="IConfigCatalog"/>). Per-type cache keyed on <c>typeof(TConfig)</c>.
     /// </para>
     /// </summary>
     public sealed class DirectoryConfigBootstrapper : IConfigBootstrapper
@@ -43,8 +47,9 @@ namespace SharedMeta.Orleans.Config.Admin
             _logger = logger ?? NullLogger<DirectoryConfigBootstrapper>.Instance;
         }
 
-        public Task<MetaConfigVersion?> GetVersionAsync(Type configType, CancellationToken cancellationToken)
+        public Task<MetaConfigVersion?> GetVersionAsync<TConfig>(CancellationToken cancellationToken) where TConfig : class
         {
+            var configType = typeof(TConfig);
             var folder = ResolveFolder(configType);
             if (folder == null)
             {
@@ -72,8 +77,10 @@ namespace SharedMeta.Orleans.Config.Admin
             return Task.FromResult<MetaConfigVersion?>(latest.version);
         }
 
-        public Task<ConfigBootstrapBytes?> GetBytesAsync(Type configType, MetaConfigVersion version, CancellationToken cancellationToken)
+        public Task<ConfigBootstrapBytes?> GetBytesAsync<TConfig>(MetaConfigVersion version, CancellationToken cancellationToken) where TConfig : class
         {
+            var configType = typeof(TConfig);
+
             // Cache hit from the GetVersionAsync phase covers the common path.
             // Fall back to a fresh scan when GetBytesAsync is called standalone (e.g. tests).
             if (!_resolved.TryGetValue(configType, out var entry) || entry.Version != version)

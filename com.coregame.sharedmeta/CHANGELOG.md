@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.28.0] - 2026-06-16
+
+### Changed — typed config bootstrap end-to-end (breaking)
+
+- `IConfigBootstrapper` methods are now **generic**: `GetVersionAsync<TConfig>(ct)` / `GetBytesAsync<TConfig>(version, ct)`. No more `Type` arguments — `TConfig` closes at the compile-time dispatch site emitted by the generator.
+- New `IConfigCatalog` (project-emitted `GeneratedConfigCatalog`) + `IConfigCatalogHandler` visitor — bootstrap / admin grain dispatch per `[MetaConfig]` type with the concrete `TConfig` parameter, zero reflection.
+- `IConfigRegistry` gained typed extensions: `GetAsync<T>`, `ListVersionsAsync<T>`, `PublishAsync<T>`, `PublishIfChangedAsync<T>`, `UnpublishAsync<T>`.
+- `IConfigAdminGrain` extensions: `DownloadAsync<T>` / `UploadAsync<T>` / `UnpublishAsync<T>` / `GetConfigAsync<T>` — admin call sites stay typed (wire stays string-based).
+
+### Removed
+
+- `IConfigByteSource.Configs` + `ConfigTypeEntry` — replaced by `IConfigCatalog.Entries` / `ForEachAsync` / `TryDispatchAsync`.
+- `DefaultInstanceConfigBootstrapper` and `o.UseDefaultInstances(...)` — wizard now emits a typed project-side `ConfigBootstrapper` stub instead.
+
+### Wizard
+
+- Generated server projects ship `ConfigBootstrapper.cs` — typed `IConfigBootstrapper` with one branch per template `[MetaConfig]` (default-instance pattern, easy to swap for filesystem / CDN / GDrive). `o.UseBootstrapper<ConfigBootstrapper>()` replaces `o.UseDefaultInstances(...)`.
+
 ## [0.27.1] - 2026-06-13
 
 ### Changed — config bootstrap API split, no more filesystem dance

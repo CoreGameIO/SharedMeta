@@ -1368,11 +1368,12 @@ namespace SharedMeta.Editor
             sb.AppendLine("    /// with <c>((GameConfig)Config!).Field</c>.");
             sb.AppendLine("    /// </summary>");
             sb.AppendLine("    /// <remarks>");
-            sb.AppendLine("    /// The server's <c>DefaultInstanceConfigBootstrapper</c> (wired by <c>UseDefaultInstances</c>");
-            sb.AppendLine("    /// in Program.cs) publishes a serialized default instance under version 0.1.0 on first run.");
-            sb.AppendLine("    /// Edit the property defaults below and restart to push a new patch (LoadIfNew strategy");
-            sb.AppendLine("    /// republishes when the offered version isn't in the registry yet), or upload a new version");
-            sb.AppendLine("    /// at runtime via <c>IConfigAdminGrain.UploadAsync</c>.");
+            sb.AppendLine("    /// The server's project-side <c>ConfigBootstrapper</c> (sibling of <c>Program.cs</c>,");
+            sb.AppendLine("    /// 0.28.0+ typed dispatcher) packs <c>new GameConfig()</c> for the matched <c>typeof(TConfig)</c>");
+            sb.AppendLine("    /// branch and publishes at the version it returns (default 0.1.0). Edit the property");
+            sb.AppendLine("    /// defaults below — LoadIfNew strategy republishes on restart when the offered version");
+            sb.AppendLine("    /// isn't in the registry yet — or upload a new version at runtime via");
+            sb.AppendLine("    /// <c>IConfigAdminGrain.UploadAsync</c>.");
             sb.AppendLine("    /// </remarks>");
             sb.AppendLine("    [MetaConfig(Default = true)]");
             // [MetaConfigVersion] maps client app version → config version branch. Wildcard
@@ -1478,6 +1479,15 @@ namespace SharedMeta.Editor
                 GenerateServerProgram(),
                 Encoding.UTF8);
 
+            // ConfigBootstrapper.cs — 0.28.0+ typed IConfigBootstrapper template per project.
+            // Wizard emits a typed switch-based stub that publishes default-instance bytes for
+            // every [MetaConfig] type the template declared. Replace branches with real sources
+            // (filesystem manifest, CDN, GDrive, etc.) when the project starts shipping content.
+            File.WriteAllText(
+                Path.Combine(outputDir, "ConfigBootstrapper.cs"),
+                GenerateServerConfigBootstrapper(),
+                Encoding.UTF8);
+
             // appsettings.json — picked up automatically by WebApplication.CreateBuilder.
             // The "ClientVersion" section binds to ClientVersionOptions and is consumed by
             // SharedMeta 0.27.0+ DefaultClientVersionService: Current seeds ICurrentClientVersionGrain
@@ -1522,6 +1532,62 @@ namespace SharedMeta.Editor
         /// Once the silo has run once, admin flips these at runtime via
         /// <c>IConfigAdminGrain.SetCurrentClientVersionAsync</c> et al.
         /// </summary>
+        /// <summary>
+        /// 0.28.0+ Project-side <see cref="IConfigBootstrapper"/> stub. Typed methods
+        /// (<c>GetVersionAsync&lt;TConfig&gt;</c> / <c>GetBytesAsync&lt;TConfig&gt;</c>) dispatched
+        /// per <c>[MetaConfig]</c> type via the generator-emitted <c>GeneratedConfigCatalog</c>.
+        /// Wizard emits one branch per template config so the project boots with sensible
+        /// defaults; swap branches for filesystem / CDN / GDrive sources as content pipelines come online.
+        /// </summary>
+        private string GenerateServerConfigBootstrapper()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("using System.Threading;");
+            sb.AppendLine("using System.Threading.Tasks;");
+            sb.AppendLine("using SharedMeta.Core;");
+            sb.AppendLine("using SharedMeta.Server.Core.Config.Admin;");
+            sb.AppendLine($"using {_sharedProjectName};");
+            sb.AppendLine();
+            sb.AppendLine("/// <summary>");
+            sb.AppendLine("/// 0.28.0+ Project bootstrapper — one branch per [MetaConfig] type. The framework's");
+            sb.AppendLine("/// IConfigCatalog closes TConfig at the dispatch site so each branch sees the concrete");
+            sb.AppendLine("/// type and can use new TConfig() / IMetaSerializer.PackForExternalUsage&lt;TConfig&gt;");
+            sb.AppendLine("/// without reflection. Returning null skips publish for that type.");
+            sb.AppendLine("///");
+            sb.AppendLine("/// Replace these branches with real sources when content pipelines come online — read");
+            sb.AppendLine("/// a manifest, fetch from CDN, pull from Google Drive, etc.; the framework's two-phase");
+            sb.AppendLine("/// contract (GetVersion → strategy gate → GetBytes) keeps byte materialization off the");
+            sb.AppendLine("/// hot path when the version is already in the registry.");
+            sb.AppendLine("/// </summary>");
+            sb.AppendLine("public sealed class ConfigBootstrapper : IConfigBootstrapper");
+            sb.AppendLine("{");
+            sb.AppendLine("    private readonly IMetaSerializer _serializer;");
+            sb.AppendLine();
+            sb.AppendLine("    public ConfigBootstrapper(IMetaSerializer serializer) => _serializer = serializer;");
+            sb.AppendLine();
+            sb.AppendLine("    public Task<MetaConfigVersion?> GetVersionAsync<TConfig>(CancellationToken ct) where TConfig : class");
+            sb.AppendLine("    {");
+            sb.AppendLine("        // TODO: replace with your version source (manifest CreationTime, CDN ETag, etc.).");
+            sb.AppendLine("        // Default — every [MetaConfig] type lands at 0.1.0 on first run.");
+            sb.AppendLine("        return Task.FromResult<MetaConfigVersion?>(new MetaConfigVersion(0, 1, 0));");
+            sb.AppendLine("    }");
+            sb.AppendLine();
+            sb.AppendLine("    public Task<ConfigBootstrapBytes?> GetBytesAsync<TConfig>(MetaConfigVersion version, CancellationToken ct) where TConfig : class");
+            sb.AppendLine("    {");
+            sb.AppendLine("        if (typeof(TConfig) == typeof(GameConfig))");
+            sb.AppendLine("            return Pack(new GameConfig());");
+            sb.AppendLine();
+            sb.AppendLine("        // Add a branch per [MetaConfig] type. Forgetting one returns null → framework skips");
+            sb.AppendLine("        // publish for that type (registry stays untouched, lazy admin upload still works).");
+            sb.AppendLine("        return Task.FromResult<ConfigBootstrapBytes?>(null);");
+            sb.AppendLine();
+            sb.AppendLine("        Task<ConfigBootstrapBytes?> Pack<T>(T instance) where T : class => Task.FromResult<ConfigBootstrapBytes?>(");
+            sb.AppendLine("            new ConfigBootstrapBytes { Bytes = _serializer.PackForExternalUsage(instance), Origin = \"default-instance\" });");
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
+            return sb.ToString();
+        }
+
         private static string GenerateServerAppsettings()
         {
             var sb = new StringBuilder();
@@ -1697,19 +1763,21 @@ namespace SharedMeta.Editor
             sb.AppendLine("                // svc.AddTransient<IRandomService, RandomServiceImpl>();");
             sb.AppendLine("                svc.AddTransient<ILobbyRequester>(sp => new OrleansLobbyRequester(sp.GetRequiredService<IGrainFactory>()));");
             sb.AppendLine();
-            sb.AppendLine("                // SharedMeta 0.27.1+ config pipeline:");
-            sb.AppendLine("                //   - UseDefaultInstances(\"0.1.0\"): per [MetaConfig] type does Activator.CreateInstance");
-            sb.AppendLine("                //     and publishes the serialized default at version 0.1.0. Pure in-memory, works in");
-            sb.AppendLine("                //     read-only Docker images. Edit the C# field initializers and restart to pick up");
-            sb.AppendLine("                //     changes under LoadIfNew (when the seeded version isn't already in the registry).");
-            sb.AppendLine("                //   - Switch to o.UseDirectorySeed(\"data/drafts\") when an external content pipeline");
-            sb.AppendLine("                //     produces the .bin files. Project-side YAML→bin compile registers as its own");
-            sb.AppendLine("                //     IHostedService BEFORE this ConfigureConfigs call so it runs first.");
+            sb.AppendLine("                // SharedMeta 0.28.0+ config pipeline:");
+            sb.AppendLine("                //   - ConfigBootstrapper (sibling file) is the project-side typed IConfigBootstrapper");
+            sb.AppendLine("                //     stub the wizard emitted. Generator dispatches per [MetaConfig] type via");
+            sb.AppendLine("                //     GeneratedConfigCatalog, closing TConfig at the call site — edit the branches");
+            sb.AppendLine("                //     in ConfigBootstrapper.cs to swap sources (manifest / CDN / GDrive / etc.).");
+            sb.AppendLine("                //   - Strategy = LoadIfNew: only republish when the bootstrapper's offered version");
+            sb.AppendLine("                //     isn't already in the registry. Bump version in ConfigBootstrapper to push fresh.");
+            sb.AppendLine("                //   - Switch to o.UseDirectorySeed(\"data/drafts\") for image-baked .bin file delivery;");
+            sb.AppendLine("                //     project-side dev pipelines (YAML → bin compile) register their own IHostedService");
+            sb.AppendLine("                //     BEFORE this ConfigureConfigs call so they finish first.");
             sb.AppendLine("                //   - ClientVersion (Current/Min/Max) auto-bound from appsettings.json, runtime-mutable");
             sb.AppendLine("                //     via IConfigAdminGrain.SetCurrentClientVersionAsync / SetMin / SetMax.");
             sb.AppendLine("                svc.ConfigureConfigs(o =>");
             sb.AppendLine("                {");
-            sb.AppendLine("                    o.UseDefaultInstances(\"0.1.0\");");
+            sb.AppendLine("                    o.UseBootstrapper<ConfigBootstrapper>();");
             sb.AppendLine("                    o.Strategy = ConfigSeedStrategy.LoadIfNew;");
             sb.AppendLine("                });");
             sb.AppendLine("            });");
@@ -1900,6 +1968,7 @@ namespace SharedMeta.Editor
                     sb.AppendLine("using MessagePack;");
             }
 
+            sb.AppendLine($"using {_sharedProjectName};");
             sb.AppendLine($"using {_sharedProjectName}.Client;");
 
             sb.AppendLine();
@@ -2045,10 +2114,23 @@ namespace SharedMeta.Editor
             sb.AppendLine("        // For deep request-lifecycle tracing, assign Client.Dispatcher.DiagnosticsLog");
             sb.AppendLine("        // to a file writer — it emits SEND/RECV/BATCH/CONFIRMED per request.");
             sb.AppendLine();
-            sb.AppendLine("        // Server-provided config: replace the auto-registered StaticConfigProvider<TConfig>");
-            sb.AppendLine("        // with a downloading provider so clients pick up the actual branch the server serves.");
-            sb.AppendLine("        // Pair with `app.MapMetaConfigDownload()` + `AddMetaConfigPublicUrl()` on the server.");
-            sb.AppendLine("        // Client.RegisterDownloadingConfigProvider<MyConfig, MyState>();");
+            // Real downloading provider — pair with app.MapMetaConfigDownload() +
+            // AddMetaConfigPublicUrl() on the server. URL resolved per <TConfig, TState>:
+            // server stamps absolute /meta/config/{stateName}/{version} into SubscribeResponse,
+            // client fetches bytes, caches by version. Replaces the auto-registered
+            // StaticConfigProvider<TConfig> (which would freeze the client to bundled defaults).
+            // Must be called BEFORE RegisterAllServices() so the resolver registers it once.
+            var configOwnerState = _templateIndex switch
+            {
+                0 => $"{_sharedStateName}State",
+                1 => "ProfileState",
+                2 => "ProfileState",
+                _ => $"{_sharedStateName}State"
+            };
+            sb.AppendLine($"        // Server-driven config. Bytes fetched from /meta/config/{configOwnerState}/{{version}}");
+            sb.AppendLine($"        // — the version is whatever the server pinned for this client (see server's");
+            sb.AppendLine($"        // ConfigBootstrapper + [MetaConfigVersion] rules on GameConfig).");
+            sb.AppendLine($"        Client.RegisterDownloadingConfigProvider<GameConfig, {configOwnerState}>();");
             sb.AppendLine();
             sb.AppendLine("        Client.Resolver.RegisterAllServices();");
             sb.AppendLine();
@@ -2180,6 +2262,11 @@ namespace SharedMeta.Editor
             sb.AppendLine($"    \"rootNamespace\": \"\",");
             sb.AppendLine("    \"references\": [");
             sb.Append("        \"SharedMeta.Runtime\"");
+            // 0.26.7+ DownloadingConfigProvider Unity helper (RegisterDownloadingConfigProvider
+            // + UnityConfigDownloader) lives in its own asmdef so projects that don't need
+            // server-driven config can skip it. Wizard emits the registration call so always reference.
+            sb.AppendLine(",");
+            sb.Append("        \"SharedMeta.Client.Config\"");
 
             // Transport
             switch (_transportIndex)
