@@ -15,29 +15,23 @@ using SharedMeta.Server.Core.Config.Admin;
 namespace SharedMeta.Orleans.Config.Admin
 {
     /// <summary>
-    /// 0.27.0+ Cold-start config bootstrap with per-strategy gating.
+    /// 0.27.0+ Cold-start config bootstrap with per-strategy gating. Two-phase from 0.27.1:
+    /// asks the bootstrapper for a version first, decides per
+    /// <see cref="ConfigsOptions.Strategy"/> whether a publish is needed, only then fetches
+    /// bytes.
     ///
     /// <para>
-    /// For each <c>[MetaConfig]</c> type exposed via <see cref="IConfigByteSource.Configs"/>,
-    /// consults <see cref="ConfigsOptions.Strategy"/> to decide whether to invoke the
-    /// project's <see cref="IConfigBootstrapper"/>, then publishes via
-    /// <see cref="ConfigRegistryExtensions.PublishIfChangedAsync"/>. After all types are
-    /// processed, warms up every <c>BroadcastingConfigProvider&lt;TConfig&gt;</c>.
+    /// For each <c>[MetaConfig]</c> type exposed via <see cref="IConfigByteSource.Configs"/>:
     /// </para>
-    ///
-    /// <para>
-    /// Strategies:
-    /// <list type="bullet">
-    /// <item><see cref="ConfigSeedStrategy.LoadIfEmpty"/>: skip the loader entirely when the registry already has any version.</item>
-    /// <item><see cref="ConfigSeedStrategy.LoadIfNew"/>: call the loader, publish only when the returned version is unknown to the registry.</item>
-    /// <item><see cref="ConfigSeedStrategy.LoadAlways"/>: always call the loader and run PublishIfChangedAsync (idempotent on same content).</item>
+    /// <list type="number">
+    /// <item><c>version = await bootstrapper.GetVersionAsync(type)</c> — <c>null</c> skips the type.</item>
+    /// <item>Strategy gate (<see cref="ConfigSeedStrategy.LoadIfEmpty"/> / <see cref="ConfigSeedStrategy.LoadIfNew"/> / <see cref="ConfigSeedStrategy.LoadAlways"/>) — decides if we need bytes at all.</item>
+    /// <item><c>bytes = await bootstrapper.GetBytesAsync(type, version)</c> — only if step 2 said yes.</item>
+    /// <item>Publish via <see cref="ConfigRegistryExtensions.PublishIfChangedAsync"/> + audit row.</item>
     /// </list>
-    /// </para>
     ///
     /// <para>
-    /// <see cref="ConfigsOptions.OnBeforeSeed"/> fires once at the very start of
-    /// <see cref="StartAsync"/> — typical hook for "dev YAML → bin" compile passes that
-    /// must populate the seed directory before the loader scans it.
+    /// After all types are processed, warms every <c>BroadcastingConfigProvider&lt;TConfig&gt;</c>.
     /// </para>
     /// </summary>
     public sealed class ConfigBootstrapHostedService : IHostedService
@@ -70,70 +64,43 @@ namespace SharedMeta.Orleans.Config.Admin
 
         public async Task StartAsync(CancellationToken cancellationToken)
         {
-            if (_options.OnBeforeSeed != null)
-            {
-                try
-                {
-                    await _options.OnBeforeSeed(_sp, cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "ConfigBootstrap: OnBeforeSeed threw — continuing with whatever the loader sees");
-                }
-            }
-
             foreach (var entry in _byteSource.Configs)
             {
-                // LoadIfEmpty: skip the loader entirely when the registry has anything.
-                if (_options.Strategy == ConfigSeedStrategy.LoadIfEmpty)
+                var version = await _bootstrapper.GetVersionAsync(entry.ConfigType, cancellationToken).ConfigureAwait(false);
+                if (version == null)
                 {
-                    var existing = await _registry.ListVersionsAsync(entry.ConfigType).ConfigureAwait(false);
-                    if (existing.Count > 0)
-                    {
-                        _logger.LogDebug(
-                            "ConfigBootstrap: {Name} LoadIfEmpty — registry has {Count} version(s), skip",
-                            entry.Name, existing.Count);
-                        continue;
-                    }
+                    _logger.LogDebug("ConfigBootstrap: bootstrapper has no version for {Name}", entry.Name);
+                    continue;
                 }
 
-                ConfigBootstrapSeed? seed;
+                if (!await ShouldSeedAsync(entry, version.Value).ConfigureAwait(false))
+                    continue;
+
+                ConfigBootstrapBytes? seed;
                 try
                 {
-                    seed = await _bootstrapper.LoadAsync(entry.ConfigType, cancellationToken).ConfigureAwait(false);
+                    seed = await _bootstrapper.GetBytesAsync(entry.ConfigType, version.Value, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex,
-                        "ConfigBootstrap: bootstrapper threw on {Name} — skipping seed", entry.Name);
+                        "ConfigBootstrap: bootstrapper threw on {Name} v{Version} — skipping seed",
+                        entry.Name, version);
                     continue;
                 }
 
                 if (seed == null || seed.Bytes.Length == 0)
                 {
-                    _logger.LogDebug("ConfigBootstrap: no seed for {Name}", entry.Name);
+                    _logger.LogDebug("ConfigBootstrap: no bytes for {Name} v{Version}", entry.Name, version);
                     continue;
                 }
 
-                // LoadIfNew: skip publish when the registry already has that exact version.
-                if (_options.Strategy == ConfigSeedStrategy.LoadIfNew)
-                {
-                    var existing = await _registry.ListVersionsAsync(entry.ConfigType).ConfigureAwait(false);
-                    if (existing.Contains(seed.Version))
-                    {
-                        _logger.LogDebug(
-                            "ConfigBootstrap: {Name} v{Version} already in registry — skip",
-                            entry.Name, seed.Version);
-                        continue;
-                    }
-                }
-
-                var outcome = await _registry.PublishIfChangedAsync(entry.ConfigType, seed.Version, seed.Bytes)
+                var outcome = await _registry.PublishIfChangedAsync(entry.ConfigType, version.Value, seed.Bytes)
                     .ConfigureAwait(false);
 
                 await _grains.GetGrain<IConfigMetadataGrain>(entry.Name)
                     .RecordPublishAsync(
-                        seed.Version.ToString(),
+                        version.Value.ToString(),
                         seed.Bytes.Length,
                         seed.Origin,
                         seed.PublishedBy,
@@ -142,7 +109,7 @@ namespace SharedMeta.Orleans.Config.Admin
 
                 _logger.LogInformation(
                     "ConfigBootstrap: {Name} v{Version} ({Size} B, {Origin}, {Strategy}) → {Outcome}",
-                    entry.Name, seed.Version, seed.Bytes.Length, seed.Origin, _options.Strategy, outcome);
+                    entry.Name, version, seed.Bytes.Length, seed.Origin, _options.Strategy, outcome);
             }
 
             // Warm up broadcasting providers: subscribe to directory grains + pull initial
@@ -156,5 +123,47 @@ namespace SharedMeta.Orleans.Config.Admin
         }
 
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        /// <summary>
+        /// Strategy gate. Cheap when grain already has versions (single list query) — the
+        /// expensive bytes fetch happens only when this returns <c>true</c>.
+        /// </summary>
+        private async Task<bool> ShouldSeedAsync(ConfigTypeEntry entry, SharedMeta.Core.MetaConfigVersion version)
+        {
+            switch (_options.Strategy)
+            {
+                case ConfigSeedStrategy.LoadAlways:
+                    return true;
+
+                case ConfigSeedStrategy.LoadIfEmpty:
+                {
+                    var existing = await _registry.ListVersionsAsync(entry.ConfigType).ConfigureAwait(false);
+                    if (existing.Count > 0)
+                    {
+                        _logger.LogDebug(
+                            "ConfigBootstrap: {Name} LoadIfEmpty — registry has {Count} version(s), skip",
+                            entry.Name, existing.Count);
+                        return false;
+                    }
+                    return true;
+                }
+
+                case ConfigSeedStrategy.LoadIfNew:
+                {
+                    var existing = await _registry.ListVersionsAsync(entry.ConfigType).ConfigureAwait(false);
+                    if (existing.Contains(version))
+                    {
+                        _logger.LogDebug(
+                            "ConfigBootstrap: {Name} v{Version} already in registry — skip",
+                            entry.Name, version);
+                        return false;
+                    }
+                    return true;
+                }
+
+                default:
+                    throw new InvalidOperationException($"Unknown ConfigSeedStrategy: {_options.Strategy}");
+            }
+        }
     }
 }

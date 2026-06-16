@@ -250,7 +250,7 @@ services.AddSingleton<IMetaConfigProvider<GameConfig>>(new GameConfigProvider())
 
 ### 5. Config Admin & Bootstrap (0.27.0+)
 
-The framework now ships the full publish-side stack so a host wires it with one DI call instead of per-config registrations + a hand-rolled bootstrapper.
+The framework ships the full publish-side stack so a host wires it with one DI call instead of per-config registrations + a hand-rolled bootstrapper. The bootstrapper is **two-phase** (0.27.1+) — the framework asks for a version first, gates against the registry, and only fetches bytes if a publish is needed.
 
 ```csharp
 siloBuilder.ConfigureServices(services =>
@@ -259,42 +259,38 @@ siloBuilder.ConfigureServices(services =>
 
     services.ConfigureConfigs(o =>
     {
-        // Built-in seed source: scans {root}/{Type.Name}/{Major.Minor.Patch}.bin.
-        // FullName-folder fallback when short name isn't found.
-        o.UseDirectorySeed("data/drafts");
+        // In-memory bootstrapper: Activator.CreateInstance per [MetaConfig] type,
+        // packed via IMetaSerializer, published at the given version. Pure code path —
+        // works in read-only Docker images, no filesystem reads or writes.
+        o.UseDefaultInstances("0.1.0");
 
-        // LoadIfEmpty (default) — only seed when registry has nothing for that type.
-        // LoadIfNew — seed when the specific version isn't published yet.
-        // LoadAlways — always run the loader (idempotent re-publish on identical bytes).
-        o.Strategy = ConfigSeedStrategy.LoadIfEmpty;
-
-        // First-run convenience: writes Activator.CreateInstance defaults via
-        // IMetaSerializer.PackForExternalUsage for every [MetaConfig] type missing
-        // a .bin under root. Remove once you ship pre-baked bins via your own pipeline.
-        o.OnBeforeSeed = (sp, _) =>
-        {
-            DefaultBinSeeder.WriteMissingDefaults(sp, "data/drafts", "0.1.0");
-            return Task.CompletedTask;
-        };
+        // LoadIfEmpty — only seed when registry has nothing for that type.
+        // LoadIfNew (default) — seed when the specific version isn't published yet.
+        // LoadAlways — always run the bootstrapper (idempotent re-publish on identical bytes).
+        o.Strategy = ConfigSeedStrategy.LoadIfNew;
     });
 });
 ```
 
 What this does, all in:
 
-- `services.AddSharedMetaConfigVersioning()` and per-`[MetaConfig]` `services.AddSharedMetaConfigProvider<T>()` registrations are emitted by the generator — no more hand-listing config types.
-- `ConfigBootstrapHostedService` runs on startup, calls your `IConfigBootstrapper` per type (strategy-gated), publishes via `IConfigRegistry.PublishIfChangedAsync`, records the audit row through `IConfigMetadataGrain`, and warms every `BroadcastingConfigProvider<TConfig>`.
+- The generator emits per-`[MetaConfig]` `BroadcastingConfigProvider<T>` registrations — no hand-listing.
+- `ConfigBootstrapHostedService` runs on startup: `bootstrapper.GetVersionAsync(type)` → strategy gate → `bootstrapper.GetBytesAsync(type, version)` → `IConfigRegistry.PublishIfChangedAsync` → audit row through `IConfigMetadataGrain` → broadcast provider warm-up.
 - `DefaultClientVersionService` is auto-registered as `IConfigVersionResolver` + `IHostedService` — see *Client App Version* below.
 - `IConfigAdminGrain` is auto-discovered by Orleans — admin tools join the cluster as a client and call it directly (no HTTP controller).
 
-**Custom bootstrapper.** Pick one form per project:
+**Bootstrapper choice.** Pick one per project:
 
 ```csharp
-o.UseBootstrapper<MyBootstrapper>();                 // typed
-o.UseBootstrapper(new MyInstance());                 // instance
-o.UseLoader((Type cfg, CancellationToken ct) => …);  // delegate inline
-o.UseDirectorySeed("data/drafts");                   // built-in (sets a factory)
+o.UseDefaultInstances("0.1.0");          // built-in, in-memory C# defaults (Wizard default)
+o.UseDirectorySeed("data/drafts");       // built-in, read-only scan {root}/{Type.Name}/{M.m.p}.bin
+o.UseBootstrapper<MyBootstrapper>();     // project-typed: implements IConfigBootstrapper
+o.UseBootstrapper(new MyInstance());     // project instance
 ```
+
+`IConfigBootstrapper` is two methods (`GetVersionAsync` returns the project's offered version or `null` to skip, `GetBytesAsync` materializes when a publish is decided) — implement directly for inline custom sources (embedded resources, internal CDN, etc.).
+
+**Pre-bootstrap project work** (e.g. dev YAML → bin compile that feeds `UseDirectorySeed`): register your own `IHostedService` **before** `ConfigureConfigs`. `IHostedService.StartAsync` runs in registration order, so the prep step completes before `ConfigBootstrapHostedService` scans.
 
 **Admin operations from any project tool joined to the cluster as a client:**
 

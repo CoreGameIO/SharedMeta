@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -17,17 +18,22 @@ namespace SharedMeta.Orleans.Config.Admin
     /// <see cref="ConfigsOptions.UseDirectorySeed"/> for the typical
     /// "image-baked bin files in a known folder" deployment.
     /// <para>
-    /// Project still owns delivery — how bin files get there (dev YAML compiler, CI
-    /// pipeline, manual copy, embedded extraction) — but the framework handles
-    /// scanning + version selection. Subdirectory name defaults to
-    /// <see cref="Type.Name"/>; the loader falls back to <see cref="Type.FullName"/>
-    /// when the short-name folder is absent.
+    /// Project owns delivery (dev YAML compiler, CI pipeline, manual copy, embedded extraction);
+    /// the framework handles scanning + version selection. Subdirectory name defaults to
+    /// <see cref="Type.Name"/>; the loader falls back to <see cref="Type.FullName"/> when the
+    /// short-name folder is absent.
+    /// </para>
+    /// <para>
+    /// 0.27.1: read-only — never writes to the filesystem. The two-phase contract caches the
+    /// resolved <c>(folder, latest path)</c> per type from <see cref="GetVersionAsync"/> so
+    /// <see cref="GetBytesAsync"/> doesn't rescan.
     /// </para>
     /// </summary>
     public sealed class DirectoryConfigBootstrapper : IConfigBootstrapper
     {
         private readonly string _root;
         private readonly ILogger<DirectoryConfigBootstrapper> _logger;
+        private readonly Dictionary<Type, (string Path, MetaConfigVersion Version, string Folder)> _resolved = new();
 
         public DirectoryConfigBootstrapper(string root, ILogger<DirectoryConfigBootstrapper>? logger = null)
         {
@@ -37,7 +43,7 @@ namespace SharedMeta.Orleans.Config.Admin
             _logger = logger ?? NullLogger<DirectoryConfigBootstrapper>.Instance;
         }
 
-        public Task<ConfigBootstrapSeed?> LoadAsync(Type configType, CancellationToken cancellationToken)
+        public Task<MetaConfigVersion?> GetVersionAsync(Type configType, CancellationToken cancellationToken)
         {
             var folder = ResolveFolder(configType);
             if (folder == null)
@@ -45,7 +51,7 @@ namespace SharedMeta.Orleans.Config.Admin
                 _logger.LogDebug(
                     "DirectoryConfigBootstrapper: no seed folder for {Type} under {Root}",
                     configType.Name, _root);
-                return Task.FromResult<ConfigBootstrapSeed?>(null);
+                return Task.FromResult<MetaConfigVersion?>(null);
             }
 
             var latest = Directory.EnumerateFiles(folder, "*.bin")
@@ -59,24 +65,44 @@ namespace SharedMeta.Orleans.Config.Admin
                 _logger.LogWarning(
                     "DirectoryConfigBootstrapper: folder {Folder} has no parseable {{M.m.p}}.bin entries",
                     folder);
-                return Task.FromResult<ConfigBootstrapSeed?>(null);
+                return Task.FromResult<MetaConfigVersion?>(null);
             }
 
-            var bytes = File.ReadAllBytes(latest.path);
-            var seed = new ConfigBootstrapSeed
+            _resolved[configType] = (latest.path, latest.version, folder);
+            return Task.FromResult<MetaConfigVersion?>(latest.version);
+        }
+
+        public Task<ConfigBootstrapBytes?> GetBytesAsync(Type configType, MetaConfigVersion version, CancellationToken cancellationToken)
+        {
+            // Cache hit from the GetVersionAsync phase covers the common path.
+            // Fall back to a fresh scan when GetBytesAsync is called standalone (e.g. tests).
+            if (!_resolved.TryGetValue(configType, out var entry) || entry.Version != version)
             {
-                Version = latest.version,
+                var folder = ResolveFolder(configType);
+                if (folder == null) return Task.FromResult<ConfigBootstrapBytes?>(null);
+                var path = Path.Combine(folder, $"{version}.bin");
+                if (!File.Exists(path))
+                {
+                    _logger.LogDebug(
+                        "DirectoryConfigBootstrapper: {Type} v{Version} not present at {Path}",
+                        configType.Name, version, path);
+                    return Task.FromResult<ConfigBootstrapBytes?>(null);
+                }
+                entry = (path, version, folder);
+            }
+
+            var bytes = File.ReadAllBytes(entry.Path);
+            _logger.LogInformation(
+                "DirectoryConfigBootstrapper: {Type} v{Version} ({Size} B) ← {Path}",
+                configType.Name, version, bytes.Length, entry.Path);
+
+            return Task.FromResult<ConfigBootstrapBytes?>(new ConfigBootstrapBytes
+            {
                 Bytes = bytes,
                 Origin = "directory",
                 PublishedBy = "bootstrap",
-                Notes = $"Seeded from {Path.GetFileName(folder)}/{Path.GetFileName(latest.path)}",
-            };
-
-            _logger.LogInformation(
-                "DirectoryConfigBootstrapper: {Type} v{Version} ({Size} B) ← {Path}",
-                configType.Name, latest.version, bytes.Length, latest.path);
-
-            return Task.FromResult<ConfigBootstrapSeed?>(seed);
+                Notes = $"Seeded from {Path.GetFileName(entry.Folder)}/{Path.GetFileName(entry.Path)}",
+            });
         }
 
         private string? ResolveFolder(Type configType)

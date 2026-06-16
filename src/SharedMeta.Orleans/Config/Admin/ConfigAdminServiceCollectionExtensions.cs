@@ -1,34 +1,33 @@
 using System;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using SharedMeta.Core;
 using SharedMeta.Server.Core;
 using SharedMeta.Server.Core.Config.Admin;
 
 namespace SharedMeta.Orleans.Config.Admin
 {
     /// <summary>
-    /// 0.27.0+ Single options bag covering the cold-start seed strategy, the loader,
-    /// the optional pre-seed hook, and the public download URL.
+    /// 0.27.0+ Options bag for <see cref="ConfigsServiceCollectionExtensions.ConfigureConfigs"/>.
+    /// Picks the bootstrapper (default-instance / directory / project-typed) and the cold-start
+    /// strategy.
+    ///
+    /// <para>
+    /// 0.27.1: <c>OnBeforeSeed</c> and <c>UseLoader</c> were removed — projects that need
+    /// pre-bootstrap work register their own <c>IHostedService</c> ahead of
+    /// <c>ConfigureConfigs</c>; projects with inline custom seeds implement
+    /// <see cref="IConfigBootstrapper"/> directly (it's two short methods).
+    /// </para>
     /// </summary>
     public sealed class ConfigsOptions
     {
         /// <summary>
-        /// When the framework's hosted service should invoke the loader. Default:
+        /// When the framework's hosted service should publish. Default:
         /// <see cref="ConfigSeedStrategy.LoadIfNew"/>.
         /// </summary>
         public ConfigSeedStrategy Strategy { get; set; } = ConfigSeedStrategy.LoadIfNew;
-
-        /// <summary>
-        /// Optional pre-seed hook fired once at silo startup before any loader call.
-        /// Typical use: invoke a project-side dev YAML compiler that materializes
-        /// <c>{root}/{Name}/{version}.bin</c> the directory loader will then scan.
-        /// </summary>
-        public Func<IServiceProvider, CancellationToken, Task>? OnBeforeSeed { get; set; }
 
         internal Type? BootstrapperType { get; private set; }
         internal IConfigBootstrapper? BootstrapperInstance { get; private set; }
@@ -55,30 +54,12 @@ namespace SharedMeta.Orleans.Config.Admin
         }
 
         /// <summary>
-        /// Register a delegate-based <see cref="IConfigBootstrapper"/>. Shorthand for
-        /// implementing the interface — projects with a small inline loader can stay in
-        /// <c>Program.cs</c>:
-        /// <code>
-        /// o.UseLoader((Type cfg, CancellationToken ct) =>
-        /// {
-        ///     // return ConfigBootstrapSeed or null
-        /// });
-        /// </code>
-        /// </summary>
-        public ConfigsOptions UseLoader(Func<Type, CancellationToken, Task<ConfigBootstrapSeed?>> loader)
-        {
-            if (loader == null) throw new ArgumentNullException(nameof(loader));
-            ResetBootstrapper();
-            BootstrapperInstance = new DelegateConfigBootstrapper(loader);
-            BootstrapperLifetime = ServiceLifetime.Singleton;
-            return this;
-        }
-
-        /// <summary>
-        /// Use the built-in <see cref="DirectoryConfigBootstrapper"/>: scans
-        /// <c>{root}/{Type.Name}/{Major.Minor.Patch}.bin</c> and seeds the highest
-        /// matching version per config. Pair with <see cref="OnBeforeSeed"/> when the
-        /// project needs a dev-time YAML→bin compile pass to populate the folder.
+        /// Use the built-in <see cref="DirectoryConfigBootstrapper"/>: scans (read-only)
+        /// <c>{root}/{Type.Name}/{Major.Minor.Patch}.bin</c> and seeds the highest matching
+        /// version per config. Suitable for Docker images that bake .bin files into the
+        /// image at build time. Projects whose dev loop writes the bin files (YAML →
+        /// compile → bin) register that step as a separate <c>IHostedService</c> ahead of
+        /// <c>ConfigureConfigs</c>.
         /// </summary>
         public ConfigsOptions UseDirectorySeed(string root)
         {
@@ -90,18 +71,34 @@ namespace SharedMeta.Orleans.Config.Admin
             return this;
         }
 
+        /// <summary>
+        /// 0.27.1+ Pure in-memory bootstrap: <see cref="Activator.CreateInstance"/> per
+        /// <c>[MetaConfig]</c> type, serialized via <see cref="IMetaSerializer"/>, published
+        /// under <paramref name="version"/>. No filesystem reads/writes — works in read-only
+        /// Docker images. The default for fresh projects: edit the C# field initializers,
+        /// restart, registry updates (under <see cref="ConfigSeedStrategy.LoadIfNew"/> /
+        /// <see cref="ConfigSeedStrategy.LoadAlways"/>).
+        /// </summary>
+        public ConfigsOptions UseDefaultInstances(MetaConfigVersion version)
+        {
+            ResetBootstrapper();
+            BootstrapperFactory = sp => new DefaultInstanceConfigBootstrapper(
+                version,
+                sp.GetRequiredService<IMetaSerializer>(),
+                sp.GetService<ILogger<DefaultInstanceConfigBootstrapper>>());
+            BootstrapperLifetime = ServiceLifetime.Singleton;
+            return this;
+        }
+
+        /// <summary>Convenience overload that parses a <c>"M.m.p"</c> string.</summary>
+        public ConfigsOptions UseDefaultInstances(string version = "0.1.0")
+            => UseDefaultInstances(MetaConfigVersion.Parse(version));
+
         private void ResetBootstrapper()
         {
             BootstrapperType = null;
             BootstrapperInstance = null;
             BootstrapperFactory = null;
-        }
-
-        private sealed class DelegateConfigBootstrapper : IConfigBootstrapper
-        {
-            private readonly Func<Type, CancellationToken, Task<ConfigBootstrapSeed?>> _loader;
-            public DelegateConfigBootstrapper(Func<Type, CancellationToken, Task<ConfigBootstrapSeed?>> loader) => _loader = loader;
-            public Task<ConfigBootstrapSeed?> LoadAsync(Type configType, CancellationToken cancellationToken) => _loader(configType, cancellationToken);
         }
     }
 
@@ -116,21 +113,18 @@ namespace SharedMeta.Orleans.Config.Admin
     public static class ConfigsServiceCollectionExtensions
     {
         /// <summary>
-        /// Wire SharedMeta config registry + per-strategy bootstrap + optional public
-        /// download URL resolver. Typical use:
+        /// Wire SharedMeta config registry + per-strategy bootstrap + appsettings-bound
+        /// <c>ClientVersionOptions</c> + auto-registered <c>DefaultClientVersionService</c>
+        /// (<see cref="IConfigVersionResolver"/> + grain-backed runtime Current).
+        /// Typical use:
         /// <code>
         /// siloBuilder.ConfigureServices(services =>
         /// {
         ///     services.ConfigureMeta(svc => { /* impls */ });
         ///     services.ConfigureConfigs(o =>
         ///     {
-        ///         o.UseDirectorySeed("data/drafts");
+        ///         o.UseDefaultInstances("0.1.0");                  // in-memory defaults from C#
         ///         o.Strategy = ConfigSeedStrategy.LoadIfNew;
-        ///         o.OnBeforeSeed = (sp, _) =>
-        ///         {
-        ///             sp.GetRequiredService&lt;DevConfigCompiler&gt;().EnsureDrafts();
-        ///             return Task.CompletedTask;
-        ///         };
         ///     });
         ///     // Public download URL stays a separate one-liner — lives in
         ///     // SharedMeta.Transport.SignalR to avoid a circular project ref:
@@ -151,7 +145,7 @@ namespace SharedMeta.Orleans.Config.Admin
             // Registry façade. Idempotent (TryAdd inside AddSharedMetaConfigVersioning).
             services.AddSharedMetaConfigVersioning();
 
-            // Push the options bag so the hosted service can read Strategy / OnBeforeSeed.
+            // Push the options bag so the hosted service can read Strategy.
             services.AddSingleton(Microsoft.Extensions.Options.Options.Create(opts));
 
             // Register the bootstrapper IF the project supplied one. If not, hosted service
@@ -185,15 +179,15 @@ namespace SharedMeta.Orleans.Config.Admin
             // Project pre-binds the same section (services.Configure<ClientVersionOptions>(...))
             // to pre-empt — both registrations compose (last-wins on overlapping keys).
             services.AddOptions<ClientVersionOptions>()
-                .Configure<IConfiguration>((opts, config) =>
+                .Configure<IConfiguration>((cvo, config) =>
                 {
                     var section = config.GetSection(ClientVersionOptions.SectionName);
                     if (!section.Exists()) return;
                     var current = section[nameof(ClientVersionOptions.Current)];
-                    if (!string.IsNullOrWhiteSpace(current)) opts.Current = current;
-                    opts.Min = section[nameof(ClientVersionOptions.Min)] ?? opts.Min;
-                    opts.Max = section[nameof(ClientVersionOptions.Max)] ?? opts.Max;
-                    opts.Server = section[nameof(ClientVersionOptions.Server)] ?? opts.Server;
+                    if (!string.IsNullOrWhiteSpace(current)) cvo.Current = current;
+                    cvo.Min = section[nameof(ClientVersionOptions.Min)] ?? cvo.Min;
+                    cvo.Max = section[nameof(ClientVersionOptions.Max)] ?? cvo.Max;
+                    cvo.Server = section[nameof(ClientVersionOptions.Server)] ?? cvo.Server;
                 });
 
             // Default IConfigVersionResolver: grain-backed Current + appsettings bootstrap.

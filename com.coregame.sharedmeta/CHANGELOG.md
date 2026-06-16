@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.27.1] - 2026-06-13
+
+### Changed — config bootstrap API split, no more filesystem dance
+
+- `IConfigBootstrapper` is now two methods: `GetVersionAsync(type)` + `GetBytesAsync(type, version)`. Strategy gate runs between them — bytes materialized only when a publish is needed.
+- New `DefaultInstanceConfigBootstrapper` (`o.UseDefaultInstances("0.1.0")`) — pure in-memory: `Activator.CreateInstance` + `IMetaSerializer`. Works in read-only Docker images, no filesystem writes.
+- `DirectoryConfigBootstrapper` is now read-only — never writes. Production stands bake the `.bin` files into the image.
+- Removed `DefaultBinSeeder` and `ConfigsOptions.OnBeforeSeed` — projects that need pre-bootstrap work register their own `IHostedService` ahead of `ConfigureConfigs` (IHostedServices start in registration order).
+- Removed `ConfigsOptions.UseLoader` — implement `IConfigBootstrapper` directly (two short methods).
+- `ConfigBootstrapSeed` renamed to `ConfigBootstrapBytes` (version no longer carried; it's now an argument to `GetBytesAsync`).
+
+### Wizard
+
+- Server template switches to `o.UseDefaultInstances("0.1.0")` + `Strategy = LoadIfNew`. Fresh `dotnet run` publishes defaults to the registry without touching the filesystem.
+
 ## [0.27.0] - 2026-06-12
 
 ### Added
@@ -11,10 +26,6 @@
 ### Wizard
 
 - Templates ship a `GameConfig`. Generated `Program.cs` wires `ConfigureConfigs` + `DefaultBinSeeder`, fixes `AddFileGrainStorage(UseOrleansSerializer=false)`, drops the shadowing `IMetaConnectionHandlerFactory` hand-reg. Generated `MetaGameClient.cs` pins `ClientAppVersion` + `ClientSignature`.
-
-### Fixed
-
-- `MetaConfigVersion.cs` missing `using System;` — broke UPM import under Unity.
 
 ## [0.26.7] - 2026-06-07
 

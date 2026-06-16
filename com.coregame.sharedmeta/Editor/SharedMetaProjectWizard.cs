@@ -1368,17 +1368,18 @@ namespace SharedMeta.Editor
             sb.AppendLine("    /// with <c>((GameConfig)Config!).Field</c>.");
             sb.AppendLine("    /// </summary>");
             sb.AppendLine("    /// <remarks>");
-            sb.AppendLine("    /// The server-side <c>DefaultBinSeeder</c> hook in Program.cs writes a serialized");
-            sb.AppendLine("    /// default instance to <c>data/drafts/GameConfig/&lt;version&gt;.bin</c> on first run.");
-            sb.AppendLine("    /// Edit the property defaults below to change the seed, or publish a new version");
-            sb.AppendLine("    /// via <c>IConfigAdminGrain</c> at runtime.");
+            sb.AppendLine("    /// The server's <c>DefaultInstanceConfigBootstrapper</c> (wired by <c>UseDefaultInstances</c>");
+            sb.AppendLine("    /// in Program.cs) publishes a serialized default instance under version 0.1.0 on first run.");
+            sb.AppendLine("    /// Edit the property defaults below and restart to push a new patch (LoadIfNew strategy");
+            sb.AppendLine("    /// republishes when the offered version isn't in the registry yet), or upload a new version");
+            sb.AppendLine("    /// at runtime via <c>IConfigAdminGrain.UploadAsync</c>.");
             sb.AppendLine("    /// </remarks>");
             sb.AppendLine("    [MetaConfig(Default = true)]");
             // [MetaConfigVersion] maps client app version → config version branch. Wildcard
             // "0.1.*" → "0.1.*" means any 0.1.x client picks the latest 0.1.x config the
-            // registry holds (DefaultBinSeeder writes 0.1.0; admin can publish 0.1.1, 0.1.2…
-            // and existing clients auto-upgrade). Bump both sides together when shipping
-            // a structurally different client (0.2.0 client → 0.2.x config branch).
+            // registry holds (default-instance bootstrapper publishes 0.1.0; admin can publish
+            // 0.1.1, 0.1.2 … and existing clients auto-upgrade). Bump both sides together when
+            // shipping a structurally different client (0.2.0 client → 0.2.x config branch).
             sb.AppendLine("    [MetaConfigVersion(Client = \"0.1.*\", Config = \"0.1.*\")]");
             AppendSerializerAttr(sb);
             sb.AppendLine("    public partial class GameConfig");
@@ -1696,26 +1697,20 @@ namespace SharedMeta.Editor
             sb.AppendLine("                // svc.AddTransient<IRandomService, RandomServiceImpl>();");
             sb.AppendLine("                svc.AddTransient<ILobbyRequester>(sp => new OrleansLobbyRequester(sp.GetRequiredService<IGrainFactory>()));");
             sb.AppendLine();
-            sb.AppendLine("                // SharedMeta 0.27.0+ config pipeline:");
-            sb.AppendLine("                //   - UseDirectorySeed: framework scans data/drafts/{Name}/{Ver}.bin and publishes the");
-            sb.AppendLine("                //     highest version per config on cold-start.");
-            sb.AppendLine("                //   - Strategy=LoadIfEmpty: only seeds when the registry has no version yet (typical");
-            sb.AppendLine("                //     dev flow). Switch to LoadIfNew if seed bumps should auto-publish new versions.");
-            sb.AppendLine("                //   - OnBeforeSeed → DefaultBinSeeder.WriteMissingDefaults: for each [MetaConfig] type");
-            sb.AppendLine("                //     the generator discovered, writes data/drafts/{Name}/0.1.0.bin with the type's");
-            sb.AppendLine("                //     default-instance bytes when the file doesn't exist yet. Remove this hook once");
-            sb.AppendLine("                //     you ship hand-baked .bin files via your own pipeline.");
-            sb.AppendLine("                //   - ClientVersion (Current/Min/Max) is auto-bound from appsettings.json and runtime-");
-            sb.AppendLine("                //     mutable via IConfigAdminGrain.SetCurrentClientVersionAsync / SetMin / SetMax.");
+            sb.AppendLine("                // SharedMeta 0.27.1+ config pipeline:");
+            sb.AppendLine("                //   - UseDefaultInstances(\"0.1.0\"): per [MetaConfig] type does Activator.CreateInstance");
+            sb.AppendLine("                //     and publishes the serialized default at version 0.1.0. Pure in-memory, works in");
+            sb.AppendLine("                //     read-only Docker images. Edit the C# field initializers and restart to pick up");
+            sb.AppendLine("                //     changes under LoadIfNew (when the seeded version isn't already in the registry).");
+            sb.AppendLine("                //   - Switch to o.UseDirectorySeed(\"data/drafts\") when an external content pipeline");
+            sb.AppendLine("                //     produces the .bin files. Project-side YAML→bin compile registers as its own");
+            sb.AppendLine("                //     IHostedService BEFORE this ConfigureConfigs call so it runs first.");
+            sb.AppendLine("                //   - ClientVersion (Current/Min/Max) auto-bound from appsettings.json, runtime-mutable");
+            sb.AppendLine("                //     via IConfigAdminGrain.SetCurrentClientVersionAsync / SetMin / SetMax.");
             sb.AppendLine("                svc.ConfigureConfigs(o =>");
             sb.AppendLine("                {");
-            sb.AppendLine("                    o.UseDirectorySeed(\"data/drafts\");");
-            sb.AppendLine("                    o.Strategy = ConfigSeedStrategy.LoadIfEmpty;");
-            sb.AppendLine("                    o.OnBeforeSeed = (sp, _) =>");
-            sb.AppendLine("                    {");
-            sb.AppendLine("                        DefaultBinSeeder.WriteMissingDefaults(sp, \"data/drafts\", \"0.1.0\");");
-            sb.AppendLine("                        return Task.CompletedTask;");
-            sb.AppendLine("                    };");
+            sb.AppendLine("                    o.UseDefaultInstances(\"0.1.0\");");
+            sb.AppendLine("                    o.Strategy = ConfigSeedStrategy.LoadIfNew;");
             sb.AppendLine("                });");
             sb.AppendLine("            });");
             sb.AppendLine("        });");
@@ -2033,8 +2028,8 @@ namespace SharedMeta.Editor
                 sb.AppendLine("            PlayerId = SystemInfo.deviceUniqueIdentifier,");
             sb.AppendLine("            // Stamped on every SessionConnect / RPC as CallerClientVersion. Must match a config");
             sb.AppendLine("            // version the server has published (or a branch covered by [MetaConfigVersion] rules) —");
-            sb.AppendLine("            // the wizard seeds data/drafts/GameConfig/0.1.0.bin on first run, so 0.1.0 is the");
-            sb.AppendLine("            // matching default. Update this when you ship a new client build with a bumped config.");
+            sb.AppendLine("            // the server's DefaultInstanceConfigBootstrapper publishes 0.1.0 on first run, so 0.1.0");
+            sb.AppendLine("            // is the matching default. Update this when you ship a new client build with a bumped config.");
             sb.AppendLine("            ClientAppVersion = \"0.1.0\",");
             sb.AppendLine("            // 0.24.0+ Explicitly pin this assembly's MetaClientSignature so SessionConnect can");
             sb.AppendLine("            // negotiate the per-signature method-id map before the first RPC dispatches.");

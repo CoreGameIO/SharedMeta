@@ -1,23 +1,22 @@
 using System;
-using SharedMeta.Core;
 
 namespace SharedMeta.Server.Core.Config.Admin
 {
     /// <summary>
-    /// 0.27.0+ Cold-start seed returned by <see cref="IConfigBootstrapper.LoadAsync"/>.
-    /// Carries the bytes the framework should publish into <see cref="IConfigRegistry"/>
-    /// when the type has no version yet, plus the audit metadata that lands in
-    /// <see cref="IConfigMetadataGrain"/>.
+    /// 0.27.1+ Serialized seed bytes returned by <see cref="IConfigBootstrapper.GetBytesAsync"/>.
+    /// Carries the bytes the framework publishes into <see cref="IConfigRegistry"/> plus the audit
+    /// metadata that lands in <see cref="IConfigMetadataGrain"/>.
+    /// <para>
+    /// Version is not on this DTO — it's the second argument to <c>GetBytesAsync</c>, set
+    /// by <see cref="IConfigBootstrapper.GetVersionAsync"/> in the earlier phase.
+    /// </para>
     /// </summary>
-    public sealed class ConfigBootstrapSeed
+    public sealed class ConfigBootstrapBytes
     {
-        /// <summary>Version under which to publish the bytes.</summary>
-        public MetaConfigVersion Version { get; init; }
-
-        /// <summary>Serialized config bytes — must match the project's <see cref="IMetaSerializer"/> wire format.</summary>
+        /// <summary>Serialized config bytes — must match the project's <see cref="SharedMeta.Core.IMetaSerializer"/> wire format.</summary>
         public byte[] Bytes { get; init; } = Array.Empty<byte>();
 
-        /// <summary>Free-form origin label recorded on audit. Typical: <c>"bootstrap"</c>.</summary>
+        /// <summary>Free-form origin label recorded on audit. Built-ins: <c>"directory"</c>, <c>"default-instance"</c>.</summary>
         public string Origin { get; init; } = "bootstrap";
 
         /// <summary>Who triggered the publish. Typical: <c>"bootstrap"</c> or the build/CI id.</summary>

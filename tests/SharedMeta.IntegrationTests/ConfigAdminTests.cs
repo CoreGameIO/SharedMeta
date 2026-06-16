@@ -55,29 +55,31 @@ namespace SharedMeta.UnitTests
         [Fact]
         public async Task IConfigBootstrapper_CanReturnNull()
         {
-            // Contract: returning null is the documented "no seed available" signal.
+            // Contract: returning null from GetVersionAsync is the documented "no seed
+            // available" signal — framework skips the type entirely.
             IConfigBootstrapper b = new NullBootstrapper();
-            var seed = await b.LoadAsync(typeof(object), default);
-            Assert.Null(seed);
+            var version = await b.GetVersionAsync(typeof(object), default);
+            Assert.Null(version);
         }
 
         [Fact]
-        public void ConfigBootstrapSeed_HasReasonableDefaults()
+        public void ConfigBootstrapBytes_HasReasonableDefaults()
         {
-            var seed = new ConfigBootstrapSeed
+            var bytes = new ConfigBootstrapBytes
             {
-                Version = new MetaConfigVersion(1, 0, 0),
                 Bytes = new byte[] { 1, 2, 3 },
             };
-            Assert.Equal("bootstrap", seed.Origin);
-            Assert.Equal("bootstrap", seed.PublishedBy);
-            Assert.Null(seed.Notes);
+            Assert.Equal("bootstrap", bytes.Origin);
+            Assert.Equal("bootstrap", bytes.PublishedBy);
+            Assert.Null(bytes.Notes);
         }
 
         private sealed class NullBootstrapper : IConfigBootstrapper
         {
-            public Task<ConfigBootstrapSeed?> LoadAsync(Type configType, System.Threading.CancellationToken ct)
-                => Task.FromResult<ConfigBootstrapSeed?>(null);
+            public Task<MetaConfigVersion?> GetVersionAsync(Type configType, System.Threading.CancellationToken ct)
+                => Task.FromResult<MetaConfigVersion?>(null);
+            public Task<ConfigBootstrapBytes?> GetBytesAsync(Type configType, MetaConfigVersion version, System.Threading.CancellationToken ct)
+                => Task.FromResult<ConfigBootstrapBytes?>(null);
         }
     }
 }
