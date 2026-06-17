@@ -607,14 +607,23 @@ namespace SharedMeta.Generator.Generators
             // with our message, which is clearer than silently skipping misconfigured methods.
             if (wantsSync)
             {
-                if (defaultMode != "Optimistic" && defaultMode != "Local")
+                if (defaultMode != "Optimistic" && defaultMode != "LocalQuery")
                 {
-                    sb.AppendLine($"#error SharedMeta: [MetaMethod] on '{interfaceName}.{methodName}' has Sync = SyncApi.{syncApi} but Mode = ExecutionMode.{defaultMode}. Sync API generation is only supported for Optimistic or Local methods.");
+                    sb.AppendLine($"#error SharedMeta: [MetaMethod] on '{interfaceName}.{methodName}' has Sync = SyncApi.{syncApi} but Mode = ExecutionMode.{defaultMode}. Sync API generation is only supported for Optimistic or LocalQuery methods.");
                 }
                 if (isAsync)
                 {
                     sb.AppendLine($"#error SharedMeta: [MetaMethod] on '{interfaceName}.{methodName}' has Sync = SyncApi.{syncApi} but the service signature is async (return type '{returnType}'). Change the return type to a non-Task type, or remove Sync.");
                 }
+            }
+
+            // 0.29.0+ LocalQuery contract: must return a value. Body executes only on the client
+            // over replicated State; a void / bare Task method is a no-op (no result, no server
+            // side-effect, no replay) — almost certainly a misuse. Reject loudly so callers either
+            // pick Optimistic / Server (writes) or supply a return value (reads).
+            if (defaultMode == "LocalQuery" && (isAsync ? returnType == "System.Threading.Tasks.Task" || returnType == "Task" : returnType == "void"))
+            {
+                sb.AppendLine($"#error SharedMeta: [MetaMethod] on '{interfaceName}.{methodName}' has Mode = ExecutionMode.LocalQuery but returns no value ('{returnType}'). LocalQuery is a client-side read; switch to Optimistic / Server for writes, or add a return value.");
             }
 
             // SkipServerOnFalse validation. The flag has no meaning without a return value to
@@ -704,7 +713,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"                throw global::SharedMeta.Core.Transport.CapabilitiesGate.RejectedException(ServiceName, \"{methodAlias}\", {methodVersion});");
                 }
                 sb.AppendLine($"            var mode = _modeProvider.GetMode(global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}, ExecutionMode.{defaultMode});");
-                sb.AppendLine("            if (mode != ExecutionMode.Optimistic && mode != ExecutionMode.Local)");
+                sb.AppendLine("            if (mode != ExecutionMode.Optimistic && mode != ExecutionMode.LocalQuery)");
                 sb.AppendLine("            {");
                 if (syncPolicy == "Warn")
                 {

@@ -190,8 +190,8 @@ public interface ICardGameService : IMetaService
     [MetaMethod(Mode = ExecutionMode.Server)]
     void DealCards();
 
-    [MetaMethod(Mode = ExecutionMode.Local)]
-    void SelectCardInHand(int index);
+    [MetaMethod(Mode = ExecutionMode.LocalQuery)]
+    int CardsInHand();   // client-side read over State, no RPC
 
     [MetaMethod(Mode = ExecutionMode.CrossOptimistic)]
     Task<bool> TradeWith(string targetEntityId, Item item);
@@ -791,9 +791,15 @@ Client                          Server
 
 `Context.ServerRandom` on server uses `MetaRandomRecorder` that writes each value to the replay payload. On client, `MetaRandomReplayer` reads those values back sequentially.
 
-### Local Mode
+### LocalQuery Mode (0.29.0+; replaces `Local`)
 
-No server communication. Instant. State changes are client-only.
+Read-only client-side compute over locally replicated state, no RPC. Method body returns a value computed from `State`; never executes on the server. Pair with `{Service}ApiClient` sync overloads when frame-critical.
+
+**Contract:** must return a value (no `void` / bare `Task`); must not mutate State; must not call cross-entity services; must not consume `Context.Random`; requires the entity to be subscribed at call time.
+
+**vs `Query`:** `Query` is server-roundtrip for entities NOT subscribed; `LocalQuery` is local-snapshot read for subscribed entities. Pick `LocalQuery` for cheap method-level computations over your own / any subscribed entity's state; `Query` when authoritative source must be the server.
+
+Pre-0.29.0 `Local` allowed client-only writes (divergence anti-pattern — server never confirms; clients diverge forever). Removed in 0.29.0. UI-state mutations belong in a ViewModel / POCO outside SharedMeta.
 
 ### CrossOptimistic Mode
 
@@ -831,8 +837,9 @@ var modeProvider = client.ModeProvider as ExecutionModeProvider;
 // Force "SetName" to always go through the server
 modeProvider.SetMode(GameMethodIds.IProfileService_SetName_v0, ExecutionMode.Server);
 
-// Force "PlayCard" to local-only (e.g., during offline mode)
-modeProvider.SetMode(GameMethodIds.ICardGameService_PlayCard_v0, ExecutionMode.Local);
+// Note: ExecutionMode.LocalQuery (0.29.0+) is a structural trait of read-only methods,
+// not a runtime routing override. The mode provider can swap Optimistic ↔ Server / ServerPatch
+// but cannot retarget a write to LocalQuery (would lose the server confirm).
 ```
 
 **Reset overrides:**
@@ -4031,8 +4038,8 @@ public interface IInventoryService : IMetaService
     [MetaMethod(ForcePersist = true, Mode = ExecutionMode.Server)]
     bool Purchase(string itemId, int price);
 
-    [MetaMethod(Mode = ExecutionMode.Local)]
-    int GetItemCount(string itemId);
+    [MetaMethod(Mode = ExecutionMode.LocalQuery)]
+    int GetItemCount(string itemId);   // 0.29.0+: client-side read over replicated State, no RPC
 }
 ```
 

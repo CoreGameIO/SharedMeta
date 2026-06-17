@@ -199,9 +199,20 @@ Client                          Server
   ├─ Replay with recorded values   │
 ```
 
-### Local
+### LocalQuery (0.29.0+; replaces `Local`)
 
-No server communication. Instant. State changes are client-only. Good for UI state (selected card, open panel).
+Read-only client-side compute over locally replicated state, no RPC. Method body returns a value computed from `State`; never executes on the server. Pair with `{Service}ApiClient` sync overloads.
+
+**Contract (generator enforces what it can):**
+- Must return a value (no `void` / bare `Task`).
+- Must not mutate State — divergence between clients would be permanent (server never sees the write).
+- Must not call cross-entity services — those round-trip the server.
+- Must not consume `Context.Random` — would advance scroll position only on the calling client.
+- Requires the entity to be subscribed at call time.
+
+**vs `Query`:** `Query` is server-roundtrip read for entities the caller has NOT subscribed to (authoritative source on server). `LocalQuery` reads the already-replicated client snapshot without RPC.
+
+Pre-0.29.0 `Local` allowed client-only writes which was a divergence anti-pattern. Removed. UI-state mutations belong in a ViewModel / POCO outside SharedMeta.
 
 ### CrossOptimistic
 
@@ -393,8 +404,8 @@ public interface ICardGameService : IMetaService
     [MetaMethod(Mode = ExecutionMode.Server)]
     void DealCards();
 
-    [MetaMethod(Mode = ExecutionMode.Local)]
-    void SelectCardInHand(int index);
+    [MetaMethod(Mode = ExecutionMode.LocalQuery)]
+    int CardsInHand();   // client-side read over State, no RPC
 
     [MetaMethod(Mode = ExecutionMode.CrossOptimistic)]
     Task<bool> TradeWith(string targetEntityId, Item item);

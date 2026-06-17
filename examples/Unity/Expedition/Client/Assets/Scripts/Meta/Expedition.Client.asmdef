@@ -8,7 +8,8 @@
         "SharedMeta.Serialization.MemoryPack",
         "Expedition.Shared",
         "SharedMeta.Auth.Client",
-        "SharedMeta.Backend.Local.Runtime"
+        "SharedMeta.Backend.Local.Runtime",
+        "SharedMeta.Client.Config"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

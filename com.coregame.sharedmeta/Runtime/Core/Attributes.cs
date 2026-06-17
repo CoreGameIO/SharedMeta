@@ -278,8 +278,30 @@ namespace SharedMeta.Core
 
     public enum ExecutionMode
     {
-        /// <summary>Execute only on client, no server call.</summary>
-        Local,
+        /// <summary>
+        /// 0.29.0+ Read-only method executed on the client over the locally replicated
+        /// state — no RPC, no server roundtrip. Method body returns a value computed over
+        /// <c>State</c>; result is never confirmed by the server because the body never
+        /// runs there. Pair with <c>{Service}ApiClient</c> sync overloads.
+        /// <para>Contract (enforced where possible by the generator):</para>
+        /// <list type="bullet">
+        /// <item>Must return a value (<c>Task&lt;T&gt;</c> or <c>T</c>) — <c>void</c> / bare
+        ///       <c>Task</c> rejected.</item>
+        /// <item>Must not mutate <c>State</c> — divergence between clients would be permanent.</item>
+        /// <item>Must not call cross-entity services — those round-trip to the server.</item>
+        /// <item>Must not consume <c>Context.Random</c> — would advance scroll position
+        ///       only on the calling client, desyncing every other observer.</item>
+        /// <item>Requires the entity to be subscribed at call time — otherwise <c>State</c> is null.</item>
+        /// </list>
+        /// <para>Differs from <see cref="Query"/> which is server-roundtrip read for entities the
+        /// caller has NOT subscribed to. Use <see cref="LocalQuery"/> for cheap method-level
+        /// computations over your own (or any subscribed) entity's state; use <see cref="Query"/>
+        /// when authoritative source is on the server.</para>
+        /// <para>Replaces the pre-0.29.0 <c>Local</c> mode which permitted client-only writes —
+        /// that was a divergence anti-pattern (server never confirms, two clients diverge forever).
+        /// UI-state mutations belong in a ViewModel / POCO outside SharedMeta.</para>
+        /// </summary>
+        LocalQuery,
         /// <summary>Execute on client first (optimistic), then sync with server. Default mode.</summary>
         Optimistic,
         /// <summary>Execute on server first, then replay on client.</summary>
@@ -514,7 +536,7 @@ namespace SharedMeta.Core
 
         /// <summary>
         /// Controls generation of a synchronous client API overload (e.g. `{Method}Sync`).
-        /// Only valid for <see cref="ExecutionMode.Optimistic"/> and <see cref="ExecutionMode.Local"/>.
+        /// Only valid for <see cref="ExecutionMode.Optimistic"/> and <see cref="ExecutionMode.LocalQuery"/>.
         /// The service method itself must have a non-Task return type.
         /// Use this in frame-critical code paths (e.g. DOTS main-thread) where the mutation must be
         /// visible in the same frame without an `await` boundary.

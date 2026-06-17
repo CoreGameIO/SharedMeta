@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.29.0] - 2026-06-17
+
+### Changed — `ExecutionMode.Local` → `LocalQuery` (breaking)
+
+- `ExecutionMode.Local` removed. Replaced by `ExecutionMode.LocalQuery` — read-only client-side compute over locally replicated state, no RPC. Pre-0.29.0 `Local` permitted client-only writes which is a divergence anti-pattern (server never confirms; two clients diverge forever). UI-state mutations belong in a ViewModel / POCO outside SharedMeta.
+- `LocalQuery` contract (enforced where possible by the generator): must return a value (no `void` / bare `Task`); must not mutate State, call cross-entity services, or consume `Context.Random`; requires the entity to be subscribed at call time.
+- Pair with `Query` (server-roundtrip read for entities NOT subscribed). Use `LocalQuery` for cheap per-method reads over your own / any subscribed entity's state; use `Query` when authoritative source is on the server.
+
 ## [0.28.0] - 2026-06-16
 
 ### Changed — typed config bootstrap end-to-end (breaking)

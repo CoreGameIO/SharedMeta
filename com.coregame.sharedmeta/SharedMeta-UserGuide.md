@@ -90,8 +90,8 @@ public interface IGameService : IMetaService
     [MetaMethod(Mode = ExecutionMode.Server)]
     void GrantReward(int amount);
 
-    [MetaMethod(Mode = ExecutionMode.Local)]
-    void SelectItem(int index);
+    [MetaMethod(Mode = ExecutionMode.LocalQuery)]
+    int ItemCount();   // client-side read over State, no RPC
 }
 ```
 

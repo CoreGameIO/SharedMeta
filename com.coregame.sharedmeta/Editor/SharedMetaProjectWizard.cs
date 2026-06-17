@@ -2966,7 +2966,8 @@ Use `Context.ServerTimeTicks` (synchronized UTC ticks) instead.
 |------|-------------|
 | `ExecutionMode.Optimistic` | UI-responsive actions where client can predict result (move, play card) |
 | `ExecutionMode.Server` | Actions needing `ServerRandom`, hidden state, or server-only data |
-| `ExecutionMode.Local` | Client-only state changes (UI state), no server communication |
+| `ExecutionMode.Query` | Read-only of an entity the caller has NOT subscribed to (server round-trip) |
+| `ExecutionMode.LocalQuery` | Read-only over locally replicated state (no RPC; subscribed entity) |
 | `ExecutionMode.CrossOptimistic` | Cross-entity interactions (trading, multiplayer moves) |
 | `ExecutionMode.ServerPatch` | Large state where sending diffs is more efficient than full state |
 
@@ -3008,8 +3009,8 @@ public interface ICardGameService : IMetaService
     [MetaMethod(Mode = ExecutionMode.Server)]
     void DealCards();
 
-    [MetaMethod(Mode = ExecutionMode.Local)]
-    void SelectCardInHand(int index);
+    [MetaMethod(Mode = ExecutionMode.LocalQuery)]
+    int CardsInHand();   // client-side read over State, no RPC
 
     [MetaMethod(Mode = ExecutionMode.CrossOptimistic)]
     Task<bool> TradeWith(string targetEntityId, Item item);

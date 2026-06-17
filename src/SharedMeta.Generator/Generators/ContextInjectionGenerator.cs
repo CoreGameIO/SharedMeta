@@ -722,7 +722,7 @@ namespace SharedMeta.Generator.Generators
         /// Cross-entity callers for Notification methods receive a void fire-and-forget variant
         /// on the EntityCaller interface instead of the async one — the source grain dispatches
         /// via the Orleans <c>[OneWay]</c> entry on the target and continues without awaiting.
-        /// ExecutionMode.Notification = 8 (after Local=0, Optimistic=1, Server=2, CrossOptimistic=3,
+        /// ExecutionMode.Notification = 8 (after LocalQuery=0, Optimistic=1, Server=2, CrossOptimistic=3,
         /// ServerPatch=4, ServerReplace=5, Query=6, Signal=7).
         /// </summary>
         /// <summary>
