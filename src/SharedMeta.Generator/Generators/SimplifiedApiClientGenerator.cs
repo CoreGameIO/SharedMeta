@@ -238,8 +238,8 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        // Events fired when methods are replayed from broadcasts");
             foreach (var method in methods)
             {
-                // Skip query methods — they don't produce broadcasts or replays
-                if (IsQueryMethod(method)) continue;
+                // Skip query / local-query methods — they don't produce broadcasts or replays
+                if (IsQueryMethod(method) || IsLocalQueryMethod(method)) continue;
 
                 var methodName = method.Identifier.Text;
                 var eventName = GetEventName(methodName);
@@ -491,6 +491,7 @@ namespace SharedMeta.Generator.Generators
             bool legacyQueryBool = false;
             bool legacySignalBool = false;
             string syncApi = "None";
+            bool syncExplicit = false;
             string syncPolicy = "Throw";
             bool skipServerOnFalse = false;
             // 0.26.6+ [MetaMethod(DeepStateCheck = SnapshotTiming.X)]. 0 = None, 1 = Before,
@@ -521,7 +522,10 @@ namespace SharedMeta.Generator.Generators
                             && signalLit.Token.Text == "true")
                             legacySignalBool = true;
                         if (name == "Sync" && arg.Expression is MemberAccessExpressionSyntax syncAccess)
+                        {
                             syncApi = syncAccess.Name.Identifier.Text;
+                            syncExplicit = true;
+                        }
                         if (name == "SyncPolicy" && arg.Expression is MemberAccessExpressionSyntax policyAccess)
                             syncPolicy = policyAccess.Name.Identifier.Text;
                         if (name == "SkipServerOnFalse" && arg.Expression is LiteralExpressionSyntax skipLit
@@ -551,6 +555,16 @@ namespace SharedMeta.Generator.Generators
                     }
                 }
             }
+
+            // LocalQuery is a synchronous, no-RPC read over locally replicated State. Its natural
+            // client API is the sync overload, so when the author leaves Sync unspecified we default
+            // to OnlySync (sync only). An explicit Sync is honoured verbatim: None → async wrapper
+            // only, Generate → both, OnlySync → sync only. Both forms run the impl over local State;
+            // the async wrapper completes synchronously (no RPC) and exists for forward-compat — a
+            // caller that already `await`s {Method}Async keeps compiling if the method later moves to
+            // a server-backed execution mode.
+            if (defaultMode == "LocalQuery" && !syncExplicit)
+                syncApi = "OnlySync";
 
             // Unified Kind detection: new canonical form is Mode = ExecutionMode.Query | Signal,
             // legacy form is Query = true / Signal = true (bool, [Obsolete]). Accept either; reject
@@ -602,6 +616,22 @@ namespace SharedMeta.Generator.Generators
             bool wantsSync = syncApi == "Generate" || syncApi == "OnlySync";
             bool onlySync = syncApi == "OnlySync";
 
+            // LocalQuery: synchronous client-side read over local State. Emit sync and/or async
+            // wrappers per Sync (default OnlySync) and return — none of the RPC-mode generation below
+            // applies (no server round-trip, no replay, no per-mode private bodies). The impl must
+            // return a non-Task value; void / Task / Task<T> are rejected.
+            if (defaultMode == "LocalQuery")
+            {
+                if (isVoidReturn || isAsync)
+                {
+                    sb.AppendLine($"#error SharedMeta: [MetaMethod] on '{interfaceName}.{methodName}' has Mode = ExecutionMode.LocalQuery but its signature is '{returnType}'. LocalQuery is a synchronous local-state read and must return a non-Task value (T). Use Optimistic / Server for writes or async/server results.");
+                    return;
+                }
+                GenerateLocalQueryApiMethods(sb, method, methodName, parameters, callArgs,
+                    innerReturnType, wantsSync, onlySync, interfaceName, namespaceName);
+                return;
+            }
+
             // Compile-time validation for sync generation.
             // Emit #error lines into the generated output — Roslyn surfaces them as CS1029
             // with our message, which is clearer than silently skipping misconfigured methods.
@@ -615,15 +645,6 @@ namespace SharedMeta.Generator.Generators
                 {
                     sb.AppendLine($"#error SharedMeta: [MetaMethod] on '{interfaceName}.{methodName}' has Sync = SyncApi.{syncApi} but the service signature is async (return type '{returnType}'). Change the return type to a non-Task type, or remove Sync.");
                 }
-            }
-
-            // 0.29.0+ LocalQuery contract: must return a value. Body executes only on the client
-            // over replicated State; a void / bare Task method is a no-op (no result, no server
-            // side-effect, no replay) — almost certainly a misuse. Reject loudly so callers either
-            // pick Optimistic / Server (writes) or supply a return value (reads).
-            if (defaultMode == "LocalQuery" && (isAsync ? returnType == "System.Threading.Tasks.Task" || returnType == "Task" : returnType == "void"))
-            {
-                sb.AppendLine($"#error SharedMeta: [MetaMethod] on '{interfaceName}.{methodName}' has Mode = ExecutionMode.LocalQuery but returns no value ('{returnType}'). LocalQuery is a client-side read; switch to Optimistic / Server for writes, or add a return value.");
             }
 
             // SkipServerOnFalse validation. The flag has no meaning without a return value to
@@ -687,13 +708,14 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine();
             }
 
-            // Public sync method — only emitted when Sync is requested on a valid Optimistic/Local sync signature.
-            // Runtime guard: if IExecutionModeProvider has overridden the mode away from Optimistic/Local
+            // Public sync method (Optimistic) — emitted when Sync is requested on a valid sync signature.
+            // Runtime guard: if IExecutionModeProvider has overridden the mode away from Optimistic
             // (e.g. loaded config promoted this method to Server), apply SyncPolicy (Throw/Warn/Silent).
             // TODO(sync-mode-override): today we still run the local body on Warn/Silent — consider an
             // opt-in that schedules a server round-trip instead (fire-and-discard local result) for callers
             // that want correctness over immediacy when a config override downgrades the mode.
-            if (wantsSync && !isAsync && (defaultMode == "Optimistic" || defaultMode == "Local"))
+            // (LocalQuery is handled earlier by GenerateLocalQueryApiMethods and never reaches here.)
+            if (wantsSync && !isAsync && defaultMode == "Optimistic")
             {
                 string syncRet = isVoidReturn ? "void" : innerReturnType;
                 sb.AppendLine($"        /// <summary>");
@@ -748,8 +770,9 @@ namespace SharedMeta.Generator.Generators
                 GenerateServerReplaceMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, interfaceName, namespaceName);
             }
 
-            // Private sync-optimistic body — only emitted when the public sync method was emitted above.
-            if (wantsSync && !isAsync && (defaultMode == "Optimistic" || defaultMode == "Local"))
+            // Private sync-optimistic body — only emitted for the Optimistic sync overload above.
+            // LocalQuery's sync overload calls the impl directly (no _Optimistic round-trip helper).
+            if (wantsSync && !isAsync && defaultMode == "Optimistic")
             {
                 GenerateOptimisticMethodSync(sb, method, methodAlias, innerReturnType, isVoidReturn, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer, deepStateCheck);
             }
@@ -1929,7 +1952,7 @@ namespace SharedMeta.Generator.Generators
             // Service may consist entirely of Query/Signal methods (no broadcasts) with no
             // subscriber interfaces — in that case emit no switch at all rather than an
             // empty body whose dispatch branches would be unreachable / malformed.
-            var broadcastingMethods = methods.Where(m => !IsQueryMethod(m) && !IsSignalMethod(m)).ToList();
+            var broadcastingMethods = methods.Where(m => !IsQueryMethod(m) && !IsLocalQueryMethod(m) && !IsSignalMethod(m)).ToList();
             if (broadcastingMethods.Count > 0 || subscriberInterfaces.Count > 0)
             {
                 sb.AppendLine("            switch (broadcast.MethodId)");
@@ -1977,7 +2000,7 @@ namespace SharedMeta.Generator.Generators
             // Compute PatchApplier full name
             var applierName = stateTypeName + "PatchApplier";
 
-            foreach (var method in methods.Where(m => !IsQueryMethod(m)))
+            foreach (var method in methods.Where(m => !IsQueryMethod(m) && !IsLocalQueryMethod(m)))
             {
                 var alias = GetMethodAlias(method, method.Identifier.Text);
                 var version = GetMethodVersion(method);
@@ -2342,6 +2365,70 @@ namespace SharedMeta.Generator.Generators
         }
 
         /// <summary>
+        /// Emits the client API for a <c>[MetaMethod(Mode = ExecutionMode.LocalQuery)]</c> method:
+        /// a synchronous <c>{Method}Sync(...)</c> and/or an asynchronous <c>{Method}Async(...)</c>,
+        /// chosen by <c>Sync</c> (default <see cref="SyncApi.OnlySync"/> for LocalQuery, so sync-only
+        /// unless the author opts into async). Both run the impl over the local <c>State</c> snapshot
+        /// with no RPC; the async form completes synchronously (<c>Task.FromResult</c>) and exists for
+        /// forward-compat — a caller that already <c>await</c>s <c>{Method}Async</c> keeps compiling if
+        /// the method later moves to a server-backed execution mode. Caller guarantees a non-Task,
+        /// non-void return type.
+        /// </summary>
+        private static void GenerateLocalQueryApiMethods(StringBuilder sb, MethodDeclarationSyntax method,
+            string methodName, string parameters, string callArgs, string innerReturnType,
+            bool wantsSync, bool onlySync, string interfaceName, string namespaceName)
+        {
+            // Async wrapper — emitted unless Sync = OnlySync. Runs the impl over local State and returns
+            // a completed Task; no server round-trip. !onlySync covers Sync = None (async only) and
+            // Sync = Generate (both); when Sync = OnlySync this block is skipped.
+            if (!onlySync)
+            {
+                sb.AppendLine($"        /// <summary>");
+                sb.AppendLine($"        /// {methodName} (LocalQuery) — async wrapper over the local-State read. Completes synchronously, no server round-trip.");
+                sb.AppendLine($"        /// </summary>");
+                sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{namespaceName}.{interfaceName}), \"{methodName}\")]");
+                sb.AppendLine($"        public Task<{innerReturnType}> {ContextInjectionGenerator.AsyncMethodName(methodName)}({parameters})");
+                sb.AppendLine("        {");
+                sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
+                sb.AppendLine("            var __prev = SetupQueryContext();");
+                sb.AppendLine("            try");
+                sb.AppendLine("            {");
+                sb.AppendLine($"                return Task.FromResult(_service.{methodName}({callArgs}));");
+                sb.AppendLine("            }");
+                sb.AppendLine("            finally");
+                sb.AppendLine("            {");
+                sb.AppendLine("                RestoreQueryContext(__prev);");
+                sb.AppendLine("            }");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+            }
+
+            // Sync method — emitted when Sync is OnlySync (LocalQuery default) or Generate. Pure local
+            // read, no RPC, no mode-override guard (there is no server counterpart to defer to).
+            if (wantsSync)
+            {
+                sb.AppendLine($"        /// <summary>");
+                sb.AppendLine($"        /// Synchronous LocalQuery read of {methodName} over locally replicated State. No server round-trip.");
+                sb.AppendLine($"        /// </summary>");
+                sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{namespaceName}.{interfaceName}), \"{methodName}\")]");
+                sb.AppendLine($"        public {innerReturnType} {methodName}Sync({parameters})");
+                sb.AppendLine("        {");
+                sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
+                sb.AppendLine("            var __prev = SetupQueryContext();");
+                sb.AppendLine("            try");
+                sb.AppendLine("            {");
+                sb.AppendLine($"                return _service.{methodName}({callArgs});");
+                sb.AppendLine("            }");
+                sb.AppendLine("            finally");
+                sb.AppendLine("            {");
+                sb.AppendLine("                RestoreQueryContext(__prev);");
+                sb.AppendLine("            }");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+            }
+        }
+
+        /// <summary>
         /// Generates a local-only query method that executes on the client's local state.
         /// No network call — just a direct call to the service instance.
         /// </summary>
@@ -2466,6 +2553,27 @@ namespace SharedMeta.Generator.Generators
                         && modeAccess.Name.Identifier.Text == "Query")
                         return true;
                 }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// True for <c>[MetaMethod(Mode = ExecutionMode.LocalQuery)]</c> — a synchronous, no-RPC read
+        /// over locally replicated State. Like Query methods, LocalQuery produces no broadcast, no
+        /// replay, and no replay event; the broadcast/replay/event loops exclude it so the client
+        /// doesn't reference per-mode private bodies that aren't generated for a sync-only method.
+        /// </summary>
+        private static bool IsLocalQueryMethod(MethodDeclarationSyntax method)
+        {
+            var metaMethod = method.AttributeLists.SelectMany(a => a.Attributes)
+                .FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
+            if (metaMethod == null) return false;
+            foreach (var arg in metaMethod.ArgumentList?.Arguments ?? Enumerable.Empty<AttributeArgumentSyntax>())
+            {
+                if (arg.NameEquals?.Name.Identifier.Text == "Mode"
+                    && arg.Expression is MemberAccessExpressionSyntax modeAccess
+                    && modeAccess.Name.Identifier.Text == "LocalQuery")
+                    return true;
             }
             return false;
         }

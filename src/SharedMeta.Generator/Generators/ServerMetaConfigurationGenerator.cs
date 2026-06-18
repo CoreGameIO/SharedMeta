@@ -370,6 +370,7 @@ namespace SharedMeta.Generator.Generators
                 bool isQuery = false;
                 bool isOpenAccess = false;
                 bool isSignal = false;
+                bool isLocalQuery = false;
                 if (metaMethodAttr != null)
                 {
                     // Legacy bool form.
@@ -380,14 +381,15 @@ namespace SharedMeta.Generator.Generators
                     bool legacySignal = !signalArg.Value.IsNull && signalArg.Value.Value is true;
 
                     // Canonical Mode form. Mode is an int (enum value); compare against known positions.
-                    // ExecutionMode layout: Local=0, Optimistic=1, Server=2, CrossOptimistic=3,
+                    // ExecutionMode layout: LocalQuery=0, Optimistic=1, Server=2, CrossOptimistic=3,
                     // ServerPatch=4, ServerReplace=5, Query=6, Signal=7.
                     bool modeIsQuery = false;
                     bool modeIsSignal = false;
                     var modeArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Mode");
                     if (!modeArg.Value.IsNull && modeArg.Value.Value is int modeVal)
                     {
-                        if (modeVal == 6) modeIsQuery = true;
+                        if (modeVal == 0) isLocalQuery = true;
+                        else if (modeVal == 6) modeIsQuery = true;
                         else if (modeVal == 7) modeIsSignal = true;
                     }
 
@@ -443,6 +445,7 @@ namespace SharedMeta.Generator.Generators
                     IsQuery = isQuery,
                     IsOpenAccess = isOpenAccess,
                     IsSignal = isSignal,
+                    IsLocalQuery = isLocalQuery,
                     SkipMigration = skipMigration,
                     MinStateVersion = minStateVersion,
                     GenerateClientApi = generateClientApi
@@ -1136,8 +1139,10 @@ namespace SharedMeta.Generator.Generators
                 // Queries route through DispatchCall (MetaProviderBase.HandleQueryAsync calls
                 // DispatchCall(call.MethodId, ...)), so they must have cases here. Signals are
                 // routed by the separate {Service}SignalDispatcher (see DispatchSignal override)
-                // and stay out of the main DispatchCall switch.
-                foreach (var ms in service.MethodSignatures.Where(m => !m.IsSignal))
+                // and stay out of the main DispatchCall switch. LocalQuery methods never reach the
+                // server (the client runs them synchronously over local state), so they are excluded
+                // here and from the per-service dispatcher switch — no server dispatch case at all.
+                foreach (var ms in service.MethodSignatures.Where(m => !m.IsSignal && !m.IsLocalQuery))
                 {
                     var idConst = "global::" + service.Namespace + ".Generated.GameMethodIds." + SignatureHashGenerator.MakeMethodIdConstName(ms.ServiceName, ms.MethodAlias, ms.Version);
                     if (service.GeneratePatchTrackedCopy)

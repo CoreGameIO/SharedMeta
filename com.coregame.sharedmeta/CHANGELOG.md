@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.29.2] - 2026-06-18
+
+### Changed — `LocalQuery` generates a synchronous client API by default
+
+- `[MetaMethod(Mode = ExecutionMode.LocalQuery)]` now defaults to `Sync = SyncApi.OnlySync`: the generator emits only a synchronous `{Method}Sync(...)` on `{Service}ApiClient` that runs the impl over local `State` in the calling frame — no RPC, no async overload.
+- An explicit `Sync` is honoured: `None` → only `{Method}Async`, `Generate` → both. The LocalQuery async wrapper completes synchronously (`Task.FromResult`, no RPC); it exists for forward-compat so callers that `await {Method}Async` keep compiling if the method later moves to a server-backed mode.
+- LocalQuery must return a non-`Task` value (it executes synchronously); `void` / `Task` / `Task<T>` are rejected.
+- LocalQuery is now excluded from server-side dispatch — no case in `DispatchCall` / the service dispatcher and not in the broadcast-filter id set. Its `GameMethodIds` constant is still emitted (id-space unchanged) but unused server-side.
+- Fixed: the sync-API generation guards still tested the pre-0.29.0 `Local` mode name, so an explicit `Sync` on a LocalQuery method previously emitted nothing.
+
 ## [0.29.1] - 2026-06-18
 
 ### Added — Roslyn body validation for `LocalQuery` / `Query`

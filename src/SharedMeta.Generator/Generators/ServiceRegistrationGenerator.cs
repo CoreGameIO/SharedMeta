@@ -390,7 +390,9 @@ namespace SharedMeta.Generator.Generators
                         if (arg.NameEquals == null) continue;
                         var name = arg.NameEquals.Name.Identifier.Text;
                         var expr = arg.Expression.ToString();
-                        if (name == "Mode" && (expr.EndsWith(".Query") || expr.EndsWith(".Signal"))) return true;
+                        // LocalQuery is a client-only no-RPC read: like Query/Signal it produces no
+                        // broadcast and no client RPC registration, so it's excluded here too.
+                        if (name == "Mode" && (expr.EndsWith(".Query") || expr.EndsWith(".Signal") || expr.EndsWith(".LocalQuery"))) return true;
                         if ((name == "Query" || name == "Signal") && expr == "true") return true;
                     }
                 }

@@ -285,8 +285,9 @@ namespace SharedMeta.Core
         /// runs there. Pair with <c>{Service}ApiClient</c> sync overloads.
         /// <para>Contract (enforced where possible by the generator):</para>
         /// <list type="bullet">
-        /// <item>Must return a value (<c>Task&lt;T&gt;</c> or <c>T</c>) — <c>void</c> / bare
-        ///       <c>Task</c> rejected.</item>
+        /// <item>Must return a non-<c>Task</c> value (<c>T</c>) — the read runs synchronously over
+        ///       local <c>State</c> and is exposed as <c>{Method}Sync()</c> and/or <c>{Method}Async()</c>
+        ///       per <c>Sync</c> (default sync-only); <c>void</c>, <c>Task</c>, <c>Task&lt;T&gt;</c> rejected.</item>
         /// <item>Must not mutate <c>State</c> — divergence between clients would be permanent.</item>
         /// <item>Must not call cross-entity services — those round-trip to the server.</item>
         /// <item>Must not consume <c>Context.Random</c> — would advance scroll position
@@ -540,6 +541,11 @@ namespace SharedMeta.Core
         /// The service method itself must have a non-Task return type.
         /// Use this in frame-critical code paths (e.g. DOTS main-thread) where the mutation must be
         /// visible in the same frame without an `await` boundary.
+        /// <para><see cref="ExecutionMode.LocalQuery"/> defaults to <see cref="SyncApi.OnlySync"/> when this
+        /// property is left unset (its natural API is a synchronous local-state read). An explicit value is
+        /// honoured: <see cref="SyncApi.None"/> emits only the async wrapper, <see cref="SyncApi.Generate"/>
+        /// emits both. For LocalQuery the async wrapper completes synchronously (no RPC) — it exists so a
+        /// caller can <c>await</c> it and keep compiling if the method later moves to a server-backed mode.</para>
         /// </summary>
         public SyncApi Sync { get; set; } = SyncApi.None;
 

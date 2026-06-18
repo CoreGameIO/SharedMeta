@@ -91,9 +91,15 @@ public interface IGameService : IMetaService
     void GrantReward(int amount);
 
     [MetaMethod(Mode = ExecutionMode.LocalQuery)]
-    int ItemCount();   // client-side read over State, no RPC
+    int ItemCount();   // client-side read over State, no RPC — client calls api.ItemCountSync()
 }
 ```
+
+> **LocalQuery is sync by default.** A `LocalQuery` method defaults to `Sync = SyncApi.OnlySync`,
+> so the generator emits only the synchronous `{Method}Sync(...)` on the client API. It reads the
+> local `State` snapshot in the calling frame with no server round-trip. Set `Sync` explicitly to
+> override: `SyncApi.Generate` emits both sync and async, `SyncApi.None` emits only the async wrapper
+> (which still runs locally — handy if the method may later move to a server-backed mode).
 
 ---
 

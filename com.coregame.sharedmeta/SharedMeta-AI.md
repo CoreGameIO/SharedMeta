@@ -201,7 +201,9 @@ Client                          Server
 
 ### LocalQuery (0.29.0+; replaces `Local`)
 
-Read-only client-side compute over locally replicated state, no RPC. Method body returns a value computed from `State`; never executes on the server. Pair with `{Service}ApiClient` sync overloads.
+Read-only client-side compute over locally replicated state, no RPC. Method body returns a value computed from `State`; never executes on the server.
+
+**Synchronous API by default (0.29.2+):** LocalQuery defaults to `Sync = SyncApi.OnlySync` — the generator emits only a synchronous `{Method}Sync(...)` on `{Service}ApiClient`, run over the local `State` snapshot in the calling frame (no `await`, no round-trip). An explicit `Sync` is honoured: `None` → only `{Method}Async`, `Generate` → both. The LocalQuery async wrapper completes synchronously (`Task.FromResult`, still no RPC) — it lets a caller `await {Method}Async(...)` and keep compiling if the method later switches to a server-backed mode. Impl must return a non-`Task` value.
 
 **Contract (generator enforces what it can):**
 - Must return a value (no `void` / bare `Task`).
@@ -405,7 +407,7 @@ public interface ICardGameService : IMetaService
     void DealCards();
 
     [MetaMethod(Mode = ExecutionMode.LocalQuery)]
-    int CardsInHand();   // client-side read over State, no RPC
+    int CardsInHand();   // client-side read over State; client calls api.CardsInHandSync()
 
     [MetaMethod(Mode = ExecutionMode.CrossOptimistic)]
     Task<bool> TradeWith(string targetEntityId, Item item);

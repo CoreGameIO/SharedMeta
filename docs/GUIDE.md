@@ -793,7 +793,19 @@ Client                          Server
 
 ### LocalQuery Mode (0.29.0+; replaces `Local`)
 
-Read-only client-side compute over locally replicated state, no RPC. Method body returns a value computed from `State`; never executes on the server. Pair with `{Service}ApiClient` sync overloads when frame-critical.
+Read-only client-side compute over locally replicated state, no RPC. Method body returns a value computed from `State`; never executes on the server.
+
+**Synchronous API by default (0.29.2+):** LocalQuery defaults to `Sync = SyncApi.OnlySync`, so the generator emits a single synchronous `{Method}Sync(...)` on `{Service}ApiClient` — the impl runs over the local `State` snapshot in the calling frame, no `await`, no round-trip, which is exactly what a local read wants. An explicit `Sync` is honoured: `None` emits only `{Method}Async`, `Generate` emits both. The LocalQuery async wrapper completes synchronously (`Task.FromResult`, still no RPC); it exists for forward-compat — a call site that already `await`s `{Method}Async` keeps compiling if the method later switches to a server-backed mode. The impl must return a non-`Task` value.
+
+```csharp
+[MetaMethod(Mode = ExecutionMode.LocalQuery)]
+int CardsInHand();                              // interface; default → sync only
+// client:
+int n = api.CardsInHandSync();                  // synchronous, reads local State, no RPC
+
+[MetaMethod(Mode = ExecutionMode.LocalQuery, Sync = SyncApi.Generate)]
+int CardsInHand();                              // → both CardsInHandSync() and CardsInHandAsync()
+```
 
 **Contract:** must return a value (no `void` / bare `Task`); must not mutate State; must not call cross-entity services; must not consume `Context.Random`; requires the entity to be subscribed at call time.
 

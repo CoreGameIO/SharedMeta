@@ -20,6 +20,23 @@ namespace SharedMeta.Test.Meta1
             });
         }
 
+        // LocalQuery reads: run on the client over replicated State, no server round-trip.
+        // Read-only by contract (validated by the 0.29.1 read-only validator).
+        public int CountHeroesAtLevel(int minLevel)
+        {
+            return state.Heroes.Count(h => h.Level >= minLevel);
+        }
+
+        public int TotalLevels()
+        {
+            return state.Heroes.Sum(h => h.Level);
+        }
+
+        public int HeroCount()
+        {
+            return state.Heroes.Count;
+        }
+
         public void AwardExp(int heroId, int amount)
         {
             // The helper returns a HeroPatchWrapper in the _PatchTracked copy of this

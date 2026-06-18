@@ -10,6 +10,28 @@ namespace SharedMeta.Test.Meta1
         void AddHero(int id, string name, int level);
 
         /// <summary>
+        /// LocalQuery: count heroes at or above <paramref name="minLevel"/>. Pure client-side read
+        /// over locally replicated State — no RPC. Sync defaults to OnlySync for LocalQuery, so the
+        /// generator emits only <c>CountHeroesAtLevelSync(int)</c> (no async overload).
+        /// </summary>
+        [MetaMethod(Alias = "CountHeroesAtLevel", Mode = ExecutionMode.LocalQuery)]
+        int CountHeroesAtLevel(int minLevel);
+
+        /// <summary>
+        /// LocalQuery with explicit Sync = Generate — generator emits BOTH <c>TotalLevelsSync()</c>
+        /// and <c>TotalLevelsAsync()</c> (the async wrapper completes synchronously, no RPC).
+        /// </summary>
+        [MetaMethod(Alias = "TotalLevels", Mode = ExecutionMode.LocalQuery, Sync = SyncApi.Generate)]
+        int TotalLevels();
+
+        /// <summary>
+        /// LocalQuery with explicit Sync = None — generator emits ONLY <c>HeroCountAsync()</c>
+        /// (no sync overload), honouring the author's explicit choice.
+        /// </summary>
+        [MetaMethod(Alias = "HeroCount", Mode = ExecutionMode.LocalQuery, Sync = SyncApi.None)]
+        int HeroCount();
+
+        /// <summary>
         /// Award exp to a specific hero. Looks up by Id via a helper method, then
         /// mutates the hero through the wrapper. Used to verify that:
         ///   - the helper method correctly returns HeroPatchWrapper (compile-time check)

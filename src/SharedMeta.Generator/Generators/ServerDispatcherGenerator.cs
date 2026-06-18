@@ -113,7 +113,12 @@ namespace SharedMeta.Generator.Generators
             // 0.24.0+ Switch on global ushort method id from GameMethodIds. Each (alias, version)
             // tuple is its own case label — version is encoded into the index, no nested switch.
             // Jump table on ushort lowers to a computed branch (much faster than string-pair match).
+            // LocalQuery methods never reach the server — the client runs them synchronously over
+            // local state with no RPC. Exclude them from the dispatch switch so there's no dead case
+            // (DispatchCall excludes them too, so nothing routes here). Signals have their own
+            // dispatcher class and are likewise not regular RPC targets in this switch.
             var flatMethods = methods
+                .Where(m => !IsLocalQueryMethod(m))
                 .Select(m => new { Method = m, Info = ReadMetaMethodInfo(m) })
                 .ToList();
 
@@ -267,6 +272,25 @@ namespace SharedMeta.Generator.Generators
                 if (name == "Mode"
                     && arg.Expression is MemberAccessExpressionSyntax modeAccess
                     && modeAccess.Name.Identifier.Text == "Signal")
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// True for <c>[MetaMethod(Mode = ExecutionMode.LocalQuery)]</c> — a client-only synchronous
+        /// read over local state. It never reaches the server, so it gets no server dispatch case.
+        /// </summary>
+        private static bool IsLocalQueryMethod(MethodDeclarationSyntax method)
+        {
+            var metaMethod = method.AttributeLists.SelectMany(a => a.Attributes)
+                .FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
+            if (metaMethod == null) return false;
+            foreach (var arg in metaMethod.ArgumentList?.Arguments ?? Enumerable.Empty<AttributeArgumentSyntax>())
+            {
+                if (arg.NameEquals?.Name.Identifier.Text == "Mode"
+                    && arg.Expression is MemberAccessExpressionSyntax modeAccess
+                    && modeAccess.Name.Identifier.Text == "LocalQuery")
                     return true;
             }
             return false;

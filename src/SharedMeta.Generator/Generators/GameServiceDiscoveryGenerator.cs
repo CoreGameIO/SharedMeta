@@ -21,6 +21,14 @@ namespace SharedMeta.Generator.Generators
         /// <summary>True if <c>[MetaMethod(Signal = true)]</c> — fire-and-forget void.</summary>
         public bool IsSignal { get; set; }
 
+        /// <summary>
+        /// True if <c>[MetaMethod(Mode = ExecutionMode.LocalQuery)]</c> — a synchronous, no-RPC read
+        /// over the client's local state. It never reaches the server, so it is excluded from the
+        /// server <c>DispatchCall</c> switch and the per-service dispatcher switch. Its
+        /// <c>GameMethodIds</c> constant is still emitted (id-space stays stable) but unused server-side.
+        /// </summary>
+        public bool IsLocalQuery { get; set; }
+
         /// <summary>True if the method carries <c>[NoMigrate]</c>.</summary>
         public bool SkipMigration { get; set; }
 
