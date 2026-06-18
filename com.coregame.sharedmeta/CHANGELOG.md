@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.29.1] - 2026-06-18
+
+### Added — Roslyn body validation for `LocalQuery` / `Query`
+
+Generator walks every `[MetaServiceImpl]` body bound to a `LocalQuery` or `Query` interface declaration and emits `#error` diagnostics for read-only contract violations: State mutations (incl. aliases / locals / out-vars), collection mutators, random consumption, cross-entity calls. Recurses into same-class helpers. Full coverage matrix in [User Guide → Section 13 "Read-only validator"](SharedMeta-UserGuide.md).
+
+**Opt-out:** `<SharedMetaDisableReadOnlyValidator>true</SharedMetaDisableReadOnlyValidator>` in the host project's `<PropertyGroup>`. Default: enabled.
+
 ## [0.29.0] - 2026-06-17
 
 ### Changed — `ExecutionMode.Local` → `LocalQuery` (breaking)

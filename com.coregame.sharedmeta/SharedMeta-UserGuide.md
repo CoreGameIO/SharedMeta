@@ -923,3 +923,42 @@ Discovery is attribute-driven via `[GeneratedFromMetaMethod]`, which the SharedM
 2. Create services for that state type
 3. Register provider on server via generated `ServerMetaConfiguration`
 4. Subscribe on client with `client.SubscribeAsync<MyState>(entityId)`
+
+## Read-only validator (0.29.1+)
+
+For every `[MetaServiceImpl]` method whose interface declaration has `Mode = ExecutionMode.LocalQuery` or `Mode = ExecutionMode.Query`, the generator walks the body syntactically and emits `#error` diagnostics for contract violations. Default: on.
+
+### Coverage
+
+| Pattern | Caught |
+|---|---|
+| Direct assignment to State (`State.X = …`, `State.X.Y[i] = …`, `State.X[k] = v`) | ✅ |
+| Collection mutators on State — `State.X.{Add\|AddRange\|Remove\|RemoveAt\|RemoveAll\|RemoveRange\|Insert\|InsertRange\|Clear\|Sort\|Reverse\|Enqueue\|Dequeue\|Push\|Pop\|TrimExcess\|EnsureCapacity\|TryAdd}(...)` | ✅ |
+| `Context.Random`, `Context.ServerRandom` consumption | ✅ |
+| Generator-emitted `{Name}Random` accessors (`[NamedRandom]`) consumption | ✅ |
+| Cross-entity calls — `GetI{Service}(entityId).{Method}(...)` pattern | ✅ |
+| Class-level State aliases — `private GameState profile;`, `protected GameState S => State;`, etc. (any field/property typed as the impl's state) | ✅ |
+| Local-variable State aliases — `var p = State;`, `var c = State.Cards;`, `foreach (var x in State.Cells)`, `out var v` from `State.Map.TryGetValue(k, out var v)` | ✅ |
+| Same-class helper recursion — walks helpers in the same `[MetaServiceImpl]` class (depth limit 5, visited set) so violations behind `=> CountStuff();` surface with both FQNs | ✅ |
+| Helpers in **other** classes (cross-file) | ❌ |
+| Local **reassignment** (`var p = State; p = otherThing; p.X = 1;` — false positive, walker still treats `p` as State) | ❌ (Level-2 control-flow, deferred) |
+| Virtual override targets, delegate-invoked callbacks, reflection (`GetField/SetValue`) | ❌ |
+| User-defined collection mutator names (`State.Inventory.AddItem(x)`) | ❌ — extend `CollectionMutators` set in `ReadOnlyMethodValidator.cs` or rename for clarity |
+
+### Diagnostic format
+
+```
+SharedMeta: [MetaMethod(Mode = ExecutionMode.LocalQuery)] 'ClanService.CardsInHand' at line 42:13 must not mutate State (direct assignment detected). Switch to ExecutionMode.Optimistic / Server for writes, or move the write out of this method.
+```
+
+Includes method FQN + line:col + concrete violation. For aliases, the alias name appears in the message: `must not mutate State alias 'profile'`. For helpers reached via recursion, the FQN shows the chain: `'ClanService.CardsInHand → CountCards'`.
+
+### Opt-out
+
+Add to the host project's `<PropertyGroup>`:
+
+```xml
+<SharedMetaDisableReadOnlyValidator>true</SharedMetaDisableReadOnlyValidator>
+```
+
+The validator becomes a no-op (other generators continue to run). Useful when generator-side compile cost matters more than catching contract violations at build time — though the cost is usually negligible.

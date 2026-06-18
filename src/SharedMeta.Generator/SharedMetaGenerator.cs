@@ -99,6 +99,12 @@ namespace SharedMeta.Generator
                     spc.AddSource($"{symbol.Name}_PatchTracked.g.cs", deepDesyncSource);
                 }
 
+                // 0.29.1+ validator runs as a SEPARATE RegisterSourceOutput below, combined with
+                // AnalyzerConfigOptionsProvider so it can be opt-out via MSBuild property
+                // <SharedMetaDisableReadOnlyValidator>true</SharedMetaDisableReadOnlyValidator>.
+                // Kept here as a comment so the connection between the impl pipeline and the
+                // validator is visible at the wiring site; actual call is at the bottom of Initialize().
+
                 // Subscriber dispatcher (for framework service events)
                 var subscriberSource = SubscriberDispatcherGenerator.Generate(node, symbol);
                 if (subscriberSource != null)
@@ -481,6 +487,36 @@ namespace SharedMeta.Generator
                     var source = TransformerRegistrationGenerator.Generate(ns, group!);
                     var safeNs = ns.Replace(".", "_");
                     spc.AddSource($"TransformerRegistrations_{safeNs}.g.cs", source);
+                }
+            });
+
+            // 0.29.1+ Read-only contract validator (LocalQuery / Query method bodies). Combines
+            // the impl pipeline with AnalyzerConfigOptionsProvider so the validator becomes a
+            // no-op when the host opts out via
+            //   <PropertyGroup>
+            //     <SharedMetaDisableReadOnlyValidator>true</SharedMetaDisableReadOnlyValidator>
+            //   </PropertyGroup>
+            // Useful when generator-side compile cost matters more than catching read-only
+            // contract violations at build time. Default: validator ON.
+            var validatorEnabled = context.AnalyzerConfigOptionsProvider.Select((opts, _) =>
+            {
+                opts.GlobalOptions.TryGetValue("build_property.SharedMetaDisableReadOnlyValidator", out var v);
+                return !string.Equals(v, "true", System.StringComparison.OrdinalIgnoreCase);
+            });
+            var validatorPipeline = implPipeline.Combine(validatorEnabled);
+            context.RegisterSourceOutput(validatorPipeline, (spc, tuple) =>
+            {
+                var (ctx, enabled) = tuple;
+                if (!enabled) return;
+                var node = ctx.TargetNode as Microsoft.CodeAnalysis.CSharp.Syntax.ClassDeclarationSyntax;
+                if (node == null) return;
+                var symbol = ctx.TargetSymbol as INamedTypeSymbol;
+                if (symbol == null) return;
+
+                var readOnlyChecks = ReadOnlyMethodValidator.Generate(node, symbol, ctx.SemanticModel.Compilation);
+                if (readOnlyChecks != null)
+                {
+                    spc.AddSource($"{symbol.Name}.ReadOnlyChecks.g.cs", readOnlyChecks);
                 }
             });
         }
