@@ -389,6 +389,31 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
+        /// Synchronous, allocation-free accessor for an already-resolved API client. Returns true
+        /// and the cached <typeparamref name="TApiClient"/> when the entity is subscribed AND that
+        /// client type has been created (by a prior <see cref="GetServiceAsync{TApiClient}"/> call);
+        /// otherwise returns false. Unlike <see cref="GetServiceAsync{TApiClient}"/> this never
+        /// subscribes, never creates the client, and never allocates a Task — the hot path is a lock
+        /// plus two dictionary lookups. Use it on frame-critical paths where the entity is known to
+        /// be subscribed; fall back to <see cref="GetServiceAsync{TApiClient}"/> for the first call.
+        /// </summary>
+        public bool TryGetService<TApiClient>(string entityId, out TApiClient api) where TApiClient : class
+        {
+            lock (_lock)
+            {
+                if (_connections.TryGetValue(entityId, out var connection)
+                    && connection.ApiClients.TryGetValue(typeof(TApiClient), out var existing))
+                {
+                    api = (TApiClient)existing;
+                    return true;
+                }
+            }
+
+            api = null!;
+            return false;
+        }
+
+        /// <summary>
         /// Returns the shared state container for an entity, exposing the joint
         /// <see cref="EntityStateContainer{TState}.MutationCount"/> /
         /// <see cref="EntityStateContainer{TState}.OnMutated"/> surface even when no

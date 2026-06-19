@@ -357,6 +357,16 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
+        /// Synchronous, allocation-free accessor for an already-resolved API client (true when the
+        /// entity is subscribed and the client was already created via <see cref="GetServiceAsync{TApiClient}"/>;
+        /// otherwise false). Never subscribes or allocates a Task — use on hot paths.
+        /// </summary>
+        public bool TryGetService<TApiClient>(string entityId, out TApiClient api) where TApiClient : class
+        {
+            return _resolver.TryGetService(entityId, out api);
+        }
+
+        /// <summary>
         /// Get current state for a connected entity.
         /// </summary>
         public TState GetState<TState>(string entityId) where TState : class, ISharedState

@@ -1074,13 +1074,19 @@ public interface IGameService : IMetaService { ... }
 | `UserOwned` | Only if entityId == playerId | **Convenience:** `client.Get{ServiceName}Async()` (auto uses PlayerId) |
 | `Authorized` | Custom `IsAuthorized(playerId)` on service impl | `client.GetServiceAsync<TApiClient>(entityId)` |
 
-**UserOwned** is the only policy that generates convenience extension methods on MetaClient. For all other policies, use the generic `GetServiceAsync<TApiClient>(entityId)`.
+**UserOwned** generates no-arg convenience (`Get{ServiceName}Async()`, auto PlayerId); Open/Authorized/OwnerOnly generate the entityId-arg form (`Get{ServiceName}Async(entityId)`). Generic `GetServiceAsync<TApiClient>(entityId)` always works.
+
+**`TryGetService` (0.29.3+) — synchronous, allocation-free hot-path accessor.** `GetServiceAsync` allocates a `Task` per call even when already subscribed. For frame-critical reads use `bool TryGetService<TApiClient>(entityId, out api)` (on resolver / `MetaClient`) — returns the cached client when the entity is subscribed AND the client was already created by a prior `GetServiceAsync`, else false (no subscribe, no throw, no alloc; hot path = lock + 2 dict lookups). Generated typed convenience mirrors `Get{Service}Async`: `TryGet{Service}(out api)` (UserOwned) / `TryGet{Service}(entityId, out api)` (others). Combine with a synchronous `LocalQuery` read (`{Method}Sync()`) for a zero-alloc per-frame path.
 
 **UserOwned service** — entityId is always the player's own ID:
 ```csharp
 // Generated convenience method (no entityId needed):
 var profileApi = await client.GetProfileServiceAsync();
 var profileState = client.GetProfileState();
+
+// Hot path (already subscribed): no Task allocation
+if (client.TryGetProfileService(out var p))
+    var n = p.CardsInHandSync();   // sync LocalQuery → zero-alloc
 ```
 
 **Authorized / Open / OwnerOnly service** — requires explicit entityId:

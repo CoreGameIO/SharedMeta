@@ -36,6 +36,18 @@ namespace SharedMeta.Core
         TState GetState<TState>(string entityId) where TState : class, ISharedState;
 
         /// <summary>
+        /// Synchronous, allocation-free accessor for an already-resolved API client. Returns true and
+        /// the cached client when the entity is subscribed and that client type was already created by
+        /// a prior <see cref="GetServiceAsync{TApiClient}"/> call; otherwise false. Never subscribes,
+        /// never creates the client, never allocates a Task. Use on hot paths where the entity is known
+        /// to be subscribed; use <see cref="GetServiceAsync{TApiClient}"/> for the first call.
+        /// </summary>
+        /// <typeparam name="TApiClient">The API client type</typeparam>
+        /// <param name="entityId">The entity ID</param>
+        /// <param name="api">The cached client when found; otherwise null</param>
+        bool TryGetService<TApiClient>(string entityId, out TApiClient api) where TApiClient : class;
+
+        /// <summary>
         /// Register a service configuration.
         /// Called by generated code or during DI setup.
         /// </summary>

@@ -813,6 +813,24 @@ int CardsInHand();                              // → both CardsInHandSync() an
 
 Pre-0.29.0 `Local` allowed client-only writes (divergence anti-pattern — server never confirms; clients diverge forever). Removed in 0.29.0. UI-state mutations belong in a ViewModel / POCO outside SharedMeta.
 
+#### `TryGetService` — allocation-free access on the hot path (0.29.3+)
+
+`GetServiceAsync` is the right call for the first access (it subscribes + creates the client), but on an already-subscribed entity it still allocates a `Task<TApiClient>` per call. For a frame-critical read path, use the synchronous accessor instead:
+
+```csharp
+// generic form
+if (client.TryGetService<PlayerProfileServiceApiClient>(client.PlayerId, out var api))
+    return api.GetProfileSummarySync();   // sync LocalQuery read → zero allocation end-to-end
+
+// generated typed convenience (mirrors Get{Service}Async):
+//   UserOwned:                bool TryGet{Service}(out api)           // auto client.PlayerId
+//   Open/Authorized/OwnerOnly bool TryGet{Service}(string entityId, out api)
+if (client.TryGetPlayerProfileService(out var profile))
+    return profile.GetProfileSummarySync();
+```
+
+`TryGetService` returns `false` (no throw, no subscribe) when the entity isn't subscribed yet or that client type hasn't been created — fall back to `GetServiceAsync` for the first call. The hot path is a lock plus two dictionary lookups and allocates nothing; combined with a synchronous `LocalQuery` read the whole access is zero-alloc (an `async UniTask`/`async` method that never suspends isn't boxed either).
+
 ### CrossOptimistic Mode
 
 Optimistic execution across **multiple states owned by the same player** — the split-profile pattern. When one player's data has grown large enough to be split across several `ISharedState` entities (e.g. `ProfileState` + `InventoryState` + `QuestState`, all keyed by the player's id), `CrossOptimistic` lets the client execute methods that touch more than one of those states locally without waiting for a round-trip.

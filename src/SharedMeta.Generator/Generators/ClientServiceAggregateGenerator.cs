@@ -154,6 +154,19 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine("        {");
                     sb.AppendLine($"            return client.GetServiceAsync<{service.BaseName}ApiClient>(client.PlayerId);");
                     sb.AppendLine("        }");
+
+                    // 0.29.3+ Synchronous, allocation-free accessor for the already-subscribed case.
+                    // Typed shortcut for client.TryGetService<{BaseName}ApiClient>(client.PlayerId, out api).
+                    sb.AppendLine();
+                    sb.AppendLine($"        /// <summary>");
+                    sb.AppendLine($"        /// Try to get the already-resolved {service.BaseName}ApiClient for the current player's");
+                    sb.AppendLine($"        /// entity without subscribing or allocating. True when it was already created via");
+                    sb.AppendLine($"        /// <c>Get{service.BaseName}Async</c>. Uses client.PlayerId as the entity ID (UserOwned policy).");
+                    sb.AppendLine($"        /// </summary>");
+                    sb.AppendLine($"        public static bool TryGet{service.BaseName}(this MetaClient client, out {service.BaseName}ApiClient api)");
+                    sb.AppendLine("        {");
+                    sb.AppendLine($"            return client.TryGetService<{service.BaseName}ApiClient>(client.PlayerId, out api);");
+                    sb.AppendLine("        }");
                 }
 
                 // Generate GetState convenience methods for unique state types among UserOwned services
@@ -189,6 +202,19 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"        public static System.Threading.Tasks.Task<{service.BaseName}ApiClient> Get{service.BaseName}Async(this MetaClient client, string entityId)");
                 sb.AppendLine("        {");
                 sb.AppendLine($"            return client.GetServiceAsync<{service.BaseName}ApiClient>(entityId);");
+                sb.AppendLine("        }");
+
+                // 0.29.3+ Synchronous, allocation-free accessor for the already-subscribed case.
+                // Typed shortcut for client.TryGetService<{BaseName}ApiClient>(entityId, out api).
+                sb.AppendLine();
+                sb.AppendLine($"        /// <summary>");
+                sb.AppendLine($"        /// Try to get the already-resolved {service.BaseName}ApiClient for <paramref name=\"entityId\"/>");
+                sb.AppendLine($"        /// without subscribing or allocating. True when it was already created via");
+                sb.AppendLine($"        /// <c>Get{service.BaseName}Async</c>.");
+                sb.AppendLine($"        /// </summary>");
+                sb.AppendLine($"        public static bool TryGet{service.BaseName}(this MetaClient client, string entityId, out {service.BaseName}ApiClient api)");
+                sb.AppendLine("        {");
+                sb.AppendLine($"            return client.TryGetService<{service.BaseName}ApiClient>(entityId, out api);");
                 sb.AppendLine("        }");
             }
 
