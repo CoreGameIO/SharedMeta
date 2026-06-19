@@ -361,7 +361,7 @@ namespace SharedMeta.Client
         /// entity is subscribed and the client was already created via <see cref="GetServiceAsync{TApiClient}"/>;
         /// otherwise false). Never subscribes or allocates a Task — use on hot paths.
         /// </summary>
-        public bool TryGetService<TApiClient>(string entityId, out TApiClient api) where TApiClient : class
+        public bool TryGetService<TApiClient>(string entityId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out TApiClient? api) where TApiClient : class
         {
             return _resolver.TryGetService(entityId, out api);
         }

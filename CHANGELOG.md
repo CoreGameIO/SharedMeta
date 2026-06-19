@@ -4,7 +4,7 @@
 
 ### Added — synchronous `TryGetService` accessor (zero-alloc hot path)
 
-- `bool TryGetService<TApiClient>(string entityId, out TApiClient api)` on `IMetaServiceResolver` / `MetaServiceResolver` / `MetaClient` — returns the already-resolved client when the entity is subscribed and the client was created by a prior `GetServiceAsync`, otherwise false. Never subscribes, never allocates a `Task` (hot path = lock + two dictionary lookups). Pairs well with synchronous `LocalQuery` reads for an allocation-free per-frame access path.
+- `bool TryGetService<TApiClient>(string entityId, [NotNullWhen(true)] out TApiClient? api)` on `IMetaServiceResolver` / `MetaServiceResolver` / `MetaClient` — returns the already-resolved client when the entity is subscribed and the client was created by a prior `GetServiceAsync`, otherwise false. Never subscribes, never allocates a `Task` (hot path = lock + two dictionary lookups). Pairs well with synchronous `LocalQuery` reads for an allocation-free per-frame access path.
 - Generated typed convenience: `TryGet{Service}(out api)` for UserOwned services (auto `client.PlayerId`) and `TryGet{Service}(entityId, out api)` for Open/Authorized/OwnerOnly — mirrors the existing `Get{Service}Async` helpers.
 - Note: `IMetaServiceResolver` gained a method — a source/binary break only for custom implementations of that interface (the built-in `MetaServiceResolver` implements it).
 

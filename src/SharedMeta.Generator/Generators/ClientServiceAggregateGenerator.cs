@@ -163,7 +163,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"        /// entity without subscribing or allocating. True when it was already created via");
                     sb.AppendLine($"        /// <c>Get{service.BaseName}Async</c>. Uses client.PlayerId as the entity ID (UserOwned policy).");
                     sb.AppendLine($"        /// </summary>");
-                    sb.AppendLine($"        public static bool TryGet{service.BaseName}(this MetaClient client, out {service.BaseName}ApiClient api)");
+                    sb.AppendLine($"        public static bool TryGet{service.BaseName}(this MetaClient client, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out {service.BaseName}ApiClient? api)");
                     sb.AppendLine("        {");
                     sb.AppendLine($"            return client.TryGetService<{service.BaseName}ApiClient>(client.PlayerId, out api);");
                     sb.AppendLine("        }");
@@ -212,7 +212,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"        /// without subscribing or allocating. True when it was already created via");
                 sb.AppendLine($"        /// <c>Get{service.BaseName}Async</c>.");
                 sb.AppendLine($"        /// </summary>");
-                sb.AppendLine($"        public static bool TryGet{service.BaseName}(this MetaClient client, string entityId, out {service.BaseName}ApiClient api)");
+                sb.AppendLine($"        public static bool TryGet{service.BaseName}(this MetaClient client, string entityId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out {service.BaseName}ApiClient? api)");
                 sb.AppendLine("        {");
                 sb.AppendLine($"            return client.TryGetService<{service.BaseName}ApiClient>(entityId, out api);");
                 sb.AppendLine("        }");

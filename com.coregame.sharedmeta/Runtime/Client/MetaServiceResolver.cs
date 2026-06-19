@@ -397,7 +397,7 @@ namespace SharedMeta.Client
         /// plus two dictionary lookups. Use it on frame-critical paths where the entity is known to
         /// be subscribed; fall back to <see cref="GetServiceAsync{TApiClient}"/> for the first call.
         /// </summary>
-        public bool TryGetService<TApiClient>(string entityId, out TApiClient api) where TApiClient : class
+        public bool TryGetService<TApiClient>(string entityId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out TApiClient? api) where TApiClient : class
         {
             lock (_lock)
             {
@@ -409,7 +409,7 @@ namespace SharedMeta.Client
                 }
             }
 
-            api = null!;
+            api = null;
             return false;
         }
 

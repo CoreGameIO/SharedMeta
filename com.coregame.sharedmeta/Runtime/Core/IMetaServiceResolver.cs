@@ -45,7 +45,7 @@ namespace SharedMeta.Core
         /// <typeparam name="TApiClient">The API client type</typeparam>
         /// <param name="entityId">The entity ID</param>
         /// <param name="api">The cached client when found; otherwise null</param>
-        bool TryGetService<TApiClient>(string entityId, out TApiClient api) where TApiClient : class;
+        bool TryGetService<TApiClient>(string entityId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out TApiClient? api) where TApiClient : class;
 
         /// <summary>
         /// Register a service configuration.
