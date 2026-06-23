@@ -25,9 +25,18 @@ namespace SharedMeta.Client.Auth
         {
             MetaAuth.LoginFunc = LoginUnityAsync;
             MetaAuth.PlatformLoginFunc = PlatformLoginUnityAsync;
+            MetaAuth.RefreshFunc = RefreshUnityAsync;
             MetaAuth.AuthActionFunc = LinkUnityAsync;
             MetaAuth.UnlinkFunc = UnlinkUnityAsync;
             MetaAuth.ResetDeviceFunc = ResetDeviceUnityAsync;
+        }
+
+        private static async Task<MetaLoginResult> RefreshUnityAsync(
+            string url, string refreshToken, CancellationToken cancellation)
+        {
+            var body = "{\"refreshToken\":\"" + EscapeJson(refreshToken) + "\"}";
+            var json = await PostJsonAsync(url, body, null, cancellation);
+            return ParseLoginResponse(json);
         }
 
         private static async Task<MetaLoginResult> LoginUnityAsync(
@@ -109,6 +118,12 @@ namespace SharedMeta.Client.Auth
             if (DateTime.TryParse(expiresStr, System.Globalization.CultureInfo.InvariantCulture,
                     System.Globalization.DateTimeStyles.RoundtripKind, out var exp))
                 result.ExpiresAt = exp;
+
+            result.RefreshToken = ExtractJsonString(json, "refreshToken");
+            var refreshExpiresStr = ExtractJsonString(json, "refreshExpiresAt");
+            if (DateTime.TryParse(refreshExpiresStr, System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.RoundtripKind, out var refreshExp))
+                result.RefreshExpiresAt = refreshExp;
             return result;
         }
 

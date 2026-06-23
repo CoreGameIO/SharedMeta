@@ -15,20 +15,41 @@ namespace SharedMeta.Core.Auth
         /// <summary>Player identifier.</summary>
         public string PlayerId { get; }
 
-        /// <summary>Token expiration time (UTC).</summary>
+        /// <summary>Access token expiration time (UTC).</summary>
         public DateTime ExpiresAt { get; }
 
+        /// <summary>Long-lived refresh token (empty if the server didn't issue one).</summary>
+        public string RefreshToken { get; }
+
+        /// <summary>Refresh token expiration time (UTC).</summary>
+        public DateTime RefreshExpiresAt { get; }
+
         public CachedToken(string token, string playerId, DateTime expiresAt)
+            : this(token, playerId, expiresAt, "", default)
+        {
+        }
+
+        public CachedToken(string token, string playerId, DateTime expiresAt,
+            string refreshToken, DateTime refreshExpiresAt)
         {
             Token = token;
             PlayerId = playerId;
             ExpiresAt = expiresAt;
+            RefreshToken = refreshToken ?? "";
+            RefreshExpiresAt = refreshExpiresAt;
         }
 
         /// <summary>
-        /// Whether the token is still valid (with a 5-minute safety margin).
+        /// Whether the access token is still valid (with a 5-minute safety margin).
         /// </summary>
         public bool IsValid => ExpiresAt > DateTime.UtcNow.AddMinutes(5);
+
+        /// <summary>
+        /// Whether a usable refresh token is present (non-empty and not yet expired). When the access
+        /// token is no longer <see cref="IsValid"/> but this is true, call MetaAuth.RefreshAsync instead
+        /// of a full re-login.
+        /// </summary>
+        public bool RefreshValid => !string.IsNullOrEmpty(RefreshToken) && RefreshExpiresAt > DateTime.UtcNow;
     }
 
     /// <summary>
@@ -37,7 +58,11 @@ namespace SharedMeta.Core.Auth
     /// </summary>
     public interface ITokenStorage
     {
-        /// <summary>Load cached token, or null if none stored or expired.</summary>
+        /// <summary>
+        /// Load the cached token, or null if none is stored or it has no usable credential left
+        /// (both the access token and the refresh token are expired). A token whose access part is
+        /// expired but whose refresh part is still valid is returned so the caller can refresh.
+        /// </summary>
         CachedToken? Load();
 
         /// <summary>Save token for future sessions.</summary>

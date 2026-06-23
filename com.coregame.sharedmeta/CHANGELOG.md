@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.30.0] - 2026-06-23
+
+### Added — JWT refresh tokens (rotation + reuse detection)
+
+- Server: per-player `IRefreshTokenGrain` (SHA-256-hashed, rotating; replay of a used token revokes the family); `POST /refresh` + `/logout`; login returns a refresh token; reset-device/unlink revoke sessions. `MetaAuthOptions` gains `AccessTokenLifetime` (30 min) + `RefreshTokenLifetime` (30 days).
+- Client: `MetaAuth.RefreshAsync` + `EnsureAuthenticatedAsync` auto-refresh; new `MetaTokenManager` (single-flight on-demand + proactive). All transports accept an access-token provider so reconnect picks up a fresh token.
+- Breaking: `MetaAuthOptions.TokenLifetime` `[Obsolete]`, default now 30 min; `IMetaAuthProvider.RefreshAsync` added; `CachedToken`/`MetaLoginResult` gained refresh fields.
+
 ## [0.29.3] - 2026-06-18
 
 ### Added — synchronous `TryGetService` accessor (zero-alloc hot path)

@@ -76,7 +76,7 @@ namespace SharedMeta.Transport.HttpPolling
             // Notify server (best effort)
             try
             {
-                using var request = CreateRequest(HttpMethod.Post, "/disconnect");
+                using var request = await CreateRequestAsync(HttpMethod.Post, "/disconnect");
                 await _httpClient.SendAsync(request);
             }
             catch (Exception ex)
@@ -92,7 +92,7 @@ namespace SharedMeta.Transport.HttpPolling
             MetaLog.Debug("[HttpPoll] GracefulDisconnectAsync called");
             try
             {
-                using var request = CreateRequest(HttpMethod.Post, "/graceful-disconnect");
+                using var request = await CreateRequestAsync(HttpMethod.Post, "/graceful-disconnect");
                 await _httpClient.SendAsync(request);
             }
             catch (Exception ex)
@@ -217,7 +217,7 @@ namespace SharedMeta.Transport.HttpPolling
             // Reuse CreateRequest so the connection-id header and URL base match every other endpoint.
             // We don't read the response body — the server returns 202 Accepted and we treat
             // any transport-level failure as a dropped signal (log + continue).
-            using var httpRequest = CreateRequest(HttpMethod.Post, "/signal");
+            using var httpRequest = await CreateRequestAsync(HttpMethod.Post, "/signal");
             httpRequest.Content = new StringContent(
                 JsonSerializer.Serialize(request, MetaJsonContext.Default.SignalCallRequest),
                 System.Text.Encoding.UTF8,
@@ -294,7 +294,7 @@ namespace SharedMeta.Transport.HttpPolling
             {
                 try
                 {
-                    using var request = CreateRequest(HttpMethod.Post, "/poll");
+                    using var request = await CreateRequestAsync(HttpMethod.Post, "/poll");
 
                     using var httpResponse = await _pollClient.SendAsync(request, ct);
 
@@ -389,7 +389,7 @@ namespace SharedMeta.Transport.HttpPolling
             object body,
             System.Text.Json.Serialization.Metadata.JsonTypeInfo requestTypeInfo)
         {
-            using var request = CreateRequest(HttpMethod.Post, path);
+            using var request = await CreateRequestAsync(HttpMethod.Post, path);
             request.Content = new StringContent(
                 JsonSerializer.Serialize(body, requestTypeInfo),
                 System.Text.Encoding.UTF8,
@@ -413,13 +413,20 @@ namespace SharedMeta.Transport.HttpPolling
             return result ?? throw new InvalidOperationException($"Null response from server for {path}");
         }
 
-        private HttpRequestMessage CreateRequest(HttpMethod method, string path)
+        private async Task<HttpRequestMessage> CreateRequestAsync(HttpMethod method, string path)
         {
             var url = _options.ServerUrl.TrimEnd('/') + path;
             var request = new HttpRequestMessage(method, url);
             request.Headers.Add(ConnectionIdHeader, _connectionId);
-            if (!string.IsNullOrEmpty(_options.AccessToken))
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.AccessToken);
+
+            // Resolve the token fresh per request: the provider (when set) returns a currently-valid
+            // token, refreshing transparently if the previous one expired. Falls back to the static token.
+            var token = _options.AccessTokenProvider != null
+                ? await _options.AccessTokenProvider().ConfigureAwait(false)
+                : _options.AccessToken;
+            if (!string.IsNullOrEmpty(token))
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
             return request;
         }
 

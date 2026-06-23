@@ -24,6 +24,13 @@ namespace SharedMeta.Core.Auth
         Task<MetaLoginResult> LoginWithPlatformAsync(
             string authUrl, string platform, string platformToken, CancellationToken cancellation);
 
+        /// <summary>
+        /// Exchange a refresh token for a new access token (and a rotated refresh token). Throws if the
+        /// refresh token is invalid/expired/revoked — the caller falls back to a full login.
+        /// </summary>
+        Task<MetaLoginResult> RefreshAsync(
+            string authUrl, string refreshToken, CancellationToken cancellation);
+
         /// <summary>Link a platform account to the currently authenticated player.</summary>
         Task<bool> LinkAsync(
             string authUrl, string platform, string platformToken, string accessToken, CancellationToken cancellation);

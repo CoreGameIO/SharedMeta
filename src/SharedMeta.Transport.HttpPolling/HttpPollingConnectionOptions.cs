@@ -38,6 +38,15 @@ namespace SharedMeta.Transport.HttpPolling
         public string? AccessToken { get; set; }
 
         /// <summary>
+        /// Optional access-token provider, resolved fresh on every request (and reconnect). Takes
+        /// precedence over <see cref="AccessToken"/> when set — pair with
+        /// <see cref="SharedMeta.Client.MetaTokenManager.GetTokenAsync()"/> so a refreshed token is
+        /// picked up automatically without rebuilding the connection. The provider's fast path returns
+        /// the cached token without a network call, so per-request resolution is cheap.
+        /// </summary>
+        public System.Func<System.Threading.Tasks.Task<string?>>? AccessTokenProvider { get; set; }
+
+        /// <summary>
         /// Client application version in "major.minor.patch" format (e.g. "1.2.3").
         /// Sent to the server during SessionConnect for compatibility checking.
         /// Null to skip version reporting.

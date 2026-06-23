@@ -58,8 +58,21 @@ namespace SharedMeta.Auth
         /// <summary>Whether this is a newly created player.</summary>
         public bool IsNewPlayer { get; set; }
 
-        /// <summary>Token expiration time (UTC).</summary>
+        /// <summary>Access token expiration time (UTC).</summary>
         public DateTime ExpiresAt { get; set; }
+
+        /// <summary>Long-lived refresh token. Exchange at /refresh for a new access token.</summary>
+        public string RefreshToken { get; set; } = "";
+
+        /// <summary>Refresh token expiration time (UTC) — absolute session expiry.</summary>
+        public DateTime RefreshExpiresAt { get; set; }
+    }
+
+    /// <summary>Exchange a refresh token for a new access token (and a rotated refresh token).</summary>
+    public class RefreshRequest
+    {
+        /// <summary>The refresh token previously issued by login or a prior refresh.</summary>
+        public string RefreshToken { get; set; } = "";
     }
 
     /// <summary>

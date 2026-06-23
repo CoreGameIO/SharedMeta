@@ -42,6 +42,19 @@ namespace SharedMeta.Core.Auth
             return result ?? throw new InvalidOperationException("Platform login returned null response");
         }
 
+        public async Task<MetaLoginResult> RefreshAsync(
+            string authUrl, string refreshToken, CancellationToken cancellation)
+        {
+            using var http = new HttpClient();
+            var response = await http.PostAsJsonAsync(
+                authUrl, new { RefreshToken = refreshToken }, cancellation);
+            response.EnsureSuccessStatusCode();
+
+            var result = await response.Content.ReadFromJsonAsync<MetaLoginResult>(
+                cancellationToken: cancellation);
+            return result ?? throw new InvalidOperationException("Refresh returned null response");
+        }
+
         public async Task<bool> LinkAsync(
             string authUrl, string platform, string platformToken, string accessToken, CancellationToken cancellation)
         {

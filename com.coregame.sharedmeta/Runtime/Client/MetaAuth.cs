@@ -41,7 +41,7 @@ namespace SharedMeta.Client
             CancellationToken cancellation = default)
         {
             var cached = tokenStorage.Load();
-            if (cached != null)
+            if (cached != null && cached.IsValid)
             {
                 MetaLog.Debug("[MetaAuth] Using cached token for player: " + cached.PlayerId);
                 return new MetaLoginResult
@@ -49,16 +49,65 @@ namespace SharedMeta.Client
                     Token = cached.Token,
                     PlayerId = cached.PlayerId,
                     IsNewPlayer = false,
-                    ExpiresAt = cached.ExpiresAt
+                    ExpiresAt = cached.ExpiresAt,
+                    RefreshToken = cached.RefreshToken,
+                    RefreshExpiresAt = cached.RefreshExpiresAt
                 };
+            }
+
+            // Access token expired but the refresh token is still valid → exchange it for a fresh
+            // access token (and a rotated refresh token) instead of a full re-login. If the refresh
+            // fails (expired / revoked / reuse-detected) we fall through to a full login.
+            if (cached != null && cached.RefreshValid)
+            {
+                try
+                {
+                    var refreshed = await RefreshAsync(authUrl, cached.RefreshToken, cancellation);
+                    tokenStorage.Save(new CachedToken(refreshed.Token, refreshed.PlayerId, refreshed.ExpiresAt,
+                        refreshed.RefreshToken, refreshed.RefreshExpiresAt));
+                    MetaLog.Debug("[MetaAuth] Access token refreshed for player: " + refreshed.PlayerId);
+                    return refreshed;
+                }
+                catch (Exception ex)
+                {
+                    MetaLog.Warning("[MetaAuth] Refresh failed (" + ex.Message + ") — falling back to full login.");
+                }
             }
 
             var result = await LoginAsync(authUrl, deviceId, cancellation);
 
-            tokenStorage.Save(new CachedToken(result.Token, result.PlayerId, result.ExpiresAt));
+            tokenStorage.Save(new CachedToken(result.Token, result.PlayerId, result.ExpiresAt,
+                result.RefreshToken, result.RefreshExpiresAt));
             MetaLog.Debug("[MetaAuth] Token cached for player: " + result.PlayerId);
 
             return result;
+        }
+
+        /// <summary>
+        /// Exchange a refresh token for a new access token (and a rotated refresh token).
+        /// Priority: <see cref="Provider"/> → <see cref="RefreshFunc"/> → default HttpClient (non-Unity only).
+        /// Throws when the refresh token is invalid/expired/revoked.
+        /// </summary>
+        public static async Task<MetaLoginResult> RefreshAsync(
+            string authUrl,
+            string refreshToken,
+            CancellationToken cancellation = default)
+        {
+            var url = authUrl.TrimEnd('/') + "/refresh";
+            MetaLog.Debug("[MetaAuth] Refreshing token at: " + url);
+
+            if (Provider != null)
+                return await Provider.RefreshAsync(url, refreshToken, cancellation);
+
+            if (RefreshFunc != null)
+                return await RefreshFunc(url, refreshToken, cancellation);
+
+#if !NETSTANDARD2_1 && !UNITY_5_3_OR_NEWER
+            return await new HttpMetaAuthProvider().RefreshAsync(url, refreshToken, cancellation);
+#else
+            throw new PlatformNotSupportedException(
+                "MetaAuth.RefreshAsync requires UnityMetaAuth.Register() (Unity) or a custom Provider.");
+#endif
         }
 
         /// <summary>
@@ -127,7 +176,8 @@ namespace SharedMeta.Client
 
             if (tokenStorage != null)
             {
-                tokenStorage.Save(new CachedToken(result.Token, result.PlayerId, result.ExpiresAt));
+                tokenStorage.Save(new CachedToken(result.Token, result.PlayerId, result.ExpiresAt,
+                    result.RefreshToken, result.RefreshExpiresAt));
                 MetaLog.Debug("[MetaAuth] Platform token cached for player: " + result.PlayerId);
             }
 
@@ -259,6 +309,9 @@ namespace SharedMeta.Client
 
         /// <summary>Legacy platform-specific platform login function. Prefer <see cref="Provider"/>.</summary>
         public static Func<string, string, string, CancellationToken, Task<MetaLoginResult>>? PlatformLoginFunc { get; set; }
+
+        /// <summary>Legacy platform-specific refresh function (url, refreshToken, ct). Prefer <see cref="Provider"/>.</summary>
+        public static Func<string, string, CancellationToken, Task<MetaLoginResult>>? RefreshFunc { get; set; }
 
         /// <summary>Legacy platform-specific link function. Prefer <see cref="Provider"/>.</summary>
         public static Func<string, string, string, string, CancellationToken, Task<bool>>? AuthActionFunc { get; set; }

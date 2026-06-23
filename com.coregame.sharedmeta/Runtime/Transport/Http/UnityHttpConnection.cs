@@ -23,6 +23,14 @@ namespace SharedMeta.Client.Network
         /// <summary>JWT access token for authenticated connections. Null for anonymous.</summary>
         public string? AccessToken { get; set; }
 
+        /// <summary>
+        /// Optional access-token provider, resolved fresh on every request. Takes precedence over
+        /// <see cref="AccessToken"/> when set — pair with
+        /// <see cref="SharedMeta.Client.MetaTokenManager.GetTokenAsync()"/> so a refreshed token is
+        /// picked up automatically. The provider's fast path returns the cached token without a network call.
+        /// </summary>
+        public System.Func<System.Threading.Tasks.Task<string?>>? AccessTokenProvider { get; set; }
+
         /// <summary>Timeout for normal HTTP requests (seconds).</summary>
         public int RequestTimeoutSeconds { get; set; } = 30;
 
@@ -420,7 +428,7 @@ namespace SharedMeta.Client.Network
             return tcs.Task;
         }
 
-        private Task<string> BuildAndSend(string url, byte[]? bodyBytes, int timeout)
+        private async Task<string> BuildAndSend(string url, byte[]? bodyBytes, int timeout)
         {
             var request = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST);
             request.downloadHandler = new DownloadHandlerBuffer();
@@ -433,10 +441,16 @@ namespace SharedMeta.Client.Network
             }
 
             request.SetRequestHeader(ConnectionIdHeader, _connectionId);
-            if (!string.IsNullOrEmpty(_options.AccessToken))
-                request.SetRequestHeader("Authorization", "Bearer " + _options.AccessToken);
 
-            return SendAsync(request);
+            // Resolve the token fresh per request: the provider (when set) returns a currently-valid
+            // token, refreshing transparently if the previous one expired. Falls back to the static token.
+            var token = _options.AccessTokenProvider != null
+                ? await _options.AccessTokenProvider()
+                : _options.AccessToken;
+            if (!string.IsNullOrEmpty(token))
+                request.SetRequestHeader("Authorization", "Bearer " + token);
+
+            return await SendAsync(request);
         }
 
         private static Task<string> SendAsync(UnityWebRequest request)

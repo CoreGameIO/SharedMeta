@@ -475,7 +475,8 @@ resolver.RegisterAllServices();
 builder.Services.AddMetaAuth(options =>
 {
     options.SecretKey = "your-secret-key-minimum-32-characters";
-    options.TokenLifetime = TimeSpan.FromDays(7);
+    options.AccessTokenLifetime  = TimeSpan.FromMinutes(30); // short — renewed via refresh (0.30.0+)
+    options.RefreshTokenLifetime = TimeSpan.FromDays(30);
 });
 builder.Services.AddSingleton(new MetaTransportOptions { RequireAuthentication = true });
 app.MapMetaAuthEndpoints(); // POST /meta/auth/login
@@ -516,6 +517,21 @@ await MetaAuth.ResetDeviceAsync($"{serverUrl}/meta/auth", deviceId, login.Token,
 ```
 
 For other platforms, implement `ITokenStorage` (3 methods: `Load`, `Save`, `Clear`).
+
+### Token Refresh (0.30.0+)
+
+Login returns a long-lived **refresh token** with the short access JWT. `EnsureAuthenticatedAsync` uses it automatically — when the access token has expired but the refresh token is still valid, it silently refreshes (rotating the token) instead of a full re-login. Nothing to change in the code above; just keep using `EnsureAuthenticatedAsync` with an `ITokenStorage`.
+
+Server-side, refresh sessions are stored per-player (SHA-256-hashed) with **rotation + reuse detection** — replaying a used token revokes that whole session. Tune lifetimes via `AccessTokenLifetime` / `RefreshTokenLifetime`.
+
+For **long sessions** that outlive the access token, drive the connection from a `MetaTokenManager` so a reconnect picks up a fresh token automatically:
+
+```csharp
+var tokens = new MetaTokenManager($"{serverUrl}/meta/auth", deviceId, storage);
+tokens.StartAutoRefresh();                                            // optional: renew before expiry
+var connection = new SignalRConnection($"{serverUrl}/meta", tokens.GetTokenAsync); // provider, not a fixed string
+// HTTP transports: set AccessTokenProvider = tokens.GetTokenAsync on the connection options.
+```
 
 > **Unity note**: `UnityMetaAuth` auto-registers via `[RuntimeInitializeOnLoadMethod]` — no manual setup needed. Unity-dependent auth code (`PlayerPrefsTokenStorage`, `UnityMetaAuth`) lives in the `SharedMeta.Auth.Client` assembly. If your asmdef has explicit references, add `SharedMeta.Auth.Client`.
 

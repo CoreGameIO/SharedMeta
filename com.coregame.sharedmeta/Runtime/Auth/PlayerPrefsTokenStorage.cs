@@ -17,6 +17,8 @@ namespace SharedMeta.Client.Auth
         private readonly string _tokenKey;
         private readonly string _playerIdKey;
         private readonly string _expiryKey;
+        private readonly string _refreshKey;
+        private readonly string _refreshExpiryKey;
 
         /// <summary>
         /// Create token storage isolated by <see cref="Application.identifier"/> (bundle ID).
@@ -40,6 +42,8 @@ namespace SharedMeta.Client.Auth
             _tokenKey = $"{prefix}_Auth_Token{suffix}";
             _playerIdKey = $"{prefix}_Auth_PlayerId{suffix}";
             _expiryKey = $"{prefix}_Auth_Expiry{suffix}";
+            _refreshKey = $"{prefix}_Auth_Refresh{suffix}";
+            _refreshExpiryKey = $"{prefix}_Auth_RefreshExpiry{suffix}";
         }
 
         // PlayerPrefs keys are free-form strings, but keep the scope conservative to avoid
@@ -72,8 +76,16 @@ namespace SharedMeta.Client.Auth
                     DateTimeStyles.RoundtripKind, out var expiry))
                 return null;
 
-            var cached = new CachedToken(token, playerId, expiry);
-            return cached.IsValid ? cached : null;
+            var refreshToken = PlayerPrefs.GetString(_refreshKey, "");
+            DateTime refreshExpiry = default;
+            var refreshExpiryStr = PlayerPrefs.GetString(_refreshExpiryKey, "");
+            if (!string.IsNullOrEmpty(refreshExpiryStr))
+                DateTime.TryParse(refreshExpiryStr, CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind, out refreshExpiry);
+
+            var cached = new CachedToken(token, playerId, expiry, refreshToken, refreshExpiry);
+            // Keep the token while either the access OR the refresh part is still usable.
+            return (cached.IsValid || cached.RefreshValid) ? cached : null;
         }
 
         public void Save(CachedToken token)
@@ -81,6 +93,8 @@ namespace SharedMeta.Client.Auth
             PlayerPrefs.SetString(_tokenKey, token.Token);
             PlayerPrefs.SetString(_playerIdKey, token.PlayerId);
             PlayerPrefs.SetString(_expiryKey, token.ExpiresAt.ToString("O", CultureInfo.InvariantCulture));
+            PlayerPrefs.SetString(_refreshKey, token.RefreshToken);
+            PlayerPrefs.SetString(_refreshExpiryKey, token.RefreshExpiresAt.ToString("O", CultureInfo.InvariantCulture));
             PlayerPrefs.Save();
         }
 
@@ -89,6 +103,8 @@ namespace SharedMeta.Client.Auth
             PlayerPrefs.DeleteKey(_tokenKey);
             PlayerPrefs.DeleteKey(_playerIdKey);
             PlayerPrefs.DeleteKey(_expiryKey);
+            PlayerPrefs.DeleteKey(_refreshKey);
+            PlayerPrefs.DeleteKey(_refreshExpiryKey);
             PlayerPrefs.Save();
         }
     }

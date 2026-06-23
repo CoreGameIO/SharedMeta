@@ -1134,6 +1134,22 @@ await MetaAuth.ResetDeviceAsync($"{serverUrl}/meta/auth", deviceId, accessToken,
 
 **Unity**: `UnityMetaAuth` auto-registers via `[RuntimeInitializeOnLoadMethod]` — sets `MetaAuth.LoginFunc` to `UnityWebRequest` implementation. Unity-dependent code (`PlayerPrefsTokenStorage`, `UnityMetaAuth`) is in `SharedMeta.Auth.Client` asmdef (`noEngineReferences: false`).
 
+### Refresh tokens (0.30.0+)
+
+Login returns a long-lived **refresh token** with the short access JWT. Server stores active sessions in a per-player `IRefreshTokenGrain` (SHA-256-hashed; key = PlayerId). Each `/refresh` **rotates** the token; replaying a used one trips **reuse detection** and revokes the whole session family. `MetaAuthOptions`: `AccessTokenLifetime` (30 min) + `RefreshTokenLifetime` (30 days); `TokenLifetime` is an `[Obsolete]` alias.
+
+- Endpoints: `POST /refresh { refreshToken }` → new access + rotated refresh (401 on invalid/expired/reuse); `POST /logout { refreshToken }`. `reset-device`/`unlink` revoke that credential's sessions.
+- `EnsureAuthenticatedAsync` auto-refreshes (rotating) when access expired + refresh valid, else full login. `MetaAuth.RefreshAsync(authUrl, refreshToken)` for explicit refresh. `CachedToken.RefreshValid`; storage persists the refresh token.
+- Mid-session: `MetaTokenManager` hands out a valid token via `GetTokenAsync()` (single-flight on-demand refresh) + `RefreshNowAsync()` (reactive) + `StartAutoRefresh()` (proactive). Pass `tokens.GetTokenAsync` to any transport as an access-token provider so reconnect picks up a fresh token automatically:
+
+```csharp
+var tokens = new MetaTokenManager(authUrl, deviceId, storage);
+var connection = new SignalRConnection($"{serverUrl}/meta", tokens.GetTokenAsync);            // provider ctor
+// HTTP: new HttpPollingConnectionOptions { ServerUrl = ..., AccessTokenProvider = tokens.GetTokenAsync }
+```
+
+Custom `IMetaAuthProvider` must implement `RefreshAsync`; custom `ITokenStorage`/`MetaLoginResult` gained refresh fields. Fixed-string `accessToken` ctors/options remain for back-compat.
+
 **Custom auth providers (0.9.3+)**: implement `IMetaAuthProvider` and assign to `MetaAuth.Provider` to replace the HTTP auth flow entirely. Used by `SharedMeta.Backend.Local`'s `LocalMetaAuthProvider` to derive deterministic PlayerIds without any network call, so `MetaAuth.EnsureAuthenticatedAsync` works identically in local and remote modes. Priority: `Provider` → legacy Func hooks → built-in HTTP fallback.
 
 **Enforcing auth:** `MetaTransportOptions.RequireAuthentication = true` rejects anonymous connections at SessionConnect. Additionally, you can add `[Authorize]` on a hub subclass or `.RequireAuthorization()` on endpoint mapping for middleware-level protection.

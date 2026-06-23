@@ -16,7 +16,13 @@ namespace SharedMeta.Core.Auth
         /// <summary>Whether this is a newly created player.</summary>
         public bool IsNewPlayer { get; set; }
 
-        /// <summary>Token expiration time (UTC).</summary>
+        /// <summary>Access token expiration time (UTC).</summary>
         public DateTime ExpiresAt { get; set; }
+
+        /// <summary>Long-lived refresh token. Exchange via MetaAuth.RefreshAsync for a new access token.</summary>
+        public string RefreshToken { get; set; } = "";
+
+        /// <summary>Refresh token expiration time (UTC).</summary>
+        public DateTime RefreshExpiresAt { get; set; }
     }
 }

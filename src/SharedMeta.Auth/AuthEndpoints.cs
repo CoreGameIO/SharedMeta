@@ -29,6 +29,14 @@ namespace SharedMeta.Auth
             endpoints.MapPost($"{prefix}/login-platform", HandlePlatformLogin)
                 .AllowAnonymous();
 
+            // Anonymous: the refresh token itself is the credential.
+            endpoints.MapPost($"{prefix}/refresh", HandleRefresh)
+                .AllowAnonymous();
+
+            // Anonymous: presenting a valid refresh token proves ownership of that session.
+            endpoints.MapPost($"{prefix}/logout", HandleLogout)
+                .AllowAnonymous();
+
             endpoints.MapPost($"{prefix}/link", HandleLink)
                 .RequireAuthorization();
 
@@ -60,13 +68,17 @@ namespace SharedMeta.Auth
             var result = await grain.LoginAsync();
 
             var token = jwtService.GenerateToken(result.PlayerId, "device");
+            var refreshGrain = grainFactory.GetGrain<IRefreshTokenGrain>(result.PlayerId);
+            var refreshToken = await refreshGrain.IssueAsync(request.DeviceId, jwtService.Options.RefreshTokenLifetime);
 
             return Results.Ok(new LoginResponse
             {
                 Token = token,
                 PlayerId = result.PlayerId,
                 IsNewPlayer = result.IsNewPlayer,
-                ExpiresAt = DateTime.UtcNow + jwtService.Options.TokenLifetime
+                ExpiresAt = DateTime.UtcNow + jwtService.Options.AccessTokenLifetime,
+                RefreshToken = refreshToken,
+                RefreshExpiresAt = DateTime.UtcNow + jwtService.Options.RefreshTokenLifetime
             });
         }
 
@@ -103,14 +115,85 @@ namespace SharedMeta.Auth
             var result = await grain.LoginAsync();
 
             var token = jwtService.GenerateToken(result.PlayerId, request.Platform.ToLowerInvariant());
+            var refreshGrain = grainFactory.GetGrain<IRefreshTokenGrain>(result.PlayerId);
+            var refreshToken = await refreshGrain.IssueAsync(authKey, jwtService.Options.RefreshTokenLifetime);
 
             return Results.Ok(new LoginResponse
             {
                 Token = token,
                 PlayerId = result.PlayerId,
                 IsNewPlayer = result.IsNewPlayer,
-                ExpiresAt = DateTime.UtcNow + jwtService.Options.TokenLifetime
+                ExpiresAt = DateTime.UtcNow + jwtService.Options.AccessTokenLifetime,
+                RefreshToken = refreshToken,
+                RefreshExpiresAt = DateTime.UtcNow + jwtService.Options.RefreshTokenLifetime
             });
+        }
+
+        /// <summary>
+        /// Exchange a refresh token for a new access token: POST /meta/auth/refresh { "refreshToken": "..." }
+        /// Rotates the refresh token (the presented one becomes invalid). Replay of a used token revokes
+        /// the whole session family and returns 401.
+        /// </summary>
+        private static async Task<IResult> HandleRefresh(
+            HttpContext ctx,
+            IGrainFactory grainFactory,
+            JwtTokenService jwtService)
+        {
+            var request = await ctx.Request.ReadFromJsonAsync<RefreshRequest>();
+            if (request == null || string.IsNullOrEmpty(request.RefreshToken))
+                return Results.BadRequest(new { error = "RefreshToken is required" });
+
+            if (!RefreshTokens.TryParse(request.RefreshToken, out var playerId, out _, out _))
+                return Results.Unauthorized();
+
+            var refreshGrain = grainFactory.GetGrain<IRefreshTokenGrain>(playerId);
+            var rotation = await refreshGrain.RotateAsync(request.RefreshToken, jwtService.Options.RefreshTokenLifetime);
+
+            // Both Invalid and Reused surface as 401 — never reveal which to the caller.
+            if (rotation.Outcome != RefreshOutcome.Valid)
+                return Results.Unauthorized();
+
+            var accessToken = jwtService.GenerateToken(playerId, AuthTypeOf(rotation.AuthKey));
+
+            return Results.Ok(new LoginResponse
+            {
+                Token = accessToken,
+                PlayerId = playerId,
+                IsNewPlayer = false,
+                ExpiresAt = DateTime.UtcNow + jwtService.Options.AccessTokenLifetime,
+                RefreshToken = rotation.NewRefreshToken!,
+                RefreshExpiresAt = rotation.RefreshExpiresAt
+            });
+        }
+
+        /// <summary>
+        /// Revoke the session behind a refresh token: POST /meta/auth/logout { "refreshToken": "..." }
+        /// Idempotent — an unknown/expired token still returns success.
+        /// </summary>
+        private static async Task<IResult> HandleLogout(
+            HttpContext ctx,
+            IGrainFactory grainFactory)
+        {
+            var request = await ctx.Request.ReadFromJsonAsync<RefreshRequest>();
+            if (request == null || string.IsNullOrEmpty(request.RefreshToken))
+                return Results.BadRequest(new { error = "RefreshToken is required" });
+
+            if (RefreshTokens.TryParse(request.RefreshToken, out var playerId, out var familyId, out _))
+            {
+                var refreshGrain = grainFactory.GetGrain<IRefreshTokenGrain>(playerId);
+                await refreshGrain.RevokeFamilyAsync(familyId);
+            }
+
+            return Results.Ok(new AuthOperationResponse { Success = true });
+        }
+
+        // auth_type claim for a re-issued access token, derived from the credential that owns the
+        // session: "google:123" → "google", a bare deviceId → "device".
+        private static string AuthTypeOf(string? authKey)
+        {
+            if (string.IsNullOrEmpty(authKey)) return "device";
+            int colon = authKey!.IndexOf(':');
+            return colon > 0 ? authKey.Substring(0, colon) : "device";
         }
 
         /// <summary>
@@ -190,10 +273,14 @@ namespace SharedMeta.Auth
             var grain = grainFactory.GetGrain<IAuthGrain>(request.AuthKey);
             var success = await grain.UnlinkAsync(playerId);
 
-            return success
-                ? Results.Ok(new AuthOperationResponse { Success = true })
-                : Results.Json(new AuthOperationResponse { Success = false, Error = "Unlink failed" },
+            if (!success)
+                return Results.Json(new AuthOperationResponse { Success = false, Error = "Unlink failed" },
                     statusCode: 400);
+
+            // Revoke refresh sessions opened with the unlinked credential.
+            await grainFactory.GetGrain<IRefreshTokenGrain>(playerId).RevokeByAuthKeyAsync(request.AuthKey);
+
+            return Results.Ok(new AuthOperationResponse { Success = true });
         }
 
         /// <summary>
@@ -244,10 +331,14 @@ namespace SharedMeta.Auth
                     statusCode: 403);
 
             var unlinkedId = await grain.ForceUnlinkAsync();
-            return unlinkedId != null
-                ? Results.Ok(new AuthOperationResponse { Success = true })
-                : Results.Json(new AuthOperationResponse { Success = false, Error = "Reset failed" },
+            if (unlinkedId == null)
+                return Results.Json(new AuthOperationResponse { Success = false, Error = "Reset failed" },
                     statusCode: 400);
+
+            // Kill any refresh sessions opened with this device so a reset truly logs it out.
+            await grainFactory.GetGrain<IRefreshTokenGrain>(playerId).RevokeByAuthKeyAsync(request.DeviceId);
+
+            return Results.Ok(new AuthOperationResponse { Success = true });
         }
 
         private static string? GetPlayerId(HttpContext ctx)

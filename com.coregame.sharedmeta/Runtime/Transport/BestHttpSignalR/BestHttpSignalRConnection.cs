@@ -22,6 +22,14 @@ namespace SharedMeta.Transport.BestHttp
         public string? AccessToken { get; set; }
 
         /// <summary>
+        /// Optional access-token provider, resolved on each pre-auth cycle (connect / reconnect). Takes
+        /// precedence over <see cref="AccessToken"/> when set — pair with
+        /// <see cref="SharedMeta.Client.MetaTokenManager.GetTokenAsync()"/> so a refreshed token is
+        /// picked up automatically on reconnect.
+        /// </summary>
+        public System.Func<System.Threading.Tasks.Task<string?>>? AccessTokenProvider { get; set; }
+
+        /// <summary>
         /// Custom IProtocol for the SignalR connection.
         /// Defaults to JsonProtocol with LitJsonEncoder if null.
         /// </summary>
@@ -158,7 +166,11 @@ namespace SharedMeta.Transport.BestHttp
                 _hub.ReconnectPolicy = new DefaultRetryPolicy(_options.ReconnectDelays);
             }
 
-            if (!string.IsNullOrEmpty(_options.AccessToken))
+            if (_options.AccessTokenProvider != null)
+            {
+                _hub.AuthenticationProvider = new BestHttpTokenAuthProvider(_options.AccessTokenProvider);
+            }
+            else if (!string.IsNullOrEmpty(_options.AccessToken))
             {
                 _hub.AuthenticationProvider = new BestHttpTokenAuthProvider(_options.AccessToken!);
             }
@@ -434,7 +446,8 @@ namespace SharedMeta.Transport.BestHttp
     /// </summary>
     internal class BestHttpTokenAuthProvider : IAuthenticationProvider
     {
-        private readonly string _token;
+        private readonly System.Func<System.Threading.Tasks.Task<string?>> _provider;
+        private string? _token;
 
         public bool IsPreAuthRequired => true;
 
@@ -446,16 +459,33 @@ namespace SharedMeta.Transport.BestHttp
         public BestHttpTokenAuthProvider(string token)
         {
             _token = token;
+            _provider = () => System.Threading.Tasks.Task.FromResult<string?>(token);
         }
 
-        public void StartAuthentication()
+        public BestHttpTokenAuthProvider(System.Func<System.Threading.Tasks.Task<string?>> provider)
         {
+            _provider = provider;
+        }
+
+        // Pre-auth runs on connect/reconnect: resolve a fresh token here, then signal success so the
+        // hub proceeds. PrepareRequest (synchronous) uses the token captured here.
+        public async void StartAuthentication()
+        {
+            try
+            {
+                _token = await _provider();
+            }
+            catch
+            {
+                // Fall back to whatever we had; the hub will surface an auth failure if it's stale.
+            }
             OnAuthenticationSucceded?.Invoke(this);
         }
 
         public void PrepareRequest(BestHTTP.HTTPRequest request)
         {
-            request.SetHeader("Authorization", "Bearer " + _token);
+            if (!string.IsNullOrEmpty(_token))
+                request.SetHeader("Authorization", "Bearer " + _token);
         }
 
         public Uri PrepareUri(Uri uri)

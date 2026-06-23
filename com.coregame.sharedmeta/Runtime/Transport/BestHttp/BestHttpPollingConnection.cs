@@ -24,6 +24,14 @@ namespace SharedMeta.Transport.BestHttp
         /// <summary>JWT access token for authenticated connections. Null for anonymous.</summary>
         public string? AccessToken { get; set; }
 
+        /// <summary>
+        /// Optional access-token provider, resolved fresh on every request. Takes precedence over
+        /// <see cref="AccessToken"/> when set — pair with
+        /// <see cref="SharedMeta.Client.MetaTokenManager.GetTokenAsync()"/> so a refreshed token is
+        /// picked up automatically. The provider's fast path returns the cached token without a network call.
+        /// </summary>
+        public System.Func<System.Threading.Tasks.Task<string?>>? AccessTokenProvider { get; set; }
+
         /// <summary>Timeout for normal HTTP requests (seconds).</summary>
         public int RequestTimeoutSeconds { get; set; } = 30;
 
@@ -373,9 +381,15 @@ namespace SharedMeta.Transport.BestHttp
             return JsonConvert.DeserializeObject<T>(responseText, JsonSettings)!;
         }
 
-        protected Task<string> PostRawAsync(string path, object? body, int timeoutSeconds = 0)
+        protected async Task<string> PostRawAsync(string path, object? body, int timeoutSeconds = 0)
         {
             var url = _options.ServerUrl.TrimEnd('/') + path;
+
+            // Resolve the token before building the request (BestHTTP's PrepareRequest is synchronous).
+            var token = _options.AccessTokenProvider != null
+                ? await _options.AccessTokenProvider()
+                : _options.AccessToken;
+
             var tcs = new TaskCompletionSource<string>();
 
             var request = new HTTPRequest(new Uri(url), HTTPMethods.Post, (req, resp) =>
@@ -412,11 +426,11 @@ namespace SharedMeta.Transport.BestHttp
             }
 
             request.SetHeader(ConnectionIdHeader, _connectionId);
-            if (!string.IsNullOrEmpty(_options.AccessToken))
-                request.SetHeader("Authorization", "Bearer " + _options.AccessToken);
+            if (!string.IsNullOrEmpty(token))
+                request.SetHeader("Authorization", "Bearer " + token);
 
             HTTPManager.SendRequest(request);
-            return tcs.Task;
+            return await tcs.Task;
         }
 
         #endregion

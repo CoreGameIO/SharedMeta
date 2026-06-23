@@ -43,7 +43,7 @@ namespace SharedMeta.Auth
                 issuer: _options.Issuer,
                 audience: _options.Audience,
                 claims: claims,
-                expires: DateTime.UtcNow + _options.TokenLifetime,
+                expires: DateTime.UtcNow + _options.AccessTokenLifetime,
                 signingCredentials: _signingCredentials);
 
             return new JwtSecurityTokenHandler().WriteToken(token);

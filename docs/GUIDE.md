@@ -2560,17 +2560,21 @@ builder.Services.AddMetaAuth(options =>
     options.SecretKey = "your-secret-key-minimum-32-characters";
     options.Issuer = "SharedMeta";
     options.Audience = "SharedMeta";
-    options.TokenLifetime = TimeSpan.FromDays(7);
+    options.AccessTokenLifetime  = TimeSpan.FromMinutes(30); // short — paired with refresh (0.30.0+)
+    options.RefreshTokenLifetime = TimeSpan.FromDays(30);    // absolute session expiry
 });
 app.MapMetaAuthEndpoints();
 ```
+
+> `TokenLifetime` is an `[Obsolete]` alias of `AccessTokenLifetime` since 0.30.0 — its default dropped from 7 days to 30 minutes because access tokens are now short-lived and renewed via refresh (see **Refresh Tokens** below).
 
 ### Login Endpoint
 
 ```
 POST /meta/auth/login
 Body: { "deviceId": "unique-device-id" }
-Response: { "token": "jwt...", "playerId": "abc123_20260226", "isNewPlayer": true, "expiresAt": "..." }
+Response: { "token": "jwt...", "playerId": "abc123_20260226", "isNewPlayer": true,
+            "expiresAt": "...", "refreshToken": "abc123_...family.secret", "refreshExpiresAt": "..." }
 ```
 
 ### Device-Based Auth Flow
@@ -2579,6 +2583,45 @@ Response: { "token": "jwt...", "playerId": "abc123_20260226", "isNewPlayer": tru
 2. First login: generates PlayerId (`{random8hex}_{yyyyMMdd}`)
 3. Subsequent logins: returns existing PlayerId
 4. JWT token contains `sub` (PlayerId), `auth_type` ("device"), `jti` (unique ID)
+
+### Refresh Tokens (0.30.0+)
+
+Login (device or platform) now returns a long-lived **refresh token** alongside the short-lived access JWT. When the access token expires, exchange the refresh token for a new one instead of re-running the full login.
+
+**Server model.** Active refresh sessions live in a per-player `IRefreshTokenGrain` (key = PlayerId). The token is `{playerId}.{familyId}.{secret}`; only a **SHA-256 hash** is stored, so a leak of grain state never yields a usable token. Each refresh **rotates** the secret — the presented token becomes invalid. Presenting an already-rotated token is treated as theft: the whole session **family is revoked** (reuse detection). Family expiry is absolute (rotation doesn't extend it). `reset-device` and `unlink` revoke that credential's sessions.
+
+```
+POST /meta/auth/refresh   Body: { "refreshToken": "..." }
+  → 200 { token, playerId, expiresAt, refreshToken (rotated), refreshExpiresAt }   on success
+  → 401                                                                            on invalid / expired / reuse
+POST /meta/auth/logout    Body: { "refreshToken": "..." }   → revokes that session (idempotent)
+```
+
+**Client — at connect/reconnect.** `EnsureAuthenticatedAsync` does it for you: a still-valid access token is reused; an expired access token with a valid refresh token is silently refreshed (rotating); otherwise it falls back to a full login. The refresh token is persisted by `ITokenStorage` (`CachedToken.RefreshValid`).
+
+```csharp
+// Same call as before — refresh is automatic.
+var login = await MetaAuth.EnsureAuthenticatedAsync(authUrl, deviceId, tokenStorage);
+// Or refresh explicitly:
+var refreshed = await MetaAuth.RefreshAsync(authUrl, cached.RefreshToken);
+```
+
+**Client — mid-session (`MetaTokenManager`).** For long sessions that outlive the access-token TTL, drive the connection from a token manager instead of a fixed string. It hands out a currently-valid token (refreshing on demand, **single-flight**), and every transport accepts it as an **access-token provider** so a reconnect picks up a fresh token automatically — no rebuilding the connection.
+
+```csharp
+var tokens = new MetaTokenManager(authUrl, deviceId, tokenStorage);
+tokens.StartAutoRefresh();                                   // optional proactive renewal before expiry
+
+// SignalR: provider ctor (invoked on every (re)connect)
+var connection = new SignalRConnection(serverUrl, tokens.GetTokenAsync);
+// HTTP polling: provider on the options (resolved fresh per request)
+var http = new HttpPollingConnection(new HttpPollingConnectionOptions {
+    ServerUrl = serverUrl, AccessTokenProvider = tokens.GetTokenAsync });
+
+await tokens.RefreshNowAsync();  // reactive: force a refresh (e.g. from a session-lost handler)
+```
+
+The fixed-string `accessToken` ctors/options remain for back-compat. `GetTokenAsync`'s fast path returns the cached token with no network call, so per-request/per-reconnect resolution is cheap.
 
 ### Platform Authentication (0.6.0+)
 
@@ -2605,7 +2648,8 @@ builder.Services.AddSharedMetaGoogleAuth(o =>
 ```
 POST /meta/auth/login-platform
 Body: { "platform": "google", "platformToken": "..." }
-Response: { "token": "jwt...", "playerId": "abc123_20260226", "isNewPlayer": false, "expiresAt": "..." }
+Response: { "token": "jwt...", "playerId": "abc123_20260226", "isNewPlayer": false,
+           "expiresAt": "...", "refreshToken": "...", "refreshExpiresAt": "..." }
 ```
 
 The flow is the same as device login but the auth key is `{platform}:{platformUserId}` instead of the raw device id, so the same player can have multiple keys (e.g. one device id + one Google account) all mapped to the same `PlayerId`.
@@ -2661,6 +2705,7 @@ The server-side primitive is `IAuthGrain.ForceUnlinkAsync()` — same as `Unlink
 - **SignalR**: Token via query string `?access_token=jwt_token`
 - **HTTP Polling**: Token via `Authorization: Bearer jwt_token` header
 - Server extracts PlayerId from JWT claims (`sub` or `ClaimTypes.NameIdentifier`), overrides request PlayerId
+- Pass a fixed token (`accessToken` ctor / `AccessToken` option) **or** an access-token provider (`Func<Task<string?>>` ctor / `AccessTokenProvider` option, 0.30.0+) — the provider is resolved on each (re)connect (SignalR) or per request (HTTP), so a refreshed token is picked up without rebuilding the connection. See **Refresh Tokens** above.
 
 ### Enforcing Authentication
 

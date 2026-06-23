@@ -19,7 +19,7 @@ namespace SharedMeta.Client.Network
     public class SignalRConnection : IConnection
     {
         private readonly string _serverUrl;
-        private readonly string? _accessToken;
+        private readonly Func<Task<string?>>? _accessTokenProvider;
         private readonly string? _clientVersion;
         private HubConnection? _hubConnection;
         private IMetaHub? _hub;
@@ -41,7 +41,19 @@ namespace SharedMeta.Client.Network
         public SignalRConnection(string serverUrl, string? accessToken = null, string? clientVersion = null)
         {
             _serverUrl = serverUrl ?? throw new ArgumentNullException(nameof(serverUrl));
-            _accessToken = accessToken;
+            _accessTokenProvider = accessToken != null ? () => Task.FromResult<string?>(accessToken) : null;
+            _clientVersion = clientVersion;
+        }
+
+        /// <summary>
+        /// Construct with a token <paramref name="accessTokenProvider"/> instead of a fixed string. SignalR
+        /// invokes it on every (re)connect, so a token refreshed between connects is picked up automatically
+        /// — pair with <see cref="SharedMeta.Client.MetaTokenManager.GetTokenAsync()"/>.
+        /// </summary>
+        public SignalRConnection(string serverUrl, Func<Task<string?>> accessTokenProvider, string? clientVersion = null)
+        {
+            _serverUrl = serverUrl ?? throw new ArgumentNullException(nameof(serverUrl));
+            _accessTokenProvider = accessTokenProvider ?? throw new ArgumentNullException(nameof(accessTokenProvider));
             _clientVersion = clientVersion;
         }
 
@@ -50,9 +62,9 @@ namespace SharedMeta.Client.Network
             var builder = new HubConnectionBuilder()
                 .WithUrl(_serverUrl, options =>
                 {
-                    if (_accessToken != null)
+                    if (_accessTokenProvider != null)
                     {
-                        options.AccessTokenProvider = () => Task.FromResult<string?>(_accessToken);
+                        options.AccessTokenProvider = _accessTokenProvider;
                     }
                 })
                 .WithAutomaticReconnect(new SignalRRetryPolicy());
