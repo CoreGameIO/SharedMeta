@@ -47,8 +47,14 @@ namespace SharedMeta.Orleans.Config
             where TConfig : class
         {
             services.AddSingleton<BroadcastingConfigProvider<TConfig>>();
-            services.AddSingleton<IMetaConfigProvider<TConfig>>(
-                sp => sp.GetRequiredService<BroadcastingConfigProvider<TConfig>>());
+            // TryAdd so an explicit host-side IMetaConfigProvider<TConfig> wins — this runs from the
+            // generated ConfigureMeta *after* the host's configureServices callback, so a plain
+            // AddSingleton here would shadow a user-supplied provider. Mirrors the IConfigDownloadUrlResolver
+            // / IConfigByteSource registrations, which TryAdd for the same reason. The BroadcastingConfigProvider
+            // (registry-backed) is therefore the default only when the host didn't register its own.
+            Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions
+                .TryAddSingleton<IMetaConfigProvider<TConfig>>(services,
+                    sp => sp.GetRequiredService<BroadcastingConfigProvider<TConfig>>());
             return services;
         }
 

@@ -8,6 +8,10 @@
 - Client: `MetaAuth.RefreshAsync` + `EnsureAuthenticatedAsync` auto-refresh; new `MetaTokenManager` (single-flight on-demand + proactive). All transports accept an access-token provider so reconnect picks up a fresh token.
 - Breaking: `MetaAuthOptions.TokenLifetime` `[Obsolete]`, default now 30 min; `IMetaAuthProvider.RefreshAsync` added; `CachedToken`/`MetaLoginResult` gained refresh fields.
 
+### Fixed
+
+- A host-registered `IMetaConfigProvider<T>` was shadowed by the auto-registered `BroadcastingConfigProvider` (regression since 0.27.0) — `AddSharedMetaConfigProvider<T>` now `TryAdd`s the interface, so an explicit provider wins.
+
 ## [0.29.3] - 2026-06-18
 
 ### Added — synchronous `TryGetService` accessor (zero-alloc hot path)
