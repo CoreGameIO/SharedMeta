@@ -120,6 +120,51 @@ public class MetaTokenManagerTests : IDisposable
         Assert.Equal(1, _provider.LoginCalls);
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task CustomLogin_NoToken_UsesCustomLoginNotDevice()
+    {
+        var storage = new MemoryTokenStorage(null); // nothing stored → forces a full login
+        int customCalls = 0;
+        using var mgr = new MetaTokenManager("https://h/meta/auth", storage, login: (url, ct) =>
+        {
+            customCalls++;
+            return Task.FromResult(PlatformResult());
+        });
+
+        Assert.Equal("access-platform", await mgr.GetTokenAsync());
+        Assert.Equal(1, customCalls);
+        Assert.Equal(0, _provider.LoginCalls);   // device login NOT used
+        Assert.Equal(0, _provider.RefreshCalls);
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task CustomLogin_RefreshRejected_FallsBackToCustomLogin()
+    {
+        var storage = new MemoryTokenStorage(new CachedToken(
+            "access-old", "p-g", DateTime.UtcNow.AddMinutes(-1), "refresh-bad", DateTime.UtcNow.AddDays(30)));
+        _provider.FailRefresh = true;   // server rejects the refresh
+        int customCalls = 0;
+        using var mgr = new MetaTokenManager("https://h/meta/auth", storage, login: (url, ct) =>
+        {
+            customCalls++;
+            return Task.FromResult(PlatformResult());
+        });
+
+        Assert.Equal("access-platform", await mgr.GetTokenAsync());
+        Assert.Equal(1, _provider.RefreshCalls);  // tried refresh first
+        Assert.Equal(1, customCalls);             // then fell back to the custom (platform) login
+        Assert.Equal(0, _provider.LoginCalls);    // device login NOT used
+    }
+
+    private static MetaLoginResult PlatformResult() => new MetaLoginResult
+    {
+        Token = "access-platform",
+        PlayerId = "p-g",
+        ExpiresAt = DateTime.UtcNow.AddMinutes(30),
+        RefreshToken = "refresh-platform",
+        RefreshExpiresAt = DateTime.UtcNow.AddDays(30),
+    };
+
     // ---- fakes ----
 
     private sealed class MemoryTokenStorage : ITokenStorage

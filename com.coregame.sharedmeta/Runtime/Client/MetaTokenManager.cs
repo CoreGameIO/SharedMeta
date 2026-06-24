@@ -24,7 +24,7 @@ namespace SharedMeta.Client
     public sealed class MetaTokenManager : IAccessTokenSource, IDisposable
     {
         private readonly string _authUrl;
-        private readonly string _deviceId;
+        private readonly Func<string, CancellationToken, Task<MetaLoginResult>> _login;
         private readonly ITokenStorage _storage;
         private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
         private readonly TimeSpan _proactiveSkew;
@@ -33,17 +33,51 @@ namespace SharedMeta.Client
         private CancellationTokenSource? _autoRefreshCts;
         private volatile bool _forceReacquire;
 
-        /// <param name="authUrl">Base auth URL (e.g. "https://host/meta/auth"); /refresh and /login are appended.</param>
-        /// <param name="deviceId">Device id used for the full-login fallback when no valid refresh token exists.</param>
+        /// <summary>
+        /// Device-login manager: the full-login fallback (used when there's no valid refresh token) is a
+        /// device login with <paramref name="deviceId"/>.
+        /// </summary>
+        /// <param name="authUrl">Base auth URL (e.g. "https://host/meta/auth"); /refresh, /login, /login-platform are appended.</param>
+        /// <param name="deviceId">Device id used for the full-login fallback.</param>
         /// <param name="storage">Token storage; seeded from <see cref="ITokenStorage.Load"/> at construction.</param>
         /// <param name="proactiveSkew">How long before access-token expiry the auto-refresh loop renews. Default 5 min.</param>
         public MetaTokenManager(string authUrl, string deviceId, ITokenStorage storage, TimeSpan? proactiveSkew = null)
+            : this(authUrl, storage, MakeDeviceLogin(deviceId), proactiveSkew)
+        {
+        }
+
+        /// <summary>
+        /// Platform/custom-login manager: supply the full-login strategy. Use this for platform sign-in
+        /// (Google Play, Apple, Steam) — the delegate obtains a fresh platform credential and calls
+        /// <see cref="MetaAuth.LoginWithPlatformAsync"/>, so a session reset re-logs in via the right
+        /// account rather than falling back to a device login. Refresh tokens still cover ordinary
+        /// renewal, so this runs only on a full re-login (no valid refresh token, or one rejected).
+        /// <code>
+        /// var tokens = new MetaTokenManager(authUrl, storage, login: async (url, ct) =>
+        /// {
+        ///     var serverAuthCode = await GetGooglePlayServerAuthCodeAsync(); // game-side GPGS call (fresh each time)
+        ///     return await MetaAuth.LoginWithPlatformAsync(url, "google", serverAuthCode, cancellation: ct);
+        /// });
+        /// </code>
+        /// </summary>
+        /// <param name="authUrl">Base auth URL; the delegate receives it and appends the right path.</param>
+        /// <param name="storage">Token storage; seeded from <see cref="ITokenStorage.Load"/> at construction.</param>
+        /// <param name="login">Full-login strategy invoked when no valid refresh token is available.</param>
+        /// <param name="proactiveSkew">How long before access-token expiry the auto-refresh loop renews. Default 5 min.</param>
+        public MetaTokenManager(string authUrl, ITokenStorage storage,
+            Func<string, CancellationToken, Task<MetaLoginResult>> login, TimeSpan? proactiveSkew = null)
         {
             _authUrl = authUrl ?? throw new ArgumentNullException(nameof(authUrl));
-            _deviceId = deviceId ?? throw new ArgumentNullException(nameof(deviceId));
             _storage = storage ?? throw new ArgumentNullException(nameof(storage));
+            _login = login ?? throw new ArgumentNullException(nameof(login));
             _proactiveSkew = proactiveSkew ?? TimeSpan.FromMinutes(5);
             _current = storage.Load();
+        }
+
+        private static Func<string, CancellationToken, Task<MetaLoginResult>> MakeDeviceLogin(string deviceId)
+        {
+            if (deviceId == null) throw new ArgumentNullException(nameof(deviceId));
+            return (url, ct) => MetaAuth.LoginAsync(url, deviceId, ct);
         }
 
         /// <summary>The player id of the current token, or null before the first successful token acquisition.</summary>
@@ -127,14 +161,15 @@ namespace SharedMeta.Client
                 }
                 catch (Exception ex)
                 {
-                    // Refresh token rejected (expired / revoked / reuse-detected) → fall back to full login.
+                    // Refresh token rejected (expired / revoked / reuse-detected) → fall back to a full
+                    // login via the configured strategy (device by default, or platform sign-in).
                     MetaLog.Warning("[MetaTokenManager] Refresh rejected (" + ex.Message + ") — falling back to full login.");
-                    result = await MetaAuth.LoginAsync(_authUrl, _deviceId, cancellation).ConfigureAwait(false);
+                    result = await _login(_authUrl, cancellation).ConfigureAwait(false);
                 }
             }
             else
             {
-                result = await MetaAuth.LoginAsync(_authUrl, _deviceId, cancellation).ConfigureAwait(false);
+                result = await _login(_authUrl, cancellation).ConfigureAwait(false);
             }
 
             var token = new CachedToken(result.Token, result.PlayerId, result.ExpiresAt,

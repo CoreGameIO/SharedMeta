@@ -2648,22 +2648,49 @@ Custom validators implement `IExternalAuthValidator` (`Validate(token)` → retu
 
 ```csharp
 builder.Services.AddMetaAuth(...);
-builder.Services.AddSharedMetaGoogleAuth(o =>
+builder.Services.AddMetaAuthGoogle(o =>
 {
-    o.WebClientId = "...apps.googleusercontent.com";
-    o.WebClientSecret = "...";
+    o.ClientId = "...apps.googleusercontent.com";   // OAuth2 *Web* client id (not Android/iOS)
+    o.ClientSecret = "...";                          // server-side only — never ship to clients
 });
 ```
+
+**Server-side validation (what the client sends is verified).** For Google, the client sends a one-time **server auth code** as `platformToken`; `GoogleAuthValidator` exchanges it with Google's OAuth2 token endpoint using the `ClientSecret`, receives a signed `id_token`, and extracts the stable `sub`. The code can't be forged (the exchange requires the secret) and is single-use. Apple validates the identity-token JWT against Apple's JWKS; Steam validates the session ticket via the Steam Web API.
 
 **Login endpoint:**
 ```
 POST /meta/auth/login-platform
-Body: { "platform": "google", "platformToken": "..." }
+Body: { "platform": "google", "platformToken": "<server auth code>" }
 Response: { "token": "jwt...", "playerId": "abc123_20260226", "isNewPlayer": false,
            "expiresAt": "...", "refreshToken": "...", "refreshExpiresAt": "..." }
 ```
 
 The flow is the same as device login but the auth key is `{platform}:{platformUserId}` instead of the raw device id, so the same player can have multiple keys (e.g. one device id + one Google account) all mapped to the same `PlayerId`.
+
+**Client (Unity, Google Play) — end to end.** The Google Play Games SDK is game-side (the framework doesn't depend on it). Get a fresh server auth code from GPGS and feed it to the token manager's login strategy, so platform sign-in participates in the full token lifecycle (refresh + recovery):
+
+```csharp
+// Game-side: obtain a fresh GPGS server auth code (Google Play Games plugin v2).
+Task<string> GetGoogleServerAuthCodeAsync() {
+    var tcs = new TaskCompletionSource<string>();
+    PlayGamesPlatform.Instance.RequestServerSideAccess(forceRefreshToken: true, tcs.SetResult);
+    return tcs.Task;
+}
+
+var tokens = new MetaTokenManager(
+    $"{serverUrl}/meta/auth", tokenStorage,
+    login: async (url, ct) =>
+    {
+        var code = await GetGoogleServerAuthCodeAsync();           // fresh, single-use
+        return await MetaAuth.LoginWithPlatformAsync(url, "google", code, cancellation: ct);
+    });
+
+await tokens.GetTokenAsync();                                       // first login (learns PlayerId)
+var connection = new SignalRConnection($"{serverUrl}/meta", tokens.GetTokenAsync);
+var client = new MetaClient(connection, serializer, new MetaClientOptions { AccessTokenSource = tokens });
+```
+
+The framework's refresh token then renews the session without re-hitting Google; the `login` delegate runs only for a full re-login (first sign-in, or after the refresh token is gone). Linking a Google account to an existing device player is the **Account Linking** flow below.
 
 ### Account Linking
 

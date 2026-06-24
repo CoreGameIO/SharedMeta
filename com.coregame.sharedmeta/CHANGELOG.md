@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.0] - 2026-06-23
+
+### Added — platform sign-in (Google Play / Apple / Steam) through the token lifecycle
+
+- `MetaTokenManager` takes a custom full-login strategy: `new MetaTokenManager(authUrl, storage, login: (url, ct) => MetaAuth.LoginWithPlatformAsync(url, "google", serverAuthCode, cancellation: ct))`. A session reset / rejected-refresh now re-logs in via the right platform account instead of falling back to device login. The game obtains a fresh platform credential (e.g. a Google Play server auth code via the GPGS SDK) inside the delegate.
+- Server-side validation (`IExternalAuthValidator` → `GoogleAuthValidator` exchanges the server auth code with Google OAuth2 using the client secret) and refresh-token issuance on `/login-platform` were already in place; this wires platform sign-in into `MetaTokenManager` so it survives token expiry/rotation.
+
 ## [0.30.1] - 2026-06-23
 
 ### Added — recover from a server-rejected cached token
