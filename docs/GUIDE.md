@@ -2623,6 +2623,17 @@ await tokens.RefreshNowAsync();  // reactive: force a refresh (e.g. from a sessi
 
 The fixed-string `accessToken` ctors/options remain for back-compat. `GetTokenAsync`'s fast path returns the cached token with no network call, so per-request/per-reconnect resolution is cheap.
 
+**Recovering from a server-rejected token (0.30.1+).** A cached access token that hasn't locally expired can still be rejected by the server — most commonly when the JWT signing key changed, so the token now fails signature validation and `ConnectAsync` throws `Authentication is required`. The client can't tell from the token alone (it only checks expiry). Set `MetaClientOptions.AccessTokenSource` and recovery is **automatic** — on an auth-type connect failure the client invalidates the token and retries the connect once:
+
+```csharp
+var tokens = new MetaTokenManager(authUrl, deviceId, storage);
+var connection = new SignalRConnection(url, tokens.GetTokenAsync);              // provider, not a fixed string
+var client = new MetaClient(connection, serializer,
+    new MetaClientOptions { AccessTokenSource = tokens });                      // ← enables auto-recovery
+```
+
+This works only with a **provider**-based connection (`tokens.GetTokenAsync`); a fixed-token connection still holds the old value on retry. To override the default policy use `MetaClientOptions.OnConnectAuthFailedAsync` (return `true` to retry once). Without a token manager, recover manually: `MetaAuth.ClearToken(storage)` then re-login + rebuild the connection.
+
 ### Platform Authentication (0.6.0+)
 
 In addition to device-based login, the framework ships pluggable validators for platform identity providers. Each is a separate NuGet package; you register them via DI and the existing `/meta/auth/login-platform` endpoint dispatches to the right validator by `platform` name.

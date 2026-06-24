@@ -78,8 +78,12 @@ public class MetaGameClient : IDisposable
         // Scope token cache by deviceId so dev builds with random/per-instance deviceIds
         // each get their own JWT slot and can't pick up a token cached for a different PlayerId.
         var tokenStorage = new PlayerPrefsTokenStorage(deviceId);
-        var login = await MetaAuth.EnsureAuthenticatedAsync($"{serverUrl}/meta/auth", deviceId, tokenStorage);
-        onStatus?.Invoke($"Authenticated: {login.PlayerId}");
+        var tokens = new MetaTokenManager($"{serverUrl}/meta/auth", deviceId, tokenStorage);
+        // Acquire the token up front (on the main thread) so we learn our PlayerId — UserOwned
+        // entities are keyed by it, so MetaClientOptions.PlayerId MUST be the authenticated id, not
+        // the random default. The token is cached; the connection's provider then just reuses it.
+        await tokens.GetTokenAsync();
+        onStatus?.Invoke($"Authenticated: {tokens.PlayerId}");
 
         Serializer = new MemoryPackMetaSerializer();
 
@@ -97,17 +101,17 @@ public class MetaGameClient : IDisposable
             connection = new UnityHttpConnection(new UnityHttpConnectionOptions
             {
                 ServerUrl = $"{serverUrl}/meta-http",
-                AccessToken = login.Token,
+                AccessTokenProvider = tokens.GetTokenAsync,
                 ClientVersion = effectiveClientVersion
             });
 #else
             Debug.LogError("[MetaGameClient] HTTP polling requires com.unity.nuget.newtonsoft-json. Falling back to SignalR.");
-            connection = new SignalRConnection($"{serverUrl}/meta", login.Token, clientVersion: effectiveClientVersion);
+            connection = new SignalRConnection($"{serverUrl}/meta", tokens.GetTokenAsync, clientVersion: effectiveClientVersion);
 #endif
         }
         else
         {
-            connection = new SignalRConnection($"{serverUrl}/meta", login.Token, clientVersion: effectiveClientVersion);
+            connection = new SignalRConnection($"{serverUrl}/meta", tokens.GetTokenAsync, clientVersion: effectiveClientVersion);
         }
 
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
@@ -123,12 +127,13 @@ public class MetaGameClient : IDisposable
         Connection = connection;
         RotateDiagnosticsLog();
 
-        Client = new MetaClient(connection, Serializer, new MetaClientOptions
-        {
-            PlayerId = login.PlayerId,
+        Client = new MetaClient(connection, Serializer, new MetaClientOptions {
+            // PlayerId is seeded from AccessTokenSource (tokens.PlayerId, known after the acquire above)
+            // — required for UserOwned entities, which are keyed by the authenticated player id.
             Diagnostics = _diagnostics,
             ConnectionHealth = _connectionHealth,
-            ClientSignature = Expedition.Shared.GameServiceDiscoveryBase.ClientSignature,
+            ClientSignature = GameServiceDiscoveryBase.ClientSignature,
+            AccessTokenSource = tokens
         });
 
         var writerCapture = _diagLogWriter;

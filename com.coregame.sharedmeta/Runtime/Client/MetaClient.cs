@@ -104,6 +104,35 @@ namespace SharedMeta.Client
         /// false if your own handler does its own logging and you want a quiet console.
         /// </summary>
         public bool LogConnectionStatusToMetaLog { get; set; } = true;
+
+        /// <summary>
+        /// 0.30.1+ Re-acquirable token source (typically your <c>MetaTokenManager</c>). When set, the
+        /// client auto-recovers from a connect the server rejected as unauthenticated — e.g. a cached
+        /// access token that's still locally valid but signed with a now-changed JWT key: it calls
+        /// <see cref="SharedMeta.Core.Auth.IAccessTokenSource.Invalidate"/> and retries the connect once
+        /// (no need to wire <see cref="OnConnectAuthFailedAsync"/> yourself). Recovery only works if the
+        /// connection reads its token from the same source's provider, not a fixed string:
+        /// <code>
+        /// var tokens = new MetaTokenManager(authUrl, deviceId, storage);
+        /// var connection = new SignalRConnection(url, tokens.GetTokenAsync);
+        /// var client = new MetaClient(connection, serializer, new MetaClientOptions { AccessTokenSource = tokens });
+        /// </code>
+        /// Also seeds <see cref="PlayerId"/> from the source when <see cref="PlayerId"/> isn't set — so
+        /// acquire the first token (e.g. <c>await tokens.GetTokenAsync()</c>) before constructing the client.
+        /// </summary>
+        public SharedMeta.Core.Auth.IAccessTokenSource? AccessTokenSource { get; set; }
+
+        /// <summary>
+        /// 0.30.1+ Invoked when <see cref="MetaClient.ConnectAsync"/> fails (e.g. the server rejected a
+        /// cached access token whose signing key changed — surfaced as "Authentication is required").
+        /// Gives the host one chance to reacquire credentials: return <c>true</c> if a fresh token was
+        /// obtained and the connect should be retried once, <c>false</c> to rethrow the original error.
+        /// <para>
+        /// Leave this null and set <see cref="AccessTokenSource"/> for the built-in default (invalidate +
+        /// retry once on auth-type failures). Set this only to override that policy.
+        /// </para>
+        /// </summary>
+        public Func<Exception, Task<bool>>? OnConnectAuthFailedAsync { get; set; }
     }
 
     /// <summary>
@@ -115,6 +144,7 @@ namespace SharedMeta.Client
     {
         private readonly ClientDispatcher _dispatcher;
         private readonly MetaServiceResolver _resolver;
+        private readonly Func<Exception, Task<bool>>? _onConnectAuthFailedAsync;
 
         /// <summary>The underlying connection.</summary>
         public IConnection Connection { get; }
@@ -163,8 +193,25 @@ namespace SharedMeta.Client
             Connection = connection ?? throw new ArgumentNullException(nameof(connection));
             Serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
             TransformerRegistry = options.TransformerRegistry ?? new TransformerRegistry();
-            PlayerId = options.PlayerId ?? Guid.NewGuid().ToString("N")[..8];
+            // Seed PlayerId from the token source when not set explicitly — UserOwned entities are
+            // keyed by the player id, so it must be the authenticated id (available once a token has
+            // been acquired), not a random fallback. Acquire the token before constructing the client
+            // (e.g. await tokens.GetTokenAsync()) so AccessTokenSource.PlayerId is populated.
+            PlayerId = options.PlayerId
+                ?? options.AccessTokenSource?.PlayerId
+                ?? Guid.NewGuid().ToString("N")[..8];
             ClientAppVersion = options.ClientAppVersion;
+            // Explicit hook wins; otherwise a configured token source gives the built-in default:
+            // on an auth-type connect failure, invalidate the source and retry the connect once.
+            _onConnectAuthFailedAsync = options.OnConnectAuthFailedAsync
+                ?? (options.AccessTokenSource is { } tokenSource
+                    ? ex =>
+                    {
+                        if (!IsAuthFailure(ex)) return Task.FromResult(false);
+                        tokenSource.Invalidate();
+                        return Task.FromResult(true);
+                    }
+                    : (Func<Exception, Task<bool>>?)null);
 
             var modeProvider = options.ModeProvider ?? new ExecutionModeProvider();
             var diagnostics = options.Diagnostics;
@@ -248,9 +295,36 @@ namespace SharedMeta.Client
             version => Connection.GetConfigDownloadUrlAsync(stateTypeName, version);
 
         /// <summary>
-        /// Connect transport and establish session with the server.
+        /// Connect transport and establish session with the server. On failure, if
+        /// <see cref="MetaClientOptions.OnConnectAuthFailedAsync"/> is set it is invoked once to
+        /// reacquire credentials (e.g. a cached token rejected because the server's signing key changed)
+        /// and the connect is retried a single time.
         /// </summary>
         public async Task ConnectAsync()
+        {
+            try
+            {
+                await ConnectCoreAsync();
+            }
+            catch (Exception ex) when (_onConnectAuthFailedAsync != null)
+            {
+                bool retry = false;
+                try { retry = await _onConnectAuthFailedAsync(ex); }
+                catch (Exception hookEx)
+                {
+                    SharedMeta.Core.Logging.MetaLog.Warning("[MetaClient] OnConnectAuthFailedAsync threw: " + hookEx.Message);
+                }
+                if (!retry) throw; // rethrow the original connect failure
+
+                SharedMeta.Core.Logging.MetaLog.Info("[MetaClient] Reauthenticated after connect failure — retrying connect once.");
+                // Reconnect the transport so a provider-sourced token is re-read with the fresh
+                // credentials (SignalR reads the token at the handshake), then retry the session connect.
+                try { await Connection.DisconnectAsync(); } catch { /* best effort */ }
+                await ConnectCoreAsync();
+            }
+        }
+
+        private async Task ConnectCoreAsync()
         {
 #if SHAREDMETA_CLIENT_TELEMETRY
             SharedMeta.Client.Telemetry.SharedMetaClientMeters.ConnectionStateTransition.Add(1,
@@ -293,6 +367,24 @@ namespace SharedMeta.Client
 #endif
                 throw;
             }
+        }
+
+        // Heuristic: does this connect failure look like the server rejecting the token (vs. a network
+        // error)? Used to gate the built-in auto-reauth so a transient outage doesn't trigger a relogin.
+        // SignalR surfaces the hub's HubException("Authentication is required") message to the client;
+        // HTTP transports include the status code/word in their thrown message.
+        private static bool IsAuthFailure(Exception ex)
+        {
+            for (var e = ex; e != null; e = e.InnerException)
+            {
+                var m = e.Message;
+                if (!string.IsNullOrEmpty(m) &&
+                    (m.IndexOf("Authentication", StringComparison.OrdinalIgnoreCase) >= 0
+                     || m.IndexOf("Unauthorized", StringComparison.OrdinalIgnoreCase) >= 0
+                     || m.IndexOf("401", StringComparison.Ordinal) >= 0))
+                    return true;
+            }
+            return false;
         }
 
         /// <summary>

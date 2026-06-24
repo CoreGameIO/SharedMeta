@@ -1,6 +1,7 @@
 #if UNITY_5_3_OR_NEWER
 using System;
 using System.Globalization;
+using System.Threading;
 using SharedMeta.Core.Auth;
 using UnityEngine;
 
@@ -11,9 +12,18 @@ namespace SharedMeta.Client.Auth
     /// <summary>
     /// Unity implementation of <see cref="ITokenStorage"/> using PlayerPrefs.
     /// Stores JWT token, player ID, and expiration across app sessions.
+    /// <para>
+    /// PlayerPrefs is main-thread-only, but the storage may be hit from a background thread — e.g.
+    /// <c>MetaTokenManager</c> persisting a refreshed token while SignalR resolves the access-token
+    /// provider during its (off-thread) connect handshake. All PlayerPrefs access is therefore
+    /// marshaled onto Unity's main thread (captured in the constructor, which runs on the main thread).
+    /// </para>
     /// </summary>
     public class PlayerPrefsTokenStorage : ITokenStorage
     {
+        private static SynchronizationContext? _mainThreadContext;
+        private static int _mainThreadId;
+
         private readonly string _tokenKey;
         private readonly string _playerIdKey;
         private readonly string _expiryKey;
@@ -37,6 +47,14 @@ namespace SharedMeta.Client.Auth
         /// </summary>
         public PlayerPrefsTokenStorage(string? scope)
         {
+            // Constructed on the main thread — capture it so later Save/Load/Clear from a background
+            // thread can marshal onto it.
+            if (_mainThreadContext == null)
+            {
+                _mainThreadContext = SynchronizationContext.Current;
+                _mainThreadId = Thread.CurrentThread.ManagedThreadId;
+            }
+
             var prefix = Application.identifier;
             var suffix = string.IsNullOrEmpty(scope) ? "" : "_" + Sanitize(scope!);
             _tokenKey = $"{prefix}_Auth_Token{suffix}";
@@ -60,7 +78,28 @@ namespace SharedMeta.Client.Auth
             return new string(chars);
         }
 
+        // Run a void PlayerPrefs op on the main thread (inline if already there, else fire-and-forget
+        // Post — persistence is best-effort and need not block the caller).
+        private static void RunOnMainThread(Action action)
+        {
+            if (_mainThreadContext == null || Thread.CurrentThread.ManagedThreadId == _mainThreadId)
+                action();
+            else
+                _mainThreadContext.Post(_ => action(), null);
+        }
+
         public CachedToken? Load()
+        {
+            if (_mainThreadContext == null || Thread.CurrentThread.ManagedThreadId == _mainThreadId)
+                return LoadCore();
+
+            // Off-thread read: marshal synchronously so the caller gets the value back.
+            CachedToken? result = null;
+            _mainThreadContext.Send(_ => result = LoadCore(), null);
+            return result;
+        }
+
+        private CachedToken? LoadCore()
         {
             if (!PlayerPrefs.HasKey(_tokenKey))
                 return null;
@@ -90,22 +129,28 @@ namespace SharedMeta.Client.Auth
 
         public void Save(CachedToken token)
         {
-            PlayerPrefs.SetString(_tokenKey, token.Token);
-            PlayerPrefs.SetString(_playerIdKey, token.PlayerId);
-            PlayerPrefs.SetString(_expiryKey, token.ExpiresAt.ToString("O", CultureInfo.InvariantCulture));
-            PlayerPrefs.SetString(_refreshKey, token.RefreshToken);
-            PlayerPrefs.SetString(_refreshExpiryKey, token.RefreshExpiresAt.ToString("O", CultureInfo.InvariantCulture));
-            PlayerPrefs.Save();
+            RunOnMainThread(() =>
+            {
+                PlayerPrefs.SetString(_tokenKey, token.Token);
+                PlayerPrefs.SetString(_playerIdKey, token.PlayerId);
+                PlayerPrefs.SetString(_expiryKey, token.ExpiresAt.ToString("O", CultureInfo.InvariantCulture));
+                PlayerPrefs.SetString(_refreshKey, token.RefreshToken);
+                PlayerPrefs.SetString(_refreshExpiryKey, token.RefreshExpiresAt.ToString("O", CultureInfo.InvariantCulture));
+                PlayerPrefs.Save();
+            });
         }
 
         public void Clear()
         {
-            PlayerPrefs.DeleteKey(_tokenKey);
-            PlayerPrefs.DeleteKey(_playerIdKey);
-            PlayerPrefs.DeleteKey(_expiryKey);
-            PlayerPrefs.DeleteKey(_refreshKey);
-            PlayerPrefs.DeleteKey(_refreshExpiryKey);
-            PlayerPrefs.Save();
+            RunOnMainThread(() =>
+            {
+                PlayerPrefs.DeleteKey(_tokenKey);
+                PlayerPrefs.DeleteKey(_playerIdKey);
+                PlayerPrefs.DeleteKey(_expiryKey);
+                PlayerPrefs.DeleteKey(_refreshKey);
+                PlayerPrefs.DeleteKey(_refreshExpiryKey);
+                PlayerPrefs.Save();
+            });
         }
     }
 }

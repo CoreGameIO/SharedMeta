@@ -21,7 +21,7 @@ namespace SharedMeta.Client
     /// (<see cref="StartAutoRefresh"/>) refreshes proactively shortly before expiry.
     /// </para>
     /// </summary>
-    public sealed class MetaTokenManager : IDisposable
+    public sealed class MetaTokenManager : IAccessTokenSource, IDisposable
     {
         private readonly string _authUrl;
         private readonly string _deviceId;
@@ -31,6 +31,7 @@ namespace SharedMeta.Client
 
         private CachedToken? _current;
         private CancellationTokenSource? _autoRefreshCts;
+        private volatile bool _forceReacquire;
 
         /// <param name="authUrl">Base auth URL (e.g. "https://host/meta/auth"); /refresh and /login are appended.</param>
         /// <param name="deviceId">Device id used for the full-login fallback when no valid refresh token exists.</param>
@@ -49,6 +50,15 @@ namespace SharedMeta.Client
         public string? PlayerId => _current?.PlayerId;
 
         /// <summary>
+        /// Force the next <see cref="GetTokenAsync()"/> to reacquire a token even if the cached access
+        /// token hasn't locally expired. Use when the server <b>rejected</b> a token the client still
+        /// considers valid — e.g. the JWT signing key changed, so a not-yet-expired cached token now
+        /// fails signature validation. The next acquisition refreshes (or, if that fails, re-logs in),
+        /// yielding a token signed with the current key.
+        /// </summary>
+        public void Invalidate() => _forceReacquire = true;
+
+        /// <summary>
         /// Provider function to hand to a transport. Returns a currently-valid access token, refreshing
         /// transparently if needed. Never throws — on refresh failure it returns the last known token
         /// (possibly expired) so the transport can still attempt the call and surface the auth error.
@@ -59,7 +69,7 @@ namespace SharedMeta.Client
         public async Task<string?> GetTokenAsync(CancellationToken cancellation)
         {
             var current = _current;
-            if (current != null && current.IsValid)
+            if (!_forceReacquire && current != null && current.IsValid)
                 return current.Token; // fast path: still valid, no lock, no network
 
             await _gate.WaitAsync(cancellation).ConfigureAwait(false);
@@ -67,7 +77,7 @@ namespace SharedMeta.Client
             {
                 // Re-check under the gate — another caller may have refreshed while we waited.
                 current = _current;
-                if (current != null && current.IsValid)
+                if (!_forceReacquire && current != null && current.IsValid)
                     return current.Token;
 
                 return await RefreshLockedAsync(current, cancellation).ConfigureAwait(false);
@@ -129,8 +139,12 @@ namespace SharedMeta.Client
 
             var token = new CachedToken(result.Token, result.PlayerId, result.ExpiresAt,
                 result.RefreshToken, result.RefreshExpiresAt);
-            _storage.Save(token);
+            // Adopt the new token first; persistence is best-effort so a storage failure (e.g. a
+            // platform that throws off the main thread) never discards a freshly acquired token.
             _current = token;
+            _forceReacquire = false; // freshly acquired — clear any pending invalidation
+            try { _storage.Save(token); }
+            catch (Exception ex) { MetaLog.Warning("[MetaTokenManager] Token persist failed: " + ex.Message); }
             return token.Token;
         }
 

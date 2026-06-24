@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.30.1] - 2026-06-23
+
+### Added — recover from a server-rejected cached token
+
+- Set `MetaClientOptions.AccessTokenSource` (e.g. your `MetaTokenManager`) and the client auto-recovers: on an auth-type connect failure it invalidates the token and retries the connect once. Requires a provider-based connection (`tokens.GetTokenAsync`), not a fixed token string. It also seeds `MetaClient.PlayerId` from the token source when `PlayerId` isn't set — required for UserOwned entities (acquire the first token before constructing the client).
+- Primitives behind it: new `IAccessTokenSource` (`PlayerId` + `Invalidate()`); `MetaTokenManager.Invalidate()` forces re-acquire even if the cached token hasn't locally expired (e.g. the JWT signing key changed); `MetaClientOptions.OnConnectAuthFailedAsync` overrides the default retry policy.
+
+### Fixed
+
+- Unity auth now works when the access-token provider is invoked off the main thread (e.g. SignalR resolving it during its connect handshake): `UnityMetaAuth` marshals its `UnityWebRequest` login/refresh and `PlayerPrefsTokenStorage` marshals its `PlayerPrefs` read/write/clear onto Unity's main thread. Without this, off-thread acquisition threw "can only be called from the main thread" and fell back to the stale token. `MetaTokenManager` also adopts a freshly acquired token before persisting it, so a storage failure never discards it.
+
 ## [0.30.0] - 2026-06-23
 
 ### Added — JWT refresh tokens (rotation + reuse detection)

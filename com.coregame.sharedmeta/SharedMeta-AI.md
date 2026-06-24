@@ -1150,6 +1150,8 @@ var connection = new SignalRConnection($"{serverUrl}/meta", tokens.GetTokenAsync
 
 Custom `IMetaAuthProvider` must implement `RefreshAsync`; custom `ITokenStorage`/`MetaLoginResult` gained refresh fields. Fixed-string `accessToken` ctors/options remain for back-compat.
 
+**Rejected-token recovery (0.30.1+):** a cached, not-yet-expired token can still be rejected by the server (e.g. JWT signing key changed) → `ConnectAsync` throws `Authentication is required`. Set `MetaClientOptions.AccessTokenSource = tokens` (a `MetaTokenManager`, which implements `IAccessTokenSource`) and the client **auto-recovers** — invalidates the token and retries the connect once on auth-type failures. Requires a provider-based connection (`tokens.GetTokenAsync`), not a fixed token. Override the policy with `MetaClientOptions.OnConnectAuthFailedAsync`; the underlying primitive is `MetaTokenManager.Invalidate()`.
+
 **Custom auth providers (0.9.3+)**: implement `IMetaAuthProvider` and assign to `MetaAuth.Provider` to replace the HTTP auth flow entirely. Used by `SharedMeta.Backend.Local`'s `LocalMetaAuthProvider` to derive deterministic PlayerIds without any network call, so `MetaAuth.EnsureAuthenticatedAsync` works identically in local and remote modes. Priority: `Provider` → legacy Func hooks → built-in HTTP fallback.
 
 **Enforcing auth:** `MetaTransportOptions.RequireAuthentication = true` rejects anonymous connections at SessionConnect. Additionally, you can add `[Authorize]` on a hub subclass or `.RequireAuthorization()` on endpoint mapping for middleware-level protection.

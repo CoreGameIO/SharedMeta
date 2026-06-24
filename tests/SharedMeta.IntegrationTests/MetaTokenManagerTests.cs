@@ -71,6 +71,28 @@ public class MetaTokenManagerTests : IDisposable
     }
 
     [Fact(Timeout = 30_000)]
+    public async Task Invalidate_ForcesReacquire_EvenWhenAccessStillValid()
+    {
+        // A locally-valid access token that the server would reject (e.g. signing key changed).
+        var storage = new MemoryTokenStorage(new CachedToken(
+            "access-stale", "p1", DateTime.UtcNow.AddHours(1), "refresh-1", DateTime.UtcNow.AddDays(30)));
+        using var mgr = new MetaTokenManager("https://h/meta/auth", "dev-1", storage);
+
+        // Without invalidation the cached token is returned (fast path).
+        Assert.Equal("access-stale", await mgr.GetTokenAsync());
+        Assert.Equal(0, _provider.RefreshCalls);
+
+        // Invalidate → next acquisition reacquires despite local validity.
+        mgr.Invalidate();
+        Assert.Equal("access-from-refresh", await mgr.GetTokenAsync());
+        Assert.Equal(1, _provider.RefreshCalls);
+
+        // Flag cleared after success — subsequent calls use the fast path again.
+        Assert.Equal("access-from-refresh", await mgr.GetTokenAsync());
+        Assert.Equal(1, _provider.RefreshCalls);
+    }
+
+    [Fact(Timeout = 30_000)]
     public async Task GetToken_NoUsableToken_FallsBackToLogin()
     {
         var storage = new MemoryTokenStorage(null); // nothing stored

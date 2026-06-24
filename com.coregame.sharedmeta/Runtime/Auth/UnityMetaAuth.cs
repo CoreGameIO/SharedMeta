@@ -16,6 +16,14 @@ namespace SharedMeta.Client.Auth
     /// </summary>
     public static class UnityMetaAuth
     {
+        // Unity's main-thread SynchronizationContext + thread id, captured in Register() (which runs
+        // on the main thread). UnityWebRequest can only be created/sent from the main thread, but the
+        // auth funcs may be invoked from a background thread — e.g. SignalR calls the access-token
+        // provider during its (off-thread) connect handshake. PostJsonAsync marshals onto this context
+        // when called off-thread so token login/refresh works regardless of the caller's thread.
+        private static SynchronizationContext _mainThreadContext;
+        private static int _mainThreadId;
+
         /// <summary>
         /// Register Unity login implementation with MetaAuth.
         /// Call this once before using MetaAuth.LoginAsync or MetaAuth.EnsureAuthenticatedAsync.
@@ -23,6 +31,9 @@ namespace SharedMeta.Client.Auth
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         public static void Register()
         {
+            _mainThreadContext = SynchronizationContext.Current;
+            _mainThreadId = Thread.CurrentThread.ManagedThreadId;
+
             MetaAuth.LoginFunc = LoginUnityAsync;
             MetaAuth.PlatformLoginFunc = PlatformLoginUnityAsync;
             MetaAuth.RefreshFunc = RefreshUnityAsync;
@@ -81,7 +92,25 @@ namespace SharedMeta.Client.Auth
             return ExtractJsonBool(json, "success");
         }
 
-        private static async Task<string> PostJsonAsync(
+        // Marshal onto Unity's main thread when invoked from a background thread (UnityWebRequest is
+        // main-thread-only). When already on the main thread, runs inline.
+        private static Task<string> PostJsonAsync(
+            string url, string body, string accessToken, CancellationToken cancellation)
+        {
+            if (_mainThreadContext == null || Thread.CurrentThread.ManagedThreadId == _mainThreadId)
+                return PostJsonOnMainThreadAsync(url, body, accessToken, cancellation);
+
+            var tcs = new TaskCompletionSource<string>();
+            _mainThreadContext.Post(async _ =>
+            {
+                try { tcs.TrySetResult(await PostJsonOnMainThreadAsync(url, body, accessToken, cancellation)); }
+                catch (OperationCanceledException) { tcs.TrySetCanceled(); }
+                catch (Exception e) { tcs.TrySetException(e); }
+            }, null);
+            return tcs.Task;
+        }
+
+        private static async Task<string> PostJsonOnMainThreadAsync(
             string url, string body, string accessToken, CancellationToken cancellation)
         {
             var bodyBytes = Encoding.UTF8.GetBytes(body);
