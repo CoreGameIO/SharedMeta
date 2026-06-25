@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.31.1] - 2026-06-25
+
+### Added
+
+- `MetaClient.OnConnectionStatusChanged` — passthrough of the dispatcher's status event (Connected / Reconnecting / Reconnected / Disconnected / Failed) so callers can react to reconnects without reaching into `Dispatcher`. API clients already survive a normal reconnect (the resolver reuses them and refreshes state in place); use this to re-acquire services after a supersede/restart, or to drive UI.
+
 ## [0.31.0] - 2026-06-23
 
 ### Added — platform sign-in (Google Play / Apple / Steam) through the token lifecycle

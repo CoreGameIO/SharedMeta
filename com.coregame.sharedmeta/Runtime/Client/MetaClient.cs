@@ -183,6 +183,16 @@ namespace SharedMeta.Client
         /// </summary>
         public event Action<string>? OnSessionSuperseded;
 
+        /// <summary>
+        /// 0.31.0+ Connection status changes (Connected / Reconnecting / Reconnected / Disconnected /
+        /// Failed) with an optional detail message. A passthrough of the dispatcher's event so callers
+        /// don't reach into <see cref="Dispatcher"/>. The framework keeps subscriptions alive across a
+        /// normal transport reconnect (the resolver's API clients survive and their state is refreshed
+        /// in place), so you usually don't need to re-acquire anything; subscribe here to re-acquire
+        /// services after a hard reset (supersede → <see cref="RestartSessionAsync"/>) or to drive UI.
+        /// </summary>
+        public event Action<SharedMeta.Core.Transport.ConnectionStatus, string?>? OnConnectionStatusChanged;
+
         public MetaClient(
             IConnection connection,
             IMetaSerializer serializer,
@@ -229,6 +239,7 @@ namespace SharedMeta.Client
             if (options.ConnectionHealthOptions != null)
                 _dispatcher.ConnectionHealthOptions = options.ConnectionHealthOptions;
             _dispatcher.OnSessionSuperseded += reason => OnSessionSuperseded?.Invoke(reason);
+            _dispatcher.OnConnectionStatusChanged += (status, detail) => OnConnectionStatusChanged?.Invoke(status, detail);
             _dispatcher.OnSubscriptionsReclaimed += verdicts => _resolver!.ApplySubscriptionVerdicts(verdicts);
 
             // 0.26.7+ Default connection-status logger — routes Reconnecting/Disconnected/Failed
