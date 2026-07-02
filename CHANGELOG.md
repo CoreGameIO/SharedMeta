@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.31.2] - 2026-06-28
+
+### Fixed
+
+- Config catalog no longer duplicates a `[MetaConfig]` shared by multiple states. A config type used by N states emitted N identical `ConfigCatalogEntry` rows, so the admin listed N duplicate sections (and bootstrap warmed the same provider N times). The generated `GeneratedConfigCatalog` now dedups by config type.
+
 ## [0.31.1] - 2026-06-25
 
 ### Added

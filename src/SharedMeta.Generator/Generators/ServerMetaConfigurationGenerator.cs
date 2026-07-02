@@ -2219,7 +2219,17 @@ namespace SharedMeta.Generator.Generators
             // 0.28.0+ Generated IConfigCatalog — typed dispatcher used by the admin grain and
             // bootstrap hosted service. Closes TConfig at compile time per [MetaConfig] type;
             // framework callers invoke HandleAsync<TConfig> through IConfigCatalogHandler.
-            GenerateConfigCatalog(sb, statesWithConfig.Select(e => (e.ConfigTypeFullName, e.StateTypeFullName)).ToList());
+            // The catalog is per [MetaConfig] TYPE (see GenerateConfigCatalog doc), but statesWithConfig
+            // holds one record per STATE. One config shared by N states (e.g. a SessionConfig used by
+            // several services) would, without dedup, emit N identical ConfigCatalogEntry rows —
+            // ConfigAdminGrain.ListConfigsAsync then returns N duplicates (N sections in the admin UI)
+            // and ForEachAsync warms the same provider N times. Dedup by ConfigTypeFullName; OwnerStateType
+            // takes the first (optional metadata only — dispatch is by HandleAsync<TConfig>, not by state).
+            GenerateConfigCatalog(sb, statesWithConfig
+                .GroupBy(e => e.ConfigTypeFullName)
+                .Select(g => g.First())
+                .Select(e => (e.ConfigTypeFullName, e.StateTypeFullName))
+                .ToList());
         }
 
         /// <summary>
