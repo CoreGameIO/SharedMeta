@@ -101,6 +101,27 @@ namespace SharedMeta.Orleans.Config.Admin
             return found;
         }
 
+        public async Task<ConfigOverview?> SetBranchHoldAsync(string name, string branch, bool held, string changedBy)
+        {
+            if (string.IsNullOrWhiteSpace(branch))
+                throw new ArgumentException("branch is required", nameof(branch));
+
+            // Resolve the caller's name (FullName or short DisplayName) to the canonical FullName the
+            // metadata grain + bootstrap seed are keyed by. Normalize the branch to a "Major.Minor" key
+            // so it matches what the bootstrap computes via MetaConfigVersion.GetBranchKey().
+            var entry = _catalog.Entries.FirstOrDefault(e =>
+                string.Equals(e.FullName, name, StringComparison.Ordinal) ||
+                string.Equals(e.DisplayName, name, StringComparison.Ordinal));
+            if (entry == null) return null;
+
+            var branchKey = MetaConfigVersion.Parse(branch).GetBranchKey();
+            await MetadataGrain(entry.FullName).SetBranchHoldAsync(branchKey, held);
+            _logger.LogInformation(
+                "ConfigAdmin: {Name} branch {Branch} hold → {Held} by {By}",
+                entry.FullName, branchKey, held, changedBy);
+            return await GetConfigAsync(entry.FullName);
+        }
+
         public Task<ClientVersionSnapshot> GetClientVersionsAsync()
             => BuildVersionSnapshotAsync();
 
@@ -253,9 +274,12 @@ namespace SharedMeta.Orleans.Config.Admin
         private static async Task<ConfigOverview> BuildOverviewAsync<TConfig>(
             IConfigRegistry registry, IGrainFactory grains, string fullName, string displayName) where TConfig : class
         {
+            var metadataGrain = grains.GetGrain<IConfigMetadataGrain>(fullName);
             var registryVersions = await registry.ListVersionsAsync<TConfig>().ConfigureAwait(false);
-            var metadataRecords = await grains.GetGrain<IConfigMetadataGrain>(fullName).ListAsync().ConfigureAwait(false);
+            var metadataRecords = await metadataGrain.ListAsync().ConfigureAwait(false);
             var metadataByVersion = metadataRecords.ToDictionary(r => r.Version, StringComparer.Ordinal);
+            var heldBranches = new HashSet<string>(
+                await metadataGrain.ListHeldBranchesAsync().ConfigureAwait(false), StringComparer.Ordinal);
 
             var allVersions = registryVersions
                 .Select(v => v.ToString())
@@ -281,6 +305,7 @@ namespace SharedMeta.Orleans.Config.Admin
                 {
                     Branch = g.Key,
                     Versions = g.OrderByDescending(v => MetaConfigVersion.Parse(v.Version)).ToArray(),
+                    Held = heldBranches.Contains(g.Key),
                 })
                 .ToArray();
 

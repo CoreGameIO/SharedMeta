@@ -22,6 +22,9 @@ namespace SharedMeta.Orleans.Config.Admin
     public partial class ConfigMetadataGrainState
     {
         [Id(0), Key(0), MemoryPackOrder(0)] public Dictionary<string, ConfigVersionInfo> Records { get; set; } = new();
+
+        /// <summary>0.32.0+ Held <c>Major.Minor</c> branch keys — bootstrap seed skips these.</summary>
+        [Id(1), Key(1), MemoryPackOrder(1)] public HashSet<string> HeldBranches { get; set; } = new();
     }
 
     /// <summary>
@@ -39,6 +42,12 @@ namespace SharedMeta.Orleans.Config.Admin
         {
             _state = state;
             _logger = logger ?? NullLogger<ConfigMetadataGrain>.Instance;
+        }
+
+        public override Task OnActivateAsync(CancellationToken cancellationToken)
+        {
+            _state.State.HeldBranches ??= [];
+            return base.OnActivateAsync(cancellationToken);
         }
 
         public async Task RecordPublishAsync(string version, int sizeBytes, string origin, string publishedBy, string? notes)
@@ -85,5 +94,28 @@ namespace SharedMeta.Orleans.Config.Admin
             _state.State.Records.TryGetValue(version, out var rec);
             return Task.FromResult<ConfigVersionInfo?>(rec);
         }
+
+        public async Task SetBranchHoldAsync(string branchKey, bool held)
+        {
+            if (string.IsNullOrWhiteSpace(branchKey))
+                throw new ArgumentException("branchKey is required", nameof(branchKey));
+
+            var changed = held
+                ? _state.State.HeldBranches.Add(branchKey)
+                : _state.State.HeldBranches.Remove(branchKey);
+
+            if (!changed) return; // already in the desired state — no write
+
+            await _state.WriteStateAsync();
+            _logger.LogInformation(
+                "ConfigMetadata[{Name}]: branch {Branch} hold → {Held}",
+                this.GetPrimaryKeyString(), branchKey, held);
+        }
+
+        public Task<string[]> ListHeldBranchesAsync()
+            => Task.FromResult(_state.State.HeldBranches.ToArray());
+
+        public Task<bool> IsBranchHeldAsync(string branchKey)
+            => Task.FromResult(!string.IsNullOrEmpty(branchKey) && _state.State.HeldBranches.Contains(branchKey));
     }
 }

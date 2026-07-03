@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.32.1] - 2026-07-03
+
+### Added
+
+- Config branch **hold** — `IConfigAdminGrain.SetBranchHoldAsync(name, branch, held, changedBy)` pins a `Major.Minor` branch so the cold-start seed skips it. Protects a manually uploaded config version from being overwritten (`LoadAlways`) or auto-patch-bumped (`LoadIfHashDiff`) on restart. Surfaced as `ConfigBranchInfo.Held` in the admin overview.
+
 ## [0.32.0] - 2026-07-03
 
 ### Added

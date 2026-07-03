@@ -114,7 +114,7 @@ builder.Services.AddSignalR(hubOptions =>
 // Authentication
 builder.Services.AddMetaAuth(options =>
 {
-    options.SecretKey = "expedition-secret-key-at-least-32-characters!!_new3";
+    options.SecretKey = "expedition-secret-key-at-least-32-characters";
     options.Issuer = "expedition-server";
     options.AccessTokenLifetime = TimeSpan.FromMinutes(20);
 });

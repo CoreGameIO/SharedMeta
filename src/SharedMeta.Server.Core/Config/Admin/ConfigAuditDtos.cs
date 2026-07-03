@@ -50,6 +50,13 @@ namespace SharedMeta.Server.Core.Config.Admin
 
         /// <summary>Patches inside this branch, newest first.</summary>
         [Id(1), Key(1), MemoryPackOrder(1)] public ConfigVersionInfo[] Versions { get; set; } = Array.Empty<ConfigVersionInfo>();
+
+        /// <summary>
+        /// 0.32.0+ When true, this <c>Major.Minor</c> branch is held: the cold-start bootstrap seed
+        /// skips it, so a manually uploaded version won't be overwritten or auto-patch-bumped on restart.
+        /// Toggle via <see cref="IConfigAdminGrain.SetBranchHoldAsync"/>.
+        /// </summary>
+        [Id(2), Key(2), MemoryPackOrder(2)] public bool Held { get; set; }
     }
 
     /// <summary>

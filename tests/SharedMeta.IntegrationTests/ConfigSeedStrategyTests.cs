@@ -19,6 +19,7 @@ namespace SharedMeta.IntegrationTests;
 public sealed class HashDiffSeedConfig { }
 public sealed class HashDiffNullBranchConfig { }
 public sealed class HashDiffNullEmptyConfig { }
+public sealed class HashDiffHeldConfig { }
 
 /// <summary>
 /// 0.32.0 — <see cref="ConfigSeedStrategy.LoadIfHashDiff"/>: the loader reports a stable
@@ -99,6 +100,37 @@ public class ConfigSeedStrategyTests
         await RunSeed<HashDiffNullEmptyConfig>(bs, registry);
 
         Assert.Empty(await registry.ListVersionsAsync(typeof(HashDiffNullEmptyConfig)));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task LoadIfHashDiff_HeldBranch_IsNotBumpedUntilReleased()
+    {
+        var registry = new GrainConfigRegistry(_fixture.GrainFactory);
+        var bs = new FakeBootstrapper { Version = new MetaConfigVersion(1, 2, 0), Bytes = new byte[] { 1 } };
+
+        await RunSeed<HashDiffHeldConfig>(bs, registry);
+        Assert.Equal(new[] { new MetaConfigVersion(1, 2, 0) },
+            await registry.ListVersionsAsync(typeof(HashDiffHeldConfig)));
+
+        // Admin holds the 1.2 branch (as if a manual upload into it should stick across restarts).
+        var meta = _fixture.GrainFactory.GetGrain<IConfigMetadataGrain>(typeof(HashDiffHeldConfig).FullName!);
+        await meta.SetBranchHoldAsync("1.2", true);
+        Assert.True(await meta.IsBranchHeldAsync("1.2"));
+        Assert.Contains("1.2", await meta.ListHeldBranchesAsync());
+
+        // Changed content must NOT auto-bump while the branch is held.
+        bs.Bytes = new byte[] { 2 };
+        await RunSeed<HashDiffHeldConfig>(bs, registry);
+        Assert.Equal(new[] { new MetaConfigVersion(1, 2, 0) },
+            await registry.ListVersionsAsync(typeof(HashDiffHeldConfig)));
+
+        // Release the hold → the change flows again as 1.2.1.
+        await meta.SetBranchHoldAsync("1.2", false);
+        Assert.False(await meta.IsBranchHeldAsync("1.2"));
+        await RunSeed<HashDiffHeldConfig>(bs, registry);
+        Assert.Equal(
+            new[] { new MetaConfigVersion(1, 2, 0), new MetaConfigVersion(1, 2, 1) },
+            await registry.ListVersionsAsync(typeof(HashDiffHeldConfig)));
     }
 
     private async Task RunSeed<TConfig>(IConfigBootstrapper bootstrapper, IConfigRegistry registry)

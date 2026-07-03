@@ -771,6 +771,14 @@ services.ConfigureConfigs(o =>
 
 Use `LoadIfHashDiff` when config content is baked/derived and you want a content edit to auto-produce a new patch on the same branch without a manual bump — e.g. an image-baked or generated config where the `Major.Minor` line is stable across a release.
 
+**Holding a branch against the seed.** An admin who uploads a config version by hand (via `IConfigAdminGrain.UploadAsync`) can pin its `Major.Minor` branch so the cold-start seed leaves it alone — otherwise the next restart would overwrite (`LoadAlways`) or auto-patch-bump over it (`LoadIfHashDiff`):
+
+```csharp
+await adminGrain.SetBranchHoldAsync("MyGame.GameConfig", "1.2", held: true, changedBy: "ops");
+```
+
+While held, the bootstrap skips that branch entirely (other branches still seed normally); `ConfigBranchInfo.Held` reflects the state in the admin overview. Release with `held: false` to let the seed manage the branch again.
+
 ---
 
 ## 4. Execution Modes & Replay

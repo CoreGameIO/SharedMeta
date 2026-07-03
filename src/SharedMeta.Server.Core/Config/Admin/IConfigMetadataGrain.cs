@@ -32,5 +32,20 @@ namespace SharedMeta.Server.Core.Config.Admin
 
         /// <summary>Fetch a single version's audit record, or <c>null</c> if not recorded.</summary>
         Task<ConfigVersionInfo?> GetAsync(string version);
+
+        /// <summary>
+        /// 0.32.0+ Hold (<paramref name="held"/> = true) or release a <c>Major.Minor</c> branch key
+        /// (e.g. <c>"1.2"</c>). A held branch is skipped by the cold-start config bootstrap seed, so a
+        /// manually uploaded version survives silo restarts without being overwritten or auto-patch-bumped
+        /// (see <see cref="ConfigSeedStrategy.LoadIfHashDiff"/> / <see cref="ConfigSeedStrategy.LoadAlways"/>).
+        /// Idempotent.
+        /// </summary>
+        Task SetBranchHoldAsync(string branchKey, bool held);
+
+        /// <summary>The set of currently held <c>Major.Minor</c> branch keys. Empty when none are held.</summary>
+        Task<string[]> ListHeldBranchesAsync();
+
+        /// <summary>Cheap single-branch hold check used by the bootstrap seed at cold start.</summary>
+        Task<bool> IsBranchHeldAsync(string branchKey);
     }
 }

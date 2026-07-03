@@ -104,6 +104,13 @@ namespace SharedMeta.Orleans.Config.Admin
                     return;
                 }
 
+                if (await _owner.IsBranchHeldAsync(fullName, version.Value).ConfigureAwait(false))
+                {
+                    log.LogInformation(
+                        "ConfigBootstrap: {Name} branch {Branch} is held — skipping seed", fullName, version.Value.GetBranchKey());
+                    return;
+                }
+
                 if (!await _owner.ShouldSeedAsync<TConfig>(fullName, version.Value).ConfigureAwait(false))
                     return;
 
@@ -218,6 +225,15 @@ namespace SharedMeta.Orleans.Config.Admin
                 return;
             }
 
+            // Held branch → admin owns it; never overwrite / auto-bump on restart. Checked before the
+            // bytes fetch so a held branch costs nothing extra.
+            if (await IsBranchHeldAsync(fullName, branch).ConfigureAwait(false))
+            {
+                _logger.LogInformation(
+                    "ConfigBootstrap: {Name} branch {Branch} is held — skipping seed", fullName, branch.GetBranchKey());
+                return;
+            }
+
             // 2. Materialize bytes (required to compare). Pass the version the loader knows about.
             ConfigBootstrapBytes? seed;
             try
@@ -271,6 +287,13 @@ namespace SharedMeta.Orleans.Config.Admin
                 "ConfigBootstrap: {Name} v{Version} ({Size} B, {Origin}, LoadIfHashDiff) → Published",
                 fullName, target, seed.Bytes.Length, seed.Origin);
         }
+
+        /// <summary>
+        /// True when the config's <c>Major.Minor</c> branch is held (admin-managed) — the seed must
+        /// leave it alone so a manual upload isn't overwritten / auto-bumped on restart.
+        /// </summary>
+        private Task<bool> IsBranchHeldAsync(string fullName, MetaConfigVersion version)
+            => _grains.GetGrain<IConfigMetadataGrain>(fullName).IsBranchHeldAsync(version.GetBranchKey());
 
         /// <summary>Record the publish audit row through the per-type metadata grain.</summary>
         private Task RecordAuditAsync(string fullName, MetaConfigVersion version, ConfigBootstrapBytes seed)

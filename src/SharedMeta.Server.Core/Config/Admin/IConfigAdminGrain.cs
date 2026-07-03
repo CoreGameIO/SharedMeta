@@ -60,6 +60,16 @@ namespace SharedMeta.Server.Core.Config.Admin
         Task<bool> UnpublishAsync(string name, string version, string deletedBy);
 
         /// <summary>
+        /// 0.32.0+ Hold (<paramref name="held"/> = true) or release a <c>Major.Minor</c>
+        /// <paramref name="branch"/> (e.g. <c>"1.2"</c>) of a config. A held branch is skipped by the
+        /// cold-start bootstrap seed, so a manual <see cref="UploadAsync"/> into it survives silo restarts
+        /// without being overwritten or auto-patch-bumped (relevant to
+        /// <see cref="ConfigSeedStrategy.LoadIfHashDiff"/> / <see cref="ConfigSeedStrategy.LoadAlways"/>).
+        /// Returns the updated overview, or <c>null</c> when <paramref name="name"/> isn't a discovered config.
+        /// </summary>
+        Task<ConfigOverview?> SetBranchHoldAsync(string name, string branch, bool held, string changedBy);
+
+        /// <summary>
         /// Read the cluster-wide client-version snapshot. <c>Current</c> from
         /// <c>ICurrentClientVersionGrain</c>; <c>Min</c> / <c>Max</c> from
         /// <c>IVersionPolicyGrain</c> (null when no admin override active); <c>Server</c>
