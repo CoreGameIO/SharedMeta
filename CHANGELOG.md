@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.32.0] - 2026-07-03
+
+### Added
+
+- `ConfigSeedStrategy.LoadIfHashDiff` — cold-start seed strategy that treats the bootstrapper's version as a stable `Major.Minor` branch and lets the framework own the patch. The loader reports `Major.Minor` (reported patch ignored; `null` → latest branch in the registry); if its bytes differ from that branch's latest patch, they publish as `Major.Minor.(latestPatch+1)`, identical content is a no-op. Lets baked/derived config content auto-produce a new patch on a content change without a manual bump.
+
 ## [0.31.2] - 2026-06-28
 
 ### Fixed

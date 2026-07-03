@@ -30,7 +30,9 @@ namespace SharedMeta.Orleans.Config.Admin
     {
         /// <summary>
         /// When the framework's hosted service should publish. Default:
-        /// <see cref="ConfigSeedStrategy.LoadIfNew"/>.
+        /// <see cref="ConfigSeedStrategy.LoadIfNew"/>. See <see cref="ConfigSeedStrategy"/> for the
+        /// per-strategy semantics — including <see cref="ConfigSeedStrategy.LoadIfHashDiff"/>, which keeps
+        /// a stable <c>Major.Minor</c> branch and auto-bumps the patch when the loader's content changes.
         /// </summary>
         public ConfigSeedStrategy Strategy { get; set; } = ConfigSeedStrategy.LoadIfNew;
 

@@ -87,6 +87,15 @@ namespace SharedMeta.Orleans.Config.Admin
 
             public async Task HandleAsync<TConfig>(string fullName, string displayName, CancellationToken ct) where TConfig : class
             {
+                // LoadIfHashDiff computes the target version from the registry + content diff (not from
+                // the reported version) and must always materialize bytes to compare — a different shape
+                // than the reported-version-keyed strategies below, so it gets its own path.
+                if (_owner._options.Strategy == ConfigSeedStrategy.LoadIfHashDiff)
+                {
+                    await _owner.HandleHashDiffAsync<TConfig>(fullName, ct).ConfigureAwait(false);
+                    return;
+                }
+
                 var log = _owner._logger;
                 var version = await _owner._bootstrapper.GetVersionAsync<TConfig>(ct).ConfigureAwait(false);
                 if (version == null)
@@ -119,14 +128,7 @@ namespace SharedMeta.Orleans.Config.Admin
 
                 var outcome = await _owner._registry.PublishIfChangedAsync<TConfig>(version.Value, seed.Bytes).ConfigureAwait(false);
 
-                await _owner._grains.GetGrain<IConfigMetadataGrain>(fullName)
-                    .RecordPublishAsync(
-                        version.Value.ToString(),
-                        seed.Bytes.Length,
-                        seed.Origin,
-                        seed.PublishedBy,
-                        seed.Notes)
-                    .ConfigureAwait(false);
+                await _owner.RecordAuditAsync(fullName, version.Value, seed).ConfigureAwait(false);
 
                 log.LogInformation(
                     "ConfigBootstrap: {Name} v{Version} ({Size} B, {Origin}, {Strategy}) → {Outcome}",
@@ -192,5 +194,87 @@ namespace SharedMeta.Orleans.Config.Admin
                     throw new InvalidOperationException($"Unknown ConfigSeedStrategy: {_options.Strategy}");
             }
         }
+
+        /// <summary>
+        /// <see cref="ConfigSeedStrategy.LoadIfHashDiff"/> path. Treats the loader's reported version as
+        /// a stable <c>Major.Minor</c> branch (reported patch ignored; <c>null</c> → latest branch in the
+        /// registry) and lets the framework own the patch: identical content to the branch's latest patch
+        /// is a no-op, changed content publishes <c>Major.Minor.(latestPatch+1)</c>.
+        /// </summary>
+        private async Task HandleHashDiffAsync<TConfig>(string fullName, CancellationToken ct) where TConfig : class
+        {
+            // 1. Resolve the target branch (Major.Minor). ListVersionsAsync is ascending.
+            var reported = await _bootstrapper.GetVersionAsync<TConfig>(ct).ConfigureAwait(false);
+            var existing = await _registry.ListVersionsAsync<TConfig>().ConfigureAwait(false);
+
+            MetaConfigVersion branch;
+            if (reported != null)
+                branch = reported.Value;
+            else if (existing.Count > 0)
+                branch = existing[existing.Count - 1]; // latest overall → its Major.Minor is the latest branch
+            else
+            {
+                _logger.LogDebug("ConfigBootstrap: {Name} LoadIfHashDiff — no reported version and empty registry, skip", fullName);
+                return;
+            }
+
+            // 2. Materialize bytes (required to compare). Pass the version the loader knows about.
+            ConfigBootstrapBytes? seed;
+            try
+            {
+                seed = await _bootstrapper.GetBytesAsync<TConfig>(reported ?? branch, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ConfigBootstrap: bootstrapper threw on {Name} (LoadIfHashDiff) — skipping seed", fullName);
+                return;
+            }
+
+            if (seed == null || seed.Bytes.Length == 0)
+            {
+                _logger.LogDebug("ConfigBootstrap: no bytes for {Name} (LoadIfHashDiff)", fullName);
+                return;
+            }
+
+            // 3. Highest patch already published in this branch (existing is ascending → last match wins).
+            MetaConfigVersion? latestInBranch = null;
+            foreach (var v in existing)
+                if (v.Major == branch.Major && v.Minor == branch.Minor)
+                    latestInBranch = v;
+
+            // 4. Decide the target version and publish.
+            MetaConfigVersion target;
+            if (latestInBranch == null)
+            {
+                // First seed for this branch — publish at the reported version (patch as-is, e.g. M.m.0).
+                target = branch;
+            }
+            else
+            {
+                var stored = await _registry.GetAsync<TConfig>(latestInBranch.Value).ConfigureAwait(false);
+                if (stored != null
+                    && stored.Length == seed.Bytes.Length
+                    && new ReadOnlySpan<byte>(stored).SequenceEqual(seed.Bytes))
+                {
+                    _logger.LogDebug("ConfigBootstrap: {Name} LoadIfHashDiff — content matches v{Version}, no-op", fullName, latestInBranch.Value);
+                    return;
+                }
+
+                target = new MetaConfigVersion(
+                    latestInBranch.Value.Major, latestInBranch.Value.Minor, latestInBranch.Value.Patch + 1);
+            }
+
+            await _registry.PublishAsync<TConfig>(target, seed.Bytes).ConfigureAwait(false);
+            await RecordAuditAsync(fullName, target, seed).ConfigureAwait(false);
+
+            _logger.LogInformation(
+                "ConfigBootstrap: {Name} v{Version} ({Size} B, {Origin}, LoadIfHashDiff) → Published",
+                fullName, target, seed.Bytes.Length, seed.Origin);
+        }
+
+        /// <summary>Record the publish audit row through the per-type metadata grain.</summary>
+        private Task RecordAuditAsync(string fullName, MetaConfigVersion version, ConfigBootstrapBytes seed)
+            => _grains.GetGrain<IConfigMetadataGrain>(fullName)
+                .RecordPublishAsync(version.ToString(), seed.Bytes.Length, seed.Origin, seed.PublishedBy, seed.Notes);
     }
 }

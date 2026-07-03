@@ -750,6 +750,27 @@ var config = client.GetEntityConfig<GameConfig>(entityId);
 // Returns null if entity not connected or no config configured
 ```
 
+### Server-side config seeding (`ConfigureConfigs`)
+
+On the silo, `ConfigureConfigs` wires the versioned config registry and a cold-start bootstrap. You supply an `IConfigBootstrapper` (two typed methods: `GetVersionAsync<TConfig>` / `GetBytesAsync<TConfig>`) and a `ConfigSeedStrategy` that decides when the loader's bytes get published:
+
+```csharp
+services.ConfigureConfigs(o =>
+{
+    o.UseBootstrapper<ConfigBootstrapper>();      // project-emitted typed dispatcher
+    o.Strategy = ConfigSeedStrategy.LoadIfHashDiff;
+});
+```
+
+| Strategy | Publishes when |
+|---|---|
+| `LoadIfEmpty` | The registry has no version for the type yet (seed once, then admin owns it). |
+| `LoadIfNew` (default) | The loader's exact version isn't already in the registry. |
+| `LoadAlways` | Every start — `PublishIfChanged` makes same-content a no-op, drift overwrites. |
+| `LoadIfHashDiff` | Content changed. The loader reports a stable `Major.Minor` branch (reported patch ignored; `null` → the latest branch in the registry); if the bytes differ from that branch's **latest patch**, they publish as `Major.Minor.(latestPatch+1)`. Identical content is a no-op. Structural `Major`/`Minor` bumps stay explicit. |
+
+Use `LoadIfHashDiff` when config content is baked/derived and you want a content edit to auto-produce a new patch on the same branch without a manual bump — e.g. an image-baked or generated config where the `Major.Minor` line is stable across a release.
+
 ---
 
 ## 4. Execution Modes & Replay

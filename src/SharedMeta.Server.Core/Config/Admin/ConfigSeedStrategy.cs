@@ -30,5 +30,16 @@ namespace SharedMeta.Server.Core.Config.Admin
         /// guarantees the registry always reflects the on-disk content without manual bumps.
         /// </summary>
         LoadAlways,
+
+        /// <summary>
+        /// Treat the loader's version as a stable <c>Major.Minor</c> branch and let the framework
+        /// own the <c>Patch</c>. The loader reports <c>Major.Minor</c> (the reported patch is
+        /// ignored; <c>null</c> targets the latest branch already in the registry). The bytes are
+        /// compared against the latest patch published in that branch: identical content is a no-op,
+        /// changed content is published as <c>Major.Minor.(latestPatch+1)</c>. Use when config
+        /// content is baked/derived and you want a content change to auto-produce a new patch on the
+        /// same branch — no manual bump — while structural (Major/Minor) bumps stay explicit.
+        /// </summary>
+        LoadIfHashDiff,
     }
 }
