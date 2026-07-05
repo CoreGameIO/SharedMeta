@@ -122,6 +122,21 @@ namespace SharedMeta.Core.Transport
         Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version);
 
         /// <summary>
+        /// Resolve the <see cref="MetaConfigVersion"/> a <c>[StatelessMetaService]</c>'s linked
+        /// config should use for this client — no entity/subscribe involved. Used by the
+        /// generated <c>client.GetI{Iface}Async()</c> extension before materializing the config
+        /// through the registered <c>IClientMetaConfigProvider&lt;TConfig&gt;</c>.
+        /// <para>
+        /// Default implementation throws — transports opt in explicitly. Mirrors the optional-
+        /// feature pattern already used by <see cref="SignalCallAsync"/> /
+        /// <see cref="RegisterClientSignatureAsync"/>.
+        /// </para>
+        /// </summary>
+        Task<ResolveStatelessConfigVersionResponse> ResolveStatelessConfigVersionAsync(string configTypeName, string clientAppVersion)
+            => throw new System.NotSupportedException(
+                "This transport does not support stateless config version resolution.");
+
+        /// <summary>
         /// Fired when a SessionResponse is received from the server (observer push path).
         /// The response is the atomic unit — one SequenceNumber per response.
         /// </summary>

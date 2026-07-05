@@ -30,6 +30,8 @@ namespace SharedMeta.Transport.HttpPolling
     [JsonSerializable(typeof(AcknowledgeResponse))]
     [JsonSerializable(typeof(ConfigDownloadUrlRequest))]
     [JsonSerializable(typeof(ConfigDownloadUrlResponse))]
+    [JsonSerializable(typeof(ResolveStatelessConfigVersionRequest))]
+    [JsonSerializable(typeof(ResolveStatelessConfigVersionResponse))]
     [JsonSerializable(typeof(PollRequest))]
     [JsonSerializable(typeof(PollResponse))]
     [JsonSerializable(typeof(SessionOp))]

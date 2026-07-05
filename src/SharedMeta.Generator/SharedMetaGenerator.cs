@@ -181,6 +181,101 @@ namespace SharedMeta.Generator
                 spc.AddSource($"{safeNs}_{safeDep}_EntityCallerHelpers.g.cs", source);
             });
 
+            // Stateless Meta Services — Config-property injection + client extension
+            // (client.GetI{Iface}Async(), Path 2). Path 1's GetI{Iface}Async() sibling-style
+            // getter is emitted by ContextInjectionGenerator as part of the existing dependency
+            // loop above, not here.
+            var statelessImplPipeline = context.SyntaxProvider.ForAttributeWithMetadataName(
+                "SharedMeta.Core.StatelessMetaServiceImplAttribute",
+                predicate: static (node, _) => node is Microsoft.CodeAnalysis.CSharp.Syntax.ClassDeclarationSyntax,
+                transform: static (ctx, _) => ctx
+            );
+
+            context.RegisterSourceOutput(statelessImplPipeline, (spc, ctx) =>
+            {
+                var symbol = ctx.TargetSymbol as INamedTypeSymbol;
+                if (symbol == null) return;
+
+                var (info, error) = StatelessServiceGenerator.Analyze(symbol);
+                if (error != null)
+                {
+                    spc.AddSource($"{symbol.Name}.StatelessError.g.cs", $"#error {error}\n");
+                    return;
+                }
+                if (info == null) return;
+
+                spc.AddSource($"{symbol.Name}.Context.g.cs", StatelessServiceGenerator.GenerateImplContext(info));
+                spc.AddSource($"{info.InterfaceName}StatelessClientExtensions.g.cs", StatelessServiceGenerator.GenerateClientExtension(info));
+            });
+
+            // Stateless config-version source — source-based (Shared projects). Wrapped in
+            // #if SHAREDMETA_SERVER, mirroring ServerMetaConfigurationGenerator's dual pipeline:
+            // the real DI wiring happens in the Server-project assembly-scan pipeline below.
+            var statelessInfoPipeline = statelessImplPipeline.Select((ctx, _) =>
+            {
+                var symbol = ctx.TargetSymbol as INamedTypeSymbol;
+                if (symbol == null) return (StatelessServiceGenerator.StatelessImplInfo?)null;
+                var (info, error) = StatelessServiceGenerator.Analyze(symbol);
+                return error != null ? null : info;
+            }).Where(static info => info != null);
+
+            var collectedStatelessSource = statelessInfoPipeline.Collect();
+            var statelessSourceWithCompilation = collectedStatelessSource.Combine(context.CompilationProvider);
+
+            context.RegisterSourceOutput(statelessSourceWithCompilation, (spc, tuple) =>
+            {
+                var (infos, compilation) = tuple;
+                var valid = infos.Where(i => i != null).Select(i => i!).ToList();
+                if (valid.Count == 0) return;
+
+                var isServerProject = compilation.ReferencedAssemblyNames
+                    .Any(a => a.Name == "SharedMeta.Server.Core");
+                if (isServerProject) return; // handled by the assembly-scan pipeline below
+
+                var rootNamespace = valid.First().ImplNamespace;
+                var source = StatelessServiceGenerator.GenerateVersionSource(rootNamespace, valid, wrapped: true);
+                spc.AddSource("GeneratedStatelessConfigVersionSource.g.cs", source);
+            });
+
+            // Stateless config-version source — assembly-scan (Server projects). Scans referenced
+            // assemblies for [StatelessMetaServiceImpl] types, same pattern as
+            // ServerMetaConfigurationGenerator's GenerateForServerProject path.
+            context.RegisterSourceOutput(context.CompilationProvider, (spc, compilation) =>
+            {
+                var isServerProject = compilation.ReferencedAssemblyNames
+                    .Any(a => a.Name == "SharedMeta.Server.Core");
+                if (!isServerProject) return;
+
+                var statelessImplAttrName = "SharedMeta.Core.StatelessMetaServiceImplAttribute";
+                var infos = new List<StatelessServiceGenerator.StatelessImplInfo>();
+
+                foreach (var reference in compilation.References)
+                {
+                    var assemblySymbol = compilation.GetAssemblyOrModuleSymbol(reference) as IAssemblySymbol;
+                    if (assemblySymbol == null) continue;
+
+                    var assemblyName = assemblySymbol.Name;
+                    if (assemblyName.StartsWith("System") || assemblyName.StartsWith("Microsoft") ||
+                        assemblyName.StartsWith("netstandard") || assemblyName == "mscorlib" ||
+                        assemblyName.StartsWith("Orleans") || assemblyName == "MemoryPack.Core" ||
+                        assemblyName == "MessagePack" || assemblyName == "MessagePack.Annotations")
+                        continue;
+
+                    var typesWithAttr = GetTypesWithAttribute(assemblySymbol.GlobalNamespace, statelessImplAttrName);
+                    foreach (var typeSymbol in typesWithAttr)
+                    {
+                        var (info, error) = StatelessServiceGenerator.Analyze(typeSymbol);
+                        if (error == null && info != null) infos.Add(info);
+                    }
+                }
+
+                if (infos.Count == 0) return;
+
+                var rootNamespace = infos.First().ImplNamespace;
+                var source = StatelessServiceGenerator.GenerateVersionSource(rootNamespace, infos, wrapped: false);
+                spc.AddSource("GeneratedStatelessConfigVersionSource.g.cs", source);
+            });
+
             // Server Meta Service Wrappers (Recorder + Replayer)
             var serverServicePipeline = context.SyntaxProvider.ForAttributeWithMetadataName(
                 "SharedMeta.Core.ServerMetaServiceAttribute",

@@ -254,6 +254,12 @@ namespace SharedMeta.Transport.SignalR
             return response.DownloadUrl;
         }
 
+        public async Task<ResolveStatelessConfigVersionResponse> ResolveStatelessConfigVersionAsync(string configTypeName, string clientAppVersion)
+        {
+            EnsureConnected();
+            return await _hub!.ResolveStatelessConfigVersion(new ResolveStatelessConfigVersionRequest { ConfigTypeName = configTypeName, ClientAppVersion = clientAppVersion });
+        }
+
         #region Event Handlers
 
         private void OnReceiveBroadcast(SessionResponse message)

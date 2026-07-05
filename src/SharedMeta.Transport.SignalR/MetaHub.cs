@@ -23,6 +23,7 @@ namespace SharedMeta.Transport.SignalR
 
         private readonly IMetaConnectionHandlerFactory _handlerFactory;
         private readonly IConfigDownloadUrlResolver? _configUrlResolver;
+        private readonly IConfigVersionResolutionSource? _configVersionSource;
         private readonly MetaTransportOptions? _transportOptions;
         private readonly ILogger<MetaHub> _logger;
 
@@ -30,11 +31,13 @@ namespace SharedMeta.Transport.SignalR
             IMetaConnectionHandlerFactory handlerFactory,
             ILogger<MetaHub> logger,
             IConfigDownloadUrlResolver? configUrlResolver = null,
+            IConfigVersionResolutionSource? configVersionSource = null,
             MetaTransportOptions? transportOptions = null)
         {
             _handlerFactory = handlerFactory ?? throw new ArgumentNullException(nameof(handlerFactory));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _configUrlResolver = configUrlResolver;
+            _configVersionSource = configVersionSource;
             _transportOptions = transportOptions;
         }
 
@@ -190,6 +193,34 @@ namespace SharedMeta.Transport.SignalR
             catch (Exception ex)
             {
                 return Task.FromResult(new ConfigDownloadUrlResponse { Success = false, Error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Resolve the config version a [StatelessMetaService] should use for this client.
+        /// Resolved via IConfigVersionResolutionSource (DI) — no entity, no grain chain.
+        /// </summary>
+        public Task<ResolveStatelessConfigVersionResponse> ResolveStatelessConfigVersion(ResolveStatelessConfigVersionRequest request)
+        {
+            try
+            {
+                var version = _configVersionSource?.ResolveVersion(request.ConfigTypeName, request.ClientAppVersion);
+                if (version == null)
+                {
+                    return Task.FromResult(new ResolveStatelessConfigVersionResponse { Success = true, Found = false });
+                }
+                return Task.FromResult(new ResolveStatelessConfigVersionResponse
+                {
+                    Success = true,
+                    Found = true,
+                    Major = version.Value.Major,
+                    Minor = version.Value.Minor,
+                    Patch = version.Value.Patch,
+                });
+            }
+            catch (Exception ex)
+            {
+                return Task.FromResult(new ResolveStatelessConfigVersionResponse { Success = false, Error = ex.Message });
             }
         }
 

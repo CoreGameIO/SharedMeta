@@ -449,6 +449,37 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
+        /// Materialize <typeparamref name="TConfig"/> at <paramref name="version"/> with no entity
+        /// involved — used by <c>[StatelessMetaService]</c> client resolution. Shares the same
+        /// registered provider + per-(type, version) memoization as entity subscribe.
+        /// </summary>
+        public async Task<TConfig?> ResolveConfigAsync<TConfig>(MetaConfigVersion version) where TConfig : class
+        {
+            if (!_configProviders.TryGetValue(typeof(TConfig), out var invoker))
+            {
+                throw new InvalidOperationException(
+                    $"[SharedMeta] No IClientMetaConfigProvider<{typeof(TConfig).Name}> registered. " +
+                    $"Register before resolving a StatelessMetaService bound to this config:\n\n" +
+                    $"    resolver.RegisterConfigProvider<{typeof(TConfig).Name}>(\n" +
+                    $"        new StaticConfigProvider<{typeof(TConfig).Name}>(yourLoadedConfig));");
+            }
+
+            var key = (typeof(TConfig), version);
+            Task<object?> task;
+            lock (_lock)
+            {
+                if (!_resolvedConfigByVersion.TryGetValue(key, out task!))
+                {
+                    task = invoker(version);
+                    _resolvedConfigByVersion[key] = task;
+                }
+            }
+
+            var result = await AwaitConfigEvictingOnFailure(key, task).ConfigureAwait(false);
+            return result as TConfig;
+        }
+
+        /// <summary>
         /// 0.20.3: snapshot every currently subscribed entity for debug inspection. Use to
         /// answer "which entities is this client tracking, which config branch got pinned,
         /// which services are wired locally?" — the kind of question that comes up when a

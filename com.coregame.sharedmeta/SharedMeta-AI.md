@@ -885,6 +885,77 @@ Call-order contract: replay is positional. Callers must make the same sequence o
 
 ---
 
+## Stateless Meta Services (`[StatelessMetaService]`) — 0.33.0+
+
+A service with **no entity, no state** whose resolution requires only materializing a linked `[MetaConfig]` — e.g. a pricing/formula service backed by a balance config. Different from `[ServerMetaService]`: a stateless service IS client-callable (via two paths below), just never entity-bound.
+
+### Pattern
+
+```csharp
+[MetaConfig]
+public class ShopConfig { public int BaseCost { get; set; } = 42; }
+
+[StatelessMetaService(typeof(ShopConfig))]
+public interface IPricingService
+{
+    int ComputeCost(int quantity);
+}
+
+// Impl gets ONLY a typed Config property — no Context, no Random, no ServerTimeTicks,
+// no dependencies. Pure function of (Config, method args) by design.
+[StatelessMetaServiceImpl(typeof(IPricingService))]
+public partial class PricingService : IPricingService
+{
+    public int ComputeCost(int quantity) => Config.BaseCost * quantity;
+}
+```
+
+### Path 1 — resolve from inside any `[MetaServiceImpl]` (sibling-like)
+
+Declare it as a dependency; the generator emits `GetIPricingServiceAsync()`:
+
+```csharp
+[MetaServiceImpl(typeof(IShopService), typeof(ShopState), typeof(IPricingService))]
+public partial class ShopServiceImpl : IShopService
+{
+    [MetaMethod(Mode = ExecutionMode.Server)]
+    public async Task Buy(int itemId, int qty)
+    {
+        var pricing = await GetIPricingServiceAsync();  // resolves Config only, no entity involved
+        int cost = pricing.ComputeCost(qty);
+        // ...
+    }
+}
+```
+
+**Server-only** — same constraint as multi-config sibling resolution (`Get{Iface}SiblingAsync()`): config materialization is async DI-backed (`IMetaConfigProvider<TConfig>.ResolveForClient` + `GetConfigAsync`) and cannot run during client-side synchronous replay. Only callable from methods running `Mode = Server` / `ServerReplace` / `ServerPatch` — calling it from an `Optimistic`/`CrossOptimistic` method throws `NotSupportedException` on the client.
+
+### Path 2 — resolve directly from `MetaClient`, no entity subscribe
+
+```csharp
+IPricingService pricing = await client.GetIPricingServiceAsync();
+int cost = pricing.ComputeCost(qty);
+```
+
+No entity to pin a `MetaConfigVersion` from, so this path resolves the version via a lightweight non-entity RPC (`IConnection.ResolveStatelessConfigVersionAsync`, mirrors `GetConfigDownloadUrlAsync`), then materializes it through the registered `IClientMetaConfigProvider<TConfig>` (same Static/Downloading/Composite providers as everything else). Requires the host to opt in server-side:
+
+```csharp
+// ASP.NET DI — pairs with app.MapMetaConfigDownload() / AddMetaConfigPublicUrl
+builder.Services.AddGeneratedStatelessConfigVersionSource();
+```
+
+Only implemented for SignalR and HttpPolling transports (client + server). Unity BestHttp variants and the Debug Mux/InProcess transports fall back to `IConnection`'s default, which throws `NotSupportedException` rather than silently no-op'ing.
+
+### Checklist for `[StatelessMetaService]`
+
+- [ ] No `[SharedState]`, no entity, no subscribe
+- [ ] Impl class is `partial` and carries `[StatelessMetaServiceImpl(typeof(IThing))]`
+- [ ] Interface carries `[StatelessMetaService(typeof(TConfig))]` — ConfigType is required
+- [ ] Every caller of Path 1's `GetI{Iface}Async()` runs under `Mode = Server/ServerReplace/ServerPatch`
+- [ ] For Path 2, host called `services.AddGeneratedStatelessConfigVersionSource()` and registered an `IClientMetaConfigProvider<TConfig>` client-side
+
+---
+
 ## Triggers & Subscribers
 
 ### Triggers
@@ -1256,6 +1327,8 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `[Trigger]` | Method | Auto-execute after condition on another method |
 | `[ServiceTrigger]` | Method | Trigger on framework service event |
 | `[ServerMetaService]` | Interface | Server-only service (generates replayer) |
+| `[StatelessMetaService]` | Interface | No-entity service resolving only a linked `[MetaConfig]` |
+| `[StatelessMetaServiceImpl]` | Class | Impl for `[StatelessMetaService]` — injects only a typed `Config` property |
 | `[Transformer]` | Class | Register argument transformer |
 | `[Transform]` | Parameter | Explicit transformer for parameter |
 | `[SkipTransform]` | Parameter | Disable auto-transformation |

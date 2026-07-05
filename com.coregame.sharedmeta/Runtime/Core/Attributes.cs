@@ -678,6 +678,61 @@ namespace SharedMeta.Core
     }
 
     /// <summary>
+    /// Marks an interface as a stateless meta service: no <c>[SharedState]</c>, no entity,
+    /// no dispatcher — resolution only requires materializing the linked <see cref="ConfigType"/>.
+    /// <para>
+    /// Two resolution paths:
+    /// </para>
+    /// <list type="bullet">
+    /// <item>From inside any <c>[MetaServiceImpl]</c>: declare the interface as a dependency and
+    /// the generator emits <c>GetI{Iface}Async()</c>, which resolves <see cref="ConfigType"/>
+    /// via <see cref="SharedMeta.Server.Core.IMetaConfigProvider{TConfig}"/> and constructs the
+    /// impl. Server-only — same constraint as multi-config sibling resolution, because config
+    /// materialization is async DI-backed and cannot run during client-side synchronous replay.
+    /// Only callable from methods running <c>Mode = Server</c> / <c>ServerReplace</c> /
+    /// <c>ServerPatch</c>.</item>
+    /// <item>Directly from <c>MetaClient</c>, without subscribing to any entity: the generator
+    /// emits a <c>client.GetI{Iface}Async()</c> extension that resolves the config version via a
+    /// lightweight non-entity RPC, then materializes it through the registered
+    /// <c>IClientMetaConfigProvider&lt;TConfig&gt;</c>.</item>
+    /// </list>
+    /// <para>
+    /// The paired <see cref="StatelessMetaServiceImplAttribute"/> impl receives only a typed
+    /// <c>Config</c> property — no <c>Context</c>, no <c>Random</c>, no <c>ServerTimeTicks</c>,
+    /// no dependencies. It is a pure function of <c>(Config, method args)</c> by design.
+    /// </para>
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Interface)]
+    public class StatelessMetaServiceAttribute : Attribute
+    {
+        /// <summary>The <c>[MetaConfig]</c> type this service resolves. Required.</summary>
+        public Type ConfigType { get; }
+
+        public StatelessMetaServiceAttribute(Type configType)
+        {
+            ConfigType = configType;
+        }
+    }
+
+    /// <summary>
+    /// Marks the implementation class of a <see cref="StatelessMetaServiceAttribute"/> interface.
+    /// Must be <c>partial</c> — the generator injects a typed <c>Config</c> property (matching
+    /// the interface's <see cref="StatelessMetaServiceAttribute.ConfigType"/>) into a sibling
+    /// partial. No other members are injected.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Class)]
+    public class StatelessMetaServiceImplAttribute : Attribute
+    {
+        /// <summary>The <see cref="StatelessMetaServiceAttribute"/>-marked interface this class implements.</summary>
+        public Type ServiceInterface { get; }
+
+        public StatelessMetaServiceImplAttribute(Type serviceInterface)
+        {
+            ServiceInterface = serviceInterface;
+        }
+    }
+
+    /// <summary>
     /// Defines a trigger that executes a method when a condition is met after another method completes.
     /// </summary>
     [AttributeUsage(AttributeTargets.Method)]

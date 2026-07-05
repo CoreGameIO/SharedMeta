@@ -269,6 +269,15 @@ namespace SharedMeta.Transport.HttpPolling
             return response?.DownloadUrl;
         }
 
+        public async Task<ResolveStatelessConfigVersionResponse> ResolveStatelessConfigVersionAsync(string configTypeName, string clientAppVersion)
+        {
+            EnsureSessionConnected();
+            return await PostAsync<ResolveStatelessConfigVersionResponse>(
+                "/config-version-resolve",
+                new ResolveStatelessConfigVersionRequest { ConfigTypeName = configTypeName, ClientAppVersion = clientAppVersion },
+                MetaJsonContext.Default.ResolveStatelessConfigVersionRequest);
+        }
+
         #region Poll Loop
 
         private void StartPollLoop()

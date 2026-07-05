@@ -58,6 +58,17 @@ namespace SharedMeta.Core.Transport
         Task<ConfigDownloadUrlResponse> GetConfigDownloadUrl(ConfigDownloadUrlRequest request);
 
         /// <summary>
+        /// Resolve the <see cref="MetaConfigVersion"/> a <c>[StatelessMetaService]</c>'s linked
+        /// config should use for this client — no entity/subscribe involved, resolved via
+        /// <c>IConfigVersionResolutionSource</c> (DI) without going through the grain chain.
+        /// Default throws — transports opt in explicitly, mirroring <see cref="IConnection"/>'s
+        /// default for this same method.
+        /// </summary>
+        Task<ResolveStatelessConfigVersionResponse> ResolveStatelessConfigVersion(ResolveStatelessConfigVersionRequest request)
+            => throw new System.NotSupportedException(
+                "This hub does not support stateless config version resolution.");
+
+        /// <summary>
         /// Set debug options for this session (deep desync, etc.).
         /// Server may ignore if debug API is disabled.
         /// </summary>

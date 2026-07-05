@@ -195,6 +195,13 @@ namespace SharedMeta.Generator.Generators
                                 }
                                 entityServices.Add(depSymbol);
                             }
+                            else if (IsStatelessMetaService(depSymbol))
+                            {
+                                // [StatelessMetaService] dependency — no entity, resolution is
+                                // just Config materialization. Server-only, same constraint as
+                                // multi-config sibling resolution (see GenerateSiblingAsyncGetter).
+                                GenerateStatelessServiceGetter(sb, depSymbol);
+                            }
                             else
                             {
                                 // Server service (e.g., ILobbyRequester)
@@ -257,6 +264,65 @@ namespace SharedMeta.Generator.Generators
             // Check if the interface has [ServerMetaService] attribute
             return symbol.GetAttributes().Any(a =>
                 a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.ServerMetaServiceAttribute");
+        }
+
+        private static bool IsStatelessMetaService(INamedTypeSymbol symbol)
+        {
+            return symbol.GetAttributes().Any(a =>
+                a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.StatelessMetaServiceAttribute");
+        }
+
+        /// <summary>
+        /// Generate <c>GetI{Iface}Async()</c> for a <c>[StatelessMetaService]</c> dependency
+        /// (Path 1 — resolve from inside any <c>[MetaServiceImpl]</c>, like a sibling). Server-only:
+        /// mirrors <see cref="GenerateSiblingAsyncGetter"/>'s multi-config constraint — config
+        /// materialization is async DI-backed and cannot run during client-side synchronous replay,
+        /// so this accessor only has a real body under <c>Mode = Server/ServerReplace/ServerPatch</c>.
+        /// A stateless service is never grain-hosted, so there is no sibling-resolver lookup —
+        /// always construct fresh with the resolved Config.
+        /// </summary>
+        private static void GenerateStatelessServiceGetter(StringBuilder sb, INamedTypeSymbol depSymbol)
+        {
+            var interfaceName = depSymbol.Name;
+            var interfaceFqn = depSymbol.ToDisplayString();
+            var depNamespace = depSymbol.ContainingNamespace.ToDisplayString();
+            var baseName = interfaceName;
+            if (baseName.StartsWith("I") && baseName.Length > 1 && char.IsUpper(baseName[1]))
+                baseName = baseName.Substring(1);
+            var implFqn = $"{depNamespace}.{baseName}";
+
+            var svcAttr = depSymbol.GetAttributes().FirstOrDefault(a =>
+                a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.StatelessMetaServiceAttribute");
+            var configFqn = svcAttr?.ConstructorArguments.Length > 0
+                ? (svcAttr.ConstructorArguments[0].Value as INamedTypeSymbol)?.ToDisplayString()
+                : null;
+            if (configFqn == null)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"#error {interfaceName} is declared as a stateless dependency but has no [StatelessMetaService(typeof(TConfig))] ConfigType.");
+                sb.AppendLine();
+                return;
+            }
+
+            sb.AppendLine();
+            sb.AppendLine($"        /// <summary>");
+            sb.AppendLine($"        /// Resolve stateless service {interfaceName} — no entity, only its Config is");
+            sb.AppendLine($"        /// materialized. Server-only (same constraint as multi-config siblings): only");
+            sb.AppendLine($"        /// callable from methods running Mode=Server/ServerReplace/ServerPatch.");
+            sb.AppendLine($"        /// </summary>");
+            sb.AppendLine($"#if SHAREDMETA_SERVER");
+            sb.AppendLine($"        protected async System.Threading.Tasks.Task<{interfaceFqn}> Get{interfaceName}Async()");
+            sb.AppendLine("        {");
+            sb.AppendLine($"            var configProvider = Context.ResolveService<SharedMeta.Server.Core.IMetaConfigProvider<{configFqn}>>();");
+            sb.AppendLine($"            var policyResolver = SharedMeta.Core.MetaConfigVersionResolver.ForType(typeof({configFqn}));");
+            sb.AppendLine($"            var resolvedVersion = configProvider.ResolveForClient(Context.CallerClientVersion, policyResolver);");
+            sb.AppendLine($"            var config = await configProvider.GetConfigAsync(resolvedVersion);");
+            sb.AppendLine($"            return new {implFqn}() {{ Config = config }};");
+            sb.AppendLine("        }");
+            sb.AppendLine($"#else");
+            sb.AppendLine($"        protected System.Threading.Tasks.Task<{interfaceFqn}> Get{interfaceName}Async()");
+            sb.AppendLine($"            => throw new System.NotSupportedException(\"{interfaceName} can only be resolved from Mode=Server/ServerReplace/ServerPatch method bodies — config materialization is server-only, same constraint as multi-config siblings.\");");
+            sb.AppendLine($"#endif");
         }
 
         private static bool IsEntityService(INamedTypeSymbol symbol)

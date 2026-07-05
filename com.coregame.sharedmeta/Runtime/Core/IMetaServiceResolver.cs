@@ -87,6 +87,18 @@ namespace SharedMeta.Core
         TConfig? GetEntityConfig<TConfig>(string entityId) where TConfig : class;
 
         /// <summary>
+        /// Materialize <typeparamref name="TConfig"/> at a specific <see cref="MetaConfigVersion"/>
+        /// via the registered <see cref="SharedMeta.Client.IClientMetaConfigProvider{TConfig}"/> —
+        /// no entity involved. Used by generated <c>client.GetI{Iface}Async()</c> extensions for
+        /// <c>[StatelessMetaService]</c> resolution, after the version itself is resolved via
+        /// <see cref="SharedMeta.Core.Transport.IConnection.ResolveStatelessConfigVersionAsync"/>.
+        /// Shares the same per-(type, version) memoization as entity subscribe, and throws the
+        /// same loud "no provider registered" error when nothing is registered for
+        /// <typeparamref name="TConfig"/>.
+        /// </summary>
+        Task<TConfig?> ResolveConfigAsync<TConfig>(MetaConfigVersion version) where TConfig : class;
+
+        /// <summary>
         /// 0.20.0: Resolve a client-side sibling service impl for a given interface type. Used
         /// by sibling-service code paths during client-side replay/optimistic execution: when
         /// user code calls <c>Get{Iface}SiblingAsync()</c> or <c>GetI{Iface}(self)</c> on the

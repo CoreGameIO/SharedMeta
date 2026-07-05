@@ -41,6 +41,7 @@ namespace SharedMeta.Transport.HttpPolling
             group.MapPost("/ack", HandleAcknowledge);
             group.MapPost("/poll", HandlePoll);
             group.MapPost("/config-url", HandleConfigDownloadUrl);
+            group.MapPost("/config-version-resolve", HandleResolveStatelessConfigVersion);
             group.MapPost("/disconnect", HandleDisconnect);
             group.MapPost("/graceful-disconnect", HandleGracefulDisconnect);
 
@@ -283,6 +284,43 @@ namespace SharedMeta.Transport.HttpPolling
             {
                 var response = new ConfigDownloadUrlResponse { Success = false, Error = ex.Message };
                 return Results.Json(response, MetaJsonContext.Default.ConfigDownloadUrlResponse);
+            }
+        }
+
+        /// <summary>
+        /// Resolve the config version a [StatelessMetaService] should use for this client.
+        /// Resolved via IConfigVersionResolutionSource (DI) — no entity, no grain chain.
+        /// </summary>
+        private static async Task<IResult> HandleResolveStatelessConfigVersion(
+            HttpContext ctx,
+            HttpPollingConnectionManager mgr,
+            IConfigVersionResolutionSource? configVersionSource = null)
+        {
+            var (state, error) = GetExistingConnection(ctx, mgr);
+            if (state == null) return error!;
+
+            var request = await ctx.Request.ReadFromJsonAsync(MetaJsonContext.Default.ResolveStatelessConfigVersionRequest);
+            if (request == null) return Results.BadRequest("Invalid request body");
+
+            try
+            {
+                var version = configVersionSource?.ResolveVersion(request.ConfigTypeName, request.ClientAppVersion);
+                var response = version == null
+                    ? new ResolveStatelessConfigVersionResponse { Success = true, Found = false }
+                    : new ResolveStatelessConfigVersionResponse
+                    {
+                        Success = true,
+                        Found = true,
+                        Major = version.Value.Major,
+                        Minor = version.Value.Minor,
+                        Patch = version.Value.Patch,
+                    };
+                return Results.Json(response, MetaJsonContext.Default.ResolveStatelessConfigVersionResponse);
+            }
+            catch (Exception ex)
+            {
+                var response = new ResolveStatelessConfigVersionResponse { Success = false, Error = ex.Message };
+                return Results.Json(response, MetaJsonContext.Default.ResolveStatelessConfigVersionResponse);
             }
         }
 

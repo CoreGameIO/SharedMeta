@@ -14,6 +14,7 @@ Complete technical reference for the SharedMeta framework. Covers all subsystems
 5. [Deterministic Random](#5-deterministic-random)
 6. [Cross-Entity Calls](#6-cross-entity-calls)
 6.5. [Server-Only Services (Bridges)](#65-server-only-services-bridges)
+6.6. [Stateless Meta Services](#66-stateless-meta-services)
 7. [Triggers & Subscribers](#7-triggers--subscribers)
 8. [Push-Based Change Tracking](#8-push-based-change-tracking)
 9. [Argument Transformers](#9-argument-transformers)
@@ -1678,6 +1679,87 @@ naming the class — if you see that diagnostic, pick one of two fixes:
 - [ ] All `Mode = Server` meta methods that call it can tolerate replaying the recorded return value on the client
 
 If all five are true — `[ServerMetaService]` fits. If any fail, use `[MetaService]`.
+
+---
+
+## 6.6. Stateless Meta Services
+
+`[StatelessMetaService]` marks a service with **no entity, no state** — resolution requires only
+materializing a linked `[MetaConfig]`. Different from `[ServerMetaService]`: a stateless service
+IS client-callable (two paths below); it's just never entity-bound. Use it for pricing/formula
+services, item-registry lookups, or any business logic that only needs config, not per-player
+state.
+
+```csharp
+[MetaConfig]
+public class ShopConfig { public int BaseCost { get; set; } = 42; }
+
+[StatelessMetaService(typeof(ShopConfig))]
+public interface IPricingService
+{
+    int ComputeCost(int quantity);
+}
+
+// Impl gets ONLY a typed Config property — no Context, no Random, no ServerTimeTicks, no
+// dependencies. Pure function of (Config, method args) by design.
+[StatelessMetaServiceImpl(typeof(IPricingService))]
+public partial class PricingService : IPricingService
+{
+    public int ComputeCost(int quantity) => Config.BaseCost * quantity;
+}
+```
+
+### Path 1 — resolve from inside any `[MetaServiceImpl]` (sibling-like)
+
+Declare it as a dependency and the generator emits `GetIPricingServiceAsync()`:
+
+```csharp
+[MetaServiceImpl(typeof(IShopService), typeof(ShopState), typeof(IPricingService))]
+public partial class ShopServiceImpl : IShopService
+{
+    [MetaMethod(Mode = ExecutionMode.Server)]
+    public async Task Buy(int itemId, int qty)
+    {
+        var pricing = await GetIPricingServiceAsync();  // resolves Config only, no entity involved
+        int cost = pricing.ComputeCost(qty);
+        // ...
+    }
+}
+```
+
+**Server-only** — same constraint as multi-config sibling resolution (`Get{Iface}SiblingAsync()`,
+section 6): config materialization is async DI-backed and cannot run during client-side
+synchronous replay. Only callable from methods running `Mode = Server` / `ServerReplace` /
+`ServerPatch`; calling it from `Optimistic`/`CrossOptimistic` throws `NotSupportedException`.
+
+### Path 2 — resolve directly from `MetaClient`, no entity subscribe
+
+```csharp
+IPricingService pricing = await client.GetIPricingServiceAsync();
+int cost = pricing.ComputeCost(qty);
+```
+
+No entity means no pinned `MetaConfigVersion` to read — this path resolves the version via a
+lightweight non-entity RPC (mirrors `GetConfigDownloadUrlAsync`), then materializes it through the
+registered `IClientMetaConfigProvider<TConfig>` (same Static/Downloading/Composite providers as
+everywhere else). Requires an explicit host opt-in:
+
+```csharp
+// ASP.NET DI — pairs with app.MapMetaConfigDownload() / AddMetaConfigPublicUrl
+builder.Services.AddGeneratedStatelessConfigVersionSource();
+```
+
+Only SignalR and HttpPolling transports implement the version-resolve RPC (client + server).
+Unity BestHttp variants and the Debug Mux/InProcess transports fall back to `IConnection`'s
+default, which throws `NotSupportedException` rather than silently no-op'ing.
+
+### Checklist — `[StatelessMetaService]`
+
+- [ ] No `[SharedState]`, no entity, no subscribe
+- [ ] Impl class is `partial`, carries `[StatelessMetaServiceImpl(typeof(IThing))]`
+- [ ] Interface carries `[StatelessMetaService(typeof(TConfig))]` — ConfigType is required
+- [ ] Every Path 1 caller of `GetI{Iface}Async()` runs under `Mode = Server/ServerReplace/ServerPatch`
+- [ ] For Path 2, host called `services.AddGeneratedStatelessConfigVersionSource()` and registered an `IClientMetaConfigProvider<TConfig>` client-side
 
 ---
 
@@ -3883,6 +3965,8 @@ The runtime ignores the attribute. It is purely a marker for downstream tooling.
 | `[ServiceTrigger]` | Method | Trigger on framework service event |
 | `[Subscribe]` | Event | Declare method subscription |
 | `[ServerMetaService]` | Interface | Server-only service (generates replayer) |
+| `[StatelessMetaService(typeof(TConfig))]` | Interface | No-entity service resolving only a linked `[MetaConfig]`. (0.33.0+) |
+| `[StatelessMetaServiceImpl(typeof(IThing))]` | Class | Impl for `[StatelessMetaService]` — injects only a typed `Config` property. (0.33.0+) |
 | `[Transformer]` | Class | Register argument transformer |
 | `[Transform]` | Parameter | Explicit transformer for parameter |
 | `[SkipTransform]` | Parameter | Disable auto-transformation |
