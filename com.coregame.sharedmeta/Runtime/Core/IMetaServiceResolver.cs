@@ -179,16 +179,28 @@ namespace SharedMeta.Core
         public Type? ConfigType { get; init; }
 
         /// <summary>
+        /// Declared order of <see cref="SharedMeta.Core.ServiceConfigAttribute"/> types on this
+        /// service's interface (0.33.0+). Empty when the service has none. The resolver looks up
+        /// an <see cref="SharedMeta.Client.IClientMetaConfigProvider{TConfig}"/> per entry (same
+        /// registry as <see cref="ConfigType"/>) to materialize each one at subscribe time,
+        /// positionally parallel to <c>ConfigVersions[1..]</c> on the subscribe response when a
+        /// legacy <see cref="ConfigType"/> is also present, or <c>ConfigVersions[..]</c> when not.
+        /// </summary>
+        public IReadOnlyList<Type>? ServiceConfigTypes { get; init; }
+
+        /// <summary>
         /// Factory to create the API client.
-        /// Parameters: (network, serializer, state, modeProvider, diagnostics, crossEntityResolver, optimisticRandom, config, namedRandoms, configResolver)
+        /// Parameters: (network, serializer, state, modeProvider, diagnostics, crossEntityResolver, optimisticRandom, config, namedRandoms, configResolver, serviceConfigs)
         /// namedRandoms: positional list of MetaRandom declared via [NamedRandom] on the state, or null if state has none.
         /// configResolver (0.21.0+): optional function that materializes a config object for a specific
-        ///   <see cref="MetaConfigVersion"/>. When the server's <c>ExecutedConfigVersion</c> on a
+        ///   <see cref="MetaConfigVersion"/>. When the server's <c>ExecutedConfigVersions[0]</c> on a
         ///   broadcast/response differs from the session-pinned version, the client's replay path
         ///   calls this to resolve the right config branch. Wired by <c>MetaServiceResolver</c> to
         ///   <c>EntityConnection.ResolveConfigForBroadcast</c>.
+        /// serviceConfigs (0.33.0+): resolved <see cref="ServiceConfigAttribute"/> values,
+        ///   positional, parallel to <see cref="ServiceConfigTypes"/>. Null/empty when none declared.
         /// </summary>
-        public Func<INetwork, IMetaSerializer, object, IExecutionModeProvider, IDesyncDiagnostics?, ICrossEntityResolver?, MetaRandom?, object?, IReadOnlyList<MetaRandom>?, Func<MetaConfigVersion, object?>?, object> ApiClientFactory { get; init; } = null!;
+        public Func<INetwork, IMetaSerializer, object, IExecutionModeProvider, IDesyncDiagnostics?, ICrossEntityResolver?, MetaRandom?, object?, IReadOnlyList<MetaRandom>?, Func<MetaConfigVersion, object?>?, IReadOnlyList<object>?, object> ApiClientFactory { get; init; } = null!;
 
         /// <summary>
         /// Factory to create the local service instance.
@@ -254,12 +266,14 @@ namespace SharedMeta.Core
         /// </para>
         /// <para>
         /// Parameters: (state, methodId, argsBytes, replayContext, callerId, serverTimeTicks,
-        /// serializer, optimisticRandom, namedRandoms, config, crossEntityResolver).
+        /// serializer, optimisticRandom, namedRandoms, config, crossEntityResolver, serviceConfigs).
         /// 0.24.0+ <c>methodId</c> is the client-local index from <c>GameMethodIds</c>; the
         /// generator emits a <c>switch (methodId)</c> with one case per method's const.
+        /// serviceConfigs (0.33.0+): resolved <see cref="ServiceConfigAttribute"/> values,
+        /// positional, parallel to <see cref="ServiceConfigTypes"/>. Null/empty when none declared.
         /// </para>
         /// </summary>
-        public Action<object, ushort, byte[], byte[], string?, long, IMetaSerializer, SharedMeta.Core.Random.MetaRandom?, IReadOnlyList<SharedMeta.Core.Random.MetaRandom>?, object?, ICrossEntityResolver?>? EntityReplayDispatcher { get; init; }
+        public Action<object, ushort, byte[], byte[], string?, long, IMetaSerializer, SharedMeta.Core.Random.MetaRandom?, IReadOnlyList<SharedMeta.Core.Random.MetaRandom>?, object?, ICrossEntityResolver?, IReadOnlyList<object>?>? EntityReplayDispatcher { get; init; }
 
         /// <summary>
         /// 0.20.0: Factory that creates a transient impl of this service bound to the calling

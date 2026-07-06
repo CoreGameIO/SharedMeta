@@ -19,7 +19,13 @@ namespace ClanWars.Shared
     // raw-field leaks, see PartyService), the example opts out: force-patch clients are rejected
     // at negotiation instead of mis-served. (The ClanConfig 2.0 boundary still force-patches
     // IClanService, whose body IS copy-compatible.)
+    // Deliberately kept on the legacy ConfigType (obsolete but functional), same reasoning as
+    // IClanService — no xUnit coverage for ClanWars, and shares ClanConfig (which carries
+    // [MetaConfigStructureBoundary("2.0")]) with IClanService, so migrate both together once
+    // that's verified.
+#pragma warning disable CS0618
     [MetaService(StateType = typeof(ProfileState), ConfigType = typeof(ClanConfig), PatchTracking = false)]
+#pragma warning restore CS0618
     public interface IProfileService : IMetaService
     {
         /// <summary>Award bonus power to the player. Forwarded to the clan (if any).</summary>

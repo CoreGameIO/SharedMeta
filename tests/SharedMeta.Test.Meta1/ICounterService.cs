@@ -6,7 +6,8 @@ namespace SharedMeta.Test.Meta1
     /// Simple meta service for testing packet delivery and ordering.
     /// Each AddRandom call adds a value to the state and broadcasts it to all subscribers.
     /// </summary>
-    [MetaService(StateType = typeof(CounterState), DefaultConfig = true)]
+    [MetaService(StateType = typeof(CounterState))]
+    [ServiceConfig(typeof(CounterConfig), "Config")]
     public interface ICounterService : IMetaService
     {
         /// <summary>
@@ -41,7 +42,8 @@ namespace SharedMeta.Test.Meta1
 
         /// <summary>
         /// Adds value clamped by Config.MaxValue. Called cross-entity from AddCrossEntity.
-        /// Accesses Context.Config — will NRE if Config is not propagated.
+        /// Accesses the generated Config property (backed by Context.Configs[0], via
+        /// [ServiceConfig]) — will NRE if Configs is not propagated.
         /// </summary>
         [MetaMethod(Alias = "AddClamped", Mode = ExecutionMode.Server, GenerateClientApi = false)]
         int AddClamped(int value);

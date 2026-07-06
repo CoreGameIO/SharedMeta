@@ -15,8 +15,16 @@ namespace ClanWars.Shared
     // Non-members can still call methods marked [MetaMethod(OpenAccess = true)] like
     // GetSummary — that's the preview-without-subscription path. Cross-entity entry points
     // (Initialize / SubmitApplication / AddPower) bypass subscription gating entirely.
+    //
+    // Deliberately kept on the legacy ConfigType (obsolete but functional) rather than
+    // migrated to [ServiceConfig]: ClanWars has no xUnit test coverage (only a stress-test
+    // tool), and ClanConfig carries [MetaConfigStructureBoundary("2.0")] — the force-patch
+    // mechanism hasn't been verified against [ServiceConfig] yet. Migrate once either real
+    // test coverage exists or that verification has been done; don't migrate on faith.
+#pragma warning disable CS0618
     [MetaService(StateType = typeof(ClanState), ConfigType = typeof(ClanConfig),
                  AccessPolicy = EntityAccessPolicy.Authorized)]
+#pragma warning restore CS0618
     public interface IClanService : IMetaService
     {
         // ── Bootstrap / cross-entity API (not client-callable) ───────────────────

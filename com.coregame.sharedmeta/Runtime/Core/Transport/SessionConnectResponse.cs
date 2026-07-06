@@ -158,10 +158,12 @@ namespace SharedMeta.Core.Transport
         [Id(1), Key(1)] public byte[] StateBytes { get; set; } = Array.Empty<byte>();
         [Id(2), Key(2)] public long EntitySequenceNumber { get; set; }
         [Id(3), Key(3)] public byte[]? OptimisticRandomBytes { get; set; }
-        [Id(4), Key(4)] public int ConfigMajorVersion { get; set; }
-        [Id(5), Key(5)] public int ConfigMinorVersion { get; set; }
+        // 0.33.0+ Id/Key 4/5/7 (ConfigMajor/Minor/PatchVersion ints) retired — see ConfigVersions
+        // below. Never reuse ids 4/5/7.
         [Id(6), Key(6)] public byte[]? NamedRandomsBytes { get; set; }
-        [Id(7), Key(7)] public int ConfigPatchVersion { get; set; }
+
+        /// <summary>Resolved config version(s) — index 0 legacy primary when declared, remaining <see cref="SharedMeta.Core.ServiceConfigAttribute"/> entries.</summary>
+        [Id(8), Key(8)] public List<MetaConfigVersion>? ConfigVersions { get; set; }
     }
 
     /// <summary>
@@ -206,9 +208,11 @@ namespace SharedMeta.Core.Transport
         [Id(3), Key(3)] public byte[]? StateBytes { get; set; }
         [Id(4), Key(4)] public byte[]? OptimisticRandomBytes { get; set; }
         [Id(5), Key(5)] public byte[]? NamedRandomsBytes { get; set; }
-        [Id(6), Key(6)] public int ConfigMajorVersion { get; set; }
-        [Id(7), Key(7)] public int ConfigMinorVersion { get; set; }
-        [Id(8), Key(8)] public int ConfigPatchVersion { get; set; }
+        // 0.33.0+ Id/Key 6/7/8 (ConfigMajor/Minor/PatchVersion ints) retired — see ConfigVersions
+        // below. Never reuse ids 6/7/8.
         [Id(9), Key(9)] public string? FailureReason { get; set; }
+
+        /// <summary>Resolved config version(s) — index 0 legacy primary when declared, remaining <see cref="SharedMeta.Core.ServiceConfigAttribute"/> entries.</summary>
+        [Id(10), Key(10)] public List<MetaConfigVersion>? ConfigVersions { get; set; }
     }
 }

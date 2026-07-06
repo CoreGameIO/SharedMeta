@@ -234,6 +234,7 @@ namespace SharedMeta.Client
             MetaRandom? optimisticRandom = null;
             MetaRandom[]? namedRandoms = null;
             object? entityConfig = null;
+            IReadOnlyList<object>? serviceConfigs = null;
             EntityConnection? newConnection = null;
 
             if (existingConnection != null)
@@ -245,6 +246,7 @@ namespace SharedMeta.Client
                 optimisticRandom = existingConnection.OptimisticRandom;
                 namedRandoms = existingConnection.NamedRandoms;
                 entityConfig = existingConnection.Config;
+                serviceConfigs = existingConnection.Configs;
             }
             else
             {
@@ -285,6 +287,7 @@ namespace SharedMeta.Client
 
                 // Resolve config: check cache → request URL → download → fallback to factory
                 entityConfig = await ResolveConfigAsync(config, subResult, entityId);
+                serviceConfigs = await ResolveServiceConfigsAsync(config, subResult, entityId);
 
                 newConnection = new EntityConnection
                 {
@@ -296,7 +299,8 @@ namespace SharedMeta.Client
                     NamedRandoms = namedRandoms,
                     Config = entityConfig,
                     ConfigType = config.ConfigType,
-                    ConfigVersion = subResult.ConfigVersion,
+                    ConfigVersions = subResult.ConfigVersions,
+                    Configs = serviceConfigs,
                 };
 
                 // 0.21.0: hook the version-specific config fetcher so drift detection
@@ -332,7 +336,8 @@ namespace SharedMeta.Client
                 optimisticRandom,
                 entityConfig,
                 namedRandoms,
-                configResolver);
+                configResolver,
+                serviceConfigs);
 
             // Cache connection
             lock (_lock)
@@ -441,7 +446,16 @@ namespace SharedMeta.Client
             {
                 if (_connections.TryGetValue(entityId, out var connection))
                 {
-                    return connection.Config as TConfig;
+                    if (connection.Config is TConfig legacy) return legacy;
+                    // 0.33.0+ fall back to [ServiceConfig] entries — the legacy Config field
+                    // stays null for services that only declare [ServiceConfig].
+                    if (connection.Configs is { Count: > 0 } configs)
+                    {
+                        foreach (var c in configs)
+                        {
+                            if (c is TConfig typed) return typed;
+                        }
+                    }
                 }
             }
 
@@ -494,15 +508,20 @@ namespace SharedMeta.Client
                 var result = new List<SubscribedEntityInfo>(_connections.Count);
                 foreach (var (entityId, connection) in _connections)
                 {
+                    // 0.33.0+ fall back to the first [ServiceConfig] entry when there's no
+                    // legacy primary — best-effort single-config summary for this debug snapshot
+                    // (structured as one Config/ConfigType pair; a state with multiple
+                    // [ServiceConfig] entries only surfaces the first here).
+                    var fallbackConfig = connection.Config ?? (connection.Configs is { Count: > 0 } cs ? cs[0] : null);
                     result.Add(new SubscribedEntityInfo
                     {
                         EntityId = entityId,
                         StateType = connection.StateType,
-                        ConfigType = connection.ConfigType,
-                        ConfigVersion = connection.ConfigVersion,
+                        ConfigType = connection.ConfigType ?? fallbackConfig?.GetType(),
+                        ConfigVersion = connection.ConfigVersions is { Count: > 0 } cv ? cv[0] : default,
                         ServiceNames = new List<string>(connection.LocalServiceNames),
                         State = connection.StateContainer.State,
-                        Config = connection.Config,
+                        Config = fallbackConfig,
                     });
                 }
                 return result;
@@ -548,6 +567,20 @@ namespace SharedMeta.Client
             {
                 if (_connections.TryGetValue(entityId, out var connection))
                     return connection.Config;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 0.33.0+ Get every [ServiceConfig] entry for a subscribed entity (untyped, positional).
+        /// ICrossEntityResolver implementation — the Configs counterpart to GetEntityConfig.
+        /// </summary>
+        IReadOnlyList<object>? ICrossEntityResolver.GetEntityConfigs(string entityId)
+        {
+            lock (_lock)
+            {
+                if (_connections.TryGetValue(entityId, out var connection))
+                    return connection.Configs;
             }
             return null;
         }
@@ -664,6 +697,7 @@ namespace SharedMeta.Client
                 namedRandoms = _serializer.Unpack<MetaRandom[]>(nrBytes);
 
             var entityConfig = await ResolveConfigAsync(config, subResult, entityId);
+            var serviceConfigs = await ResolveServiceConfigsAsync(config, subResult, entityId);
 
             EntityConnection? newConnection = new EntityConnection
             {
@@ -675,7 +709,8 @@ namespace SharedMeta.Client
                 NamedRandoms = namedRandoms,
                 Config = entityConfig,
                 ConfigType = config.ConfigType,
-                ConfigVersion = subResult.ConfigVersion,
+                ConfigVersions = subResult.ConfigVersions,
+                Configs = serviceConfigs,
             };
             newConnection.SubscribeBroadcasts(_serializer, config.PatchApplier, LookupConfigByMethodId, this);
             if (!string.IsNullOrEmpty(config.ServiceName))
@@ -832,7 +867,44 @@ namespace SharedMeta.Client
         {
             if (config.ConfigType == null) return Task.FromResult<object?>(null);
 
-            if (!_configProviders.TryGetValue(config.ConfigType, out var invoker))
+            // Index 0 is always the entity's legacy primary config — [ServiceConfig] entries
+            // (remaining indices) are resolved separately via ResolveServiceConfigsAsync.
+            var primaryVersion = subResult.ConfigVersions is { Count: > 0 } cvs ? cvs[0] : default;
+            return ResolveConfigByTypeAsync(config.ConfigType, primaryVersion, entityId, config.ServiceName);
+        }
+
+        /// <summary>
+        /// Resolve every <see cref="MetaServiceConfig.ServiceConfigTypes"/> entry declared on
+        /// the service, positionally parallel to <c>subResult.ConfigVersions[1..]</c>. Returns
+        /// null when the service has no [ServiceConfig] entries.
+        /// </summary>
+        private async Task<IReadOnlyList<object>?> ResolveServiceConfigsAsync(MetaServiceConfig config, NetworkSubscribeResult subResult, string entityId)
+        {
+            if (config.ServiceConfigTypes is not { Count: > 0 } types) return null;
+
+            var versions = subResult.ConfigVersions;
+            var results = new object[types.Count];
+            for (int i = 0; i < types.Count; i++)
+            {
+                // Version list is [legacy primary, serviceConfig0, serviceConfig1, ...] — entry i
+                // is at index i+1. Missing entries (shorter list than declared types) resolve
+                // under default(MetaConfigVersion) rather than throwing — same permissive
+                // fallback the legacy config path takes for "no config system".
+                var version = versions is { } v && v.Count > i + 1 ? v[i + 1] : default;
+                results[i] = await ResolveConfigByTypeAsync(types[i], version, entityId, config.ServiceName).ConfigureAwait(false)
+                    ?? throw new InvalidOperationException(
+                        $"[SharedMeta] IClientMetaConfigProvider<{types[i].Name}> returned null for entity '{entityId}'.");
+            }
+            return results;
+        }
+
+        /// <summary>
+        /// Shared resolve-and-memoize core for both the legacy primary config (<see cref="ResolveConfigAsync"/>)
+        /// and each [ServiceConfig] entry (<see cref="ResolveServiceConfigsAsync"/>).
+        /// </summary>
+        private Task<object?> ResolveConfigByTypeAsync(Type configType, MetaConfigVersion version, string entityId, string serviceName)
+        {
+            if (!_configProviders.TryGetValue(configType, out var invoker))
             {
                 // Fail loud at the first subscribe instead of silently propagating a null
                 // config and detonating later inside service code with an opaque NRE on
@@ -843,31 +915,31 @@ namespace SharedMeta.Client
                 // [MetaService(DefaultConfig = true)] only, and a missing provider is an
                 // error, not a warning.
                 throw new InvalidOperationException(
-                    $"[SharedMeta] No IClientMetaConfigProvider<{config.ConfigType.Name}> registered " +
-                    $"for service '{config.ServiceName}' on entity '{entityId}'. Register before subscribing:\n\n" +
-                    $"    resolver.RegisterConfigProvider<{config.ConfigType.Name}>(\n" +
-                    $"        new StaticConfigProvider<{config.ConfigType.Name}>(yourLoadedConfig));\n\n" +
+                    $"[SharedMeta] No IClientMetaConfigProvider<{configType.Name}> registered " +
+                    $"for service '{serviceName}' on entity '{entityId}'. Register before subscribing:\n\n" +
+                    $"    resolver.RegisterConfigProvider<{configType.Name}>(\n" +
+                    $"        new StaticConfigProvider<{configType.Name}>(yourLoadedConfig));\n\n" +
                     $"or for server-driven configs (recommended for real servers):\n\n" +
-                    $"    resolver.RegisterConfigProvider<{config.ConfigType.Name}>(\n" +
-                    $"        new DownloadingConfigProvider<{config.ConfigType.Name}>(\n" +
+                    $"    resolver.RegisterConfigProvider<{configType.Name}>(\n" +
+                    $"        new DownloadingConfigProvider<{configType.Name}>(\n" +
                     $"            urlResolver: client.ConfigDownloadUrlResolver(stateTypeName),\n" +
                     $"            downloader:  UnityConfigDownloader.DownloadAsync,\n" +
                     $"            serializer:  client.Serializer));\n\n" +
                     $"As of SharedMeta 0.17.0 the generator no longer silently registers a default-" +
                     $"constructed StaticConfigProvider; opt in by adding DefaultConfig = true on the " +
-                    $"[MetaService] attribute if an empty {config.ConfigType.Name}() is intentionally " +
+                    $"[MetaService] attribute if an empty {configType.Name}() is intentionally " +
                     $"acceptable as a fallback.");
             }
 
             // Memoize per (TConfig, version): share one provider invocation across every entity
             // that uses this config at this version, and across concurrent in-flight subscribes.
-            var key = (config.ConfigType, subResult.ConfigVersion);
+            var key = (configType, version);
             Task<object?> task;
             lock (_lock)
             {
                 if (!_resolvedConfigByVersion.TryGetValue(key, out task!))
                 {
-                    task = invoker(subResult.ConfigVersion);
+                    task = invoker(version);
                     _resolvedConfigByVersion[key] = task;
                 }
             }
@@ -907,10 +979,21 @@ namespace SharedMeta.Client
             public MetaRandom? OptimisticRandom { get; set; }
             public MetaRandom[]? NamedRandoms { get; set; }
             public object? Config { get; set; }
+            /// <summary>
+            /// Resolved <see cref="SharedMeta.Core.ServiceConfigAttribute"/> values, positional
+            /// (parallel to <see cref="MetaServiceConfig.ServiceConfigTypes"/>). Null/empty when
+            /// the service declares none. 0.33.0+
+            /// </summary>
+            public IReadOnlyList<object>? Configs { get; set; }
             /// <summary>0.20.3: tracked for <see cref="GetSubscribedEntities"/> debug snapshot.</summary>
             public Type? ConfigType { get; init; }
-            /// <summary>0.20.3: tracked for <see cref="GetSubscribedEntities"/> debug snapshot.</summary>
-            public MetaConfigVersion ConfigVersion { get; init; }
+            /// <summary>
+            /// Resolved config version(s) for this entity — index 0 is the legacy primary config
+            /// when declared, remaining indices are <see cref="ServiceConfigAttribute"/> entries
+            /// in declaration order. 0.33.0+ (was a single scalar <c>ConfigVersion</c> pre-0.33).
+            /// </summary>
+            public IReadOnlyList<MetaConfigVersion>? ConfigVersions { get; init; }
+            private MetaConfigVersion PrimaryConfigVersion => ConfigVersions is { Count: > 0 } cv ? cv[0] : default;
 
             // 0.21.0 — per-call config drift detection. Server sends ExecutedConfigVersion on every
             // RpcResponse / EntityBroadcast. When it differs from this entity's session ConfigVersion
@@ -950,7 +1033,7 @@ namespace SharedMeta.Client
                 // Default(0,0,0) = "no config system" sentinel from the server. Use session.
                 if (executedVersion.Major == 0 && executedVersion.Minor == 0 && executedVersion.Patch == 0)
                     return Config;
-                if (executedVersion == ConfigVersion) return Config;
+                if (executedVersion == PrimaryConfigVersion) return Config;
                 if (_configByVersion.TryGetValue(executedVersion, out var cached)) return cached;
 
                 // Cache miss: fire fetch (idempotent if already in flight) and emit one-time diag.
@@ -969,7 +1052,7 @@ namespace SharedMeta.Client
                     Core.Logging.MetaLog.Debug(
                         $"[MetaServiceResolver] Entity '{EntityId}' broadcast carries ExecutedConfigVersion " +
                         $"{executedVersion.Major}.{executedVersion.Minor}.{executedVersion.Patch} but session is pinned at " +
-                        $"{ConfigVersion.Major}.{ConfigVersion.Minor}.{ConfigVersion.Patch}. Replaying under session config; " +
+                        $"{PrimaryConfigVersion.Major}.{PrimaryConfigVersion.Minor}.{PrimaryConfigVersion.Patch}. Replaying under session config; " +
                         $"future broadcasts at this version will use the fetched config.");
                 }
                 return Config;
@@ -1085,7 +1168,8 @@ namespace SharedMeta.Client
                     // from the session (e.g. mid-session config rollout). Falls back to session
                     // Config on cache miss + kicks off a background fetch so the next broadcast
                     // at this version uses the right config.
-                    var replayConfig = ResolveConfigForBroadcast(broadcast.ExecutedConfigVersion);
+                    var replayConfig = ResolveConfigForBroadcast(
+                        broadcast.ExecutedConfigVersions is { Count: > 0 } ecv ? ecv[0] : default);
                     foreignConfig.EntityReplayDispatcher(
                         StateContainer.State,
                         broadcast.MethodId,
@@ -1097,7 +1181,8 @@ namespace SharedMeta.Client
                         OptimisticRandom,
                         NamedRandoms,
                         replayConfig,
-                        _crossEntityResolver);
+                        _crossEntityResolver,
+                        Configs);
                     StateContainer.NotifyMutated();
                 }
                 catch (Exception ex)

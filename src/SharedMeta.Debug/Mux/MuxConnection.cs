@@ -114,7 +114,7 @@ namespace SharedMeta.Debug.Mux
                 StateBytes = resp.StateBytes ?? Array.Empty<byte>(),
                 OptimisticRandomBytes = resp.OptimisticRandomBytes,
                 NamedRandomsBytes = resp.NamedRandomsBytes,
-                ConfigVersion = new MetaConfigVersion(resp.ConfigMajorVersion, resp.ConfigMinorVersion, resp.ConfigPatchVersion),
+                ConfigVersions = resp.ConfigVersions,
                 FeatureRequirement = resp.FeatureRequirement,
                 AugmentedCapabilities = resp.AugmentedCapabilities,
             };

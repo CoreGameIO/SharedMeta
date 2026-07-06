@@ -211,11 +211,14 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        private IReadOnlyList<MetaRandom>? _namedRandoms;");
             sb.AppendLine("        private readonly object? _config;");
             // 0.21.0: optional version-aware config resolver from EntityConnection. When the
-            // server's ExecutedConfigVersion (carried on each RpcResponse/EntityBroadcast)
+            // server's ExecutedConfigVersions[0] (carried on each RpcResponse/EntityBroadcast)
             // differs from this session's pin, the replay path passes the version into
             // SetContext, which calls this resolver to materialize the right config branch.
             // Null when the entity has no config system — _config alone is used.
             sb.AppendLine("        private readonly System.Func<SharedMeta.Core.MetaConfigVersion, object?>? _configResolver;");
+            // 0.33.0+ Resolved [ServiceConfig] values, positional (parallel to
+            // MetaServiceConfig.ServiceConfigTypes). Null/empty when the service declares none.
+            sb.AppendLine("        private readonly System.Collections.Generic.IReadOnlyList<object>? _serviceConfigs;");
             sb.AppendLine($"        private const string ServiceName = \"{interfaceName}\";");
             sb.AppendLine($"        private Exception? _errorException;");
 
@@ -331,7 +334,8 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            MetaRandom? optimisticRandom = null,");
             sb.AppendLine($"            object? config = null,");
             sb.AppendLine($"            IReadOnlyList<MetaRandom>? namedRandoms = null,");
-            sb.AppendLine($"            System.Func<SharedMeta.Core.MetaConfigVersion, object?>? configResolver = null)");
+            sb.AppendLine($"            System.Func<SharedMeta.Core.MetaConfigVersion, object?>? configResolver = null,");
+            sb.AppendLine($"            System.Collections.Generic.IReadOnlyList<object>? serviceConfigs = null)");
             sb.AppendLine("        {");
             sb.AppendLine("            _network = network;");
             sb.AppendLine("            _serializer = serializer;");
@@ -343,6 +347,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            _namedRandoms = namedRandoms;");
             sb.AppendLine("            _config = config;");
             sb.AppendLine("            _configResolver = configResolver;");
+            sb.AppendLine("            _serviceConfigs = serviceConfigs;");
             sb.AppendLine($"            _service = new {namespaceName}.{implClassName}();");
             if (hasDeepDesync)
                 sb.AppendLine($"            _patchTrackedService = new {namespaceName}.{patchTrackedClassName}();");
@@ -1117,6 +1122,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            ctx.ServerTimeTicks = serverTimeTicks;");
             sb.AppendLine("            ctx.Random = _optimisticRandom;");
             sb.AppendLine("            ctx.Config = _config;");
+            sb.AppendLine("            ctx.Configs = _serviceConfigs;");
             sb.AppendLine("            ctx.NamedRandoms = _namedRandoms;");
             // 0.20.0: set instance Context on impl(s) directly + wire the client-side sibling
             // resolver so user code can call Get{Iface}SiblingAsync() / GetI{Iface}(self) and
@@ -1305,6 +1311,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            ctx.ServerTimeTicks = serverTimeTicks;");
             sb.AppendLine("            ctx.Random = _optimisticRandom;");
             sb.AppendLine("            ctx.Config = _config;");
+            sb.AppendLine("            ctx.Configs = _serviceConfigs;");
             sb.AppendLine("            ctx.NamedRandoms = _namedRandoms;");
             // 0.20.0: set instance Context on impl(s) directly + wire the client-side sibling
             // resolver so user code can call Get{Iface}SiblingAsync() / GetI{Iface}(self) and
@@ -1488,6 +1495,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            ctx.CrossEntityResolver = _crossEntityResolver;");
             sb.AppendLine("            ctx.Random = _optimisticRandom;");
             sb.AppendLine("            ctx.Config = _config;");
+            sb.AppendLine("            ctx.Configs = _serviceConfigs;");
             sb.AppendLine("            ctx.NamedRandoms = _namedRandoms;");
             // 0.20.0: set instance Context on impl(s) directly + wire the client-side sibling
             // resolver so user code can call Get{Iface}SiblingAsync() / GetI{Iface}(self) and
@@ -1882,6 +1890,11 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            ctx.Config = (executedConfigVersion.Major == 0 && executedConfigVersion.Minor == 0 && executedConfigVersion.Patch == 0)");
             sb.AppendLine("                ? _config");
             sb.AppendLine("                : (_configResolver?.Invoke(executedConfigVersion) ?? _config);");
+            // [ServiceConfig] entries don't participate in per-broadcast drift resolution
+            // (only the legacy primary config does, via _configResolver above) — always the
+            // session's resolved set, same simplification the legacy config's own
+            // EntityReplayDispatcher path already takes for foreign-service replay.
+            sb.AppendLine("            ctx.Configs = _serviceConfigs;");
             sb.AppendLine("            ctx.ServerRandom = new MetaRandomReplayer(ctx);");
             sb.AppendLine("            ctx.NamedRandoms = _namedRandoms;");
             // 0.20.0: set instance Context on impl(s) directly + wire the client-side sibling
@@ -1918,6 +1931,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            var ctx = new ClientMetaContext<{stateTypeName}>(_state, _serializer);");
             sb.AppendLine("            ctx.EntityId = _network.EntityId ?? string.Empty;");
             sb.AppendLine("            ctx.Config = _config;");
+            sb.AppendLine("            ctx.Configs = _serviceConfigs;");
             sb.AppendLine("            ctx.NamedRandoms = _namedRandoms;");
             sb.AppendLine("            ctx.SiblingServiceResolver = type => _crossEntityResolver?.ResolveSibling(type, ctx);");
             sb.AppendLine("            _service.Context = ctx;");
@@ -2077,7 +2091,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine("                    }");
                     sb.AppendLine("                    else");
                     sb.AppendLine("                    {");
-                    sb.AppendLine("                        SetContext(broadcast.ReplayContext, broadcast.CallerId, broadcast.ServerTimeTicks, broadcast.ExecutedConfigVersion);");
+                    sb.AppendLine("                        SetContext(broadcast.ReplayContext, broadcast.CallerId, broadcast.ServerTimeTicks, broadcast.ExecutedConfigVersions is { Count: > 0 } ? broadcast.ExecutedConfigVersions[0] : default);");
                     if (method.IsAsync)
                     {
                         sb.AppendLine($"                        BroadcastValidator.EnsureSyncCompletion(_service.{method.MethodName}(@event), ServiceName, \"{method.MethodName}\");");
@@ -2299,7 +2313,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}}}");
             sb.AppendLine($"{indent}else");
             sb.AppendLine($"{indent}{{");
-            sb.AppendLine($"{indent}    SetContext(broadcast.ReplayContext, broadcast.CallerId, broadcast.ServerTimeTicks, broadcast.ExecutedConfigVersion);");
+            sb.AppendLine($"{indent}    SetContext(broadcast.ReplayContext, broadcast.CallerId, broadcast.ServerTimeTicks, broadcast.ExecutedConfigVersions is {{ Count: > 0 }} ? broadcast.ExecutedConfigVersions[0] : default);");
             if (paramCount == 0)
             {
                 if (isAsyncMethod)

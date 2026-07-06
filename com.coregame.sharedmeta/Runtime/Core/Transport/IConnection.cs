@@ -243,7 +243,13 @@ namespace SharedMeta.Core.Transport
         public byte[] StateBytes { get; set; } = Array.Empty<byte>();
         public byte[]? OptimisticRandomBytes { get; set; }
         public byte[]? NamedRandomsBytes { get; set; }
-        public MetaConfigVersion ConfigVersion { get; set; }
+        /// <summary>
+        /// Resolved config version(s) — index 0 is the entity's legacy primary config when
+        /// declared, remaining indices are <see cref="SharedMeta.Core.ServiceConfigAttribute"/>
+        /// entries in declaration order. Null/empty means "no config system". 0.33.0+ (was a
+        /// single scalar <c>ConfigVersion</c> pre-0.33).
+        /// </summary>
+        public List<MetaConfigVersion>? ConfigVersions { get; set; }
         /// <summary>
         /// 0.24.0+ Current entity sequence number at subscribe time. Client seeds its per-entity
         /// seq tracker with this value so the next Resume's <c>SubscriptionClaim.LastKnownEntitySequence</c>

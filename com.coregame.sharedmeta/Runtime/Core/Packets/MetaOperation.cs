@@ -61,7 +61,20 @@ namespace SharedMeta.Core.Packets
 
         // ── Server context for replay ──────────────────────────────────────
         [Id(10), Key(10)] public long ServerTimeTicks { get; set; }
-        [Id(11), Key(11)] public MetaConfigVersion ExecutedConfigVersion { get; set; }
+        // 0.33.0+ Id/Key 11 (ExecutedConfigVersion, single MetaConfigVersion) retired — a service
+        // can now declare multiple independently-versioned configs ([ServiceConfig]), so one
+        // scalar can no longer represent "the" resolved version. Never reuse id 11; old recorded
+        // broadcasts may still carry data there. Replaced by ExecutedConfigVersions below: index 0
+        // is the legacy primary ConfigType's resolved version when declared (what id 11 used to
+        // carry alone), remaining indices are [ServiceConfig] entries in declaration order.
+        /// <summary>
+        /// Resolved <see cref="MetaConfigVersion"/> for the target service's legacy primary config
+        /// (index 0, when <c>[MetaService(ConfigType=...)]</c> is declared) and every
+        /// <see cref="SharedMeta.Core.ServiceConfigAttribute"/> entry (remaining indices,
+        /// declaration order). Null/empty means "no config system" — client falls back to its
+        /// session-resolved version(s).
+        /// </summary>
+        [Id(18), Key(18)] public List<MetaConfigVersion>? ExecutedConfigVersions { get; set; }
 
         // ── Method-level error (set when the method body returned an error) ──
         [Id(12), Key(12)] public string? Error { get; set; }
@@ -96,7 +109,7 @@ namespace SharedMeta.Core.Packets
             RandomScrollDelta = 0;
             NamedRandomScrollDeltas = null;
             ServerTimeTicks = 0;
-            ExecutedConfigVersion = default;
+            ExecutedConfigVersions = null;
             Error = null;
             DeepDesyncCrc = null;
             Triggers = null;

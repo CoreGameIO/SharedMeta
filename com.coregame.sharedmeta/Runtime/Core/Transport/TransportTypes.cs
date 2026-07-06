@@ -28,17 +28,16 @@ namespace SharedMeta.Core.Transport
         /// </summary>
         [Id(2), Key(2)] public byte[]? OptimisticRandomBytes { get; set; }
 
-        /// <summary>Config major version (schema). 0 = no config.</summary>
-        [Id(3), Key(3)] public int ConfigMajorVersion { get; set; }
-
-        /// <summary>Config minor version (data). 0 = no config.</summary>
-        [Id(4), Key(4)] public int ConfigMinorVersion { get; set; }
+        // 0.33.0+ Id/Key 3/4/6 (ConfigMajor/Minor/PatchVersion ints) retired — a service can now
+        // declare multiple independently-versioned configs ([ServiceConfig]), so a single
+        // Major/Minor/Patch triple can no longer represent "the" resolved version. Never reuse
+        // ids 3/4/6. Replaced by ConfigVersions below: index 0 is the legacy primary ConfigType's
+        // resolved version when declared (what ids 3/4/6 used to carry alone), remaining indices
+        // are [ServiceConfig] entries in declaration order. MetaConfigVersion is already fully
+        // wire-serializable, so no int-triple packing is needed for the new field.
 
         /// <summary>Serialized named-random states (packed positional list) for deterministic replay.</summary>
         [Id(5), Key(5)] public byte[]? NamedRandomsBytes { get; set; }
-
-        /// <summary>Config patch version (content). 0 = no patch versioning / pre-0.19.0 entity.</summary>
-        [Id(6), Key(6)] public int ConfigPatchVersion { get; set; }
 
         /// <summary>
         /// 0.22.0+ Per-entity capability overlay returned by the server's subscribe path.
@@ -47,6 +46,13 @@ namespace SharedMeta.Core.Transport
         /// and entity-level capabilities at the gate.
         /// </summary>
         [Id(7), Key(7)] public EntityAugmentedCapabilities? AugmentedCapabilities { get; set; }
+
+        /// <summary>
+        /// Resolved <see cref="MetaConfigVersion"/> for the entity's legacy primary config
+        /// (index 0, when declared) and every <see cref="SharedMeta.Core.ServiceConfigAttribute"/>
+        /// entry (remaining indices, declaration order). Null/empty means "no config system".
+        /// </summary>
+        [Id(8), Key(8)] public System.Collections.Generic.List<MetaConfigVersion>? ConfigVersions { get; set; }
     }
 
     /// <summary>

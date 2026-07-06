@@ -56,6 +56,14 @@ namespace SharedMeta.Core
         object? GetEntityConfig(string entityId);
 
         /// <summary>
+        /// 0.33.0+ Get every <c>[ServiceConfig]</c> entry for a subscribed entity, positional
+        /// (declaration order). Returns null/empty if the entity has none. Used by generated
+        /// LocalEntityCaller to propagate Configs to cross-entity context — the
+        /// <see cref="GetEntityConfig"/> counterpart for the symmetric [ServiceConfig] list.
+        /// </summary>
+        IReadOnlyList<object>? GetEntityConfigs(string entityId);
+
+        /// <summary>
         /// Serializer for creating client MetaContext.
         /// </summary>
         IMetaSerializer Serializer { get; }

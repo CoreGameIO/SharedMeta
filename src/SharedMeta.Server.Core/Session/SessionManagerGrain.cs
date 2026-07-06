@@ -573,7 +573,7 @@ namespace SharedMeta.Server.Core.Session
                     EntitySequenceNumber = snapshot.CurrentSequenceNumber,
                     OptimisticRandomBytes = snapshot.OptimisticRandomBytes,
                     NamedRandomsBytes = snapshot.NamedRandomsBytes,
-                    ConfigVersion = snapshot.ConfigVersion
+                    ConfigVersions = snapshot.ConfigVersions
                 };
             }
 
@@ -619,7 +619,7 @@ namespace SharedMeta.Server.Core.Session
                     EntitySequenceNumber = snapshot.CurrentSequenceNumber,
                     OptimisticRandomBytes = snapshot.OptimisticRandomBytes,
                     NamedRandomsBytes = snapshot.NamedRandomsBytes,
-                    ConfigVersion = snapshot.ConfigVersion,
+                    ConfigVersions = snapshot.ConfigVersions,
                     AugmentedCapabilities = snapshot.AugmentedCapabilities,
                 };
             }

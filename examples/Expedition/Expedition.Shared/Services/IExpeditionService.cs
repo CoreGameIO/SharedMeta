@@ -7,7 +7,11 @@ namespace Expedition.Shared
     /// Move and RemoveObstacle use CrossOptimistic mode for responsive gameplay
     /// with cross-entity calls to profile for energy/money management.
     /// </summary>
+    // Deliberately kept on the legacy DefaultConfig — same reasoning as IExpeditionProfileService
+    // (no xUnit coverage, [MetaStateVersion] on this state not yet verified against [ServiceConfig]).
+#pragma warning disable CS0618
     [MetaService(StateType = typeof(ExpeditionState), AccessPolicy = EntityAccessPolicy.Authorized, DefaultConfig = true)]
+#pragma warning restore CS0618
     public interface IExpeditionService : IMetaService
     {
         /// <summary>

@@ -246,9 +246,11 @@ namespace SharedMeta.Server.Core
         /// <summary>
         /// Returns true when <paramref name="resolvedClientConfigVersion"/> is high enough for
         /// the entity's current state schema. Called by EntityGrain during SubscribeAsync.
+        /// <paramref name="callerClientVersion"/> (0.33.0+) lets implementations also gate on
+        /// <c>[ServiceConfig]</c>-linked conditions, each resolved independently.
         /// Default returns true (no schema requirements declared).
         /// </summary>
-        bool IsClientConfigCompatible(MetaConfigVersion resolvedClientConfigVersion) => true;
+        bool IsClientConfigCompatible(MetaConfigVersion resolvedClientConfigVersion, string? callerClientVersion) => true;
     }
 
     /// <summary>

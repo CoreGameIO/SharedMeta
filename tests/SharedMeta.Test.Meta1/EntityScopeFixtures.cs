@@ -43,7 +43,8 @@ namespace SharedMeta.Test.Meta1
         [MemoryPackOrder(0)] public List<(int Major, int Minor, int Patch)> ConfigsSeen { get; set; } = new();
     }
 
-    [MetaService(StateType = typeof(SharedScopeState), ConfigType = typeof(SharedScopeConfig), DefaultConfig = true)]
+    [MetaService(StateType = typeof(SharedScopeState))]
+    [ServiceConfig(typeof(SharedScopeConfig), "Config")]
     public interface ISharedScopeService : IMetaService
     {
         /// <summary>Server-mode call that records the Config version it saw into state.</summary>
@@ -117,7 +118,8 @@ namespace SharedMeta.Test.Meta1
         [MemoryPackOrder(2)] public int InitConfigMinor { get; set; }
     }
 
-    [MetaService(StateType = typeof(GlobalScopeState), ConfigType = typeof(GlobalScopeConfig), DefaultConfig = true)]
+    [MetaService(StateType = typeof(GlobalScopeState))]
+    [ServiceConfig(typeof(GlobalScopeConfig), "Config")]
     public interface IGlobalScopeService : IMetaService
     {
         [MetaMethod(Mode = ExecutionMode.Query)]

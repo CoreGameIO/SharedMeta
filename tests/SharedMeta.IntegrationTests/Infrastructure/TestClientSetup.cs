@@ -59,6 +59,33 @@ public class TestClientSetup : IAsyncDisposable
         // Register services using generated aggregate method
         _client.Resolver.RegisterAllServices();
 
+        // 0.33.0+ CounterConfig moved from [MetaService(DefaultConfig=true)] (which
+        // auto-registered a fallback StaticConfigProvider on both sides) to [ServiceConfig],
+        // which has no auto-default by design. Register the client-side equivalent once,
+        // centrally, so the ~16 CounterService-dependent test files don't each need to.
+        _client.Resolver.RegisterConfigProvider(
+            new SharedMeta.Client.StaticConfigProvider<SharedMeta.Test.Meta1.CounterConfig>(new SharedMeta.Test.Meta1.CounterConfig()));
+        // Same migration for the EntityScope Shared/Global fixtures — these are
+        // version-dependent (per [MetaConfigVersion] rules), so echo Major/Minor/Patch from
+        // the resolved version, mirroring the server-side test providers exactly.
+        _client.Resolver.RegisterConfigProvider(
+            new VersionEchoConfigProvider<SharedMeta.Test.Meta1.SharedScopeConfig>(v => new SharedMeta.Test.Meta1.SharedScopeConfig
+            {
+                Major = v.Major,
+                Minor = v.Minor,
+                Patch = v.Patch,
+            }));
+        _client.Resolver.RegisterConfigProvider(
+            new VersionEchoConfigProvider<SharedMeta.Test.Meta1.GlobalScopeConfig>(v => new SharedMeta.Test.Meta1.GlobalScopeConfig
+            {
+                Major = v.Major,
+                Minor = v.Minor,
+            }));
+        // MigrationTest.cs's config: Query-mode only, so the client's own resolved value is
+        // never observed by test assertions (server-authoritative) — a fixed instance is fine.
+        _client.Resolver.RegisterConfigProvider(
+            new SharedMeta.Client.StaticConfigProvider<SharedMeta.Test.Meta1.MigrationConfig>(new SharedMeta.Test.Meta1.MigrationConfig()));
+
         // In-process tests run single-threaded — process broadcasts immediately
         _client.Dispatcher.ImmediateMode = true;
     }
@@ -112,4 +139,17 @@ public class TestClientSetup : IAsyncDisposable
     {
         await _client.DisposeAsync();
     }
+}
+
+/// <summary>
+/// Shared client-side test config provider — materializes <typeparamref name="T"/> by
+/// echoing the resolved <see cref="MetaConfigVersion"/> through a factory. Used for fixtures
+/// whose config value is expected to mirror the resolved version (e.g. EntityScope Shared/Global
+/// fixtures) rather than a fixed instance.
+/// </summary>
+public sealed class VersionEchoConfigProvider<T> : IClientMetaConfigProvider<T> where T : class
+{
+    private readonly Func<MetaConfigVersion, T> _factory;
+    public VersionEchoConfigProvider(Func<MetaConfigVersion, T> factory) => _factory = factory;
+    public Task<T> GetConfigAsync(MetaConfigVersion version) => Task.FromResult(_factory(version));
 }

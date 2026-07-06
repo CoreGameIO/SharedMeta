@@ -201,7 +201,7 @@ namespace SharedMeta.Client.Network
                 StateBytes = response.StateBytes ?? Array.Empty<byte>(),
                 OptimisticRandomBytes = response.OptimisticRandomBytes,
                 NamedRandomsBytes = response.NamedRandomsBytes,
-                ConfigVersion = new MetaConfigVersion(response.ConfigMajorVersion, response.ConfigMinorVersion, response.ConfigPatchVersion),
+                ConfigVersions = response.ConfigVersions,
                 EntitySequenceNumber = response.EntitySequenceNumber,
                 FeatureRequirement = response.FeatureRequirement,
                 AugmentedCapabilities = response.AugmentedCapabilities,

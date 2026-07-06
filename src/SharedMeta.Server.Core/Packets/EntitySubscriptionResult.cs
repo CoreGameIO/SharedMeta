@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Orleans;
 using SharedMeta.Core;
 using SharedMeta.Core.Transport;
@@ -16,8 +17,11 @@ namespace SharedMeta.Server.Core.Session
         [Id(2)] public ReadOnlyMemory<byte> StateBytes { get; set; }
         [Id(3)] public long EntitySequenceNumber { get; set; }
         [Id(4)] public byte[]? OptimisticRandomBytes { get; set; }
-        [Id(5)] public MetaConfigVersion ConfigVersion { get; set; }
+        // 0.33.0+ Id 5 (ConfigVersion, single MetaConfigVersion) retired — see ConfigVersions below.
         [Id(6)] public byte[]? NamedRandomsBytes { get; set; }
+
+        /// <summary>Resolved config version(s) — index 0 legacy primary when declared, remaining <see cref="ServiceConfigAttribute"/> entries.</summary>
+        [Id(9)] public List<MetaConfigVersion>? ConfigVersions { get; set; }
         /// <summary>
         /// Structured rejection details when Success=false and the failure is a
         /// version-compatibility mismatch (Breaking schema gate, RejectedMethods entry, etc.).

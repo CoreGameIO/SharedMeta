@@ -3,12 +3,14 @@ using SharedMeta.Core;
 namespace SharedMeta.Test.Meta1
 {
     /// <summary>
-    /// Sibling service on CounterState with a non-primary config type. Verifies multi-config
-    /// sibling support — <see cref="ICounterService"/> uses CounterConfig (DefaultConfig=true),
-    /// this service uses <see cref="CounterAltConfig"/>. The async sibling getter resolves
-    /// each service's typed Config independently through their own IMetaConfigProvider.
+    /// Sibling service on CounterState with a distinct config type. Verifies multi-config
+    /// sibling support — <see cref="ICounterService"/> uses CounterConfig, this service uses
+    /// <see cref="CounterAltConfig"/> via [ServiceConfig]. The async sibling getter resolves
+    /// each service's typed Config independently through their own IMetaConfigProvider,
+    /// pinning it to this instance's settable Config property (not the shared Context).
     /// </summary>
-    [MetaService(StateType = typeof(CounterState), ConfigType = typeof(CounterAltConfig))]
+    [MetaService(StateType = typeof(CounterState))]
+    [ServiceConfig(typeof(CounterAltConfig), "Config")]
     public interface IAltConfigService : IMetaService
     {
         /// <summary>

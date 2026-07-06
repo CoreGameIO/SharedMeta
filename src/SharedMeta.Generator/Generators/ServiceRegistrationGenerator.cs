@@ -68,6 +68,16 @@ namespace SharedMeta.Generator.Generators
                 }
             }
 
+            // 0.33.0+ [ServiceConfig] entries — independently-versioned configs, symmetric with
+            // each other. Positional: declaration order = list index (after the legacy primary's
+            // index 0 on the wire, when a legacy ConfigType is also declared).
+            var serviceConfigAttrs = symbol.GetAttributes()
+                .Where(a => a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.ServiceConfigAttribute")
+                .Select(a => (a.ConstructorArguments.Length > 0 ? a.ConstructorArguments[0].Value as INamedTypeSymbol : null)?.ToDisplayString())
+                .Where(t => t != null)
+                .Select(t => t!)
+                .ToList();
+
             var interfaceName = symbol.Name;
             var namespaceName = symbol.ContainingNamespace.ToDisplayString();
 
@@ -105,7 +115,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        {");
             sb.AppendLine($"            resolver.RegisterService<{baseName}ApiClient>(new MetaServiceConfig");
             sb.AppendLine("            {");
-            EmitConfigBody(sb, node, baseName, stateTypeFullName, stateTypeName, configTypeFullName, interfaceName, namespaceName, serializer);
+            EmitConfigBody(sb, node, baseName, stateTypeFullName, stateTypeName, configTypeFullName, interfaceName, namespaceName, serializer, serviceConfigAttrs);
             sb.AppendLine("            });");
             if (configTypeFullName != null && usesDefaultConfig)
             {
@@ -129,7 +139,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        {");
             sb.AppendLine($"            return new MetaServiceConfig");
             sb.AppendLine("            {");
-            EmitConfigBody(sb, node, baseName, stateTypeFullName, stateTypeName, configTypeFullName, interfaceName, namespaceName, serializer);
+            EmitConfigBody(sb, node, baseName, stateTypeFullName, stateTypeName, configTypeFullName, interfaceName, namespaceName, serializer, serviceConfigAttrs);
             sb.AppendLine("            };");
             sb.AppendLine("        }");
             sb.AppendLine("    }");
@@ -147,7 +157,8 @@ namespace SharedMeta.Generator.Generators
             string? configTypeFullName,
             string interfaceName,
             string namespaceName,
-            Utilities.DetectedSerializer serializer)
+            Utilities.DetectedSerializer serializer,
+            List<string> serviceConfigTypeNames)
         {
             sb.AppendLine($"                ServiceName = \"{interfaceName}\",");
             sb.AppendLine($"                ApiClientType = typeof({baseName}ApiClient),");
@@ -157,9 +168,14 @@ namespace SharedMeta.Generator.Generators
             {
                 sb.AppendLine($"                ConfigType = typeof({configTypeFullName}),");
             }
+            if (serviceConfigTypeNames.Count > 0)
+            {
+                var typeofList = string.Join(", ", serviceConfigTypeNames.Select(t => $"typeof({t})"));
+                sb.AppendLine($"                ServiceConfigTypes = new System.Type[] {{ {typeofList} }},");
+            }
             EmitMethodIds(sb, node, interfaceName, namespaceName);
-            sb.AppendLine($"                ApiClientFactory = (network, serializer, stateContainer, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms, configResolver) =>");
-            sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, (EntityStateContainer<{stateTypeFullName}>)stateContainer, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms, configResolver),");
+            sb.AppendLine($"                ApiClientFactory = (network, serializer, stateContainer, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms, configResolver, serviceConfigs) =>");
+            sb.AppendLine($"                    new {baseName}ApiClient(network, serializer, (EntityStateContainer<{stateTypeFullName}>)stateContainer, modeProvider, diagnostics, crossResolver, optimisticRandom, config, namedRandoms, configResolver, serviceConfigs),");
             sb.AppendLine($"                StateContainerFactory = state => new EntityStateContainer<{stateTypeFullName}>(({stateTypeFullName})state),");
             sb.AppendLine($"                PatchApplier = (state, patchBytes, ser) =>");
             sb.AppendLine($"                {{");
@@ -196,7 +212,7 @@ namespace SharedMeta.Generator.Generators
             string namespaceName,
             Utilities.DetectedSerializer serializer)
         {
-            sb.AppendLine($"                EntityReplayDispatcher = (state, methodId, argsBytes, replayContext, callerId, serverTimeTicks, ser, optRandom, namedRandoms, cfg, crossResolver) =>");
+            sb.AppendLine($"                EntityReplayDispatcher = (state, methodId, argsBytes, replayContext, callerId, serverTimeTicks, ser, optRandom, namedRandoms, cfg, crossResolver, serviceConfigs) =>");
             sb.AppendLine($"                {{");
             sb.AppendLine($"                    var ctx = new SharedMeta.Client.ClientMetaContext<{stateTypeFullName}>(({stateTypeFullName})state, ser);");
             sb.AppendLine($"                    ctx.CallerId = callerId;");
@@ -204,6 +220,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                    ctx.BeginReplay(replayContext ?? System.Array.Empty<byte>());");
             sb.AppendLine($"                    ctx.Random = optRandom;");
             sb.AppendLine($"                    ctx.Config = cfg;");
+            sb.AppendLine($"                    ctx.Configs = serviceConfigs;");
             sb.AppendLine($"                    ctx.ServerRandom = new SharedMeta.Core.Random.MetaRandomReplayer(ctx);");
             sb.AppendLine($"                    ctx.NamedRandoms = namedRandoms;");
             sb.AppendLine($"                    var prev = SharedMeta.Core.MetaContextAccessor.Current;");

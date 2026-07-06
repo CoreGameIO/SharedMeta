@@ -9,7 +9,8 @@ namespace SharedMeta.Test.Meta1
     /// of which service triggered it. CounterServiceTests exercise this through the pair
     /// ICounterService + ICounterAuxService.
     /// </summary>
-    [MetaService(StateType = typeof(CounterState), DefaultConfig = true)]
+    [MetaService(StateType = typeof(CounterState))]
+    [ServiceConfig(typeof(CounterConfig), "Config")]
     public interface ICounterAuxService : IMetaService
     {
         /// <summary>

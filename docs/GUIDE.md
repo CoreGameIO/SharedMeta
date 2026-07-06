@@ -478,6 +478,77 @@ public class AbTestConfigResolver : IConfigVersionResolver
 services.AddSingleton<IConfigVersionResolver>(new AbTestConfigResolver());
 ```
 
+### Multiple Configs (`[ServiceConfig]`) — 0.33.0+
+
+A service can declare N configs, each independently versioned/published (own
+`IMetaConfigProvider<TConfig>` / `IClientMetaConfigProvider<TConfig>`, own `[MetaConfigVersion]`
+rules) — all symmetric, no privileged "primary". Unlike multi-config siblings
+(`Get{Iface}SiblingAsync()`, see [Cross-Entity Calls](#6-cross-entity-calls)) or
+`[StatelessMetaService]`'s sibling-style resolution, these resolve **synchronously in every
+execution mode**, including `Optimistic`/`CrossOptimistic` where the client also executes the
+method body predictively.
+
+```csharp
+[MetaService(StateType = typeof(ShopState))]
+[ServiceConfig(typeof(ShopConfig), "Shop")]
+[ServiceConfig(typeof(BalanceConfig), "Balance")]
+[ServiceConfig(typeof(SeasonConfig), "Season")]
+public interface IShopService : IMetaService { ... }
+
+public partial class ShopServiceImpl : IShopService
+{
+    [MetaMethod(Mode = ExecutionMode.Optimistic)]
+    public void Buy(int itemId)
+    {
+        var cost = Shop.BaseCost * Balance.BaseCost * Season.Multiplier;   // generated named accessors
+        // ...
+    }
+}
+```
+
+A service can declare zero, one, or many `[ServiceConfig]` entries — there's no minimum, and no
+entry is treated as "the" config. Positional: declaration order = wire/storage index — same
+deliberate-reseed-on-reorder contract `[NamedRandom]` already has. Generator emits one named
+typed accessor per entry: `protected {TConfig} {Name} => ({TConfig})Context.Configs![i]!;`.
+
+**Legacy `[MetaService(ConfigType=...)]` / `Context.Config`:** `[Obsolete]` (compiler warning)
+but fully functional — existing services keep working unchanged. When a service declares both
+the legacy `ConfigType` and one or more `[ServiceConfig]` entries (a migration-in-progress mix),
+the legacy config occupies wire index 0 and `[ServiceConfig]` entries follow at the remaining
+indices; `Context.Config`/`Context.Configs` are independent lists (a service reads whichever it
+declared). New services should use `[ServiceConfig]` exclusively.
+
+**Wire shape:** config versions travel as a **list**, not a scalar — every per-op / subscribe
+DTO (`MetaOperation.ExecutedConfigVersions`, `CallResponse<T>` family,
+`SubscribeResponse`/`SessionConnectResponse`'s `ConfigVersions`) is `List<MetaConfigVersion>`
+(index 0 = legacy config when declared). This replaced the pre-0.33 single-scalar
+`ExecutedConfigVersion` / `ConfigMajor/Minor/PatchVersion` triple outright — a wire-breaking
+change, not additive.
+
+**Full parity with the legacy primary** — `[ServiceConfig]` entries get the same mechanics the
+legacy `ConfigType` path has, not a reduced subset:
+- **Pin support** — `Private`/`Shared`-scope entities pin each declared entry on first subscribe
+  (`EstablishConfigPinsFromClientVersion`), same as the legacy primary; a later joiner sees the
+  pinned branch, not their own resolved version.
+- **`[EntityScope(Global)]` substitution** — every declared entry resolves under
+  `IConfigVersionResolver.CurrentClientVersion` on a Global entity, so all observers see the
+  same branch regardless of who's calling.
+- **`[MetaStateVersion(N, "M.m", typeof(TConfig))]` schema-floor migration** — a
+  `[ServiceConfig]`-declared type can gate a migration step exactly like the legacy primary can;
+  `[NoMigrate]` pins that entry to the schema-floor branch, and the Breaking-schema compat gate
+  rejects old clients the same way.
+- **Cross-entity / `CrossOptimistic` propagation** — `GetICounterService(otherEntityId)`-style
+  calls propagate every declared entry into the target entity's context
+  (`ICrossEntityResolver.GetEntityConfigs`), not just the legacy primary.
+- **Multi-config sibling resolution** — `Get{Iface}SiblingAsync()` resolves each sibling's own
+  `[ServiceConfig]` entries independently and pins them to that sibling instance's settable
+  property, without touching the caller's shared `Context`.
+
+**Known limitation:** when multiple services share one state and declare *different*
+`[ServiceConfig]` sets, they're aggregated into one list on the shared `Context.Configs`
+(state-wide collapsing) — same simplification the legacy `ConfigType` already uses for
+multi-service states sharing one entity.
+
 ### Per-Client Config Branches & State Migration
 
 > **Added in 0.19.0**: a complete system for routing connecting clients to the correct config branch and migrating entity state schema as the live config advances — without locking older clients out of fresh entities.
@@ -3958,6 +4029,7 @@ The runtime ignores the attribute. It is purely a marker for downstream tooling.
 | `[NoMigrate]` | Method | Skip lazy migration; pin `Context.Config` to the schema-floor branch. (0.19.0+) |
 | `[MinStateVersion(N)]` | Method | Cap migration target at schema N for this method. (0.19.0+) |
 | `[MetaConfig]` | Class | Marks a class as static game configuration |
+| `[ServiceConfig(typeof(TConfig), "Name")]` | Interface | Independently-versioned config, repeatable, all symmetric (no privileged "primary") — resolves synchronously in every execution mode; replaces `[MetaService].ConfigType`/`DefaultConfig` (obsolete but functional). (0.33.0+) |
 | `[MetaConfigVersion(Client = …, Config = …)]` | Class (config) | Per-client config branch routing rule. Pattern grammar: literal / `x` capture / `N+` range / `*` wildcard. Multiple per class. (0.19.0+) |
 | `[SharedState]` | Class | Marks shared state entity |
 | `[Tracked]` | Field | Push-based change tracking property for UI binding (client-only) |

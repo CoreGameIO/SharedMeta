@@ -48,13 +48,16 @@ namespace SharedMeta.Core.Network
         public long[]? NamedRandomScrollDeltas { get; set; }
 
         /// <summary>
-        /// The <see cref="MetaConfigVersion"/> the server actually executed under. Used by the
-        /// client's optimistic / cross-optimistic replay path to pin <c>Context.Config</c> to
-        /// the same branch the server saw, regardless of the client's own session-resolved
-        /// version. Added in 0.21.0. <c>default(MetaConfigVersion)</c> means "no config system"
-        /// — the client falls back to its session-resolved version.
+        /// The <see cref="MetaConfigVersion"/>s the server actually executed under — index 0 is
+        /// the legacy primary config when declared, remaining indices are
+        /// <see cref="SharedMeta.Core.ServiceConfigAttribute"/> entries in declaration order. Used
+        /// by the client's optimistic / cross-optimistic replay path to pin
+        /// <c>Context.Config</c>/<c>Context.Configs</c> to the same branch(es) the server saw,
+        /// regardless of the client's own session-resolved versions. Null/empty means "no config
+        /// system" — the client falls back to its session-resolved version(s). 0.33.0+ (was a
+        /// single scalar <c>ExecutedConfigVersion</c> pre-0.33).
         /// </summary>
-        public MetaConfigVersion ExecutedConfigVersion { get; set; }
+        public List<MetaConfigVersion>? ExecutedConfigVersions { get; set; }
 
         /// <summary>0.26.6+ Server-stamped <see cref="PayloadDebug"/> from <c>MetaOperation.Debug</c>.
         /// Carries entity-seq info, and (when a method is annotated
@@ -103,13 +106,16 @@ namespace SharedMeta.Core.Network
         public long[]? NamedRandomScrollDeltas { get; set; }
 
         /// <summary>
-        /// The <see cref="MetaConfigVersion"/> the server actually executed under. Used by the
-        /// client's optimistic / cross-optimistic replay path to pin <c>Context.Config</c> to
-        /// the same branch the server saw, regardless of the client's own session-resolved
-        /// version. Added in 0.21.0. <c>default(MetaConfigVersion)</c> means "no config system"
-        /// — the client falls back to its session-resolved version.
+        /// The <see cref="MetaConfigVersion"/>s the server actually executed under — index 0 is
+        /// the legacy primary config when declared, remaining indices are
+        /// <see cref="SharedMeta.Core.ServiceConfigAttribute"/> entries in declaration order. Used
+        /// by the client's optimistic / cross-optimistic replay path to pin
+        /// <c>Context.Config</c>/<c>Context.Configs</c> to the same branch(es) the server saw,
+        /// regardless of the client's own session-resolved versions. Null/empty means "no config
+        /// system" — the client falls back to its session-resolved version(s). 0.33.0+ (was a
+        /// single scalar <c>ExecutedConfigVersion</c> pre-0.33).
         /// </summary>
-        public MetaConfigVersion ExecutedConfigVersion { get; set; }
+        public List<MetaConfigVersion>? ExecutedConfigVersions { get; set; }
 
         /// <summary>0.26.6+ Server-stamped <see cref="PayloadDebug"/> from <c>MetaOperation.Debug</c>.
         /// Carries entity-seq info, and (when a method is annotated
@@ -163,13 +169,16 @@ namespace SharedMeta.Core.Network
         public long[]? NamedRandomScrollDeltas { get; set; }
 
         /// <summary>
-        /// The <see cref="MetaConfigVersion"/> the server actually executed under. Used by the
-        /// client's optimistic / cross-optimistic replay path to pin <c>Context.Config</c> to
-        /// the same branch the server saw, regardless of the client's own session-resolved
-        /// version. Added in 0.21.0. <c>default(MetaConfigVersion)</c> means "no config system"
-        /// — the client falls back to its session-resolved version.
+        /// The <see cref="MetaConfigVersion"/>s the server actually executed under — index 0 is
+        /// the legacy primary config when declared, remaining indices are
+        /// <see cref="SharedMeta.Core.ServiceConfigAttribute"/> entries in declaration order. Used
+        /// by the client's optimistic / cross-optimistic replay path to pin
+        /// <c>Context.Config</c>/<c>Context.Configs</c> to the same branch(es) the server saw,
+        /// regardless of the client's own session-resolved versions. Null/empty means "no config
+        /// system" — the client falls back to its session-resolved version(s). 0.33.0+ (was a
+        /// single scalar <c>ExecutedConfigVersion</c> pre-0.33).
         /// </summary>
-        public MetaConfigVersion ExecutedConfigVersion { get; set; }
+        public List<MetaConfigVersion>? ExecutedConfigVersions { get; set; }
 
         /// <summary>
         /// 0.26.6+ Server-stamped <see cref="PayloadDebug"/> from <c>MetaOperation.Debug</c>.

@@ -225,12 +225,14 @@ namespace SharedMeta.Core
         /// The config is provided by IMetaConfigProvider and available via Context.Config.
         /// Takes priority over DefaultConfig.
         /// </summary>
+        [Obsolete("Use [ServiceConfig(typeof(TConfig), \"Name\")] on the interface instead — repeatable, symmetric (no privileged \"primary\" config), and supports zero, one, or many configs per service. ConfigType/DefaultConfig still work unchanged.")]
         public Type? ConfigType { get; set; }
 
         /// <summary>
         /// If true, use the config class marked with [MetaConfig(Default = true)].
         /// No explicit ConfigType reference needed.
         /// </summary>
+        [Obsolete("Use [ServiceConfig(typeof(TConfig), \"Name\")] on the interface instead — repeatable, symmetric (no privileged \"primary\" config), and supports zero, one, or many configs per service. ConfigType/DefaultConfig still work unchanged.")]
         public bool DefaultConfig { get; set; }
 
         /// <summary>
@@ -273,6 +275,54 @@ namespace SharedMeta.Core
         /// </para>
         /// </summary>
         public bool PatchTracking { get; set; } = true;
+    }
+
+    /// <summary>
+    /// Declares an independently-versioned config type on a <c>[MetaService]</c> interface.
+    /// Repeatable — a service can declare zero, one, or many. All declared configs are
+    /// symmetric/equal (no privileged "primary" config); this is the sole config-declaration
+    /// mechanism going forward, replacing <see cref="MetaServiceAttribute.ConfigType"/> /
+    /// <see cref="MetaServiceAttribute.DefaultConfig"/> (obsolete but still functional for
+    /// existing services). Each declared config gets its own
+    /// <c>IMetaConfigProvider&lt;TConfig&gt;</c> (server) /
+    /// <c>IClientMetaConfigProvider&lt;TConfig&gt;</c> (client), resolved and published on its
+    /// own <see cref="MetaConfigVersion"/> — never merged with any other declared config's branch.
+    /// <para>
+    /// Resolved synchronously in every execution mode (Optimistic / Server / CrossOptimistic /
+    /// ServerPatch / ServerReplace) — same per-call resolve-and-cache mechanism as the legacy
+    /// primary <c>Context.Config</c>, just one cache per declared type.
+    /// </para>
+    /// <para>
+    /// Generator emits a named typed accessor on the service's Context partial (e.g.
+    /// <c>protected BalanceConfig Balance =&gt; (BalanceConfig)Context.Configs![0]!;</c>).
+    /// Storage is positional (declaration order = wire/storage index) — same contract as
+    /// <see cref="NamedRandomAttribute"/>: reordering or inserting attributes reseeds/remaps the
+    /// affected slots, a deliberate code change.
+    /// </para>
+    /// </summary>
+    /// <example>
+    /// <code>
+    /// [MetaService(StateType = typeof(ShopState))]
+    /// [ServiceConfig(typeof(ShopConfig), "Shop")]
+    /// [ServiceConfig(typeof(BalanceConfig), "Balance")]
+    /// [ServiceConfig(typeof(SeasonConfig), "Season")]
+    /// public interface IShopService : IMetaService { ... }
+    /// </code>
+    /// </example>
+    [AttributeUsage(AttributeTargets.Interface, AllowMultiple = true)]
+    public class ServiceConfigAttribute : Attribute
+    {
+        /// <summary>The declared <c>[MetaConfig]</c> type. Required.</summary>
+        public Type ConfigType { get; }
+
+        /// <summary>Identifier used to generate the typed accessor (e.g. "Balance" → Context.Balance).</summary>
+        public string Name { get; }
+
+        public ServiceConfigAttribute(Type configType, string name)
+        {
+            ConfigType = configType;
+            Name = name;
+        }
     }
 
 

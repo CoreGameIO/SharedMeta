@@ -580,6 +580,80 @@ app.MapMetaConfigDownload();   // non-generic — recommended; serves every [Met
 
 Set `DefaultConfig = true` on `[MetaService]` only when `new TConfig()` produces gameplay-correct fallback values; for typical configs (item registries, balance numbers, level data) leave it off and register an explicit provider.
 
+### Multiple Configs (`[ServiceConfig]`) — 0.33.0+
+
+A service can declare N configs, each independently versioned/published (own
+`IMetaConfigProvider<TConfig>` / `IClientMetaConfigProvider<TConfig>`, own `[MetaConfigVersion]`
+rules) — all symmetric, no privileged "primary". Unlike multi-config siblings
+(`Get{Iface}SiblingAsync()`) or `[StatelessMetaService]`'s Path 1, these resolve
+**synchronously in every execution mode**, including `Optimistic`/`CrossOptimistic` where the
+client also executes the method body predictively. A service can declare zero, one, or many.
+
+```csharp
+[MetaService(StateType = typeof(ShopState))]
+[ServiceConfig(typeof(ShopConfig), "Shop")]
+[ServiceConfig(typeof(BalanceConfig), "Balance")]
+[ServiceConfig(typeof(SeasonConfig), "Season")]
+public interface IShopService : IMetaService { ... }
+
+public partial class ShopServiceImpl : IShopService
+{
+    [MetaMethod(Mode = ExecutionMode.Optimistic)]
+    public void Buy(int itemId)
+    {
+        var cost = Shop.BaseCost * Balance.BaseCost * Season.Multiplier;   // generated named accessors
+        // ...
+    }
+}
+```
+
+Positional: declaration order = wire/storage index — same deliberate-reseed-on-reorder contract
+`[NamedRandom]` already has. Generator emits one named typed accessor per entry:
+`protected {TConfig} {Name} => ({TConfig})Context.Configs![i]!;`.
+
+**Legacy `[MetaService(ConfigType=...)]` / `Context.Config`:** `[Obsolete]` (compiler warning)
+but fully functional — existing services keep working unchanged, no forced migration. When a
+service declares both the legacy `ConfigType` and one or more `[ServiceConfig]` entries (a
+migration-in-progress mix), the legacy config occupies wire index 0 and `[ServiceConfig]`
+entries follow at the remaining indices; `Context.Config`/`Context.Configs` are independent
+lists. New services should use `[ServiceConfig]` exclusively.
+
+**Wire shape:** the framework carries config versions as a **list**, not a scalar — every
+per-op / subscribe DTO (`MetaOperation.ExecutedConfigVersions`, `CallResponse<T>` family,
+`SubscribeResponse`/`SessionConnectResponse`'s `ConfigVersions`) is `List<MetaConfigVersion>`
+(index 0 = legacy config when declared). This replaced the pre-0.33 single-scalar
+`ExecutedConfigVersion` / `ConfigMajor/Minor/PatchVersion` triple outright — a wire-breaking
+change, not additive.
+
+**Full parity with the legacy primary** — `[ServiceConfig]` entries get the same mechanics the
+legacy `ConfigType` path has:
+- **Pin support** — `GetCachedServiceConfigsForClient`/`GetCachedServiceConfigVersionsForClient`
+  check `TryGetConfigPin` first (set by the generated `EstablishConfigPinsFromClientVersion`
+  override, which now loops declared `[ServiceConfig]` types the same way it already loops the
+  legacy primary and migration-only secondaries).
+- **`[EntityScope(Global)]` substitution** — both methods substitute
+  `IConfigVersionResolver.CurrentClientVersion` for Global-scope states, mirroring
+  `GetCachedConfigForClient`'s Global branch.
+- **`[MetaStateVersion]` schema-floor migration** — `GetSchemaFloorServiceConfigsForClient`/
+  `GetSchemaFloorServiceConfigVersionsForClient` (per-type, parallel to
+  `GetSchemaFloorConfig`/`Version` for the legacy primary) feed `[NoMigrate]` calls; `RunInitAsync`
+  resolves `[MetaInit]` steps for [ServiceConfig]-linked conditions the same way it already does
+  for the primary/secondary; `IsClientConfigCompatible`/`ComputeSchemaCapForClient` fold every
+  declared type into the AND-gate, not just the primary's.
+- **Cross-entity propagation** — `ICrossEntityResolver.GetEntityConfigs` (the `Configs`
+  counterpart to `GetEntityConfig`) is threaded into the generated `LocalEntityCaller`'s
+  `CrossOptimisticMetaContext`, so cross-entity/`CrossOptimistic` calls see the target's
+  `[ServiceConfig]` entries, not just its legacy `Config`.
+- **Multi-config sibling resolution** — the generated `[ServiceConfig]` accessor has a settable
+  backing field (mirroring the legacy `Config` property's `_config ?? Context.Config` shape);
+  `Get{Iface}SiblingAsync()` resolves each sibling's own declared entries independently and pins
+  them to that instance's field, without touching the caller's shared `Context`.
+
+**Known limitation:** when multiple services share one state and declare *different*
+`[ServiceConfig]` sets, they're aggregated into one list on the shared `Context.Configs`
+(state-wide collapsing) — same simplification the legacy `ConfigType` already uses for
+multi-service states (`services.Select(s => s.ConfigTypeFullName).FirstOrDefault(...)`).
+
 ### Per-Client Config Branches & State Migration
 
 > **Added in 0.19.0**: route each connecting client to its own config branch and migrate entity state schema gradually as live config advances. Without this, a 1.x client connecting after the server published 2.0 either gets locked out or sees a state shape it can't reason about.
@@ -1323,6 +1397,7 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `[MetaServiceImpl]` | Class | Marks service implementation for context injection |
 | `[MetaInit]` | Method | State initialization/migration on grain activation |
 | `[MetaConfig]` | Class | Marks a class as static game configuration |
+| `[ServiceConfig(typeof(TConfig), "Name")]` | Interface | Independently-versioned config, repeatable, all symmetric (no privileged "primary") — resolves synchronously in every execution mode; replaces `[MetaService].ConfigType`/`DefaultConfig` (obsolete but functional). (0.33.0+) |
 | `[Tracked]` | Field | Push-based change tracking — generates property with tracking setter |
 | `[Trigger]` | Method | Auto-execute after condition on another method |
 | `[ServiceTrigger]` | Method | Trigger on framework service event |

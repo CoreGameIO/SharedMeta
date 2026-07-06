@@ -50,7 +50,13 @@ namespace SharedMeta.Test.Meta1
         [MemoryPackOrder(0)] public int Value { get; set; }
     }
 
+    // Deliberately kept on the legacy ConfigType/DefaultConfig — this is the reference test
+    // for the legacy primary+secondary [MetaStateVersion] AND-gate pattern (secondaryProviders
+    // in ServerMetaConfigurationGenerator), which remains a supported mechanism independent of
+    // [ServiceConfig]. Not a migration gap.
+#pragma warning disable CS0618
     [MetaService(StateType = typeof(MultiConfigState), ConfigType = typeof(MultiConfigA), DefaultConfig = true)]
+#pragma warning restore CS0618
     public interface IMultiConfigService : IMetaService
     {
         [MetaMethod(Mode = ExecutionMode.Query)]

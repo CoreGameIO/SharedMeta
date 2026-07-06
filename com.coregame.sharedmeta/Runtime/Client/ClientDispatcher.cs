@@ -224,9 +224,7 @@ namespace SharedMeta.Client
                 CurrentSequenceNumber = result.EntitySequenceNumber,
                 OptimisticRandomBytes = result.OptimisticRandomBytes,
                 NamedRandomsBytes = result.NamedRandomsBytes,
-                ConfigMajorVersion = result.ConfigVersion.Major,
-                ConfigMinorVersion = result.ConfigVersion.Minor,
-                ConfigPatchVersion = result.ConfigVersion.Patch,
+                ConfigVersions = result.ConfigVersions,
                 AugmentedCapabilities = result.AugmentedCapabilities,
             };
         }

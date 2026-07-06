@@ -37,6 +37,12 @@ namespace SharedMeta.Generator.Generators
         /// True if [MetaService(DefaultConfig = true)] — needs resolution at aggregation time.
         /// </summary>
         public bool UsesDefaultConfig { get; set; }
+
+        /// <summary>
+        /// 0.33.0+ Full type names of [ServiceConfig] entries declared on the service
+        /// interface, in declaration order — each independently versioned/published.
+        /// </summary>
+        public List<string> ServiceConfigTypeFullNames { get; set; } = new();
         /// <summary>True if [MetaServiceImpl(DeepDesync = true)].</summary>
         public bool DeepDesync { get; set; }
 
@@ -217,6 +223,16 @@ namespace SharedMeta.Generator.Generators
                     if (!defaultConfigArg.Value.IsNull && defaultConfigArg.Value.Value is true)
                     {
                         info.UsesDefaultConfig = true;
+                    }
+                }
+
+                // 0.33.0+ [ServiceConfig] entries — repeatable, positional, on the service interface.
+                foreach (var scAttr in serviceInterface.GetAttributes()
+                    .Where(a => a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.ServiceConfigAttribute"))
+                {
+                    if (scAttr.ConstructorArguments.Length > 0 && scAttr.ConstructorArguments[0].Value is INamedTypeSymbol scType)
+                    {
+                        info.ServiceConfigTypeFullNames.Add(scType.ToDisplayString());
                     }
                 }
             }
@@ -905,18 +921,42 @@ namespace SharedMeta.Generator.Generators
                 .Select(g => (ConfigType: g.Key, Ident: g.First().ConfigTypeIdent))
                 .ToList();
 
-            // Emit OnInitialize when EITHER a primary config exists OR migration conditions
-            // reference secondary config types (a state with [MetaStateVersion] but no service
-            // declaring a primary ConfigType still needs the migration providers wired up).
-            bool hasAnyConfigProvider = configType != null || secondaryProviders.Count > 0;
+            // 0.33.0+ [ServiceConfig] entries — aggregated across every [MetaServiceImpl]
+            // sharing this state, deduped by type (first-seen order). Same state-wide collapsing
+            // simplification `configType` above already uses for multi-service states —
+            // Context.Configs is one shared list per entity, not per-service. Each is
+            // independently versioned/published — no pin / EntityScope.Global support yet
+            // (unlike the legacy primary config's GetCachedConfigForClient below); follow-up work.
+            var serviceConfigTypes = services
+                .SelectMany(s => s.ServiceConfigTypeFullNames)
+                .Distinct()
+                .Select(t => (ConfigType: t, Ident: new string(t.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray())))
+                .ToList();
+
+            // Emit OnInitialize when a primary config exists, migration conditions reference
+            // secondary config types, or the state has [ServiceConfig] entries.
+            bool hasAnyConfigProvider = configType != null || secondaryProviders.Count > 0 || serviceConfigTypes.Count > 0;
 
             if (configType != null)
             {
                 sb.AppendLine($"        private SharedMeta.Server.Core.IMetaConfigProvider<{configType}>? _configProvider;");
+            }
+            // _configVersionResolver is needed by the legacy primary's Global branch AND by
+            // [ServiceConfig]'s Global branch (GetCachedServiceConfigsForClient/Versions below) —
+            // declare/resolve it whenever ANY config provider exists, not just the legacy primary.
+            if (hasAnyConfigProvider)
+            {
                 sb.AppendLine($"        private SharedMeta.Server.Core.IConfigVersionResolver? _configVersionResolver;");
             }
             foreach (var sec in secondaryProviders)
                 sb.AppendLine($"        private SharedMeta.Server.Core.IMetaConfigProvider<{sec.ConfigType}>? _configProvider_{sec.Ident};");
+            foreach (var sc in serviceConfigTypes)
+            {
+                sb.AppendLine($"        private SharedMeta.Server.Core.IMetaConfigProvider<{sc.ConfigType}>? _serviceConfigProvider_{sc.Ident};");
+                sb.AppendLine($"        private static readonly SharedMeta.Core.MetaConfigVersionResolver? _serviceConfigVersionPolicyResolver_{sc.Ident}");
+                sb.AppendLine($"            = SharedMeta.Core.MetaConfigVersionResolver.ForType(typeof({sc.ConfigType}));");
+                sb.AppendLine($"        private readonly System.Collections.Generic.Dictionary<string, {sc.ConfigType}> _serviceConfigCacheByClient_{sc.Ident} = new System.Collections.Generic.Dictionary<string, {sc.ConfigType}>();");
+            }
 
             if (hasAnyConfigProvider)
             {
@@ -928,10 +968,12 @@ namespace SharedMeta.Generator.Generators
                 if (configType != null)
                 {
                     sb.AppendLine($"                _configProvider = (SharedMeta.Server.Core.IMetaConfigProvider<{configType}>)ServiceResolver(typeof(SharedMeta.Server.Core.IMetaConfigProvider<{configType}>));");
-                    sb.AppendLine($"                try {{ _configVersionResolver = ServiceResolver(typeof(SharedMeta.Server.Core.IConfigVersionResolver)) as SharedMeta.Server.Core.IConfigVersionResolver; }} catch {{ }}");
                 }
+                sb.AppendLine($"                try {{ _configVersionResolver = ServiceResolver(typeof(SharedMeta.Server.Core.IConfigVersionResolver)) as SharedMeta.Server.Core.IConfigVersionResolver; }} catch {{ }}");
                 foreach (var sec in secondaryProviders)
                     sb.AppendLine($"                try {{ _configProvider_{sec.Ident} = ServiceResolver(typeof(SharedMeta.Server.Core.IMetaConfigProvider<{sec.ConfigType}>)) as SharedMeta.Server.Core.IMetaConfigProvider<{sec.ConfigType}>; }} catch {{ }}");
+                foreach (var sc in serviceConfigTypes)
+                    sb.AppendLine($"                try {{ _serviceConfigProvider_{sc.Ident} = ServiceResolver(typeof(SharedMeta.Server.Core.IMetaConfigProvider<{sc.ConfigType}>)) as SharedMeta.Server.Core.IMetaConfigProvider<{sc.ConfigType}>; }} catch {{ }}");
                 sb.AppendLine("            }");
                 sb.AppendLine("        }");
                 sb.AppendLine();
@@ -956,6 +998,18 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine("            {");
                     sb.AppendLine($"                var _sv = _configProvider_{sec.Ident}.ResolveForClient(clientVersion, null);");
                     sb.AppendLine($"                SetConfigPin(typeof({sec.ConfigType}).FullName!, _sv);");
+                    sb.AppendLine("            }");
+                }
+                // 0.33.0+ [ServiceConfig] entries pin the same way the primary does — the pin
+                // dictionary is already keyed by config type full name (type-agnostic), so this
+                // is the same call shape as the primary/secondary loops above, just looped per
+                // declared [ServiceConfig] type.
+                foreach (var sc in serviceConfigTypes)
+                {
+                    sb.AppendLine($"            if (_serviceConfigProvider_{sc.Ident} != null)");
+                    sb.AppendLine("            {");
+                    sb.AppendLine($"                var _scv = _serviceConfigProvider_{sc.Ident}.ResolveForClient(clientVersion, _serviceConfigVersionPolicyResolver_{sc.Ident});");
+                    sb.AppendLine($"                SetConfigPin(typeof({sc.ConfigType}).FullName!, _scv);");
                     sb.AppendLine("            }");
                 }
                 sb.AppendLine("        }");
@@ -1113,9 +1167,101 @@ namespace SharedMeta.Generator.Generators
                 }
                 sb.AppendLine("        }");
                 sb.AppendLine();
+            }
+
+            if (hasAnyConfigProvider)
+            {
                 sb.AppendLine("        protected override void ClearConfigCache()");
                 sb.AppendLine("        {");
-                sb.AppendLine("            _configCacheByClient.Clear();");
+                if (configType != null)
+                    sb.AppendLine("            _configCacheByClient.Clear();");
+                foreach (var sc in serviceConfigTypes)
+                    sb.AppendLine($"            _serviceConfigCacheByClient_{sc.Ident}.Clear();");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+            }
+
+            if (serviceConfigTypes.Count > 0)
+            {
+                // GetCachedServiceConfigsForClient / GetCachedServiceConfigVersionsForClient —
+                // 0.33.0+ full parity with GetCachedConfigForClient: pin-first (set by
+                // EstablishConfigPinsFromClientVersion above), EntityScope.Global substitutes
+                // IConfigVersionResolver.CurrentClientVersion (every observer of a Global entity
+                // sees the same branch, regardless of who's calling), else per-client resolve+cache.
+                sb.AppendLine("        protected override object[] GetCachedServiceConfigsForClient(string? clientVersion)");
+                sb.AppendLine("        {");
+                sb.AppendLine($"            var _result = new object[{serviceConfigTypes.Count}];");
+                for (int i = 0; i < serviceConfigTypes.Count; i++)
+                {
+                    var sc = serviceConfigTypes[i];
+                    sb.AppendLine($"            if (_serviceConfigProvider_{sc.Ident} != null)");
+                    sb.AppendLine("            {");
+                    if (stateScope == 2) // EntityScope.Global
+                    {
+                        sb.AppendLine("                if (_configVersionResolver == null || string.IsNullOrEmpty(_configVersionResolver.CurrentClientVersion))");
+                        sb.AppendLine("                    throw new System.InvalidOperationException(");
+                        sb.AppendLine($"                        \"[EntityScope(Global)] state '{stateTypeFullName}' requires IConfigVersionResolver.CurrentClientVersion. \" +");
+                        sb.AppendLine("                        \"Register IConfigVersionResolver in DI and ensure CurrentClientVersion is non-empty.\");");
+                        sb.AppendLine("                var _effectiveClient = _configVersionResolver.CurrentClientVersion;");
+                        sb.AppendLine("                var _key = _effectiveClient ?? string.Empty;");
+                        sb.AppendLine($"                if (!_serviceConfigCacheByClient_{sc.Ident}.TryGetValue(_key, out var _cached))");
+                        sb.AppendLine("                {");
+                        sb.AppendLine($"                    var _resolved = _serviceConfigProvider_{sc.Ident}.ResolveForClient(_effectiveClient, _serviceConfigVersionPolicyResolver_{sc.Ident});");
+                        sb.AppendLine($"                    _cached = _serviceConfigProvider_{sc.Ident}.GetConfig(_resolved);");
+                        sb.AppendLine($"                    _serviceConfigCacheByClient_{sc.Ident}[_key] = _cached;");
+                        sb.AppendLine("                }");
+                        sb.AppendLine($"                _result[{i}] = _cached;");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"                bool _hasPin = TryGetConfigPin(typeof({sc.ConfigType}).FullName!, out var _pinned);");
+                        sb.AppendLine("                string? _effectiveClient = clientVersion;");
+                        sb.AppendLine("                if (!_hasPin && string.IsNullOrEmpty(_effectiveClient))");
+                        sb.AppendLine("                {");
+                        sb.AppendLine("                    _effectiveClient = _configVersionResolver?.CurrentClientVersion;");
+                        sb.AppendLine("                    if (string.IsNullOrEmpty(_effectiveClient))");
+                        sb.AppendLine("                        throw new System.InvalidOperationException(");
+                        sb.AppendLine($"                            \"Cold call into '{stateTypeFullName}' without CallerClientVersion and no IConfigVersionResolver.CurrentClientVersion configured. \" +");
+                        sb.AppendLine("                            \"Register IConfigVersionResolver in DI or pass CallerClientVersion explicitly from the calling code.\");");
+                        sb.AppendLine("                }");
+                        sb.AppendLine("                var _key = _effectiveClient ?? string.Empty;");
+                        sb.AppendLine($"                if (!_serviceConfigCacheByClient_{sc.Ident}.TryGetValue(_key, out var _cached))");
+                        sb.AppendLine("                {");
+                        sb.AppendLine($"                    var _resolved = _hasPin ? _pinned : _serviceConfigProvider_{sc.Ident}.ResolveForClient(_effectiveClient, _serviceConfigVersionPolicyResolver_{sc.Ident});");
+                        sb.AppendLine($"                    _cached = _serviceConfigProvider_{sc.Ident}.GetConfig(_resolved);");
+                        sb.AppendLine($"                    _serviceConfigCacheByClient_{sc.Ident}[_key] = _cached;");
+                        sb.AppendLine("                }");
+                        sb.AppendLine($"                _result[{i}] = _cached;");
+                    }
+                    sb.AppendLine("            }");
+                }
+                sb.AppendLine("            return _result;");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+
+                sb.AppendLine("        protected override SharedMeta.Core.MetaConfigVersion[] GetCachedServiceConfigVersionsForClient(string? clientVersion)");
+                sb.AppendLine("        {");
+                sb.AppendLine($"            var _result = new SharedMeta.Core.MetaConfigVersion[{serviceConfigTypes.Count}];");
+                for (int i = 0; i < serviceConfigTypes.Count; i++)
+                {
+                    var sc = serviceConfigTypes[i];
+                    sb.AppendLine($"            if (_serviceConfigProvider_{sc.Ident} != null)");
+                    sb.AppendLine("            {");
+                    if (stateScope == 2) // EntityScope.Global
+                    {
+                        sb.AppendLine("                if (_configVersionResolver != null && !string.IsNullOrEmpty(_configVersionResolver.CurrentClientVersion))");
+                        sb.AppendLine($"                    _result[{i}] = _serviceConfigProvider_{sc.Ident}.ResolveForClient(_configVersionResolver.CurrentClientVersion, _serviceConfigVersionPolicyResolver_{sc.Ident});");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"                if (TryGetConfigPin(typeof({sc.ConfigType}).FullName!, out var _pin))");
+                        sb.AppendLine($"                    _result[{i}] = _pin;");
+                        sb.AppendLine("                else");
+                        sb.AppendLine($"                    _result[{i}] = _serviceConfigProvider_{sc.Ident}.ResolveForClient(clientVersion, _serviceConfigVersionPolicyResolver_{sc.Ident});");
+                    }
+                    sb.AppendLine("            }");
+                }
+                sb.AppendLine("            return _result;");
                 sb.AppendLine("        }");
                 sb.AppendLine();
             }
@@ -1398,24 +1544,52 @@ namespace SharedMeta.Generator.Generators
                     var primaryServicesWithInit = servicesWithInit
                         .Where(s => s.ConfigTypeFullName == null || s.ConfigTypeFullName == configType)
                         .ToList();
-                    if (!hasExplicitSchemaOne && primaryServicesWithInit.Count > 0 && configType != null)
+                    // 0.33.0+ services whose [MetaInit] is tied ONLY to [ServiceConfig] entries
+                    // (no legacy primary at all) also need a Step 0 base-init branch when schema 1
+                    // isn't explicitly gated — same "give it a well-defined 1.0 baseline" reasoning
+                    // as the primary case, just targeting Context.Configs[i] for each declared
+                    // entry instead of the legacy Context.Config.
+                    var serviceConfigServicesWithInit = servicesWithInit
+                        .Where(s => s.ConfigTypeFullName == null && s.ServiceConfigTypeFullNames.Count > 0)
+                        .ToList();
+                    bool step0HasPrimaryWork = primaryServicesWithInit.Count > 0 && configType != null;
+                    bool step0HasServiceConfigWork = serviceConfigServicesWithInit.Count > 0 && serviceConfigTypes.Count > 0;
+                    if (!hasExplicitSchemaOne && (step0HasPrimaryWork || step0HasServiceConfigWork))
                     {
-                        sb.AppendLine("            if (currentVersion < 1 && 1 <= _migrationCap && _configProvider != null)");
+                        var guard = step0HasPrimaryWork ? "currentVersion < 1 && 1 <= _migrationCap && _configProvider != null" : "currentVersion < 1 && 1 <= _migrationCap";
+                        sb.AppendLine($"            if ({guard})");
                         sb.AppendLine("            {");
                         sb.AppendLine("                var _savedConfig0 = MetaContext!.Config;");
+                        sb.AppendLine("                var _savedConfigs0 = MetaContext!.Configs;");
+                        sb.AppendLine("                var _savedConfigVersions0 = MetaContext!.ConfigVersions;");
                         sb.AppendLine("                try");
                         sb.AppendLine("                {");
-                        sb.AppendLine("                    MetaContext!.Config = _configProvider.GetConfig(new SharedMeta.Core.MetaConfigVersion(1, 0, 0));");
-                        sb.AppendLine("                    MetaContext!.ConfigVersion = new SharedMeta.Core.MetaConfigVersion(1, 0, 0);");
+                        if (step0HasPrimaryWork)
+                        {
+                            sb.AppendLine("                    MetaContext!.Config = _configProvider!.GetConfig(new SharedMeta.Core.MetaConfigVersion(1, 0, 0));");
+                            sb.AppendLine("                    MetaContext!.ConfigVersion = new SharedMeta.Core.MetaConfigVersion(1, 0, 0);");
+                        }
+                        if (step0HasServiceConfigWork)
+                        {
+                            sb.AppendLine($"                    var _step0Configs = new object[{serviceConfigTypes.Count}];");
+                            sb.AppendLine($"                    var _step0Versions = new SharedMeta.Core.MetaConfigVersion[{serviceConfigTypes.Count}];");
+                            for (int i = 0; i < serviceConfigTypes.Count; i++)
+                            {
+                                var sc = serviceConfigTypes[i];
+                                sb.AppendLine($"                    if (_serviceConfigProvider_{sc.Ident} != null) {{ _step0Configs[{i}] = _serviceConfigProvider_{sc.Ident}.GetConfig(new SharedMeta.Core.MetaConfigVersion(1, 0, 0)); _step0Versions[{i}] = new SharedMeta.Core.MetaConfigVersion(1, 0, 0); }}");
+                            }
+                            sb.AppendLine("                    MetaContext!.Configs = _step0Configs;");
+                            sb.AppendLine("                    MetaContext!.ConfigVersions = _step0Versions;");
+                        }
                         sb.AppendLine("                    MetaContext!.Version = currentVersion;");
-                        foreach (var svc in primaryServicesWithInit)
+                        foreach (var svc in primaryServicesWithInit.Concat(serviceConfigServicesWithInit))
                         {
                             var baseName = GetBaseName(svc.InterfaceName);
                             var initArgs = svc.MetaInitParameterCount == 2 ? "currentVersion, 1" : "currentVersion";
                             sb.AppendLine($"                    maxVersion = System.Math.Max(maxVersion, await (({svc.ImplClassFullName})Get{baseName}()).{svc.MetaInitMethodName}({initArgs}));");
                         }
                         sb.AppendLine("                }");
-                        sb.AppendLine("                finally { MetaContext!.Config = _savedConfig0; }");
+                        sb.AppendLine("                finally { MetaContext!.Config = _savedConfig0; MetaContext!.Configs = _savedConfigs0; MetaContext!.ConfigVersions = _savedConfigVersions0; }");
                         sb.AppendLine("                currentVersion = maxVersion;");
                         sb.AppendLine("            }");
                     }
@@ -1453,20 +1627,28 @@ namespace SharedMeta.Generator.Generators
                         // each step by the caller's resolved config — running the same AND-check
                         // twice was redundant. The outer guard `targetSchema <= _migrationCap`
                         // is the only gate; if we reach here, all AND-conditions are satisfied.
+                        // 0.33.0+ also save/restore Configs/ConfigVersions — a condition whose type
+                        // is a [ServiceConfig] entry (rather than the legacy primary) needs its
+                        // transition version written into Context.Configs[i], since that's what the
+                        // generated per-entry accessor reads, not the legacy Context.Config.
                         sb.AppendLine("                var _savedConfig = MetaContext!.Config;");
+                        sb.AppendLine("                var _savedConfigs = MetaContext!.Configs;");
+                        sb.AppendLine("                var _savedConfigVersions = MetaContext!.ConfigVersions;");
                         sb.AppendLine("                try");
                         sb.AppendLine("                {");
 
                         // For each condition: find the service whose config type matches, set config, call [MetaInit].
                         foreach (var cond in conds)
                         {
-                            var provField = (cond.ConfigTypeFullName == null || cond.ConfigTypeFullName == configType)
-                                ? "_configProvider"
-                                : $"_configProvider_{cond.ConfigTypeIdent}";
-                            // Find matching service by config type
+                            bool isPrimary = cond.ConfigTypeFullName == null || cond.ConfigTypeFullName == configType;
+                            var provField = isPrimary ? "_configProvider" : $"_configProvider_{cond.ConfigTypeIdent}";
+                            int scIndex = isPrimary ? -1 : serviceConfigTypes.FindIndex(sc => sc.ConfigType == cond.ConfigTypeFullName);
+                            // Find matching service: legacy ConfigType match (primary/secondary), OR
+                            // a service that declares this condition's type via [ServiceConfig].
                             var matchingSvc = servicesWithInit.FirstOrDefault(s =>
                                 (cond.ConfigTypeFullName == null && (s.ConfigTypeFullName == null || s.ConfigTypeFullName == configType))
-                                || s.ConfigTypeFullName == cond.ConfigTypeFullName);
+                                || s.ConfigTypeFullName == cond.ConfigTypeFullName
+                                || (cond.ConfigTypeFullName != null && s.ServiceConfigTypeFullNames.Contains(cond.ConfigTypeFullName)));
                             if (matchingSvc == null) continue;
 
                             var baseName = GetBaseName(matchingSvc.InterfaceName);
@@ -1475,12 +1657,17 @@ namespace SharedMeta.Generator.Generators
                                 : "currentVersion";
                             sb.AppendLine($"                    MetaContext!.Config = {provField}!.GetConfig(new SharedMeta.Core.MetaConfigVersion({cond.Major}, {cond.Minor}, 0));");
                             sb.AppendLine($"                    MetaContext!.ConfigVersion = new SharedMeta.Core.MetaConfigVersion({cond.Major}, {cond.Minor}, 0);");
+                            if (scIndex >= 0)
+                            {
+                                sb.AppendLine($"                    {{ var _stepConfigs = new object[{serviceConfigTypes.Count}]; var _priorConfigs = MetaContext!.Configs; if (_priorConfigs != null) for (int _i = 0; _i < _priorConfigs.Count && _i < {serviceConfigTypes.Count}; _i++) _stepConfigs[_i] = _priorConfigs[_i]; _stepConfigs[{scIndex}] = {provField}!.GetConfig(new SharedMeta.Core.MetaConfigVersion({cond.Major}, {cond.Minor}, 0)); MetaContext!.Configs = _stepConfigs; }}");
+                                sb.AppendLine($"                    {{ var _stepVersions = new SharedMeta.Core.MetaConfigVersion[{serviceConfigTypes.Count}]; var _priorVersions = MetaContext!.ConfigVersions; if (_priorVersions != null) for (int _i = 0; _i < _priorVersions.Count && _i < {serviceConfigTypes.Count}; _i++) _stepVersions[_i] = _priorVersions[_i]; _stepVersions[{scIndex}] = new SharedMeta.Core.MetaConfigVersion({cond.Major}, {cond.Minor}, 0); MetaContext!.ConfigVersions = _stepVersions; }}");
+                            }
                             sb.AppendLine($"                    MetaContext!.Version = currentVersion;");
                             sb.AppendLine($"                    maxVersion = System.Math.Max(maxVersion, await (({matchingSvc.ImplClassFullName})Get{baseName}()).{matchingSvc.MetaInitMethodName}({initArgs}));");
                         }
 
                         sb.AppendLine("                }");
-                        sb.AppendLine("                finally { MetaContext!.Config = _savedConfig; }");
+                        sb.AppendLine("                finally { MetaContext!.Config = _savedConfig; MetaContext!.Configs = _savedConfigs; MetaContext!.ConfigVersions = _savedConfigVersions; }");
                         sb.AppendLine("            }");
 
                         // After successful step, currentVersion tracks progress for next step guard.
@@ -1489,10 +1676,15 @@ namespace SharedMeta.Generator.Generators
 
                     // Call [MetaInit] for services whose config type doesn't appear in any migration
                     // condition — backward-compatible path (they use version-counter logic internally).
+                    // 0.33.0+ also exclude services already handled via a [ServiceConfig]-linked
+                    // condition above (checked via ServiceConfigTypeFullNames) — otherwise a
+                    // ServiceConfig-only service (no legacy ConfigTypeFullName) whose type IS
+                    // covered by a migration condition would double-run [MetaInit].
                     var handledConfigTypes = new HashSet<string?>(allMigConds.Select(c => c.ConfigTypeFullName));
                     var uncoveredServices = servicesWithInit
                         .Where(s => !handledConfigTypes.Contains(s.ConfigTypeFullName)
-                                 && !handledConfigTypes.Contains(null))
+                                 && !handledConfigTypes.Contains(null)
+                                 && !s.ServiceConfigTypeFullNames.Any(t => handledConfigTypes.Contains(t)))
                         .ToList();
                     foreach (var svc in uncoveredServices)
                     {
@@ -1630,7 +1822,11 @@ namespace SharedMeta.Generator.Generators
                     // additive fields). Reason: most schema bumps are additive; explicit
                     // Breaking opt-in surfaces real structural breaks as user-actionable
                     // "update required" notifications instead of silent fail-loud on every bump.
-                    sb.AppendLine("        public override bool IsClientConfigCompatible(SharedMeta.Core.MetaConfigVersion clientConfigVersion)");
+                    // 0.33.0+ callerClientVersion lets non-primary conditions (whether a plain
+                    // secondary or a [ServiceConfig]-linked type) resolve and check their OWN
+                    // version independently — the AND-gate now covers every declared type, not
+                    // just the primary.
+                    sb.AppendLine("        public override bool IsClientConfigCompatible(SharedMeta.Core.MetaConfigVersion clientConfigVersion, string? callerClientVersion)");
                     sb.AppendLine("        {");
                     sb.AppendLine("            int schema = CurrentStateSchemaVersion;");
                     sb.AppendLine("            if (schema <= 0) return true;");
@@ -1644,30 +1840,27 @@ namespace SharedMeta.Generator.Generators
                         // backward-compatible — emit nothing for that step.
                         if (!conds.Any(c => c.Breaking)) continue;
 
-                        var nullGuards = new List<string>();
-                        if (conds.Any(c => c.ConfigTypeFullName == null || c.ConfigTypeFullName == configType))
-                            nullGuards.Add("_configProvider != null");
-                        foreach (var ident in conds
-                            .Where(c => c.ConfigTypeFullName != null && c.ConfigTypeFullName != configType)
-                            .Select(c => $"_configProvider_{c.ConfigTypeIdent}").Distinct())
-                            nullGuards.Add($"{ident} != null");
-
-                        var nullGuardExpr = nullGuards.Count > 0
-                            ? "if (" + string.Join(" && ", nullGuards) + ")"
-                            : "";
-
                         sb.AppendLine($"            // Schema {targetSchema} gate — BREAKING; rejects old clients");
                         sb.AppendLine($"            if (schema >= {targetSchema})");
                         sb.AppendLine("            {");
-                        // For single-config: compare clientConfigVersion directly
                         for (int ci = 0; ci < conds.Count; ci++)
                         {
                             var cond = conds[ci];
-                            // Only check conditions for the primary config (clientConfigVersion IS the primary config version)
-                            if (cond.ConfigTypeFullName != null && cond.ConfigTypeFullName != configType)
-                                continue; // secondary configs: skip for now (single-config gate)
-                            sb.AppendLine($"                bool _gc{ci} = clientConfigVersion.Major > {cond.Major} || (clientConfigVersion.Major == {cond.Major} && clientConfigVersion.Minor >= {cond.Minor});");
-                            sb.AppendLine($"                if (!_gc{ci}) return false;");
+                            bool isPrimary = cond.ConfigTypeFullName == null || cond.ConfigTypeFullName == configType;
+                            if (isPrimary)
+                            {
+                                sb.AppendLine($"                bool _gc{ci} = clientConfigVersion.Major > {cond.Major} || (clientConfigVersion.Major == {cond.Major} && clientConfigVersion.Minor >= {cond.Minor});");
+                                sb.AppendLine($"                if (!_gc{ci}) return false;");
+                            }
+                            else
+                            {
+                                sb.AppendLine($"                if (_configProvider_{cond.ConfigTypeIdent} != null)");
+                                sb.AppendLine("                {");
+                                sb.AppendLine($"                    var _rc{ci} = _configProvider_{cond.ConfigTypeIdent}.ResolveForClient(callerClientVersion, null);");
+                                sb.AppendLine($"                    bool _gc{ci} = _rc{ci}.Major > {cond.Major} || (_rc{ci}.Major == {cond.Major} && _rc{ci}.Minor >= {cond.Minor});");
+                                sb.AppendLine($"                    if (!_gc{ci}) return false;");
+                                sb.AppendLine("                }");
+                            }
                         }
                         sb.AppendLine("            }");
                     }
@@ -1680,11 +1873,9 @@ namespace SharedMeta.Generator.Generators
                     // client's resolved config branch supports. Used by EntityGrain.SubscribeAsync
                     // and MetaProviderBase.HandleCallAsync to prevent premature migration
                     // (a 1.x client triggering a 2.0 schema jump on a fresh entity).
-                    // Single-config gate only — secondary configs aren't reflected here.
-                    var primaryStepGroupsForCap = migStepGroups
-                        .Where(g => g.Any(c => c.ConfigTypeFullName == null || c.ConfigTypeFullName == configType))
-                        .OrderBy(g => g.Key)
-                        .ToList();
+                    // 0.33.0+ every declared type's threshold must be met for the cap to advance
+                    // to that schema — not just the primary's (mirrors ComputeRequiredStateSchema's
+                    // AND-gate, which already did this).
                     // Cap baseline: 1 when schema 1 is implicit base init (no explicit
                     // [MetaStateVersion(1, …)]); 0 when schema 1 is gated, because in that case
                     // running base init below the gate would contradict the user's declaration.
@@ -1693,14 +1884,39 @@ namespace SharedMeta.Generator.Generators
 
                     sb.AppendLine("        public override int? ComputeSchemaCapForClient(string? clientVersion)");
                     sb.AppendLine("        {");
-                    sb.AppendLine("            if (_configProvider == null) return null;");
-                    sb.AppendLine("            var resolved = ResolveClientConfigVersion(clientVersion);");
                     sb.AppendLine($"            int cap = {capBaseline};");
-                    foreach (var grp in primaryStepGroupsForCap)
+                    if (configType != null)
+                        sb.AppendLine("            var resolved = _configProvider != null ? ResolveClientConfigVersion(clientVersion) : default;");
+                    int capGroupIdx = 0;
+                    foreach (var grp in migStepGroups)
                     {
-                        // Use any one primary condition's threshold (group's target shares it).
-                        var primaryCond = grp.First(c => c.ConfigTypeFullName == null || c.ConfigTypeFullName == configType);
-                        sb.AppendLine($"            if (resolved.Major > {primaryCond.Major} || (resolved.Major == {primaryCond.Major} && resolved.Minor >= {primaryCond.Minor})) cap = System.Math.Max(cap, {grp.Key});");
+                        var conds = grp.ToList();
+                        var checkParts = new List<string>();
+                        sb.AppendLine("            {");
+                        for (int ci = 0; ci < conds.Count; ci++)
+                        {
+                            var cond = conds[ci];
+                            bool isPrimary = cond.ConfigTypeFullName == null || cond.ConfigTypeFullName == configType;
+                            var flag = $"_cap{capGroupIdx}_{ci}";
+                            if (isPrimary)
+                            {
+                                sb.AppendLine($"                bool {flag} = _configProvider != null && (resolved.Major > {cond.Major} || (resolved.Major == {cond.Major} && resolved.Minor >= {cond.Minor}));");
+                            }
+                            else
+                            {
+                                sb.AppendLine($"                bool {flag} = false;");
+                                sb.AppendLine($"                if (_configProvider_{cond.ConfigTypeIdent} != null)");
+                                sb.AppendLine("                {");
+                                sb.AppendLine($"                    var _crv{capGroupIdx}_{ci} = _configProvider_{cond.ConfigTypeIdent}.ResolveForClient(clientVersion, null);");
+                                sb.AppendLine($"                    {flag} = _crv{capGroupIdx}_{ci}.Major > {cond.Major} || (_crv{capGroupIdx}_{ci}.Major == {cond.Major} && _crv{capGroupIdx}_{ci}.Minor >= {cond.Minor});");
+                                sb.AppendLine("                }");
+                            }
+                            checkParts.Add(flag);
+                        }
+                        var combined = string.Join(" && ", checkParts);
+                        sb.AppendLine($"                if ({combined}) cap = System.Math.Max(cap, {grp.Key});");
+                        sb.AppendLine("            }");
+                        capGroupIdx++;
                     }
                     sb.AppendLine("            return cap;");
                     sb.AppendLine("        }");
@@ -1823,6 +2039,59 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_configProvider == null) return null;");
                 sb.AppendLine("            return _configProvider.GetConfig(GetSchemaFloorConfigVersion(stateSchema));");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+            }
+
+            // 0.33.0+ Per-[ServiceConfig]-type equivalent of GetSchemaFloorConfig/Version above —
+            // same "[NoMigrate] sees the schema-consistent branch" guarantee, but per declared
+            // entry instead of just the legacy primary. An entry with no [MetaStateVersion]
+            // condition referencing it falls back to (1,0,0), same default the primary uses.
+            if (allSkipMigrationMethods.Count > 0 && serviceConfigTypes.Count > 0)
+            {
+                sb.AppendLine("        protected override SharedMeta.Core.MetaConfigVersion[] GetSchemaFloorServiceConfigVersionsForClient(int stateSchema)");
+                sb.AppendLine("        {");
+                sb.AppendLine($"            var _result = new SharedMeta.Core.MetaConfigVersion[{serviceConfigTypes.Count}];");
+                for (int i = 0; i < serviceConfigTypes.Count; i++)
+                {
+                    var sc = serviceConfigTypes[i];
+                    var typeStepGroups = allMigConds
+                        .Where(c => c.ConfigTypeFullName == sc.ConfigType)
+                        .GroupBy(c => c.StateVersion)
+                        .OrderBy(g => g.Key)
+                        .ToList();
+                    if (typeStepGroups.Count > 0)
+                    {
+                        sb.AppendLine($"            _result[{i}] = stateSchema switch");
+                        sb.AppendLine("            {");
+                        foreach (var grp in typeStepGroups)
+                        {
+                            var cond = grp.First();
+                            sb.AppendLine($"                {grp.Key} => new SharedMeta.Core.MetaConfigVersion({cond.Major}, {cond.Minor}, 0),");
+                        }
+                        sb.AppendLine("                _ => new SharedMeta.Core.MetaConfigVersion(1, 0, 0)");
+                        sb.AppendLine("            };");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"            _result[{i}] = new SharedMeta.Core.MetaConfigVersion(1, 0, 0);");
+                    }
+                }
+                sb.AppendLine("            return _result;");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+
+                sb.AppendLine("        protected override object?[] GetSchemaFloorServiceConfigsForClient(int stateSchema)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            var _versions = GetSchemaFloorServiceConfigVersionsForClient(stateSchema);");
+                sb.AppendLine($"            var _result = new object?[{serviceConfigTypes.Count}];");
+                for (int i = 0; i < serviceConfigTypes.Count; i++)
+                {
+                    var sc = serviceConfigTypes[i];
+                    sb.AppendLine($"            if (_serviceConfigProvider_{sc.Ident} != null)");
+                    sb.AppendLine($"                _result[{i}] = _serviceConfigProvider_{sc.Ident}.GetConfig(_versions[{i}]);");
+                }
+                sb.AppendLine("            return _result;");
                 sb.AppendLine("        }");
                 sb.AppendLine();
             }

@@ -106,7 +106,7 @@ namespace SharedMeta.Test.Meta1
 
         public int AddClamped(int value)
         {
-            var config = (CounterConfig)Context.Config!;
+            var config = Config;
             int clamped = Math.Min(value, config.MaxValue);
             var state = GetState();
             state.Sum += clamped;

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.33.0] - 2026-07-06
+
+### Added
+
+- `[ServiceConfig(typeof(TConfig), "Name")]` — repeatable, symmetric config declaration per service (0, 1, or many configs, no privileged "primary"), replacing `[MetaService(ConfigType=...)]`/`DefaultConfig` as the recommended way to declare service configs. Full parity with the legacy mechanism: pin support (`Private`/`Shared` scope), `[EntityScope(Global)]` substitution, `[MetaStateVersion]` schema-floor migration (including `[NoMigrate]` and the Breaking-schema compat gate), cross-entity/`CrossOptimistic` propagation, and multi-config sibling resolution (`Get{Iface}SiblingAsync()`).
+- `ICrossEntityResolver.GetEntityConfigs(entityId)` — the list counterpart to `GetEntityConfig`, propagating `[ServiceConfig]` entries into cross-entity/`CrossOptimistic` call contexts.
+
+### Changed
+
+- **Wire-breaking:** the scalar `ExecutedConfigVersion`/`ConfigVersion` fields on `MetaOperation`, `CallResponse<T>`/`VoidCallResponse`/`ByteCallResponse`, `SubscribeResponse`, and `SessionConnectResponse` are replaced by `List<MetaConfigVersion> ConfigVersions` — generalizes from exactly one config per service to any number. Old field ids are tombstoned, not reused. Requires a lockstep client/server redeploy.
+- `[MetaService(ConfigType=...)]` and `DefaultConfig` are now `[Obsolete]` (compiler warning) but remain fully functional — no forced migration.
+
+### Fixed
+
+- `MetaServiceResolver.GetEntityConfig<TConfig>` / `GetSubscribedEntities` now fall back to `[ServiceConfig]` entries when a service has no legacy primary config.
+
 ## [0.32.1] - 2026-07-03
 
 ### Added

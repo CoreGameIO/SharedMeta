@@ -53,7 +53,8 @@ namespace SharedMeta.Test.Meta1
 
     // ─── Service interface ────────────────────────────────────────────────────
 
-    [MetaService(StateType = typeof(MigrationTestState), ConfigType = typeof(MigrationConfig), DefaultConfig = true)]
+    [MetaService(StateType = typeof(MigrationTestState))]
+    [ServiceConfig(typeof(MigrationConfig), "Config")]
     public interface IMigrationTestService : IMetaService
     {
         /// <summary>

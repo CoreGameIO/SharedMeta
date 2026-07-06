@@ -202,11 +202,21 @@ public partial class GameConfig
 ### 2. Link to Service
 
 ```csharp
-[MetaService(StateType = typeof(GameState), DefaultConfig = true)]
+[MetaService(StateType = typeof(GameState))]
+[ServiceConfig(typeof(GameConfig), "Config")]
 public interface IGameService : IMetaService { ... }
 ```
 
-Or explicitly: `ConfigType = typeof(GameConfig)`.
+`[ServiceConfig]` is repeatable — declare it more than once to give a service several independently-versioned configs, each with its own accessor name:
+
+```csharp
+[MetaService(StateType = typeof(GameState))]
+[ServiceConfig(typeof(GameConfig), "Config")]
+[ServiceConfig(typeof(SeasonConfig), "Season")]
+public interface IGameService : IMetaService { ... }
+```
+
+The older `[MetaService(ConfigType = typeof(GameConfig))]` / `DefaultConfig = true` still work (marked `[Obsolete]` — a compiler warning nudging you toward `[ServiceConfig]`, not a break).
 
 ### 3. Access in Code
 

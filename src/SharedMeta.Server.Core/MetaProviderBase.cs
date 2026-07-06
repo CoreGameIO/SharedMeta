@@ -60,7 +60,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         op.RandomScrollDelta = 0;
         op.NamedRandomScrollDeltas = null;
         op.ServerTimeTicks = 0;
-        op.ExecutedConfigVersion = default;
+        op.ExecutedConfigVersions = null;
         op.DeepDesyncCrc = null;
         op.Error = null;
         op.Debug = null;
@@ -705,6 +705,22 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// </summary>
     protected virtual MetaConfigVersion GetSchemaFloorConfigVersion(int stateSchema) => default;
 
+    /// <summary>
+    /// 0.33.0+ Per-<c>[ServiceConfig]</c>-type equivalent of <see cref="GetSchemaFloorConfig"/>:
+    /// for each declared entry linked to a <c>[MetaStateVersion(N, ..., typeof(TConfig))]</c>
+    /// condition, returns the config object for the branch that does not require migration past
+    /// <paramref name="stateSchema"/> — same schema-consistency guarantee <c>[NoMigrate]</c>
+    /// already gets for the legacy primary. Positional, parallel to the declared
+    /// <c>[ServiceConfig]</c> order. Default returns empty (no entries declared).
+    /// </summary>
+    protected virtual object?[] GetSchemaFloorServiceConfigsForClient(int stateSchema) => System.Array.Empty<object?>();
+
+    /// <summary>
+    /// Resolved <see cref="MetaConfigVersion"/> for each <see cref="GetSchemaFloorServiceConfigsForClient"/>
+    /// entry, same positional order. Default returns empty.
+    /// </summary>
+    protected virtual MetaConfigVersion[] GetSchemaFloorServiceConfigVersionsForClient(int stateSchema) => System.Array.Empty<MetaConfigVersion>();
+
     // Per-method validation (e.g. IsClientCallable guards for [GenerateClientApi=false]) is
     // emitted inline by the generator as a HandleCallAsync override that runs the switch then
     // calls base. Conditional: only emitted when at least one method opts out, so projects
@@ -754,6 +770,11 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                 MetaContext.Config = floorConfig;
                 MetaContext.ConfigVersion = GetSchemaFloorConfigVersion(CurrentStateSchemaVersion);
             }
+            // 0.33.0+ [ServiceConfig] entries linked to a [MetaStateVersion] condition get the
+            // same schema-floor pinning the legacy primary gets above — entries with no such
+            // condition fall back to (1,0,0), same default the primary uses.
+            MetaContext.Configs = GetSchemaFloorServiceConfigsForClient(CurrentStateSchemaVersion);
+            MetaContext.ConfigVersions = GetSchemaFloorServiceConfigVersionsForClient(CurrentStateSchemaVersion);
         }
         else
         {
@@ -765,6 +786,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                 MetaContext.Config = perCallConfig;
                 MetaContext.ConfigVersion = ResolveClientConfigVersion(call.CallerClientVersion);
             }
+            // 0.33.0+ [ServiceConfig] entries — each independently versioned/published.
+            MetaContext.Configs = GetCachedServiceConfigsForClient(call.CallerClientVersion);
         }
 
         // Expose current schema version on the context so service code can branch on it
@@ -922,7 +945,11 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContext.ClientDebug = null;
             // Caller's optimistic replay materializes the same config branch the server used —
             // decoupling replay from session-resolved versions (Global scope, mid-rollout).
-            _pooledResponseOp.ExecutedConfigVersion = MetaContext.ConfigVersion;
+            // 0.33.0+ index 0 is the legacy primary, remaining are [ServiceConfig] entries in declaration order.
+            var serviceConfigVersions = GetCachedServiceConfigVersionsForClient(call.CallerClientVersion);
+            var executedConfigVersions = new List<MetaConfigVersion>(1 + serviceConfigVersions.Length) { MetaContext.ConfigVersion };
+            executedConfigVersions.AddRange(serviceConfigVersions);
+            _pooledResponseOp.ExecutedConfigVersions = executedConfigVersions;
 
             // Populate pooled broadcast — the form sent to OTHER subscribers. CallerId is
             // set so subscribers can attribute the op to the originator on their side.
@@ -942,7 +969,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             _pooledBroadcastOp.ServerTimeTicks = call.ServerTimeTicks;
             // Same as response above — Debug intentionally null to avoid per-RPC string allocation.
             _pooledBroadcastOp.Debug = null;
-            _pooledBroadcastOp.ExecutedConfigVersion = MetaContext.ConfigVersion;
+            _pooledBroadcastOp.ExecutedConfigVersions = executedConfigVersions;
 
             // Handle triggers — populate pooled trigger ops, attach to broadcast's Triggers list.
             // 0.24.0+ TriggersToExecute carries client-local MethodIds directly (emitted by the
@@ -1012,7 +1039,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                     triggerOp.RandomScrollDelta = triggerScrollDelta;
                     triggerOp.NamedRandomScrollDeltas = triggerNamedDeltas;
                     triggerOp.ServerTimeTicks = call.ServerTimeTicks;
-                    triggerOp.ExecutedConfigVersion = MetaContext.ConfigVersion;
+                    triggerOp.ExecutedConfigVersions = executedConfigVersions;
                     _pooledTriggerSlice.Add(triggerOp);
                 }
                 // Both response and broadcast carry the SAME trigger list (same object reference
@@ -1204,7 +1231,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             _pooledBroadcastOp.Payload = eventData;
             _pooledBroadcastOp.ReplayPayload = replayPayload;
             _pooledBroadcastOp.ServerTimeTicks = MetaContext.ServerTimeTicks;
-            _pooledBroadcastOp.ExecutedConfigVersion = MetaContext.ConfigVersion;
+            _pooledBroadcastOp.ExecutedConfigVersions = new List<MetaConfigVersion>(1) { MetaContext.ConfigVersion };
 
             var broadcastBytes = PackBytes(Context.Serializer, _pooledBroadcastOp);
             _outgoingEventBroadcast = broadcastBytes;
@@ -1269,6 +1296,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                 MetaContext.Config = floorConfig;
                 MetaContext.ConfigVersion = GetSchemaFloorConfigVersion(CurrentStateSchemaVersion);
             }
+            MetaContext.Configs = GetSchemaFloorServiceConfigsForClient(CurrentStateSchemaVersion);
+            MetaContext.ConfigVersions = GetSchemaFloorServiceConfigVersionsForClient(CurrentStateSchemaVersion);
         }
         else
         {
@@ -1278,6 +1307,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                 MetaContext.Config = perCallConfig;
                 MetaContext.ConfigVersion = ResolveClientConfigVersion(call.CallerClientVersion);
             }
+            MetaContext.Configs = GetCachedServiceConfigsForClient(call.CallerClientVersion);
         }
 
         MetaContext.Version = CurrentStateSchemaVersion;
@@ -1503,6 +1533,21 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     protected virtual object? GetCachedConfigForClient(string? clientVersion) => null;
 
     /// <summary>
+    /// 0.33.0+ Per-call resolution of every <c>[ServiceConfig]</c> entry declared on the
+    /// dispatched service, positional (declaration order = index). Default returns empty (no
+    /// configs declared); generated providers override this with one two-level cache per
+    /// declared type, mirroring <see cref="GetCachedConfigForClient"/> — each entry is
+    /// independently versioned/published.
+    /// </summary>
+    protected virtual object[] GetCachedServiceConfigsForClient(string? clientVersion) => System.Array.Empty<object>();
+
+    /// <summary>
+    /// Resolved <see cref="MetaConfigVersion"/> for each <see cref="GetCachedServiceConfigsForClient"/>
+    /// entry, same positional order. Default returns empty.
+    /// </summary>
+    protected virtual MetaConfigVersion[] GetCachedServiceConfigVersionsForClient(string? clientVersion) => System.Array.Empty<MetaConfigVersion>();
+
+    /// <summary>
     /// Scope-aware effective config version the framework will dispatch under for a given
     /// subscriber. Private/Shared: pin's version when pinned, else the joiner's resolved
     /// version (becomes the pin on first subscribe). Global: <see cref="IConfigVersionResolver.CurrentClientVersion"/>
@@ -1511,6 +1556,18 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// </summary>
     public virtual MetaConfigVersion ResolveEffectiveConfigVersion(string? clientVersion)
         => ResolveClientConfigVersion(clientVersion);
+
+    /// <summary>
+    /// 0.33.0+ Effective (subscribe-time) versions for every <c>[ServiceConfig]</c> entry,
+    /// same positional order as <see cref="GetCachedServiceConfigsForClient"/>. Used by
+    /// <c>EntityGrain</c>'s subscribe snapshot to populate <c>ConfigVersions</c> alongside
+    /// the legacy primary (when declared) at index 0 — without this, a fresh subscriber's
+    /// initial <c>Context.Configs</c> would resolve under <c>default(MetaConfigVersion)</c>
+    /// instead of the branch matching their app version. Pin- and
+    /// <see cref="EntityScope.Global"/>-aware, same as <see cref="GetCachedServiceConfigsForClient"/>.
+    /// </summary>
+    public virtual MetaConfigVersion[] ResolveEffectiveServiceConfigVersions(string? clientVersion)
+        => GetCachedServiceConfigVersionsForClient(clientVersion);
 
     /// <summary>Called by generated <see cref="OnDeactivating"/> overrides to drop the per-call config cache.</summary>
     protected virtual void ClearConfigCache() { }
@@ -1522,9 +1579,13 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     ///
     /// Generated providers override this when the state class declares
     /// <see cref="SharedMeta.Core.MetaStateVersionAttribute"/> attributes.
+    /// <paramref name="callerClientVersion"/> (0.33.0+) lets the override also gate on
+    /// <c>[ServiceConfig]</c>-linked <c>[MetaStateVersion(..., Breaking = true)]</c>
+    /// conditions, each resolved through its own provider — <paramref name="resolvedClientConfigVersion"/>
+    /// alone only carries the legacy primary's resolved version.
     /// Default returns true (no schema requirements).
     /// </summary>
-    public virtual bool IsClientConfigCompatible(MetaConfigVersion resolvedClientConfigVersion)
+    public virtual bool IsClientConfigCompatible(MetaConfigVersion resolvedClientConfigVersion, string? callerClientVersion)
         => true;
 
     /// <summary>

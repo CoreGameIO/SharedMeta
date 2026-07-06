@@ -3,7 +3,11 @@ using SharedMeta.Core;
 
 namespace Expedition.Shared
 {
+    // Deliberately kept on the legacy DefaultConfig — no xUnit coverage for this Unity mirror,
+    // migrate together with the main Expedition.Shared copy once verified.
+#pragma warning disable CS0618
     [MetaService(StateType = typeof(ExpeditionState), AccessPolicy = EntityAccessPolicy.Authorized, DefaultConfig = true)]
+#pragma warning restore CS0618
     public interface IExpeditionService : IMetaService
     {
         [MetaMethod(Alias = "Init", Mode = ExecutionMode.Server, GenerateClientApi = false)]

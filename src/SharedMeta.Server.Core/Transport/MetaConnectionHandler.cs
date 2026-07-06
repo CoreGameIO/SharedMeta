@@ -428,9 +428,7 @@ namespace SharedMeta.Server.Core.Transport
                     EntitySequenceNumber = result.EntitySequenceNumber,
                     OptimisticRandomBytes = result.OptimisticRandomBytes,
                     NamedRandomsBytes = result.NamedRandomsBytes,
-                    ConfigMajorVersion = result.ConfigVersion.Major,
-                    ConfigMinorVersion = result.ConfigVersion.Minor,
-                    ConfigPatchVersion = result.ConfigVersion.Patch,
+                    ConfigVersions = result.ConfigVersions,
                     FeatureRequirement = result.FeatureRequirement,
                 };
             }

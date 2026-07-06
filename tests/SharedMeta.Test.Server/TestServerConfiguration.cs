@@ -36,7 +36,12 @@ public static class TestServerConfiguration
         Action<IServiceCollection>? configureServices = null)
     {
         services.AddSingleton<IMetaConfigProvider<MigrationConfig>>(MigrationConfigProvider);
-        // 0.20.0 multi-config sibling test fixture: AltConfigService declares ConfigType =
+        // 0.33.0+ CounterConfig moved from [MetaService(DefaultConfig=true)] (auto-registered
+        // fallback on both sides) to [ServiceConfig(typeof(CounterConfig), "Config")] on
+        // ICounterService/ICounterAuxService — no auto-default by design. Register the
+        // server-side equivalent explicitly, matching the fallback's `new CounterConfig()`.
+        services.AddSingleton<IMetaConfigProvider<CounterConfig>>(new TestCounterConfigProvider());
+        // 0.20.0 multi-config sibling test fixture: AltConfigService declares [ServiceConfig] =
         // typeof(CounterAltConfig). Generated Get{Iface}SiblingAsync() resolves this provider
         // via Context.ResolveService → DI lookup. Without this registration the sibling-async
         // path throws when called from a multi-config sibling test.
@@ -46,6 +51,18 @@ public static class TestServerConfiguration
         services.AddSingleton<IMetaConfigProvider<GlobalScopeConfig>>(new TestGlobalScopeConfigProvider());
         services.AddSingleton<IMetaConfigProvider<MultiConfigA>>(new TestMultiConfigAProvider());
         services.AddSingleton<IMetaConfigProvider<MultiConfigB>>(new TestMultiConfigBProvider());
+        // 0.33.0 [ServiceConfig] fixture: legacy primary + two independently-versioned entries.
+        services.AddSingleton<IMetaConfigProvider<AdditionalFixturePrimaryConfig>>(new TestAdditionalFixturePrimaryConfigProvider());
+        services.AddSingleton<IMetaConfigProvider<AdditionalFixtureBalanceConfig>>(new TestAdditionalFixtureBalanceConfigProvider());
+        services.AddSingleton<IMetaConfigProvider<AdditionalFixtureSeasonConfig>>(new TestAdditionalFixtureSeasonConfigProvider());
+        // 0.33.0 fully symmetric [ServiceConfig] fixture: no legacy ConfigType at all.
+        services.AddSingleton<IMetaConfigProvider<SymmetricFixtureShopConfig>>(new TestSymmetricFixtureShopConfigProvider());
+        services.AddSingleton<IMetaConfigProvider<SymmetricFixtureVaultConfig>>(new TestSymmetricFixtureVaultConfigProvider());
+        // 0.33.0 Phase A: [ServiceConfig] pin/Global parity fixtures.
+        services.AddSingleton<IMetaConfigProvider<ServiceConfigSharedScopeConfig>>(new TestServiceConfigSharedScopeConfigProvider());
+        services.AddSingleton<IMetaConfigProvider<ServiceConfigGlobalScopeConfig>>(new TestServiceConfigGlobalScopeConfigProvider());
+        // 0.33.0 Phase B: [ServiceConfig] schema-floor migration parity fixture.
+        services.AddSingleton<IMetaConfigProvider<ServiceConfigMigrationConfig>>(new TestServiceConfigMigrationConfigProvider());
         services.AddSingleton<IConfigVersionResolver>(ConfigVersionResolver);
         return services.ConfigureMeta(configureServices);
     }
@@ -88,6 +105,27 @@ public class TestGlobalScopeConfigProvider : IMetaConfigProvider<GlobalScopeConf
     };
 }
 
+/// <summary>Provider for <see cref="ServiceConfigSharedScopeConfig"/>; same pattern as SharedScope, for the [ServiceConfig] pin-parity fixture.</summary>
+public class TestServiceConfigSharedScopeConfigProvider : IMetaConfigProvider<ServiceConfigSharedScopeConfig>
+{
+    public ServiceConfigSharedScopeConfig GetConfig(MetaConfigVersion version) => new ServiceConfigSharedScopeConfig
+    {
+        Major = version.Major,
+        Minor = version.Minor,
+        Patch = version.Patch,
+    };
+}
+
+/// <summary>Provider for <see cref="ServiceConfigGlobalScopeConfig"/>; same pattern as GlobalScope, for the [ServiceConfig] Global-parity fixture.</summary>
+public class TestServiceConfigGlobalScopeConfigProvider : IMetaConfigProvider<ServiceConfigGlobalScopeConfig>
+{
+    public ServiceConfigGlobalScopeConfig GetConfig(MetaConfigVersion version) => new ServiceConfigGlobalScopeConfig
+    {
+        Major = version.Major,
+        Minor = version.Minor,
+    };
+}
+
 /// <summary>Provider for <see cref="MultiConfigA"/> — used by the AND-gate test fixture.</summary>
 public class TestMultiConfigAProvider : IMetaConfigProvider<MultiConfigA>
 {
@@ -109,6 +147,18 @@ public class TestMultiConfigBProvider : IMetaConfigProvider<MultiConfigB>
 }
 
 /// <summary>
+/// Trivial static provider for <see cref="CounterConfig"/> — returns the same instance
+/// (default <c>MaxValue=1000</c>) regardless of version. Replaces the auto-default
+/// StaticConfigProvider that [MetaService(DefaultConfig=true)] used to register automatically.
+/// </summary>
+public class TestCounterConfigProvider : IMetaConfigProvider<CounterConfig>
+{
+    private readonly CounterConfig _instance = new();
+    public MetaConfigVersion CurrentVersion => new(1, 0);
+    public CounterConfig GetConfig(MetaConfigVersion version) => _instance;
+}
+
+/// <summary>
 /// Trivial static provider for <see cref="CounterAltConfig"/> — returns the same instance
 /// regardless of version. Tests rely on the default <c>MaxValue=7777</c> to verify the sibling
 /// saw the alt config rather than the primary <c>CounterConfig</c>.
@@ -118,6 +168,53 @@ public class TestCounterAltConfigProvider : IMetaConfigProvider<CounterAltConfig
     private readonly CounterAltConfig _instance = new() { MaxValue = 7777 };
     public MetaConfigVersion CurrentVersion => new(1, 0);
     public CounterAltConfig GetConfig(MetaConfigVersion version) => _instance;
+}
+
+/// <summary>Provider for <see cref="AdditionalFixturePrimaryConfig"/> — fixed value, not version-dependent.</summary>
+public class TestAdditionalFixturePrimaryConfigProvider : IMetaConfigProvider<AdditionalFixturePrimaryConfig>
+{
+    public AdditionalFixturePrimaryConfig GetConfig(MetaConfigVersion version) => new() { Value = 42 };
+}
+
+/// <summary>
+/// Provider for <see cref="AdditionalFixtureBalanceConfig"/> — Major/Minor mirror the resolved
+/// version, which per its [MetaConfigVersion] rules is ALWAYS 1.0 regardless of client version.
+/// </summary>
+public class TestAdditionalFixtureBalanceConfigProvider : IMetaConfigProvider<AdditionalFixtureBalanceConfig>
+{
+    public AdditionalFixtureBalanceConfig GetConfig(MetaConfigVersion version) => new()
+    {
+        Major = version.Major,
+        Minor = version.Minor,
+    };
+}
+
+/// <summary>
+/// Provider for <see cref="AdditionalFixtureSeasonConfig"/> — Major/Minor mirror the resolved
+/// version, which per its [MetaConfigVersion] rules tracks the client's own version branch.
+/// </summary>
+public class TestAdditionalFixtureSeasonConfigProvider : IMetaConfigProvider<AdditionalFixtureSeasonConfig>
+{
+    public AdditionalFixtureSeasonConfig GetConfig(MetaConfigVersion version) => new()
+    {
+        Major = version.Major,
+        Minor = version.Minor,
+    };
+}
+
+/// <summary>Provider for <see cref="SymmetricFixtureShopConfig"/> — Major mirrors the resolved version.</summary>
+public class TestSymmetricFixtureShopConfigProvider : IMetaConfigProvider<SymmetricFixtureShopConfig>
+{
+    public SymmetricFixtureShopConfig GetConfig(MetaConfigVersion version) => new() { Major = version.Major };
+}
+
+/// <summary>
+/// Provider for <see cref="SymmetricFixtureVaultConfig"/> — Major/Minor rules pin it to ALWAYS
+/// 1.0 regardless of client version, mirroring how Balance behaves in the legacy+ServiceConfig fixture.
+/// </summary>
+public class TestSymmetricFixtureVaultConfigProvider : IMetaConfigProvider<SymmetricFixtureVaultConfig>
+{
+    public SymmetricFixtureVaultConfig GetConfig(MetaConfigVersion version) => new() { Major = version.Major };
 }
 
 /// <summary>
@@ -143,5 +240,15 @@ public class TestMigrationConfigProvider : IMetaConfigProvider<MigrationConfig>
         Major = version.Major,
         Minor = version.Minor,
         Label = $"{version.Major}.{version.Minor}"
+    };
+}
+
+/// <summary>Provider for <see cref="ServiceConfigMigrationConfig"/> — Major/Minor echo the resolved version, same pattern as <see cref="TestMigrationConfigProvider"/>.</summary>
+public class TestServiceConfigMigrationConfigProvider : IMetaConfigProvider<ServiceConfigMigrationConfig>
+{
+    public ServiceConfigMigrationConfig GetConfig(MetaConfigVersion version) => new ServiceConfigMigrationConfig
+    {
+        Major = version.Major,
+        Minor = version.Minor,
     };
 }

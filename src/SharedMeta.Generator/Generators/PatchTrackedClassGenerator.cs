@@ -210,7 +210,8 @@ namespace SharedMeta.Generator.Generators
                             {
                                 ContextInjectionGenerator.GenerateSiblingAsyncGetter(
                                     sb, depSymbol, stateTypeName,
-                                    ContextInjectionGenerator.ReadDepConfigType(depSymbol));
+                                    ContextInjectionGenerator.ReadDepConfigType(depSymbol),
+                                    ContextInjectionGenerator.ReadDepServiceConfigTypes(depSymbol));
                             }
                         }
                     }

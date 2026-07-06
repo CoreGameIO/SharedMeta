@@ -122,7 +122,7 @@ namespace SharedMeta.Client.Network
                 NamedRandomScrollDeltas = op.NamedRandomScrollDeltas,
                 PatchBytes = op.PatchBytes.IsEmpty ? null : op.PatchBytes.ToArray(),
                 StateBytes = op.StateBytes.IsEmpty ? null : op.StateBytes.ToArray(),
-                ExecutedConfigVersion = op.ExecutedConfigVersion
+                ExecutedConfigVersions = op.ExecutedConfigVersions
             });
         }
 
@@ -175,7 +175,7 @@ namespace SharedMeta.Client.Network
                 PatchBytes = op.PatchBytes.IsEmpty ? null : op.PatchBytes.ToArray(),
                 StateBytes = op.StateBytes.IsEmpty ? null : op.StateBytes.ToArray(),
                 DeepDesyncCrc = op.DeepDesyncCrc,
-                ExecutedConfigVersion = op.ExecutedConfigVersion,
+                ExecutedConfigVersions = op.ExecutedConfigVersions,
                 Debug = op.Debug,
             };
         }
@@ -211,7 +211,7 @@ namespace SharedMeta.Client.Network
                 PatchBytes = op.PatchBytes.IsEmpty ? null : op.PatchBytes.ToArray(),
                 StateBytes = op.StateBytes.IsEmpty ? null : op.StateBytes.ToArray(),
                 DeepDesyncCrc = op.DeepDesyncCrc,
-                ExecutedConfigVersion = op.ExecutedConfigVersion,
+                ExecutedConfigVersions = op.ExecutedConfigVersions,
                 Debug = op.Debug,
             };
         }
@@ -248,7 +248,7 @@ namespace SharedMeta.Client.Network
                 PatchBytes = op.PatchBytes.IsEmpty ? null : op.PatchBytes.ToArray(),
                 StateBytes = op.StateBytes.IsEmpty ? null : op.StateBytes.ToArray(),
                 DeepDesyncCrc = op.DeepDesyncCrc,
-                ExecutedConfigVersion = op.ExecutedConfigVersion,
+                ExecutedConfigVersions = op.ExecutedConfigVersions,
                 Debug = op.Debug,
             };
         }

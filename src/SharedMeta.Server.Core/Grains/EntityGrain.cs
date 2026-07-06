@@ -341,7 +341,7 @@ namespace SharedMeta.Server.Core.Grains
             if (_provider != null)
             {
                 var resolvedConfigVersion = _provider.ResolveClientConfigVersion(clientVersion);
-                if (!_provider.IsClientConfigCompatible(resolvedConfigVersion))
+                if (!_provider.IsClientConfigCompatible(resolvedConfigVersion, clientVersion))
                 {
                     _logger.LogWarning(
                         "[EntityGrain] Subscribe rejected (breaking schema): entity={EntityId} player={PlayerId} " +
@@ -498,10 +498,11 @@ namespace SharedMeta.Server.Core.Grains
                 NamedRandomsBytes = namedBytes is { Length: > 0 } ? namedBytes : null,
                 // Scope-aware effective version: pinned for Private/Shared, resolver-driven
                 // for Global — so the client materializes the same config the server will
-                // dispatch under, not its own natural branch.
-                ConfigVersion = (_provider as MetaProviderBase<TState>)?.ResolveEffectiveConfigVersion(clientVersion)
-                               ?? _provider?.ResolveClientConfigVersion(clientVersion)
-                               ?? default,
+                // dispatch under, not its own natural branch. Index 0 = legacy primary (when
+                // declared); remaining are [ServiceConfig] entries (0.33.0+) — without appending
+                // these, a fresh subscriber's initial Context.Configs would resolve under
+                // default(MetaConfigVersion) instead of the branch matching their app version.
+                ConfigVersions = BuildConfigVersionsList(clientVersion),
                 AugmentedCapabilities = augmentedCaps,
             };
             }
@@ -510,6 +511,23 @@ namespace SharedMeta.Server.Core.Grains
                 __m.MarkError();
                 throw;
             }
+        }
+
+        /// <summary>
+        /// 0.33.0+ Builds the full config-version list for a subscribe snapshot: index 0 is the
+        /// scope-aware effective legacy primary version (mirrors the pre-0.33 single-scalar
+        /// behavior), remaining are <c>[ServiceConfig]</c> entries in declaration order.
+        /// </summary>
+        private List<MetaConfigVersion> BuildConfigVersionsList(string? clientVersion)
+        {
+            var providerBase = _provider as MetaProviderBase<TState>;
+            var primary = providerBase?.ResolveEffectiveConfigVersion(clientVersion)
+                ?? _provider?.ResolveClientConfigVersion(clientVersion)
+                ?? default;
+            var serviceConfigs = providerBase?.ResolveEffectiveServiceConfigVersions(clientVersion) ?? Array.Empty<MetaConfigVersion>();
+            var result = new List<MetaConfigVersion>(1 + serviceConfigs.Length) { primary };
+            result.AddRange(serviceConfigs);
+            return result;
         }
 
         public async Task<SubscriptionResult> ReclaimSubscriptionAsync(
@@ -585,9 +603,7 @@ namespace SharedMeta.Server.Core.Grains
                     StateBytes = snapshot.StateBytes.IsEmpty ? null : snapshot.StateBytes.ToArray(),
                     OptimisticRandomBytes = snapshot.OptimisticRandomBytes,
                     NamedRandomsBytes = snapshot.NamedRandomsBytes,
-                    ConfigMajorVersion = snapshot.ConfigVersion.Major,
-                    ConfigMinorVersion = snapshot.ConfigVersion.Minor,
-                    ConfigPatchVersion = snapshot.ConfigVersion.Patch,
+                    ConfigVersions = snapshot.ConfigVersions,
                 };
             }
             catch (EntityAccessDeniedException ex)
