@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
     <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)Generated</CompilerGeneratedFilesOutputPath>
+    <MapSourceGeneratedFilesInDebugSymbols>true</MapSourceGeneratedFilesInDebugSymbols>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 

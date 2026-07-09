@@ -17,11 +17,11 @@ public interface ISessionManagerReference : IGrainWithStringKey
     /// </summary>
     [OneWay]
     [AlwaysInterleave]
-    Task ReceiveBroadcastAsync(string entityId, EntityBroadcast broadcast, long entitySequenceNumber);
+    Task ReceiveBroadcastAsync(string entityId, string stateTypeName, EntityBroadcast broadcast, long entitySequenceNumber);
 
     /// <summary>
     /// [OneWay] Notify that an entity is deactivating.
     /// </summary>
     [OneWay]
-    Task NotifyEntityDeactivatingAsync(string entityId);
+    Task NotifyEntityDeactivatingAsync(string entityId, string stateTypeName);
 }

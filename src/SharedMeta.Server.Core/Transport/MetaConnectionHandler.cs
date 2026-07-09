@@ -449,7 +449,7 @@ namespace SharedMeta.Server.Core.Transport
                 if (!string.IsNullOrEmpty(request.EntityId))
                 {
                     var grain = SessionManagerGrainOrThrow;
-                    await grain.UnsubscribeFromEntityAsync(request.EntityId);
+                    await grain.UnsubscribeFromEntityAsync(request.EntityId, request.StateTypeName);
                 }
 
                 _logger.HandlerUnsubscribe(PlayerId!, request.EntityId);
@@ -551,6 +551,7 @@ namespace SharedMeta.Server.Core.Transport
 
                 var response = await grain.SendToEntityAsync(
                     request.EntityId,
+                    request.StateTypeName,
                     request.RequestId,
                     call,
                     request.LastAcknowledgedSequence,

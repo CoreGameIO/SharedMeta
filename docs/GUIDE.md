@@ -727,18 +727,18 @@ When the client's `DownloadingConfigProvider<TConfig>` fetches bytes, it asks th
 
 ```csharp
 // (1) Register the URL resolver. Builds URLs in the form
-//     {publicBaseUrl}{routePrefix}/{stateType}/{major}.{minor}.{patch}
+//     {publicBaseUrl}{routePrefix}/{configType}/{major}.{minor}.{patch}
 builder.Services.AddMetaConfigPublicUrl(
     publicBaseUrl: builder.Configuration["Server:PublicBaseUrl"]!,   // e.g. "https://api.example.com"
     routePrefix:   "/meta/config");                                   // default
 
 // (2) Map the matching HTTP endpoint. Non-generic overload uses generator-emitted
-//     IConfigByteSource — auto-routes by stateType to the right IMetaConfigProvider<T>,
+//     IConfigByteSource — auto-routes by configType to the right IMetaConfigProvider<T>,
 //     so every [MetaConfig] declared in the assembly is served from a single endpoint.
 app.MapMetaConfigDownload();   // recommended for multi-config / future-proof setups
 ```
 
-Both calls accept the same `routePrefix` — keep them in sync. The endpoint responds to `GET {routePrefix}/{stateType}/{version}`; the non-generic overload picks the right config type per request based on `stateType`.
+Both calls accept the same `routePrefix` — keep them in sync. The endpoint responds to `GET {routePrefix}/{configType}/{version}`; the non-generic overload picks the right config type per request based on `configType`.
 
 **Single-config dedicated-route variant** — if you want one config served from its own unique route (e.g. to gate behind separate auth):
 
@@ -791,7 +791,7 @@ resolver.RegisterAllServices();
 // (B) Server-pushed bytes with on-disk caching — real-server live ops.
 using var http = new HttpClient();
 resolver.RegisterConfigProvider<GameConfig>(new DownloadingConfigProvider<GameConfig>(
-    urlResolver: client.ConfigDownloadUrlResolver(typeof(GameState).FullName!),
+    urlResolver: client.ConfigDownloadUrlResolver,      // keyed by config type, not state type
     downloader:  url => http.GetByteArrayAsync(url),
     serializer:  client.Serializer,
     cache:       new FileConfigCache<GameConfig>("./config-cache", client.Serializer)));

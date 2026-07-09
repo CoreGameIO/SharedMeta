@@ -547,7 +547,7 @@ client.Resolver.RegisterConfigProvider<GameConfig>(
 
 // (B) Server-pushed bytes — real-server live ops, with optional disk cache
 client.Resolver.RegisterConfigProvider<GameConfig>(new DownloadingConfigProvider<GameConfig>(
-    urlResolver: client.ConfigDownloadUrlResolver(typeof(GameState).FullName!),
+    urlResolver: client.ConfigDownloadUrlResolver,      // keyed by config type, not state type
     downloader:  UnityConfigDownloader.DownloadAsync,   // Unity-friendly UnityWebRequest
     serializer:  client.Serializer,
     cache:       new FileConfigCache<GameConfig>(cacheDir, client.Serializer)));
@@ -570,7 +570,7 @@ builder.Services.AddMetaConfigPublicUrl(publicBaseUrl, routePrefix: "/meta/confi
 app.MapMetaConfigDownload();   // non-generic — recommended; serves every [MetaConfig]
 ```
 
-`AddMetaConfigPublicUrl` registers an `IConfigDownloadUrlResolver` that emits `{publicBaseUrl}{routePrefix}/{stateType}/{major}.{minor}.{patch}`. The non-generic `MapMetaConfigDownload()` uses the generator-emitted `IConfigByteSource` (auto-routing `stateType` → right `IMetaConfigProvider<TConfig>`), so adding a new `[MetaConfig]` type later requires zero endpoint changes — just `AddSharedMetaConfigProvider<NewConfig>()` on `builder.Services`.
+`AddMetaConfigPublicUrl` registers an `IConfigDownloadUrlResolver` that emits `{publicBaseUrl}{routePrefix}/{configType}/{major}.{minor}.{patch}`. The non-generic `MapMetaConfigDownload()` uses the generator-emitted `IConfigByteSource` (auto-routing `configType` → right `IMetaConfigProvider<TConfig>`), so adding a new `[MetaConfig]` type later requires zero endpoint changes — just `AddSharedMetaConfigProvider<NewConfig>()` on `builder.Services`.
 
 **Generic overload** `MapMetaConfigDownload<TConfig>(routePrefix)` is kept for single-config dedicated routes; multiple generic calls require distinct route prefixes to avoid collisions. Prefer the non-generic form for typical multi-config setups.
 

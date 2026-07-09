@@ -466,7 +466,7 @@ To override (download from server with disk caching), register a custom provider
 
 ```csharp
 resolver.RegisterConfigProvider<GameConfig>(new DownloadingConfigProvider<GameConfig>(
-    urlResolver: client.ConfigDownloadUrlResolver(typeof(GameState).FullName!),
+    urlResolver: client.ConfigDownloadUrlResolver,      // keyed by config type, not state type
     downloader: UnityConfigDownloader.DownloadAsync,
     serializer: client.Serializer,
     cache: new FileConfigCache<GameConfig>(Application.persistentDataPath + "/cfg", client.Serializer)));

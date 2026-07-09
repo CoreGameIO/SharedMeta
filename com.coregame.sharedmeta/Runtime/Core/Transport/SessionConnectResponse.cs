@@ -214,5 +214,15 @@ namespace SharedMeta.Core.Transport
 
         /// <summary>Resolved config version(s) — index 0 legacy primary when declared, remaining <see cref="SharedMeta.Core.ServiceConfigAttribute"/> entries.</summary>
         [Id(10), Key(10)] public List<MetaConfigVersion>? ConfigVersions { get; set; }
+
+        /// <summary>
+        /// 0.33.0+ Full type name of the state this verdict resolves — echoes the corresponding
+        /// <see cref="SubscriptionClaim.StateTypeName"/>. entityId alone doesn't uniquely identify
+        /// a connection (the server addresses entities by (state type, entityId), so two claims
+        /// can share an entityId across different state types, e.g. Inventory/Profile/Wallet all
+        /// keyed by playerId) — the client needs this to correlate a verdict back to the right
+        /// connection on Resume.
+        /// </summary>
+        [Id(11), Key(11)] public string StateTypeName { get; set; } = "";
     }
 }

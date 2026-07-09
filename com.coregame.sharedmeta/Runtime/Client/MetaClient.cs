@@ -299,11 +299,12 @@ namespace SharedMeta.Client
         /// <summary>
         /// Convenience helper for <see cref="DownloadingConfigProvider{TConfig}"/>: maps a
         /// <see cref="MetaConfigVersion"/> to the server-issued download URL by calling
-        /// <see cref="IConnection.GetConfigDownloadUrlAsync"/>. The <paramref name="stateTypeName"/>
-        /// must match the state that owns the config (the server keys URLs by state type).
+        /// <see cref="IConnection.GetConfigDownloadUrlAsync"/>. <paramref name="stateTypeName"/>
+        /// must match the state that owns the config; <paramref name="configTypeName"/>
+        /// disambiguates which config on that state (0.33.0+ — a state can expose several
+        /// independently-typed configs via <see cref="SharedMeta.Core.ServiceConfigAttribute"/>).
         /// </summary>
-        public Func<MetaConfigVersion, Task<string?>> ConfigDownloadUrlResolver(string stateTypeName) =>
-            version => Connection.GetConfigDownloadUrlAsync(stateTypeName, version);
+        public ConfigProvider.UrlResolverDelegate ConfigDownloadUrlResolver => Connection.GetConfigDownloadUrlAsync;
 
         /// <summary>
         /// Connect transport and establish session with the server. On failure, if
@@ -555,6 +556,30 @@ namespace SharedMeta.Client
             return result ?? throw new InvalidOperationException("Login returned null response");
         }
 #endif
+    }
+
+    public static class MetaClientExt
+    {
+        public static void RegisterDownloadingConfigProvider<TConfig>(
+            this MetaClient client
+            , Func<string, Task<byte[]>> downloader
+            , ConfigProvider.UrlResolverDelegate? urlResolver = null
+            , IMetaSerializer? serializer = null
+            , IClientMetaConfigCache<TConfig>? cache = null
+            , string configCacheDir = "./config-cache"
+        )
+        where TConfig : class
+        {
+            serializer ??= client.Serializer;
+            client.Resolver.RegisterConfigProvider(
+                ConfigProvider.Downloading(
+                    urlResolver : urlResolver ?? client.ConfigDownloadUrlResolver
+                    , downloader : downloader
+                    , serializer : serializer
+                    , cache: cache ?? new FileConfigCache<TConfig>(configCacheDir, serializer)
+                )
+            );
+        }
     }
 
 }

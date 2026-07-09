@@ -84,6 +84,11 @@ namespace SharedMeta.Client
         public Task<TConfig> GetConfigAsync(MetaConfigVersion version) => Task.FromResult(_config);
     }
 
+    public static class StaticConfigProvider {
+        public static StaticConfigProvider<TConfig> Create<TConfig>(TConfig config) where TConfig : class
+            => new StaticConfigProvider<TConfig>(config);
+    }
+
     /// <summary>
     /// Materializes a config by fetching it from the server. The URL resolver maps a
     /// <see cref="MetaConfigVersion"/> to a download URL (typically a wrapper around
@@ -94,13 +99,13 @@ namespace SharedMeta.Client
     public sealed class DownloadingConfigProvider<TConfig> : IClientMetaConfigProvider<TConfig>, IClearableConfigProvider
         where TConfig : class
     {
-        private readonly Func<MetaConfigVersion, Task<string?>> _urlResolver;
+        private readonly ConfigProvider.UrlResolverDelegate _urlResolver;
         private readonly Func<string, Task<byte[]>> _downloader;
         private readonly IMetaSerializer _serializer;
         private readonly IClientMetaConfigCache<TConfig>? _cache;
 
         public DownloadingConfigProvider(
-            Func<MetaConfigVersion, Task<string?>> urlResolver,
+            ConfigProvider.UrlResolverDelegate urlResolver,
             Func<string, Task<byte[]>> downloader,
             IMetaSerializer serializer,
             IClientMetaConfigCache<TConfig>? cache = null)
@@ -116,7 +121,7 @@ namespace SharedMeta.Client
             var cached = _cache?.TryGet(version);
             if (cached != null) return cached;
 
-            var url = await _urlResolver(version).ConfigureAwait(false);
+            var url = await _urlResolver(typeof(TConfig).FullName ?? "", version).ConfigureAwait(false);
             if (string.IsNullOrEmpty(url))
                 throw new InvalidOperationException(
                     $"DownloadingConfigProvider<{typeof(TConfig).Name}>: URL resolver returned no URL for version {version.Major}.{version.Minor}.");
@@ -133,6 +138,21 @@ namespace SharedMeta.Client
 
         /// <summary>Wipe the backing cache (if it supports clearing). No-op otherwise.</summary>
         public void ClearCache() => (_cache as IClearableConfigCache)?.Clear();
+    }
+
+    public static class ConfigProvider
+    {
+        public delegate Task<string?> UrlResolverDelegate(string configTypeName, MetaConfigVersion version);
+
+        public static DownloadingConfigProvider<TConfig> Downloading<TConfig>(
+            UrlResolverDelegate urlResolver
+            , Func<string, Task<byte[]>> downloader
+            , IMetaSerializer serializer
+            , IClientMetaConfigCache<TConfig>? cache = null
+            ) where TConfig : class
+        {
+            return new DownloadingConfigProvider<TConfig>(urlResolver, downloader, serializer, cache);
+        }
     }
 
     /// <summary>

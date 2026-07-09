@@ -252,10 +252,10 @@ namespace SharedMeta.Client.Network
             });
         }
 
-        public async Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version)
+        public async Task<string?> GetConfigDownloadUrlAsync(string configTypeName, MetaConfigVersion version)
         {
             EnsureConnected();
-            var response = await _hub!.GetConfigDownloadUrl(new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor, ConfigPatchVersion = version.Patch });
+            var response = await _hub!.GetConfigDownloadUrl(new ConfigDownloadUrlRequest { ConfigTypeName = configTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor, ConfigPatchVersion = version.Patch });
             return response.DownloadUrl;
         }
 

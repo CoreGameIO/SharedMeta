@@ -20,11 +20,19 @@ namespace SharedMeta.Core
     /// back safely after the framework upgrade that introduced Patch.
     /// </summary>
     [MemoryPackable, MessagePackObject, GenerateSerializer]
-    public readonly partial struct MetaConfigVersion : IComparable<MetaConfigVersion>, IComparable, IEquatable<MetaConfigVersion>
+    public partial struct MetaConfigVersion : IComparable<MetaConfigVersion>, IComparable, IEquatable<MetaConfigVersion>
     {
-        [Id(0), Key(0), MemoryPackOrder(0)] public int Major { get; }
-        [Id(1), Key(1), MemoryPackOrder(1)] public int Minor { get; }
-        [Id(2), Key(2), MemoryPackOrder(2)] public int Patch { get; }
+        // init (not get-only): plain reflection-based JSON deserializers (System.Text.Json's
+        // default JsonHubProtocol, which Unity SignalR clients get unless they explicitly opt
+        // into AddMetaMessagePackProtocol()) construct via the parameterless struct ctor and set
+        // properties by name — they don't know about [SerializationConstructor] (an Orleans-only
+        // marker) and won't bind the (major, minor, patch) constructor. With get-only properties
+        // that left every deserialized MetaConfigVersion silently at (0,0,0) regardless of what
+        // was sent, since there was no setter to write the real value into. MemoryPack/MessagePack
+        // are unaffected (they bind by [Id]/[Key] positional index, not JSON name/ctor matching).
+        [Id(0), Key(0), MemoryPackOrder(0)] public int Major { get; set; }
+        [Id(1), Key(1), MemoryPackOrder(1)] public int Minor { get; set; }
+        [Id(2), Key(2), MemoryPackOrder(2)] public int Patch { get; set; }
 
         [SerializationConstructor]
         public MetaConfigVersion(int major, int minor, int patch = 0)

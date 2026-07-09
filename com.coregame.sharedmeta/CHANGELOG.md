@@ -6,15 +6,22 @@
 
 - `[ServiceConfig(typeof(TConfig), "Name")]` — repeatable, symmetric config declaration per service (0, 1, or many configs, no privileged "primary"), replacing `[MetaService(ConfigType=...)]`/`DefaultConfig` as the recommended way to declare service configs. Full parity with the legacy mechanism: pin support (`Private`/`Shared` scope), `[EntityScope(Global)]` substitution, `[MetaStateVersion]` schema-floor migration (including `[NoMigrate]` and the Breaking-schema compat gate), cross-entity/`CrossOptimistic` propagation, and multi-config sibling resolution (`Get{Iface}SiblingAsync()`).
 - `ICrossEntityResolver.GetEntityConfigs(entityId)` — the list counterpart to `GetEntityConfig`, propagating `[ServiceConfig]` entries into cross-entity/`CrossOptimistic` call contexts.
+- `[StatelessMetaService(typeof(TConfig))]` / `[StatelessMetaServiceImpl]` — no-entity, no-state services resolving only a linked `[MetaConfig]` (e.g. a pricing formula). Impl gets a typed `Config` property only, no `Context`.
+- `MetaProviderBase.InitializeConfigsAsync` — async pre-warms `[ServiceConfig]` providers on subscribe, avoiding a cold-cache race on a service's first call.
+- `IMetaServiceResolver.DisconnectAsync<TState>` / `GetEntityConfig<TState, TConfig>` — disambiguating overloads for entities that share an entityId across state types (e.g. Inventory/Profile/Wallet all keyed by playerId).
 
 ### Changed
 
 - **Wire-breaking:** the scalar `ExecutedConfigVersion`/`ConfigVersion` fields on `MetaOperation`, `CallResponse<T>`/`VoidCallResponse`/`ByteCallResponse`, `SubscribeResponse`, and `SessionConnectResponse` are replaced by `List<MetaConfigVersion> ConfigVersions` — generalizes from exactly one config per service to any number. Old field ids are tombstoned, not reused. Requires a lockstep client/server redeploy.
 - `[MetaService(ConfigType=...)]` and `DefaultConfig` are now `[Obsolete]` (compiler warning) but remain fully functional — no forced migration.
+- **Wire-breaking:** subscriptions are now keyed by `(entityId, stateTypeName)`, not entityId alone — `RpcCallRequest`, `SessionConnectResponse`, `UnsubscribeRequest` gain `StateTypeName`. Requires lockstep client/server redeploy.
+- **Wire-breaking:** config download URLs are now resolved by config type, not state type — `ConfigDownloadUrlRequest.StateTypeName` renamed to `ConfigTypeName`.
+- `MetaClient.RegisterDownloadingConfigProvider` moved to a config-type-keyed URL resolver (`ConfigProvider.UrlResolverDelegate`). Migration: `RegisterDownloadingConfigProvider<TConfig, TState>` → `UnityRegisterDownloadingConfigProvider<TConfig>` (Unity) or `RegisterDownloadingConfigProvider<TConfig>` (generic).
 
 ### Fixed
 
 - `MetaServiceResolver.GetEntityConfig<TConfig>` / `GetSubscribedEntities` now fall back to `[ServiceConfig]` entries when a service has no legacy primary config.
+- `MetaConfigVersion` deserialized as `(0,0,0)` under SignalR's default JSON protocol — properties are now settable so reflection-based JSON binding works (MemoryPack/MessagePack were unaffected).
 
 ## [0.32.1] - 2026-07-03
 

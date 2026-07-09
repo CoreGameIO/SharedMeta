@@ -65,5 +65,15 @@ namespace SharedMeta.Core.Transport
         /// <c>null</c> keeps the wire identical for unannotated methods.
         /// </summary>
         [Id(10), Key(10)] public SharedMeta.Core.PayloadDebug? Debug { get; set; }
+
+        /// <summary>
+        /// 0.33.0+ Full type name of the target state, matching the corresponding
+        /// <see cref="SubscribeRequest.StateTypeName"/>. entityId alone is not a unique
+        /// subscription key — the server addresses entities by (state type, entityId), so the
+        /// same entityId can be shared by independent state types (e.g. Inventory/Profile/Wallet
+        /// all keyed by playerId). SessionManagerGrain uses this to route the call to the correct
+        /// cached subscription instead of an ambiguous entityId-only lookup.
+        /// </summary>
+        [Id(11), Key(11)] public string StateTypeName { get; set; } = "";
     }
 }

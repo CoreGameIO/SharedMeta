@@ -153,11 +153,10 @@ namespace SharedMeta.Debug.Mux
             await _hub.AcknowledgeSequence(_sessionTag, new AcknowledgeRequest { SequenceNumber = sequenceNumber });
         }
 
-        public async Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version)
+        public async Task<string?> GetConfigDownloadUrlAsync(string configTypeName, MetaConfigVersion version)
         {
-            var resp = await _hub.GetConfigDownloadUrl(_sessionTag, new ConfigDownloadUrlRequest
-            {
-                StateTypeName = stateTypeName,
+            var resp = await _hub.GetConfigDownloadUrl(_sessionTag, new ConfigDownloadUrlRequest {
+                ConfigTypeName = configTypeName,
                 ConfigMajorVersion = version.Major,
                 ConfigMinorVersion = version.Minor,
             });

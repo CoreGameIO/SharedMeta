@@ -104,7 +104,13 @@ namespace SharedMeta.Server.Core.Session
         /// Unsubscribe from an entity.
         /// </summary>
         /// <param name="entityId">The entity to unsubscribe from.</param>
-        Task UnsubscribeFromEntityAsync(string entityId);
+        /// <param name="stateTypeName">
+        /// The state type name identifying which subscription to remove. entityId alone is not
+        /// a unique key — the server addresses entities by (state type, entityId), so the same
+        /// entityId can be shared by independent state types (e.g. Inventory/Profile/Wallet all
+        /// keyed by playerId).
+        /// </param>
+        Task UnsubscribeFromEntityAsync(string entityId, string stateTypeName);
 
         /// <summary>
         /// Send a request to an entity.
@@ -113,12 +119,16 @@ namespace SharedMeta.Server.Core.Session
         /// Rejects calls where sessionId doesn't match the current session (superseded).
         /// </summary>
         /// <param name="entityId">The target entity.</param>
+        /// <param name="stateTypeName">
+        /// The state type name identifying which subscription to route the call through —
+        /// entityId alone is not a unique key (see <see cref="UnsubscribeFromEntityAsync"/>).
+        /// </param>
         /// <param name="requestId">Client-managed request ID for idempotency.</param>
         /// <param name="call">The RPC call.</param>
         /// <param name="lastAcknowledgedSequence">Piggybacked ack: highest sequence client has processed.</param>
         /// <param name="sessionId">Caller's session ID — rejected if it doesn't match the current session.</param>
         /// <returns>SessionResponse with result and sequence numbers.</returns>
-        Task<SessionResponse> SendToEntityAsync(string entityId, long requestId, RpcCall call, long lastAcknowledgedSequence, Guid sessionId);
+        Task<SessionResponse> SendToEntityAsync(string entityId, string stateTypeName, long requestId, RpcCall call, long lastAcknowledgedSequence, Guid sessionId);
 
         /// <summary>
         /// Execute a query call on an entity without subscribing.

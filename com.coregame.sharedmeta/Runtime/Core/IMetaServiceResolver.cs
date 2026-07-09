@@ -29,6 +29,15 @@ namespace SharedMeta.Core
         Task DisconnectAsync(string entityId);
 
         /// <summary>
+        /// Disconnect only the <typeparamref name="TState"/> connection under
+        /// <paramref name="entityId"/>, leaving any other state-type connections sharing the
+        /// same entityId (e.g. Inventory/Profile/Wallet all keyed by playerId) intact. Use when
+        /// <see cref="DisconnectAsync(string)"/>'s "disconnect everything under this entityId"
+        /// behavior is too broad.
+        /// </summary>
+        Task DisconnectAsync<TState>(string entityId) where TState : class, ISharedState;
+
+        /// <summary>
         /// Get the current state for a connected entity.
         /// </summary>
         /// <typeparam name="TState">State type</typeparam>
@@ -81,10 +90,21 @@ namespace SharedMeta.Core
         void ClearConfigCaches();
 
         /// <summary>
-        /// Get the resolved config for a connected entity.
-        /// Returns null if the entity is not connected or has no config.
+        /// Get the resolved config for a connected entity, searching across every state-type
+        /// connection sharing <paramref name="entityId"/> (e.g. Inventory/Profile/Wallet all
+        /// keyed by the same playerId) and matching by <typeparamref name="TConfig"/>'s actual
+        /// type. Returns null if no connection under this entityId is connected or exposes this
+        /// config type. Throws if two or more connections expose the same
+        /// <typeparamref name="TConfig"/> — use <see cref="GetEntityConfig{TState, TConfig}"/> to
+        /// disambiguate that rare case.
         /// </summary>
         TConfig? GetEntityConfig<TConfig>(string entityId) where TConfig : class;
+
+        /// <summary>
+        /// Disambiguating overload of <see cref="GetEntityConfig{TConfig}"/> for the rare case
+        /// where two different state types sharing an entityId both expose the same config type.
+        /// </summary>
+        TConfig? GetEntityConfig<TState, TConfig>(string entityId) where TState : class, ISharedState where TConfig : class;
 
         /// <summary>
         /// Materialize <typeparamref name="TConfig"/> at a specific <see cref="MetaConfigVersion"/>

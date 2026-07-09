@@ -7,13 +7,8 @@ namespace Expedition.Shared
     /// Energy regenerates over time. Can be spent on exploration.
     /// Money earned from treasures, spent on buying energy.
     /// </summary>
-    // Deliberately kept on the legacy DefaultConfig (obsolete but functional) rather than
-    // migrated to [ServiceConfig]: Expedition has no xUnit test coverage, and ProfileState
-    // carries [MetaStateVersion(2, "2.0", typeof(ExpeditionConfig))] — migrate once that's
-    // been exercised against [ServiceConfig], not on faith from a build-only check.
-#pragma warning disable CS0618
-    [MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned, DefaultConfig = true)]
-#pragma warning restore CS0618
+    [MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned)]
+    [ServiceConfig(typeof(ExpeditionConfig), "Config")]
     public interface IExpeditionProfileService : IMetaService
     {
         /// <summary>

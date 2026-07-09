@@ -186,7 +186,7 @@ namespace SharedMeta.Orleans.Config.Admin
             { _registry = registry; _grains = grains; }
 
             public async Task HandleAsync<TConfig>(string fullName, string displayName, CancellationToken ct) where TConfig : class
-                => _items.Add(await BuildOverviewAsync<TConfig>(_registry, _grains, fullName, displayName).ConfigureAwait(false));
+                => _items.Add(await BuildOverviewAsync<TConfig>(_registry, _grains, fullName, displayName));
 
             public ConfigOverview[] Build() => _items.ToArray();
         }
@@ -201,7 +201,7 @@ namespace SharedMeta.Orleans.Config.Admin
             { _registry = registry; _grains = grains; }
 
             public async Task HandleAsync<TConfig>(string fullName, string displayName, CancellationToken ct) where TConfig : class
-                => Result = await BuildOverviewAsync<TConfig>(_registry, _grains, fullName, displayName).ConfigureAwait(false);
+                => Result = await BuildOverviewAsync<TConfig>(_registry, _grains, fullName, displayName);
         }
 
         private sealed class DownloadHandler : IConfigCatalogHandler
@@ -214,7 +214,7 @@ namespace SharedMeta.Orleans.Config.Admin
             { _registry = registry; _version = version; }
 
             public async Task HandleAsync<TConfig>(string fullName, string displayName, CancellationToken ct) where TConfig : class
-                => Bytes = await _registry.GetAsync<TConfig>(_version).ConfigureAwait(false);
+                => Bytes = await _registry.GetAsync<TConfig>(_version);
         }
 
         private sealed class UploadHandler : IConfigCatalogHandler
@@ -240,14 +240,14 @@ namespace SharedMeta.Orleans.Config.Admin
 
             public async Task HandleAsync<TConfig>(string fullName, string displayName, CancellationToken ct) where TConfig : class
             {
-                var outcome = await _registry.PublishIfChangedAsync<TConfig>(_version, _bytes, _failOnDrift).ConfigureAwait(false);
+                var outcome = await _registry.PublishIfChangedAsync<TConfig>(_version, _bytes, _failOnDrift);
                 await _grains.GetGrain<IConfigMetadataGrain>(fullName)
                     .RecordPublishAsync(_version.ToString(), _bytes.Length, _origin, _publishedBy, _notes)
-                    .ConfigureAwait(false);
+                    ;
                 _logger.LogInformation(
                     "ConfigAdmin: upload {Name} v{Version} ({Bytes} B, origin={Origin}, by={By}) → {Outcome}",
                     fullName, _version, _bytes.Length, _origin, _publishedBy, outcome);
-                Overview = await BuildOverviewAsync<TConfig>(_registry, _grains, fullName, displayName).ConfigureAwait(false);
+                Overview = await BuildOverviewAsync<TConfig>(_registry, _grains, fullName, displayName);
             }
         }
 
@@ -264,8 +264,8 @@ namespace SharedMeta.Orleans.Config.Admin
 
             public async Task HandleAsync<TConfig>(string fullName, string displayName, CancellationToken ct) where TConfig : class
             {
-                await _registry.UnpublishAsync<TConfig>(_version).ConfigureAwait(false);
-                await _grains.GetGrain<IConfigMetadataGrain>(fullName).RemoveAsync(_version.ToString()).ConfigureAwait(false);
+                await _registry.UnpublishAsync<TConfig>(_version);
+                await _grains.GetGrain<IConfigMetadataGrain>(fullName).RemoveAsync(_version.ToString());
                 _logger.LogInformation(
                     "ConfigAdmin: unpublished {Name} v{Version} by {By}", fullName, _version, _deletedBy);
             }
@@ -275,11 +275,11 @@ namespace SharedMeta.Orleans.Config.Admin
             IConfigRegistry registry, IGrainFactory grains, string fullName, string displayName) where TConfig : class
         {
             var metadataGrain = grains.GetGrain<IConfigMetadataGrain>(fullName);
-            var registryVersions = await registry.ListVersionsAsync<TConfig>().ConfigureAwait(false);
-            var metadataRecords = await metadataGrain.ListAsync().ConfigureAwait(false);
+            var registryVersions = await registry.ListVersionsAsync<TConfig>();
+            var metadataRecords = await metadataGrain.ListAsync();
             var metadataByVersion = metadataRecords.ToDictionary(r => r.Version, StringComparer.Ordinal);
             var heldBranches = new HashSet<string>(
-                await metadataGrain.ListHeldBranchesAsync().ConfigureAwait(false), StringComparer.Ordinal);
+                await metadataGrain.ListHeldBranchesAsync(), StringComparer.Ordinal);
 
             var allVersions = registryVersions
                 .Select(v => v.ToString())

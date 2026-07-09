@@ -17,6 +17,9 @@ namespace SharedMeta.Client
     {
         public long RequestId { get; init; }
         public string EntityId { get; init; } = "";
+        // entityId alone doesn't uniquely identify a subscription (see SendAsync) — carried
+        // through to RpcCallRequest so SessionManagerGrain can route to the right one.
+        public string StateTypeName { get; init; } = "";
         public ushort MethodId { get; init; }  // 0.24.0+: stamped from RpcCall.MethodId
         public ReadOnlyMemory<byte> Payload { get; init; }
         public bool IsCrossOptimistic { get; init; }
@@ -261,6 +264,7 @@ namespace SharedMeta.Client
                 {
                     RequestId = requestId,
                     EntityId = entityId,
+                    StateTypeName = stateTypeName ?? "",
                     MethodId = call.MethodId,
                     Payload = payloadBytes,
                     IsCrossOptimistic = call.IsCrossOptimistic,
@@ -1321,6 +1325,7 @@ namespace SharedMeta.Client
         private RpcCallRequest BuildRequest(PendingRequest pending) => new()
         {
             EntityId = pending.EntityId,
+            StateTypeName = pending.StateTypeName,
             RequestId = pending.RequestId,
             MethodId = pending.MethodId,
             Payload = pending.Payload,

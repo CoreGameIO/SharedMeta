@@ -187,7 +187,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         InitializeNamedRandoms(context);
 
         // Hook for subclass initialization
-        OnInitialize();
+        OnInitialize(context.Logger);
     }
 
     /// <summary>
@@ -441,7 +441,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// <summary>
     /// Override to perform additional initialization after context and state are set.
     /// </summary>
-    protected virtual void OnInitialize() { }
+    protected virtual void OnInitialize(ILogger? logger) { }
 
     /// <summary>
     /// Dispatches a service method call by global method id. Implemented by generated code
@@ -625,6 +625,30 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     {
         // Default: no config providers, no pins to set.
     }
+
+    /// <summary>
+    /// Async-warms every declared <c>[ServiceConfig]</c> provider's cache for the
+    /// version(s) resolved for <paramref name="clientVersion"/> (pin-first for Private/Shared —
+    /// call after <see cref="EstablishConfigPinsFromClientVersion"/> so pins are already set;
+    /// <see cref="IConfigVersionResolver.CurrentClientVersion"/> for Global). Called once by
+    /// <c>EntityGrain.SubscribeAsync</c> per activation.
+    /// <para>
+    /// Unlike the legacy primary config — whose version is always fetched via
+    /// <c>InitializeConfigAsync</c> before any sync access is possible — a <c>[ServiceConfig]</c>
+    /// entry only had its version *resolved*, never *fetched*, at subscribe time. The first sync
+    /// <c>GetConfig</c> call (from <c>GetCachedServiceConfigsForClient</c>, invoked on every
+    /// <c>HandleCallAsync</c>) could therefore race an async-backed provider's cache and throw.
+    /// This pre-populates the same per-client memoization dictionary
+    /// (<c>_serviceConfigCacheByClient_X</c>) that call uses, keyed identically, so the first
+    /// real call is guaranteed a cache hit instead of a cold synchronous fetch.
+    /// </para>
+    /// <para>
+    /// Default base implementation is a no-op — used by states without any
+    /// <c>[ServiceConfig]</c> providers.
+    /// </para>
+    /// </summary>
+    public virtual System.Threading.Tasks.Task InitializeConfigsAsync(string? clientVersion)
+        => System.Threading.Tasks.Task.CompletedTask;
 
     /// <summary>
     /// Shared scope only: validates a joining client's config versions against the pins.

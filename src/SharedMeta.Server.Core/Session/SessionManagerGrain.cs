@@ -53,16 +53,24 @@ namespace SharedMeta.Server.Core.Session
         private SessionResponse? _pendingNotifyResponse;
         private readonly Func<ISessionObserver, Task> _onBatchInvoker;
 
-        // Subscriptions
-        private readonly Dictionary<string, EntitySubscriptionInfo> _subscribedEntities = new();
+        // Subscriptions. Keyed by (entityId, stateTypeName) — NOT entityId alone. The server
+        // addresses entities by (state type, entityId) (an Orleans grain identity), so the same
+        // entityId string is a valid, independent identity across different state types (e.g.
+        // Inventory:playerId, Profile:playerId, Wallet:playerId under the UserOwned convention).
+        // Outer key is entityId, inner key is stateTypeName. Use the TryGetSubscription/
+        // SetSubscription/RemoveSubscription/AllSubscriptions helpers instead of touching directly.
+        private readonly Dictionary<string, Dictionary<string, EntitySubscriptionInfo>> _subscribedEntities = new();
 
         // Observer (Hub connection) - managed with expiration-based cleanup (Orleans built-in)
         private readonly ObserverManager<ISessionObserver> _observerManager;
         private IDisposable? _observerCleanupTimer;
         private static readonly TimeSpan ObserverCleanupInterval = TimeSpan.FromSeconds(30);
 
-        // Per-entity ordering state
-        private readonly Dictionary<string, EntityOrderingState> _entityStates = new();
+        // Per-entity ordering state. Keyed by (entityId, stateTypeName) — same rationale as
+        // _subscribedEntities above; a conflated ordering state for two state types sharing an
+        // entityId could let one grain's advancing sequence spuriously satisfy the other's
+        // gap-detection check, bypassing held-broadcast ordering guarantees.
+        private readonly Dictionary<string, Dictionary<string, EntityOrderingState>> _entityStates = new();
 
         // Sentinel slot-reservation marker for HeldBroadcasts. Used by the CrossOptimistic path
         // to claim the target entity's seq slot for a cross-call whose effect is already inlined
@@ -102,6 +110,7 @@ namespace SharedMeta.Server.Core.Session
         {
             public long RequestId;
             public string EntityId;
+            public string StateTypeName;
             public RpcCall Call;
             public long LastAcknowledgedSequence;
         }
@@ -139,6 +148,7 @@ namespace SharedMeta.Server.Core.Session
         private struct QueuedBroadcast
         {
             public string EntityId;
+            public string StateTypeName;
             public long EntitySequenceNumber;
             public EntityBroadcast Broadcast;
         }
@@ -147,12 +157,59 @@ namespace SharedMeta.Server.Core.Session
         {
             public long RequestId;
             public string EntityId;
+            public string StateTypeName;
             public long RequiredEntitySeq;
             public EntityCallResult Result;
             public RpcCall OriginalCall;
         }
 
         #endregion
+
+        // --- Composite-key (entityId, stateTypeName) subscription/ordering-state helpers ----
+        // Mirrors the client-side MetaServiceResolver pattern. Orleans grains are single-
+        // threaded, so no locking is needed here (unlike the client's _lock-guarded helpers).
+
+        private bool TryGetSubscription(string entityId, string stateTypeName, out EntitySubscriptionInfo info)
+        {
+            info = default;
+            return _subscribedEntities.TryGetValue(entityId, out var byType) && byType.TryGetValue(stateTypeName, out info);
+        }
+
+        private void SetSubscription(string entityId, string stateTypeName, EntitySubscriptionInfo info)
+        {
+            if (!_subscribedEntities.TryGetValue(entityId, out var byType))
+            {
+                byType = new Dictionary<string, EntitySubscriptionInfo>();
+                _subscribedEntities[entityId] = byType;
+            }
+            byType[stateTypeName] = info;
+        }
+
+        private bool RemoveSubscription(string entityId, string stateTypeName, out EntitySubscriptionInfo info)
+        {
+            info = default;
+            if (_subscribedEntities.TryGetValue(entityId, out var byType) && byType.TryGetValue(stateTypeName, out info))
+            {
+                byType.Remove(stateTypeName);
+                if (byType.Count == 0) _subscribedEntities.Remove(entityId);
+                return true;
+            }
+            return false;
+        }
+
+        private IEnumerable<EntitySubscriptionInfo> AllSubscriptions()
+        {
+            foreach (var byType in _subscribedEntities.Values)
+                foreach (var info in byType.Values)
+                    yield return info;
+        }
+
+        private int SubscriptionCount()
+        {
+            int count = 0;
+            foreach (var byType in _subscribedEntities.Values) count += byType.Count;
+            return count;
+        }
 
         // 0.24.0+ Persistent state — see SessionManagerGrainState. Written on
         // graceful disconnect + OnDeactivateAsync; read on OnActivateAsync. Hot path doesn't write.
@@ -241,7 +298,7 @@ namespace SharedMeta.Server.Core.Session
             // entity grains are already gone, no point calling them
             if (reason.ReasonCode != DeactivationReasonCode.ShuttingDown)
             {
-                foreach (var sub in _subscribedEntities.Values)
+                foreach (var sub in AllSubscriptions())
                 {
                     try
                     {
@@ -410,7 +467,7 @@ namespace SharedMeta.Server.Core.Session
                 await _observerManager.Notify(o => o.OnSessionTerminated("Session superseded by new connection"));
                 _observerManager.Clear();
 
-                foreach (var sub in _subscribedEntities.Values)
+                foreach (var sub in AllSubscriptions())
                 {
                     try { await sub.GrainRef.UnsubscribeAsync(_playerId); }
                     catch { /* best effort */ }
@@ -476,7 +533,7 @@ namespace SharedMeta.Server.Core.Session
             _observerManager.Clear();
 
             // Unsubscribe from all entities
-            foreach (var sub in _subscribedEntities.Values)
+            foreach (var sub in AllSubscriptions())
             {
                 try
                 {
@@ -528,7 +585,7 @@ namespace SharedMeta.Server.Core.Session
             // gap during the disconnect window). The Continued cheap-path only kicks in after
             // silo-shutdown reactivation, where OnDeactivateAsync(reason=ShuttingDown) skips
             // the unsubscribe loop and state.Subscribers survives.
-            var subscribers = _subscribedEntities.Values.ToList();
+            var subscribers = AllSubscriptions().ToList();
             foreach (var sub in subscribers)
             {
                 try
@@ -555,16 +612,21 @@ namespace SharedMeta.Server.Core.Session
 
         public async Task<EntitySubscriptionResult> SubscribeToEntityAsync(string entityId, string stateTypeName, string? clientVersion = null, ulong clientSignatureHash = 0)
         {
-            if (_subscribedEntities.TryGetValue(entityId, out var existing))
+            // Must match on (entityId, stateTypeName) — matching on entityId alone here was a
+            // confirmed bug: a second Subscribe under a different state type sharing this
+            // entityId (e.g. Wallet after Inventory, both keyed by playerId) would silently take
+            // this "already subscribed" fast path and return the FIRST state type's snapshot for
+            // the second subscribe call, with no error.
+            if (TryGetSubscription(entityId, stateTypeName, out var existing))
             {
                 // Already subscribed - return current state (pass clientVersion for per-client config resolution)
                 var snapshot = await existing.GrainRef.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>(), clientVersion, clientSignatureHash);
 
                 // Update entity ordering state
-                _entityStates[entityId] = new EntityOrderingState
+                SetEntityState(entityId, stateTypeName, new EntityOrderingState
                 {
                     KnownEntitySequence = snapshot.CurrentSequenceNumber
-                };
+                });
 
                 return new EntitySubscriptionResult
                 {
@@ -596,19 +658,19 @@ namespace SharedMeta.Server.Core.Session
                 // forwarded to the client unchanged. Broadcast tailoring lives on EntityGrain.
                 var snapshot = await entityGrain.SubscribeAsync(_playerId, this.AsReference<ISessionManagerReference>(), clientVersion, clientSignatureHash);
 
-                _subscribedEntities[entityId] = new EntitySubscriptionInfo(
+                SetSubscription(entityId, stateTypeName, new EntitySubscriptionInfo(
                     entityId: entityId,
                     stateTypeName: stateTypeName,
                     grainRef: entityGrain,
                     clientVersion: clientVersion,
                     clientSignatureHash: clientSignatureHash
-                );
+                ));
 
                 // Initialize entity ordering state
-                _entityStates[entityId] = new EntityOrderingState
+                SetEntityState(entityId, stateTypeName, new EntityOrderingState
                 {
                     KnownEntitySequence = snapshot.CurrentSequenceNumber
-                };
+                });
 
                 _logger.SubscribedToEntity(_playerId, entityId, snapshot.CurrentSequenceNumber);
 
@@ -646,11 +708,11 @@ namespace SharedMeta.Server.Core.Session
             }
         }
 
-        public async Task UnsubscribeFromEntityAsync(string entityId)
+        public async Task UnsubscribeFromEntityAsync(string entityId, string stateTypeName)
         {
             var playerId = this.GetPrimaryKeyString();
 
-            if (_subscribedEntities.Remove(entityId, out var sub))
+            if (RemoveSubscription(entityId, stateTypeName, out var sub))
             {
                 try
                 {
@@ -662,8 +724,8 @@ namespace SharedMeta.Server.Core.Session
                 }
 
                 // Clean up ordering state
-                _entityStates.Remove(entityId);
-                _deferredResponses.RemoveAll(d => d.EntityId == entityId);
+                RemoveEntityState(entityId, stateTypeName);
+                _deferredResponses.RemoveAll(d => d.EntityId == entityId && d.StateTypeName == stateTypeName);
 
                 _logger.UnsubscribedFromEntity(playerId, entityId);
             }
@@ -673,7 +735,7 @@ namespace SharedMeta.Server.Core.Session
 
         #region RPC Handling
 
-        public async Task<SessionResponse> SendToEntityAsync(string entityId, long requestId, RpcCall call, long lastAcknowledgedSequence, Guid sessionId)
+        public async Task<SessionResponse> SendToEntityAsync(string entityId, string stateTypeName, long requestId, RpcCall call, long lastAcknowledgedSequence, Guid sessionId)
         {
             // Reject calls from superseded sessions
             if (sessionId != _currentSessionId)
@@ -734,6 +796,7 @@ namespace SharedMeta.Server.Core.Session
                     {
                         RequestId = requestId,
                         EntityId = entityId,
+                        StateTypeName = stateTypeName,
                         Call = call,
                         LastAcknowledgedSequence = lastAcknowledgedSequence,
                     };
@@ -793,7 +856,7 @@ namespace SharedMeta.Server.Core.Session
                 }
             }
 
-            if (!_subscribedEntities.TryGetValue(entityId, out var sub) || sub.GrainRef == null)
+            if (!TryGetSubscription(entityId, stateTypeName, out var sub) || sub.GrainRef == null)
                 return SessionResponse.ForError($"Not subscribed to entity {entityId}");
 
             _logger.SendToEntity(_playerId, entityId, requestId, "", "");
@@ -805,7 +868,7 @@ namespace SharedMeta.Server.Core.Session
 
             try
             {
-                anyDeferred |= await ExecuteOneCallAsync(entityId, requestId, call, sub.GrainRef, allOps);
+                anyDeferred |= await ExecuteOneCallAsync(entityId, stateTypeName, requestId, call, sub.GrainRef, allOps);
                 if (_options.EnforceRpcOrder && requestId > 0)
                 {
                     // The slot for this RequestId in the ring was conceptually the head;
@@ -822,7 +885,7 @@ namespace SharedMeta.Server.Core.Session
                 {
                     while (_orderingBuffer.TryDequeueNext(out _, out var stashed))
                     {
-                        if (!_subscribedEntities.TryGetValue(stashed.EntityId, out var stashedSub) || stashedSub.GrainRef == null)
+                        if (!TryGetSubscription(stashed.EntityId, stashed.StateTypeName, out var stashedSub) || stashedSub.GrainRef == null)
                         {
                             // Stashed call's entity is gone — surface as an error op.
                             // Error-only SessionOp: OpBytes empty, Error set. Client sees error,
@@ -837,7 +900,7 @@ namespace SharedMeta.Server.Core.Session
                             continue;
                         }
 
-                        anyDeferred |= await ExecuteOneCallAsync(stashed.EntityId, stashed.RequestId, stashed.Call, stashedSub.GrainRef, allOps);
+                        anyDeferred |= await ExecuteOneCallAsync(stashed.EntityId, stashed.StateTypeName, stashed.RequestId, stashed.Call, stashedSub.GrainRef, allOps);
                     }
                 }
             }
@@ -870,7 +933,7 @@ namespace SharedMeta.Server.Core.Session
         /// gap detected) and added to <see cref="_deferredResponses"/> instead of allOps.
         /// </summary>
         private async Task<bool> ExecuteOneCallAsync(
-            string entityId, long requestId, RpcCall call, IEntityGrainBase grainRef, List<SessionOp> allOps)
+            string entityId, string stateTypeName, long requestId, RpcCall call, IEntityGrainBase grainRef, List<SessionOp> allOps)
         {
             _inActiveRpc = true;
             _rpcBroadcastQueue.Clear();
@@ -901,7 +964,14 @@ namespace SharedMeta.Server.Core.Session
             {
                 foreach (var crossCall in result.CrossEntityCalls)
                 {
-                    var crossState = GetOrCreateEntityState(crossCall.EntityId);
+                    // Known residual limitation: CrossEntityOperationInfo carries MethodId but no
+                    // state-type name, and there's no server-side MethodId->StateType registry
+                    // (unlike the client's _configsByMethodId) to resolve one. Cross-call ordering
+                    // bookkeeping is parked under a dedicated empty-string bucket, isolated from
+                    // this player's own (entityId, stateTypeName)-keyed subscriptions above — but
+                    // two cross-called sibling entities that happen to share an entityId with each
+                    // other would still conflate here. Narrow edge case, not fixed this pass.
+                    var crossState = GetOrCreateEntityState(crossCall.EntityId, "");
                     if (crossState.KnownEntitySequence == crossCall.EntitySequenceNumber - 1)
                     {
                         crossState.KnownEntitySequence = crossCall.EntitySequenceNumber;
@@ -915,12 +985,12 @@ namespace SharedMeta.Server.Core.Session
                 }
             }
 
-            var state = GetOrCreateEntityState(entityId);
+            var state = GetOrCreateEntityState(entityId, stateTypeName);
             _logger.RpcReturned(_playerId, entityId, result.EntitySequenceNumber, state.KnownEntitySequence, _rpcBroadcastQueue.Count, result.HasError);
 
             // Collect preceding broadcasts queued during RPC + drain held.
             // Append directly to allOps to avoid an intermediate List<SessionOp> per RPC.
-            AppendPrecedingOps(state, entityId, allOps);
+            AppendPrecedingOps(state, entityId, stateTypeName, allOps);
 
             if (state.KnownEntitySequence >= result.EntitySequenceNumber - 1)
             {
@@ -938,6 +1008,7 @@ namespace SharedMeta.Server.Core.Session
             {
                 RequestId = requestId,
                 EntityId = entityId,
+                StateTypeName = stateTypeName,
                 RequiredEntitySeq = result.EntitySequenceNumber,
                 Result = result,
                 OriginalCall = call
@@ -981,10 +1052,10 @@ namespace SharedMeta.Server.Core.Session
         /// directly onto <paramref name="allOps"/>. Replaces the prior pattern that allocated
         /// a fresh List per RPC just to merge into <paramref name="allOps"/>.
         /// </summary>
-        private void AppendPrecedingOps(EntityOrderingState state, string entityId, List<SessionOp> allOps)
+        private void AppendPrecedingOps(EntityOrderingState state, string entityId, string stateTypeName, List<SessionOp> allOps)
         {
             AppendBuiltPrecedingOps(allOps);
-            DrainAndResolve(state, entityId);
+            DrainAndResolve(state, entityId, stateTypeName);
         }
 
         // ── RPC ordering stash helpers ───────────────────────────────────
@@ -1116,9 +1187,9 @@ namespace SharedMeta.Server.Core.Session
         // Batch buffer: collects operations during a single method call, flushed at the end
         private readonly List<SessionOp> _outgoingBatch = new();
 
-        public async Task ReceiveBroadcastAsync(string entityId, EntityBroadcast broadcast, long entitySequenceNumber)
+        public async Task ReceiveBroadcastAsync(string entityId, string stateTypeName, EntityBroadcast broadcast, long entitySequenceNumber)
         {
-            var state = GetOrCreateEntityState(entityId);
+            var state = GetOrCreateEntityState(entityId, stateTypeName);
 
             if (_inActiveRpc)
             {
@@ -1126,6 +1197,7 @@ namespace SharedMeta.Server.Core.Session
                 _rpcBroadcastQueue.Add(new QueuedBroadcast
                 {
                     EntityId = entityId,
+                    StateTypeName = stateTypeName,
                     EntitySequenceNumber = entitySequenceNumber,
                     Broadcast = broadcast
                 });
@@ -1141,7 +1213,7 @@ namespace SharedMeta.Server.Core.Session
                 state.KnownEntitySequence = entitySequenceNumber;
                 BufferBroadcast(entityId, broadcast, entitySequenceNumber);
 
-                DrainAndResolve(state, entityId);
+                DrainAndResolve(state, entityId, stateTypeName);
             }
             else if (entitySequenceNumber > expectedNext)
             {
@@ -1257,7 +1329,7 @@ namespace SharedMeta.Server.Core.Session
 
             foreach (var b in _rpcBroadcastQueue)
             {
-                var state = GetOrCreateEntityState(b.EntityId);
+                var state = GetOrCreateEntityState(b.EntityId, b.StateTypeName);
                 var expectedNext = state.KnownEntitySequence + 1;
 
                 if (b.EntitySequenceNumber == expectedNext)
@@ -1278,13 +1350,13 @@ namespace SharedMeta.Server.Core.Session
         /// which may allow held broadcasts to drain, which may satisfy more deferred responses.
         /// Repeats until no more progress is made.
         /// </summary>
-        private void DrainAndResolve(EntityOrderingState state, string entityId)
+        private void DrainAndResolve(EntityOrderingState state, string entityId, string stateTypeName)
         {
             while (true)
             {
                 var knownBefore = state.KnownEntitySequence;
                 DrainHeldBroadcasts(state, entityId);
-                ResolveDeferredResponses(entityId);
+                ResolveDeferredResponses(entityId, stateTypeName);
                 if (state.KnownEntitySequence == knownBefore)
                     break;
             }
@@ -1294,14 +1366,14 @@ namespace SharedMeta.Server.Core.Session
         /// Check if any deferred RPC responses can now be resolved (gap filled).
         /// Resolved responses are buffered to _outgoingBatch.
         /// </summary>
-        private void ResolveDeferredResponses(string entityId)
+        private void ResolveDeferredResponses(string entityId, string stateTypeName)
         {
-            var state = GetOrCreateEntityState(entityId);
+            var state = GetOrCreateEntityState(entityId, stateTypeName);
 
             for (int i = _deferredResponses.Count - 1; i >= 0; i--)
             {
                 var deferred = _deferredResponses[i];
-                if (deferred.EntityId != entityId) continue;
+                if (deferred.EntityId != entityId || deferred.StateTypeName != stateTypeName) continue;
                 if (state.KnownEntitySequence < deferred.RequiredEntitySeq - 1) continue;
 
                 // Gap filled!
@@ -1363,26 +1435,50 @@ namespace SharedMeta.Server.Core.Session
             };
         }
 
-        private EntityOrderingState GetOrCreateEntityState(string entityId)
+        private EntityOrderingState GetOrCreateEntityState(string entityId, string stateTypeName)
         {
-            if (!_entityStates.TryGetValue(entityId, out var state))
+            if (!_entityStates.TryGetValue(entityId, out var byType))
+            {
+                byType = new Dictionary<string, EntityOrderingState>();
+                _entityStates[entityId] = byType;
+            }
+            if (!byType.TryGetValue(stateTypeName, out var state))
             {
                 state = new EntityOrderingState();
-                _entityStates[entityId] = state;
+                byType[stateTypeName] = state;
             }
             return state;
+        }
+
+        private void SetEntityState(string entityId, string stateTypeName, EntityOrderingState state)
+        {
+            if (!_entityStates.TryGetValue(entityId, out var byType))
+            {
+                byType = new Dictionary<string, EntityOrderingState>();
+                _entityStates[entityId] = byType;
+            }
+            byType[stateTypeName] = state;
+        }
+
+        private void RemoveEntityState(string entityId, string stateTypeName)
+        {
+            if (_entityStates.TryGetValue(entityId, out var byType))
+            {
+                byType.Remove(stateTypeName);
+                if (byType.Count == 0) _entityStates.Remove(entityId);
+            }
         }
 
         #endregion
 
         #region Entity Notifications
 
-        public Task NotifyEntityDeactivatingAsync(string entityId)
+        public Task NotifyEntityDeactivatingAsync(string entityId, string stateTypeName)
         {
-            if (_subscribedEntities.Remove(entityId))
+            if (RemoveSubscription(entityId, stateTypeName, out _))
             {
-                _entityStates.Remove(entityId);
-                _deferredResponses.RemoveAll(d => d.EntityId == entityId);
+                RemoveEntityState(entityId, stateTypeName);
+                _deferredResponses.RemoveAll(d => d.EntityId == entityId && d.StateTypeName == stateTypeName);
 
                 _logger.EntityDeactivated(entityId);
 
@@ -1461,8 +1557,9 @@ namespace SharedMeta.Server.Core.Session
         private void ReleaseAndClearRpcBroadcastQueue() => _rpcBroadcastQueue.Clear();
         private void ReleaseAndClearEntityStates()
         {
-            foreach (var state in _entityStates.Values)
-                state.HeldBroadcasts.Clear();
+            foreach (var byType in _entityStates.Values)
+                foreach (var state in byType.Values)
+                    state.HeldBroadcasts.Clear();
             _entityStates.Clear();
         }
 
@@ -1501,6 +1598,7 @@ namespace SharedMeta.Server.Core.Session
                             EntityId = claim.EntityId,
                             Status = SubscriptionStatus.Failed,
                             FailureReason = $"Unknown state type '{claim.StateTypeName}' on server",
+                            StateTypeName = claim.StateTypeName,
                         });
                         continue;
                     }
@@ -1511,17 +1609,17 @@ namespace SharedMeta.Server.Core.Session
 
                     if (verdict.Status != SubscriptionStatus.Failed)
                     {
-                        _subscribedEntities[claim.EntityId] = new EntitySubscriptionInfo(
+                        SetSubscription(claim.EntityId, claim.StateTypeName, new EntitySubscriptionInfo(
                             entityId: claim.EntityId,
                             stateTypeName: claim.StateTypeName,
                             grainRef: entityGrain,
                             clientVersion: clientVersion,
-                            clientSignatureHash: clientSignatureHash);
+                            clientSignatureHash: clientSignatureHash));
 
-                        _entityStates[claim.EntityId] = new EntityOrderingState
+                        SetEntityState(claim.EntityId, claim.StateTypeName, new EntityOrderingState
                         {
                             KnownEntitySequence = verdict.EntitySequenceNumber
-                        };
+                        });
 
                         _logger.SubscribedToEntity(_playerId, claim.EntityId, verdict.EntitySequenceNumber);
                     }
@@ -1536,6 +1634,7 @@ namespace SharedMeta.Server.Core.Session
                         EntityId = claim.EntityId,
                         Status = SubscriptionStatus.Failed,
                         FailureReason = ex.Message,
+                        StateTypeName = claim.StateTypeName,
                     });
                 }
             }

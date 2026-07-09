@@ -31,12 +31,12 @@ public class SessionOrderingTests
         var (sessionId, observer, grain, entityId) = await SetupSessionAsync("ordering-drain");
 
         // Send req=2 first (gap), then req=1 (closes gap and drains stash).
-        var resp2 = await grain.SendToEntityAsync(entityId, requestId: 2, BuildAddCall(2), 0, sessionId);
+        var resp2 = await grain.SendToEntityAsync(entityId, typeof(CounterState).FullName!, requestId: 2, BuildAddCall(2), 0, sessionId);
         // Stashed → empty ack response
         Assert.Empty(resp2.Operations);
         Assert.Equal(0, resp2.SequenceNumber);
 
-        var resp1 = await grain.SendToEntityAsync(entityId, requestId: 1, BuildAddCall(1), 0, sessionId);
+        var resp1 = await grain.SendToEntityAsync(entityId, typeof(CounterState).FullName!, requestId: 1, BuildAddCall(1), 0, sessionId);
         // Real response: contains both req=1 and req=2 ops
         var requestIds = resp1.Operations.Select(o => o.RequestId).Where(id => id > 0).OrderBy(x => x).ToList();
         Assert.Equal(new long[] { 1, 2 }, requestIds);
@@ -57,11 +57,11 @@ public class SessionOrderingTests
         var (sessionId, observer, grain, entityId) = await SetupSessionAsync("ordering-stall");
 
         // Send req=2 → stash. Stall diagnostics are lazy — notification arrives on NEXT request.
-        var resp2 = await grain.SendToEntityAsync(entityId, requestId: 2, BuildAddCall(2), 0, sessionId);
+        var resp2 = await grain.SendToEntityAsync(entityId, typeof(CounterState).FullName!, requestId: 2, BuildAddCall(2), 0, sessionId);
         Assert.Empty(resp2.Operations);
 
         // Send req=3 → stash. This triggers lazy stall notification for the gap (missing req=1).
-        var resp3 = await grain.SendToEntityAsync(entityId, requestId: 3, BuildAddCall(3), 0, sessionId);
+        var resp3 = await grain.SendToEntityAsync(entityId, typeof(CounterState).FullName!, requestId: 3, BuildAddCall(3), 0, sessionId);
         Assert.Empty(resp3.Operations);
 
         var stalled = await observer.WaitForStallAsync(StallStage.Stalled, TimeSpan.FromSeconds(5));
@@ -69,7 +69,7 @@ public class SessionOrderingTests
         Assert.Equal(1, stalled!.OldestMissingRequestId);
 
         // Now send req=1 to close the gap. Server drains stash (req=1, req=2, req=3).
-        var resp1 = await grain.SendToEntityAsync(entityId, requestId: 1, BuildAddCall(1), 0, sessionId);
+        var resp1 = await grain.SendToEntityAsync(entityId, typeof(CounterState).FullName!, requestId: 1, BuildAddCall(1), 0, sessionId);
         Assert.Equal(3, resp1.Operations.Count(o => o.RequestId > 0));
 
         await grain.GracefulDisconnectAsync(sessionId);
@@ -86,12 +86,12 @@ public class SessionOrderingTests
         const int capacity = 256;
         for (int i = 2; i <= capacity; i++)
         {
-            var resp = await grain.SendToEntityAsync(entityId, requestId: i, BuildAddCall(i), 0, sessionId);
+            var resp = await grain.SendToEntityAsync(entityId, typeof(CounterState).FullName!, requestId: i, BuildAddCall(i), 0, sessionId);
             Assert.Empty(resp.Operations);
         }
 
         // The capacity+1th call overflows.
-        var overflow = await grain.SendToEntityAsync(entityId, requestId: capacity + 1, BuildAddCall(capacity + 1), 0, sessionId);
+        var overflow = await grain.SendToEntityAsync(entityId, typeof(CounterState).FullName!, requestId: capacity + 1, BuildAddCall(capacity + 1), 0, sessionId);
         Assert.True(overflow.HasError);
         Assert.Contains("stash overflow", overflow.Error);
 
@@ -110,10 +110,10 @@ public class SessionOrderingTests
         var (sessionId, observer, grain, entityId) = await SetupSessionAsync("ordering-stall-stages");
 
         // req=2 → stash, starts stall clock
-        await grain.SendToEntityAsync(entityId, requestId: 2, BuildAddCall(2), 0, sessionId);
+        await grain.SendToEntityAsync(entityId, typeof(CounterState).FullName!, requestId: 2, BuildAddCall(2), 0, sessionId);
 
         // req=3 → triggers lazy stall notification (Stalled, elapsed < HardStallNotifyTimeout)
-        await grain.SendToEntityAsync(entityId, requestId: 3, BuildAddCall(3), 0, sessionId);
+        await grain.SendToEntityAsync(entityId, typeof(CounterState).FullName!, requestId: 3, BuildAddCall(3), 0, sessionId);
         var stalled = await observer.WaitForStallAsync(StallStage.Stalled, TimeSpan.FromSeconds(5));
         Assert.NotNull(stalled);
 
@@ -121,12 +121,12 @@ public class SessionOrderingTests
         await Task.Delay(TimeSpan.FromSeconds(2));
 
         // req=4 → triggers lazy notification again, now elapsed > HardStallNotifyTimeout → TimeoutPending
-        await grain.SendToEntityAsync(entityId, requestId: 4, BuildAddCall(4), 0, sessionId);
+        await grain.SendToEntityAsync(entityId, typeof(CounterState).FullName!, requestId: 4, BuildAddCall(4), 0, sessionId);
         var pending = await observer.WaitForStallAsync(StallStage.TimeoutPending, TimeSpan.FromSeconds(5));
         Assert.NotNull(pending);
 
         // Recover by sending req=1 — drains all stashed
-        await grain.SendToEntityAsync(entityId, requestId: 1, BuildAddCall(1), 0, sessionId);
+        await grain.SendToEntityAsync(entityId, typeof(CounterState).FullName!, requestId: 1, BuildAddCall(1), 0, sessionId);
 
         await grain.GracefulDisconnectAsync(sessionId);
     }

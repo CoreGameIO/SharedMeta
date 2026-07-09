@@ -381,6 +381,26 @@ namespace SharedMeta.Server.Core.Grains
                 }
             }
 
+            // Async pre-warm every [ServiceConfig] provider for this subscriber's resolved
+            // version(s) — see MetaProviderBase.InitializeConfigsAsync doc. Idempotent (each
+            // generated branch checks its own cache before fetching), safe to call on every
+            // subscribe including resubscribes. Failure here must not block the subscribe
+            // itself — the sync accessor on the first real call falls back to today's
+            // behavior (cold fetch, or a clear cold-call exception) if warmup didn't land.
+            if (_provider is MetaProviderBase<TState> mpbWarm)
+            {
+                try
+                {
+                    await mpbWarm.InitializeConfigsAsync(clientVersion);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "[EntityGrain] InitializeConfigsAsync failed for entity={EntityId} player={PlayerId} — " +
+                        "[ServiceConfig] providers may still be cold on first call.", _entityId, playerId);
+                }
+            }
+
             // Per-entity [MetaConfigStructureBoundary] overlay for this subscriber. Computed once
             // here (before any state mutation) so a hard rejection can short-circuit cleanly, then
             // reused below for the force-patch contributions.
@@ -587,6 +607,7 @@ namespace SharedMeta.Server.Core.Grains
                             EntityId = _entityId,
                             Status = SubscriptionStatus.Continued,
                             EntitySequenceNumber = state.EntitySequenceNumber,
+                            StateTypeName = StateTypeName,
                         };
                     }
                 }
@@ -604,6 +625,7 @@ namespace SharedMeta.Server.Core.Grains
                     OptimisticRandomBytes = snapshot.OptimisticRandomBytes,
                     NamedRandomsBytes = snapshot.NamedRandomsBytes,
                     ConfigVersions = snapshot.ConfigVersions,
+                    StateTypeName = StateTypeName,
                 };
             }
             catch (EntityAccessDeniedException ex)
@@ -614,6 +636,7 @@ namespace SharedMeta.Server.Core.Grains
                     EntityId = _entityId,
                     Status = SubscriptionStatus.Failed,
                     FailureReason = ex.Message,
+                    StateTypeName = StateTypeName,
                 };
             }
             catch (IncompatibleFeatureException ex)
@@ -624,6 +647,7 @@ namespace SharedMeta.Server.Core.Grains
                     EntityId = _entityId,
                     Status = SubscriptionStatus.Failed,
                     FailureReason = $"Schema incompatible: {ex.Requirement.Reason}",
+                    StateTypeName = StateTypeName,
                 };
             }
             catch (Exception ex)
@@ -634,9 +658,14 @@ namespace SharedMeta.Server.Core.Grains
                     EntityId = _entityId,
                     Status = SubscriptionStatus.Failed,
                     FailureReason = $"Reclaim failed: {ex.Message}",
+                    StateTypeName = StateTypeName,
                 };
             }
         }
+
+        // Full type name of TState, matching the format the client resolver keys its
+        // config-by-state-type-name registry on (config.StateType.FullName ?? config.StateType.Name).
+        private static string StateTypeName => typeof(TState).FullName ?? typeof(TState).Name;
 
         // Delegates the boundary check to ConfigBoundaryEvaluator (pure, unit-tested).
         // Returns null when no boundaries apply.
@@ -1357,7 +1386,7 @@ namespace SharedMeta.Server.Core.Grains
                         MethodId = methodId
                     };
                     _logger.SendingBroadcast(playerId, entityId, operationSequence, serviceName, methodName);
-                    await sessionManager.ReceiveBroadcastAsync(entityId, broadcast, operationSequence);
+                    await sessionManager.ReceiveBroadcastAsync(entityId, StateTypeName, broadcast, operationSequence);
                     sentCount++;
                     if (subscriberNeedsPatch) patchSent++;
                     else replaySent++;

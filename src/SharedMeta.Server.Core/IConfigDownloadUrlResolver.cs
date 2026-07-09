@@ -13,9 +13,12 @@ namespace SharedMeta.Server.Core
         /// <summary>
         /// Get the download URL for a config.
         /// </summary>
-        /// <param name="stateTypeName">The state type name (short or full).</param>
+        /// <param name="configTypeName">
+        /// Full type name of the requested config.
+        /// <see cref="SharedMeta.Core.ServiceConfigAttribute"/>.
+        /// </param>
         /// <param name="version">The config version requested by the client.</param>
         /// <returns>The download URL, or null if not available.</returns>
-        string? GetDownloadUrl(string stateTypeName, MetaConfigVersion version);
+        string? GetDownloadUrl(string configTypeName, MetaConfigVersion version);
     }
 }

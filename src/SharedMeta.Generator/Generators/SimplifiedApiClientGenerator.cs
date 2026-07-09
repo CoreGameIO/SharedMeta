@@ -53,6 +53,34 @@ namespace SharedMeta.Generator.Generators
                 }
             }
 
+            // 0.33.0+ Resolve the legacy ConfigType (explicit or [MetaService(DefaultConfig=true)])
+            // and the declared [ServiceConfig] entries so the generated ApiClient can expose typed
+            // Config / named accessors directly on the instance — sidesteps
+            // IMetaServiceResolver.GetEntityConfig<TConfig>(entityId)'s ambiguity question entirely
+            // for the common "I already have my api, give me its config" case.
+            string? apiConfigTypeName = null;
+            var apiConfigTypeArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "ConfigType");
+            if (!apiConfigTypeArg.Value.IsNull && apiConfigTypeArg.Value.Value is INamedTypeSymbol apiConfigTypeSymbol)
+            {
+                apiConfigTypeName = apiConfigTypeSymbol.ToDisplayString();
+            }
+            else
+            {
+                var apiDefaultConfigArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "DefaultConfig");
+                if (!apiDefaultConfigArg.Value.IsNull && apiDefaultConfigArg.Value.Value is true && compilation != null)
+                {
+                    apiConfigTypeName = FindDefaultConfigType(compilation);
+                }
+            }
+
+            var apiServiceConfigs = symbol.GetAttributes()
+                .Where(a => a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.ServiceConfigAttribute")
+                .Select(a => (
+                    Type: a.ConstructorArguments.Length > 0 ? a.ConstructorArguments[0].Value as INamedTypeSymbol : null,
+                    Name: a.ConstructorArguments.Length > 1 ? a.ConstructorArguments[1].Value as string : null))
+                .Where(e => e.Type != null && !string.IsNullOrEmpty(e.Name))
+                .ToList();
+
             // Remove leading 'I' for class names
             var baseName2 = interfaceName;
             if (baseName2.StartsWith("I") && baseName2.Length > 1 && char.IsUpper(baseName2[1]))
@@ -219,6 +247,25 @@ namespace SharedMeta.Generator.Generators
             // 0.33.0+ Resolved [ServiceConfig] values, positional (parallel to
             // MetaServiceConfig.ServiceConfigTypes). Null/empty when the service declares none.
             sb.AppendLine("        private readonly System.Collections.Generic.IReadOnlyList<object>? _serviceConfigs;");
+
+            // 0.33.0+ Typed config accessors directly on the instance — sidesteps
+            // IMetaServiceResolver.GetEntityConfig<TConfig>(entityId)'s cross-entity ambiguity
+            // question entirely for the common "I already have my api, give me its config" case.
+            if (apiConfigTypeName != null)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"        /// <summary>Resolved config for this entity (from [MetaService(ConfigType=...)] or DefaultConfig).</summary>");
+                sb.AppendLine($"        public {apiConfigTypeName}? Config => ({apiConfigTypeName}?)_config;");
+            }
+            for (int i = 0; i < apiServiceConfigs.Count; i++)
+            {
+                var (scType, scName) = apiServiceConfigs[i];
+                var scTypeName = scType!.ToDisplayString();
+                sb.AppendLine();
+                sb.AppendLine($"        /// <summary>Config '{scName}' declared via [ServiceConfig] on {interfaceName}.</summary>");
+                sb.AppendLine($"        public {scTypeName} {scName} => ({scTypeName})_serviceConfigs![{i}]!;");
+            }
+
             sb.AppendLine($"        private const string ServiceName = \"{interfaceName}\";");
             sb.AppendLine($"        private Exception? _errorException;");
 
@@ -2707,6 +2754,49 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}    LocalRandomDelta = {localDeltaExpr},");
             sb.AppendLine($"{indent}    MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Random,");
             sb.AppendLine($"{indent}}});");
+        }
+
+        // Mirrors ContextInjectionGenerator's helper of the same name — [MetaConfig(Default=true)]
+        // resolution for [MetaService(DefaultConfig=true)] services with no explicit ConfigType.
+        private static string? FindDefaultConfigType(Compilation compilation)
+        {
+            var result = FindDefaultConfigTypeInNamespace(compilation.Assembly.GlobalNamespace);
+            if (result != null) return result;
+
+            foreach (var reference in compilation.References)
+            {
+                var assemblySymbol = compilation.GetAssemblyOrModuleSymbol(reference) as IAssemblySymbol;
+                if (assemblySymbol == null) continue;
+                var name = assemblySymbol.Name;
+                if (name.StartsWith("System") || name.StartsWith("Microsoft") ||
+                    name.StartsWith("netstandard") || name.StartsWith("SharedMeta"))
+                    continue;
+
+                result = FindDefaultConfigTypeInNamespace(assemblySymbol.GlobalNamespace);
+                if (result != null) return result;
+            }
+            return null;
+        }
+
+        private static string? FindDefaultConfigTypeInNamespace(INamespaceSymbol ns)
+        {
+            foreach (var type in ns.GetTypeMembers())
+            {
+                var attr = type.GetAttributes().FirstOrDefault(a =>
+                    a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaConfigAttribute");
+                if (attr != null)
+                {
+                    var defaultArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "Default");
+                    if (!defaultArg.Value.IsNull && defaultArg.Value.Value is true)
+                        return type.ToDisplayString();
+                }
+            }
+            foreach (var childNs in ns.GetNamespaceMembers())
+            {
+                var result = FindDefaultConfigTypeInNamespace(childNs);
+                if (result != null) return result;
+            }
+            return null;
         }
 
         private static string GetEventName(string methodName)

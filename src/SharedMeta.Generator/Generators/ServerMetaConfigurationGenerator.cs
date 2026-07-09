@@ -594,7 +594,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("using SharedMeta.Server;");
             sb.AppendLine("using SharedMeta.Server.Core;");
             sb.AppendLine("using SharedMeta.Server.Core.Grains;");
-            sb.AppendLine();
+            sb.AppendLine("using Microsoft.Extensions.Logging;");
 
             // Collect all unique namespaces
             var namespaces = services
@@ -961,7 +961,7 @@ namespace SharedMeta.Generator.Generators
             if (hasAnyConfigProvider)
             {
                 sb.AppendLine();
-                sb.AppendLine("        protected override void OnInitialize()");
+                sb.AppendLine("        protected override void OnInitialize(Microsoft.Extensions.Logging.ILogger? logger)");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (ServiceResolver != null)");
                 sb.AppendLine("            {");
@@ -969,11 +969,29 @@ namespace SharedMeta.Generator.Generators
                 {
                     sb.AppendLine($"                _configProvider = (SharedMeta.Server.Core.IMetaConfigProvider<{configType}>)ServiceResolver(typeof(SharedMeta.Server.Core.IMetaConfigProvider<{configType}>));");
                 }
-                sb.AppendLine($"                try {{ _configVersionResolver = ServiceResolver(typeof(SharedMeta.Server.Core.IConfigVersionResolver)) as SharedMeta.Server.Core.IConfigVersionResolver; }} catch {{ }}");
+                // IConfigVersionResolver is optional server-wide infrastructure (Global-scope
+                // client-version substitution) — most projects never register it, so its absence
+                // is expected and stays silent.
+                sb.AppendLine($"                try {{ _configVersionResolver = ServiceResolver(typeof(SharedMeta.Server.Core.IConfigVersionResolver)) as SharedMeta.Server.Core.IConfigVersionResolver; }}");
+                sb.AppendLine($"                catch (Exception e) {{ logger?.LogError(e, \"Unable resolve ConfigVersionResolver\"); }}");
+                // Secondary/[ServiceConfig] providers are NOT optional — the state declared them,
+                // so a missing DI registration is a real misconfiguration. Previously caught and
+                // discarded silently: the field stayed null, GetCachedServiceConfigVersionsForClient
+                // skipped it and returned default(0,0,0) for that slot with no visible error anywhere
+                // — a config-version resolution failure that looked identical to a legitimate
+                // unmatched [MetaConfigVersion] rule. Logging here (Logger is set at
+                // MetaProviderBase.cs:163, before OnInitialize() runs at line 190) surfaces the
+                // real cause instead.
                 foreach (var sec in secondaryProviders)
-                    sb.AppendLine($"                try {{ _configProvider_{sec.Ident} = ServiceResolver(typeof(SharedMeta.Server.Core.IMetaConfigProvider<{sec.ConfigType}>)) as SharedMeta.Server.Core.IMetaConfigProvider<{sec.ConfigType}>; }} catch {{ }}");
+                {
+                    sb.AppendLine($"                try {{ _configProvider_{sec.Ident} = ServiceResolver(typeof(SharedMeta.Server.Core.IMetaConfigProvider<{sec.ConfigType}>)) as SharedMeta.Server.Core.IMetaConfigProvider<{sec.ConfigType}>; }}");
+                    sb.AppendLine($"                catch (System.Exception ex) {{ logger?.LogError(ex, \"[{{StateType}}] Failed to resolve IMetaConfigProvider<{sec.ConfigType}> from DI — config version for this type will silently default to 0.0.0. Register it in ConfigureMeta.\", \"{stateTypeFullName}\"); }}");
+                }
                 foreach (var sc in serviceConfigTypes)
-                    sb.AppendLine($"                try {{ _serviceConfigProvider_{sc.Ident} = ServiceResolver(typeof(SharedMeta.Server.Core.IMetaConfigProvider<{sc.ConfigType}>)) as SharedMeta.Server.Core.IMetaConfigProvider<{sc.ConfigType}>; }} catch {{ }}");
+                {
+                    sb.AppendLine($"                try {{ _serviceConfigProvider_{sc.Ident} = ServiceResolver(typeof(SharedMeta.Server.Core.IMetaConfigProvider<{sc.ConfigType}>)) as SharedMeta.Server.Core.IMetaConfigProvider<{sc.ConfigType}>; }}");
+                    sb.AppendLine($"                catch (System.Exception ex) {{ logger?.LogError(ex, \"[{{StateType}}] Failed to resolve IMetaConfigProvider<{sc.ConfigType}> from DI — config version for this type will silently default to 0.0.0. Register it in ConfigureMeta.\", \"{stateTypeFullName}\"); }}");
+                }
                 sb.AppendLine("            }");
                 sb.AppendLine("        }");
                 sb.AppendLine();
@@ -1068,7 +1086,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("            base.InitializeConfig(version);");
                 sb.AppendLine("            // Async fetch — works with sync providers (returns immediately via Task.FromResult) and");
                 sb.AppendLine("            // with async providers like BroadcastingConfigProvider (registry round-trip on cold cache).");
-                sb.AppendLine("            MetaContext!.Config = await _configProvider.GetConfigAsync(version).ConfigureAwait(false);");
+                sb.AppendLine("            MetaContext!.Config = await _configProvider.GetConfigAsync(version);");
                 sb.AppendLine("        }");
                 sb.AppendLine();
 
@@ -1183,6 +1201,59 @@ namespace SharedMeta.Generator.Generators
 
             if (serviceConfigTypes.Count > 0)
             {
+                // InitializeConfigsAsync — async pre-warm, called once by EntityGrain
+                // right after EstablishConfigPinsFromClientVersion. Resolves the exact same
+                // (scope, pin) branch GetCachedServiceConfigsForClient below will read
+                // synchronously, but fetches via GetConfigAsync and pre-populates
+                // _serviceConfigCacheByClient_X under the identical key — so an async-backed
+                // provider (BroadcastingConfigProvider et al.) is never read cold from
+                // HandleCallAsync's sync path.
+                sb.AppendLine("        public override async System.Threading.Tasks.Task InitializeConfigsAsync(string? clientVersion)");
+                sb.AppendLine("        {");
+                for (int i = 0; i < serviceConfigTypes.Count; i++)
+                {
+                    var sc = serviceConfigTypes[i];
+                    sb.AppendLine($"            if (_serviceConfigProvider_{sc.Ident} != null)");
+                    sb.AppendLine("            {");
+                    if (stateScope == 2) // EntityScope.Global
+                    {
+                        sb.AppendLine("                if (_configVersionResolver != null && !string.IsNullOrEmpty(_configVersionResolver.CurrentClientVersion))");
+                        sb.AppendLine("                {");
+                        sb.AppendLine("                    var _effectiveClient = _configVersionResolver.CurrentClientVersion;");
+                        sb.AppendLine("                    var _key = _effectiveClient ?? string.Empty;");
+                        sb.AppendLine($"                    if (!_serviceConfigCacheByClient_{sc.Ident}.TryGetValue(_key, out _))");
+                        sb.AppendLine("                    {");
+                        sb.AppendLine($"                        var _resolved = _serviceConfigProvider_{sc.Ident}.ResolveForClient(_effectiveClient, _serviceConfigVersionPolicyResolver_{sc.Ident});");
+                        sb.AppendLine($"                        var _cfg = await _serviceConfigProvider_{sc.Ident}.GetConfigAsync(_resolved);");
+                        sb.AppendLine($"                        _serviceConfigCacheByClient_{sc.Ident}[_key] = _cfg;");
+                        sb.AppendLine("                    }");
+                        sb.AppendLine("                }");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"                bool _hasPin = TryGetConfigPin(typeof({sc.ConfigType}).FullName!, out var _pinned);");
+                        sb.AppendLine("                string? _effectiveClient = clientVersion;");
+                        sb.AppendLine("                if (_hasPin || !string.IsNullOrEmpty(_effectiveClient) || !string.IsNullOrEmpty(_configVersionResolver?.CurrentClientVersion))");
+                        sb.AppendLine("                {");
+                        sb.AppendLine("                    if (!_hasPin && string.IsNullOrEmpty(_effectiveClient))");
+                        sb.AppendLine("                        _effectiveClient = _configVersionResolver?.CurrentClientVersion;");
+                        sb.AppendLine("                    var _key = _effectiveClient ?? string.Empty;");
+                        sb.AppendLine($"                    if (!_serviceConfigCacheByClient_{sc.Ident}.TryGetValue(_key, out _))");
+                        sb.AppendLine("                    {");
+                        sb.AppendLine($"                        var _resolved = _hasPin ? _pinned : _serviceConfigProvider_{sc.Ident}.ResolveForClient(_effectiveClient, _serviceConfigVersionPolicyResolver_{sc.Ident});");
+                        sb.AppendLine($"                        var _cfg = await _serviceConfigProvider_{sc.Ident}.GetConfigAsync(_resolved);");
+                        sb.AppendLine($"                        _serviceConfigCacheByClient_{sc.Ident}[_key] = _cfg;");
+                        sb.AppendLine("                    }");
+                        sb.AppendLine("                }");
+                        sb.AppendLine("                // else: no pin, no CallerClientVersion, no CurrentClientVersion — nothing to");
+                        sb.AppendLine("                // resolve yet. Leave uncached; the sync accessor's own cold-call guard");
+                        sb.AppendLine("                // throws a clear error if this state is ever really called that way.");
+                    }
+                    sb.AppendLine("            }");
+                }
+                sb.AppendLine("        }");
+                sb.AppendLine();
+
                 // GetCachedServiceConfigsForClient / GetCachedServiceConfigVersionsForClient —
                 // 0.33.0+ full parity with GetCachedConfigForClient: pin-first (set by
                 // EstablishConfigPinsFromClientVersion above), EntityScope.Global substitutes
@@ -2265,10 +2336,19 @@ namespace SharedMeta.Generator.Generators
             // backends) skip the Orleans wiring.
             if (hasOrleansConfig)
             {
+                // 0.33.0+ fix: this used to collect only the legacy ConfigTypeFullName, so any
+                // config declared solely via [ServiceConfig] (no legacy primary anywhere on the
+                // state) never got a BroadcastingConfigProvider<T> auto-registered at all —
+                // ServiceResolver(typeof(IMetaConfigProvider<T>)) then throws in the generated
+                // OnInitialize(), silently caught, leaving that config's resolved version pinned
+                // at default(0,0,0) with no visible error. Same root pattern as the 0.33.0
+                // config-download-multi-config-identity fix — the 0.33.0 [ServiceConfig] rework
+                // added a second way to declare a config type without updating every place that
+                // still assumed "legacy ConfigType is the only source".
                 var configTypesForRegistration = byStateType
                     .SelectMany(kvp => kvp.Value
-                        .Where(s => s.ConfigTypeFullName != null)
-                        .Select(s => s.ConfigTypeFullName!))
+                        .SelectMany(s => (s.ConfigTypeFullName != null ? new[] { s.ConfigTypeFullName! } : System.Array.Empty<string>())
+                            .Concat(s.ServiceConfigTypeFullNames)))
                     .Distinct()
                     .ToList();
                 if (configTypesForRegistration.Count > 0)
@@ -2409,65 +2489,130 @@ namespace SharedMeta.Generator.Generators
         }
 
         /// <summary>
+        /// 0.33.0+ One row per (state, configType) pair a state exposes — the legacy primary
+        /// <c>[MetaService(ConfigType=...)]</c> (state-wide first-non-null, same simplification
+        /// used elsewhere for the legacy primary) PLUS every <c>[ServiceConfig]</c> entry across
+        /// every service sharing the state (deduped by type). Replaces the pre-0.33.0
+        /// "one config per state" assumption in <see cref="GenerateConfigByteSource"/> /
+        /// <see cref="GenerateConfigDownloadUrlResolver"/>, which silently exposed only the
+        /// legacy primary (or nothing at all for [ServiceConfig]-only states).
+        /// </summary>
+        private static List<(string StateTypeFullName, string StateTypeName, string ConfigTypeFullName)> CollectStateConfigPairs(
+            Dictionary<string, List<ServiceImplInfo>> byStateType)
+        {
+            var result = new List<(string, string, string)>();
+            foreach (var kvp in byStateType)
+            {
+                var stateTypeFullName = kvp.Key;
+                var stateTypeName = kvp.Value.First().StateTypeName;
+
+                var configTypes = new List<string>();
+                var legacy = kvp.Value.Select(s => s.ConfigTypeFullName).FirstOrDefault(c => c != null);
+                if (legacy != null)
+                    configTypes.Add(legacy);
+                foreach (var t in kvp.Value.SelectMany(s => s.ServiceConfigTypeFullNames).Distinct())
+                {
+                    if (!configTypes.Contains(t)) configTypes.Add(t);
+                }
+
+                foreach (var configType in configTypes)
+                    result.Add((stateTypeFullName, stateTypeName, configType));
+            }
+            return result;
+        }
+
+        private static HashSet<string/*ConfigTypeFullName*/> CollectConfigs(Dictionary<string, List<ServiceImplInfo>> byStateType)
+        {
+            var result = new HashSet<string>();
+            foreach (var kvp in byStateType) {
+                var legacy = kvp.Value.Select(s => s.ConfigTypeFullName).FirstOrDefault(c => c != null);
+                if (legacy != null)
+                    result.Add(legacy);
+                foreach (var t in kvp.Value.SelectMany(s => s.ServiceConfigTypeFullNames).Distinct())
+                {
+                    result.Add(t);
+                }
+            }
+            return result;
+        }
+
+        // Field identifier is per CONFIG TYPE (not per state) — several states commonly share
+        // one config type (e.g. a SessionConfig used by many services), and DI resolves the
+        // same IMetaConfigProvider<TConfig> singleton either way, so one field/one GetService
+        // call covers every (state, configType) pair naming that type.
+        private static string ConfigFieldIdent(string configTypeFullName)
+            => "_config_" + new string(configTypeFullName.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
+
+        /// <summary>
         /// 0.26.2+: Generate IConfigByteSource implementation — non-generic,
-        /// auto-routes (stateTypeName, version) to the right IMetaConfigProvider&lt;TConfig&gt;
-        /// using the same state→config map as GeneratedConfigDownloadUrlResolver, serializes
-        /// via the supplied IMetaSerializer.
+        /// auto-routes (stateTypeName, configTypeName, version) to the right
+        /// IMetaConfigProvider&lt;TConfig&gt; using the same state→config map as
+        /// GeneratedConfigDownloadUrlResolver, serializes via the supplied IMetaSerializer.
         /// </summary>
         private static void GenerateConfigByteSource(
             StringBuilder sb,
             Dictionary<string, List<ServiceImplInfo>> byStateType)
         {
-            var statesWithConfig = byStateType
-                .Where(kvp => kvp.Value.Any(s => s.ConfigTypeFullName != null))
-                .Select(kvp => new
-                {
-                    StateTypeFullName = kvp.Key,
-                    StateTypeName = kvp.Value.First().StateTypeName,
-                    ConfigTypeFullName = kvp.Value.Select(s => s.ConfigTypeFullName).First(c => c != null)!
-                })
-                .ToList();
+            var stateConfigPairs = CollectStateConfigPairs(byStateType);
+            var distinctConfigTypes = stateConfigPairs.Select(p => p.ConfigTypeFullName).Distinct().ToList();
 
             sb.AppendLine("    /// <summary>");
             sb.AppendLine("    /// Generated non-generic config byte source. Pair with app.MapMetaConfigDownload()");
             sb.AppendLine("    /// (no generic parameter) to serve all configs from a single endpoint, routed by");
-            sb.AppendLine("    /// stateTypeName at request time.");
+            sb.AppendLine("    /// (stateTypeName, configTypeName) at request time.");
             sb.AppendLine("    /// </summary>");
             sb.AppendLine("    public sealed class GeneratedConfigByteSource : SharedMeta.Server.Core.IConfigByteSource");
             sb.AppendLine("    {");
 
-            if (statesWithConfig.Count > 0)
+            if (distinctConfigTypes.Count > 0)
             {
-                foreach (var entry in statesWithConfig)
+                foreach (var configType in distinctConfigTypes)
                 {
-                    var fieldName = $"_{char.ToLower(entry.StateTypeName[0])}{entry.StateTypeName.Substring(1)}ConfigProvider";
-                    sb.AppendLine($"        private readonly SharedMeta.Server.Core.IMetaConfigProvider<{entry.ConfigTypeFullName}>? {fieldName};");
+                    sb.AppendLine($"        private readonly SharedMeta.Server.Core.IMetaConfigProvider<{configType}>? {ConfigFieldIdent(configType)};");
                 }
                 sb.AppendLine();
 
                 sb.AppendLine("        public GeneratedConfigByteSource(System.IServiceProvider sp)");
                 sb.AppendLine("        {");
-                foreach (var entry in statesWithConfig)
+                foreach (var configType in distinctConfigTypes)
                 {
-                    var fieldName = $"_{char.ToLower(entry.StateTypeName[0])}{entry.StateTypeName.Substring(1)}ConfigProvider";
-                    sb.AppendLine($"            {fieldName} = sp.GetService<SharedMeta.Server.Core.IMetaConfigProvider<{entry.ConfigTypeFullName}>>();");
+                    sb.AppendLine($"            {ConfigFieldIdent(configType)} = sp.GetService<SharedMeta.Server.Core.IMetaConfigProvider<{configType}>>();");
                 }
                 sb.AppendLine("        }");
                 sb.AppendLine();
 
-                sb.AppendLine("        public byte[]? GetBytes(SharedMeta.Core.IMetaSerializer serializer, string stateTypeName, SharedMeta.Core.MetaConfigVersion version)");
+                sb.AppendLine("        public byte[]? GetBytes(SharedMeta.Core.IMetaSerializer serializer, string configTypeName, SharedMeta.Core.MetaConfigVersion version)");
                 sb.AppendLine("        {");
-                sb.AppendLine("            switch (stateTypeName)");
+                sb.AppendLine("            switch (configTypeName)");
                 sb.AppendLine("            {");
 
-                foreach (var entry in statesWithConfig)
+                foreach (var сonfigTypeFullName in distinctConfigTypes)
                 {
-                    var fieldName = $"_{char.ToLower(entry.StateTypeName[0])}{entry.StateTypeName.Substring(1)}ConfigProvider";
-                    sb.AppendLine($"                case \"{entry.StateTypeName}\":");
-                    sb.AppendLine($"                case \"{entry.StateTypeFullName}\":");
+                    var fieldName = ConfigFieldIdent(сonfigTypeFullName);
+                    sb.AppendLine($"                case \"{сonfigTypeFullName}\":");
                     sb.AppendLine($"                {{");
                     sb.AppendLine($"                    if ({fieldName} == null) return null;");
                     sb.AppendLine($"                    var cfg = {fieldName}.GetConfig(version);");
+                    sb.AppendLine($"                    return cfg == null ? null : serializer.PackForExternalUsage(cfg);");
+                    sb.AppendLine($"                }}");
+                }
+
+                sb.AppendLine("                default: return null;");
+                sb.AppendLine("            }");
+                sb.AppendLine("    }");
+
+                sb.AppendLine("        public async Task<byte[]?> GetBytesAsync(SharedMeta.Core.IMetaSerializer serializer, string configTypeName, SharedMeta.Core.MetaConfigVersion version)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            switch (configTypeName)");
+                sb.AppendLine("            {");
+
+                foreach (var сonfigTypeFullName in distinctConfigTypes)
+                {
+                    var fieldName = ConfigFieldIdent(сonfigTypeFullName);
+                    sb.AppendLine($"                case \"{сonfigTypeFullName}\":");
+                    sb.AppendLine($"                {{");
+                    sb.AppendLine($"                    if ({fieldName} == null) return null;");
+                    sb.AppendLine($"                    var cfg = await {fieldName}.GetConfigAsync(version);");
                     sb.AppendLine($"                    return cfg == null ? null : serializer.PackForExternalUsage(cfg);");
                     sb.AppendLine($"                }}");
                 }
@@ -2480,7 +2625,8 @@ namespace SharedMeta.Generator.Generators
             {
                 sb.AppendLine("        public GeneratedConfigByteSource(System.IServiceProvider sp) { }");
                 sb.AppendLine();
-                sb.AppendLine("        public byte[]? GetBytes(SharedMeta.Core.IMetaSerializer serializer, string stateTypeName, SharedMeta.Core.MetaConfigVersion version) => null;");
+                sb.AppendLine("        public byte[]? GetBytes(SharedMeta.Core.IMetaSerializer serializer, string configTypeName, SharedMeta.Core.MetaConfigVersion version) => null;");
+                sb.AppendLine("        public Task<byte[]?> GetBytesAsync(SharedMeta.Core.IMetaSerializer serializer, string configTypeName, SharedMeta.Core.MetaConfigVersion version) => Task.FromResult<byte[]?>(null);");
             }
 
             sb.AppendLine("    }");
@@ -2488,13 +2634,14 @@ namespace SharedMeta.Generator.Generators
             // 0.28.0+ Generated IConfigCatalog — typed dispatcher used by the admin grain and
             // bootstrap hosted service. Closes TConfig at compile time per [MetaConfig] type;
             // framework callers invoke HandleAsync<TConfig> through IConfigCatalogHandler.
-            // The catalog is per [MetaConfig] TYPE (see GenerateConfigCatalog doc), but statesWithConfig
-            // holds one record per STATE. One config shared by N states (e.g. a SessionConfig used by
-            // several services) would, without dedup, emit N identical ConfigCatalogEntry rows —
-            // ConfigAdminGrain.ListConfigsAsync then returns N duplicates (N sections in the admin UI)
-            // and ForEachAsync warms the same provider N times. Dedup by ConfigTypeFullName; OwnerStateType
-            // takes the first (optional metadata only — dispatch is by HandleAsync<TConfig>, not by state).
-            GenerateConfigCatalog(sb, statesWithConfig
+            // The catalog is per [MetaConfig] TYPE, but stateConfigPairs holds one record per
+            // (state, configType) pair. Dedup by ConfigTypeFullName so N states/services sharing
+            // one config type (or a state exposing one config as both legacy primary and via
+            // [ServiceConfig]) don't produce duplicate catalog rows — ConfigAdminGrain.ListConfigsAsync
+            // would otherwise show N sections for the same config and ForEachAsync would warm the
+            // same provider N times. OwnerStateType takes the first pair's state (optional
+            // metadata only — dispatch is by HandleAsync<TConfig>, not by state).
+            GenerateConfigCatalog(sb, stateConfigPairs
                 .GroupBy(e => e.ConfigTypeFullName)
                 .Select(g => g.First())
                 .Select(e => (e.ConfigTypeFullName, e.StateTypeFullName))
@@ -2538,7 +2685,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        {");
             foreach (var e in entries)
             {
-                sb.AppendLine($"            await handler.HandleAsync<{e.ConfigTypeFullName}>(typeof({e.ConfigTypeFullName}).FullName!, typeof({e.ConfigTypeFullName}).Name, cancellationToken).ConfigureAwait(false);");
+                sb.AppendLine($"            await handler.HandleAsync<{e.ConfigTypeFullName}>(typeof({e.ConfigTypeFullName}).FullName!, typeof({e.ConfigTypeFullName}).Name, cancellationToken);");
             }
             if (entries.Count == 0)
                 sb.AppendLine("            await System.Threading.Tasks.Task.CompletedTask;");
@@ -2554,7 +2701,7 @@ namespace SharedMeta.Generator.Generators
             foreach (var e in entries)
             {
                 sb.AppendLine($"                case var n when n == typeof({e.ConfigTypeFullName}).FullName || n == typeof({e.ConfigTypeFullName}).Name:");
-                sb.AppendLine($"                    await handler.HandleAsync<{e.ConfigTypeFullName}>(typeof({e.ConfigTypeFullName}).FullName!, typeof({e.ConfigTypeFullName}).Name, cancellationToken).ConfigureAwait(false);");
+                sb.AppendLine($"                    await handler.HandleAsync<{e.ConfigTypeFullName}>(typeof({e.ConfigTypeFullName}).FullName!, typeof({e.ConfigTypeFullName}).Name, cancellationToken);");
                 sb.AppendLine("                    return true;");
             }
             sb.AppendLine("                default: return false;");
@@ -2571,56 +2718,45 @@ namespace SharedMeta.Generator.Generators
             StringBuilder sb,
             Dictionary<string, List<ServiceImplInfo>> byStateType)
         {
-            // Find state types that have a config type
-            var statesWithConfig = byStateType
-                .Where(kvp => kvp.Value.Any(s => s.ConfigTypeFullName != null))
-                .Select(kvp => new
-                {
-                    StateTypeFullName = kvp.Key,
-                    StateTypeName = kvp.Value.First().StateTypeName,
-                    ConfigTypeFullName = kvp.Value.Select(s => s.ConfigTypeFullName).First(c => c != null)!
-                })
-                .ToList();
+            var distinctConfigTypes = CollectConfigs(byStateType);
 
             sb.AppendLine("    /// <summary>");
             sb.AppendLine("    /// Generated config download URL resolver.");
-            sb.AppendLine("    /// Resolves download URLs via IMetaConfigProvider instances from DI.");
+            sb.AppendLine("    /// Resolves download URLs via IMetaConfigProvider instances from DI, routed by");
+            sb.AppendLine("    /// (stateTypeName, configTypeName).");
             sb.AppendLine("    /// </summary>");
             sb.AppendLine("    public sealed class GeneratedConfigDownloadUrlResolver : SharedMeta.Server.Core.IConfigDownloadUrlResolver");
             sb.AppendLine("    {");
 
-            if (statesWithConfig.Count > 0)
+            if (distinctConfigTypes.Count > 0)
             {
-                // Fields for each config provider
-                foreach (var entry in statesWithConfig)
+                // Fields for each config provider — one per distinct config TYPE (not per
+                // state); several states commonly share a config type.
+                foreach (var configType in distinctConfigTypes)
                 {
-                    var fieldName = $"_{char.ToLower(entry.StateTypeName[0])}{entry.StateTypeName.Substring(1)}ConfigProvider";
-                    sb.AppendLine($"        private readonly SharedMeta.Server.Core.IMetaConfigProvider<{entry.ConfigTypeFullName}>? {fieldName};");
+                    sb.AppendLine($"        private readonly SharedMeta.Server.Core.IMetaConfigProvider<{configType}>? {ConfigFieldIdent(configType)};");
                 }
                 sb.AppendLine();
 
                 // Constructor
                 sb.AppendLine("        public GeneratedConfigDownloadUrlResolver(System.IServiceProvider sp)");
                 sb.AppendLine("        {");
-                foreach (var entry in statesWithConfig)
+                foreach (var configType in distinctConfigTypes)
                 {
-                    var fieldName = $"_{char.ToLower(entry.StateTypeName[0])}{entry.StateTypeName.Substring(1)}ConfigProvider";
-                    sb.AppendLine($"            {fieldName} = sp.GetService<SharedMeta.Server.Core.IMetaConfigProvider<{entry.ConfigTypeFullName}>>();");
+                    sb.AppendLine($"            {ConfigFieldIdent(configType)} = sp.GetService<SharedMeta.Server.Core.IMetaConfigProvider<{configType}>>();");
                 }
                 sb.AppendLine("        }");
                 sb.AppendLine();
 
                 // GetDownloadUrl
-                sb.AppendLine("        public string? GetDownloadUrl(string stateTypeName, SharedMeta.Core.MetaConfigVersion version)");
+                sb.AppendLine("        public string? GetDownloadUrl(string configTypeName, SharedMeta.Core.MetaConfigVersion version)");
                 sb.AppendLine("        {");
-                sb.AppendLine("            return stateTypeName switch");
+                sb.AppendLine("            return configTypeName switch");
                 sb.AppendLine("            {");
 
-                foreach (var entry in statesWithConfig)
-                {
-                    var fieldName = $"_{char.ToLower(entry.StateTypeName[0])}{entry.StateTypeName.Substring(1)}ConfigProvider";
-                    sb.AppendLine($"                \"{entry.StateTypeName}\" or \"{entry.StateTypeFullName}\"");
-                    sb.AppendLine($"                    => {fieldName}?.GetDownloadUrl(version),");
+                foreach (var configTypeFullName in distinctConfigTypes) {
+                    var fieldName = ConfigFieldIdent(configTypeFullName);
+                    sb.AppendLine($"                \"{configTypeFullName}\" => {fieldName}?.GetDownloadUrl(version),");
                 }
 
                 sb.AppendLine("                _ => null");
@@ -2632,7 +2768,7 @@ namespace SharedMeta.Generator.Generators
                 // No config providers — return null always
                 sb.AppendLine("        public GeneratedConfigDownloadUrlResolver(System.IServiceProvider sp) { }");
                 sb.AppendLine();
-                sb.AppendLine("        public string? GetDownloadUrl(string stateTypeName, SharedMeta.Core.MetaConfigVersion version) => null;");
+                sb.AppendLine("        public string? GetDownloadUrl(string configTypeName, SharedMeta.Core.MetaConfigVersion version) => null;");
             }
 
             sb.AppendLine("    }");

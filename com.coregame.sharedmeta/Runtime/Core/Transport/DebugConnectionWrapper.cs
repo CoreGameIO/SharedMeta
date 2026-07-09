@@ -122,7 +122,7 @@ namespace SharedMeta.Core.Transport
         public Task AcknowledgeSequenceAsync(long sequenceNumber) => _inner.AcknowledgeSequenceAsync(sequenceNumber);
         public Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request) => _inner.SetDebugOptionsAsync(request);
         public Task<DesyncReportResponse> SendDesyncReportAsync(DesyncReportRequest request) => _inner.SendDesyncReportAsync(request);
-        public Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version) => _inner.GetConfigDownloadUrlAsync(stateTypeName, version);
+        public Task<string?> GetConfigDownloadUrlAsync(string configTypeName, MetaConfigVersion version) => _inner.GetConfigDownloadUrlAsync(configTypeName, version);
 
         // --- Simulated methods ---
 

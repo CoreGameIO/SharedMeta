@@ -119,7 +119,7 @@ namespace Expedition.Shared
             if (!state.Revealed[idx])
             {
                 var profileCaller = GetIExpeditionProfileService(state.ProfileEntityId!);
-                bool spent = await profileCaller.SpendEnergyAsync(Config.MoveCost);
+                bool spent = await profileCaller.SpendEnergyAsync(PlayerConfig.MoveCost);
                 if (!spent)
                     return MoveResult.NoEnergy;
             }
@@ -177,7 +177,7 @@ namespace Expedition.Shared
 
             // Spend energy
             var profileCaller = GetIExpeditionProfileService(state.ProfileEntityId!);
-            bool spent = await profileCaller.SpendEnergyAsync(Config.ObstacleCost);
+            bool spent = await profileCaller.SpendEnergyAsync(PlayerConfig.ObstacleCost);
             if (!spent)
                 return false;
 

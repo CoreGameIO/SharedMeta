@@ -1310,7 +1310,12 @@ namespace SharedMeta.Generator.Generators
             // Check subscription synchronously — no network calls allowed.
             // If not subscribed, silently return default. The CrossOptimistic method
             // continues execution — other cross-entity calls to subscribed entities still work.
-            sb.AppendLine("            if (!_resolver.IsSubscribed(_entityId))");
+            // entityId alone is not a unique key — the server addresses entities by (state type,
+            // entityId), so the same entityId can be shared by independent state types (e.g.
+            // Inventory/Profile/Wallet all keyed by playerId). Every ICrossEntityResolver call
+            // below is qualified with the target state type's runtime FullName so it resolves
+            // the right connection even when the entityId is shared.
+            sb.AppendLine($"            if (!_resolver.IsSubscribed(_entityId, typeof({targetStateType}).FullName!))");
             if (innerType != null)
             {
                 sb.AppendLine($"                return Task.FromResult(default({innerType})!);");
@@ -1319,7 +1324,7 @@ namespace SharedMeta.Generator.Generators
             {
                 sb.AppendLine("                return Task.CompletedTask;");
             }
-            sb.AppendLine($"            var state = ({targetStateType})_resolver.GetEntityState(_entityId);");
+            sb.AppendLine($"            var state = ({targetStateType})_resolver.GetEntityState(_entityId, typeof({targetStateType}).FullName!);");
             sb.AppendLine();
 
             // Save and set context (inherit ServerTimeTicks from parent for deterministic time)
@@ -1328,8 +1333,8 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            ctx.CrossEntityResolver = _resolver;");
             sb.AppendLine("            ctx.ServerTimeTicks = prevCtx?.ServerTimeTicks ?? 0;");
             sb.AppendLine("            ctx.Log = prevCtx?.Log ?? SharedMeta.Core.Logging.NullMetaLogger.Instance;");
-            sb.AppendLine("            ctx.Config = _resolver.GetEntityConfig(_entityId);");
-            sb.AppendLine("            ctx.Configs = _resolver.GetEntityConfigs(_entityId);");
+            sb.AppendLine($"            ctx.Config = _resolver.GetEntityConfig(_entityId, typeof({targetStateType}).FullName!);");
+            sb.AppendLine($"            ctx.Configs = _resolver.GetEntityConfigs(_entityId, typeof({targetStateType}).FullName!);");
             sb.AppendLine("            MetaContextAccessor.Current = ctx;");
             sb.AppendLine("            try");
             sb.AppendLine("            {");

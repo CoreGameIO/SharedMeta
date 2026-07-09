@@ -113,10 +113,10 @@ namespace SharedMeta.Server.Core.Config
             if (configType is null) throw new ArgumentNullException(nameof(configType));
             if (configBytes is null) throw new ArgumentNullException(nameof(configBytes));
 
-            var existing = await registry.GetAsync(configType, version).ConfigureAwait(false);
+            var existing = await registry.GetAsync(configType, version);
             if (existing is null)
             {
-                await registry.PublishAsync(configType, version, configBytes).ConfigureAwait(false);
+                await registry.PublishAsync(configType, version, configBytes);
                 return ConfigPublishOutcome.PublishedNew;
             }
 
@@ -131,7 +131,7 @@ namespace SharedMeta.Server.Core.Config
                 throw new ConfigContentDriftException(configType, version, existing.Length, configBytes.Length);
             }
 
-            await registry.PublishAsync(configType, version, configBytes).ConfigureAwait(false);
+            await registry.PublishAsync(configType, version, configBytes);
             return ConfigPublishOutcome.OverwrittenAfterDrift;
         }
 

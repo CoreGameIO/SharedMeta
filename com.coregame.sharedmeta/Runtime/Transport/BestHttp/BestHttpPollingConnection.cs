@@ -271,12 +271,12 @@ namespace SharedMeta.Transport.BestHttp
                 new AcknowledgeRequest { SequenceNumber = sequenceNumber });
         }
 
-        public async Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version)
+        public async Task<string?> GetConfigDownloadUrlAsync(string configTypeName, MetaConfigVersion version)
         {
             EnsureSessionConnected();
             var response = await PostAsync<ConfigDownloadUrlResponse>(
                 "/config-url",
-                new ConfigDownloadUrlRequest { StateTypeName = stateTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor, ConfigPatchVersion = version.Patch });
+                new ConfigDownloadUrlRequest { ConfigTypeName = configTypeName, ConfigMajorVersion = version.Major, ConfigMinorVersion = version.Minor, ConfigPatchVersion = version.Patch });
             return response?.DownloadUrl;
         }
 

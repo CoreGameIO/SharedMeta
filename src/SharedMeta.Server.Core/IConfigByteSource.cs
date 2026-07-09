@@ -27,14 +27,13 @@ namespace SharedMeta.Server.Core
     public interface IConfigByteSource
     {
         /// <summary>
-        /// Materialize the config registered for <paramref name="stateTypeName"/>
-        /// at <paramref name="version"/> and serialize it via
-        /// <paramref name="serializer"/>. Returns <c>null</c> when the state type
-        /// is unknown or no provider is registered for its config type.
+        /// Materialize the config registered
         /// </summary>
         /// <param name="serializer">Serializer used for the wire format — should match the client's.</param>
-        /// <param name="stateTypeName">Simple or fully-qualified state type name (the path-segment from the download URL).</param>
+        /// <param name="configTypeName">Full type name of the requested config.</param>
         /// <param name="version">Requested config version.</param>
-        byte[]? GetBytes(IMetaSerializer serializer, string stateTypeName, MetaConfigVersion version);
+        byte[]? GetBytes(IMetaSerializer serializer, string configTypeName, MetaConfigVersion version);
+
+        Task<byte[]?> GetBytesAsync(IMetaSerializer serializer, string configTypeName, MetaConfigVersion version);
     }
 }

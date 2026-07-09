@@ -43,8 +43,7 @@ var metaUrl = $"{serverUrl}/meta";
 
 // ServerPatch mode: override CrossOptimistic methods to use server-side patching
 IExecutionModeProvider? modeProvider = null;
-if (useServerPatch)
-{
+if (useServerPatch) {
     var provider = new ExecutionModeProvider();
     provider.SetMode(global::Expedition.Shared.Generated.GameMethodIds.IExpeditionService_Move_v0, ExecutionMode.ServerPatch);
     provider.SetMode(global::Expedition.Shared.Generated.GameMethodIds.IExpeditionService_RemoveObstacle_v0, ExecutionMode.ServerPatch);
@@ -60,8 +59,7 @@ var client = new MetaClient(
 #endif
     new MessagePackMetaSerializer(),
     //new MemoryPackMetaSerializer(),
-    new MetaClientOptions
-    {
+    new MetaClientOptions {
         PlayerId = login.PlayerId,
         // Required by ExpeditionConfig's [MetaConfigVersion(Client = "1.x.*"/"2.x.*")] rules:
         // server resolves the config branch per-subscribe from this string. Subscribe throws
@@ -69,23 +67,24 @@ var client = new MetaClient(
         ClientAppVersion = clientAppVersion,
         Diagnostics = new ConsoleDesyncDiagnostics(),
         ModeProvider = modeProvider,
-        ClientSignature = Expedition.Shared.GameServiceDiscoveryBase.ClientSignature,
+        ClientSignature = GameServiceDiscoveryBase.ClientSignature,
     }
 );
 Console.WriteLine($"Client app version: {clientAppVersion}");
-var resolver = (MetaServiceResolver)client.Resolver;
 
 // Wire a downloading provider for ExpeditionConfig before registering services so the
 // generator-emitted default StaticConfigProvider doesn't take precedence. The provider
 // caches downloaded configs to disk so subsequent sessions skip the network round-trip.
-using var http = new HttpClient();
-resolver.RegisterConfigProvider<ExpeditionConfig>(new DownloadingConfigProvider<ExpeditionConfig>(
-    urlResolver: client.ConfigDownloadUrlResolver(typeof(ExpeditionState).FullName!),
-    downloader: url => http.GetByteArrayAsync(url),
-    serializer: client.Serializer,
-    cache: new FileConfigCache<ExpeditionConfig>("./config-cache", client.Serializer)));
+client.RegisterDownloadingConfigProvider<ExpeditionConfig>(url => {
+    var http = new HttpClient();
+    return http.GetByteArrayAsync(url);
+});
+client.RegisterDownloadingConfigProvider<PlayerConfig>(url => {
+    var http = new HttpClient();
+    return http.GetByteArrayAsync(url);
+});
 
-resolver.RegisterAllServices();
+client.Resolver.RegisterAllServices();
 
 // Track connection status for UI
 string connectionStatusMessage = "";

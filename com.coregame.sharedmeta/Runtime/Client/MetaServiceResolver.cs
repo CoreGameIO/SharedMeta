@@ -34,7 +34,13 @@ namespace SharedMeta.Client
         // that drops these fields doesn't clobber the generator-emitted ones registered earlier.
         private readonly Dictionary<string, Func<object, IEntityStateContainer>> _stateContainerFactoriesByStateType = new();
         private readonly Dictionary<string, Action<object, byte[], IMetaSerializer>> _patchAppliersByStateType = new();
-        private readonly Dictionary<string, EntityConnection> _connections = new();
+        // Keyed by (entityId, StateType) — NOT entityId alone. The server addresses entities by
+        // (state type, entityId) (an Orleans grain identity), so the same entityId string is a
+        // valid, independent identity across different state types (e.g. Inventory:playerId,
+        // Profile:playerId, Wallet:playerId for a UserOwned convention). Outer key is entityId,
+        // inner key is the connection's StateType. Use the TryGetConnection/SetConnection/
+        // RemoveConnection/GetConnectionsForEntity helpers below instead of touching this directly.
+        private readonly Dictionary<string, Dictionary<Type, EntityConnection>> _connections = new();
         // Provider registered per TConfig type — single point of materialization for entity
         // configs at subscribe time. Replaces the pre-0.14.0 cache + downloader + URL factory +
         // bundled-factory chain. Keyed by typeof(TConfig); values are typed closures that the
@@ -202,6 +208,45 @@ namespace SharedMeta.Client
             return _patchAppliersByStateType.TryGetValue(stateTypeName, out var applier) ? applier : null;
         }
 
+        // --- Composite-key (entityId, StateType) connection store helpers -----------------
+        // Callers must hold _lock for the duration of use; GetConnectionsForEntity returns a
+        // snapshot copy so it's safe to enumerate even though callers hold the lock while doing so.
+
+        private bool TryGetConnection(string entityId, Type stateType, out EntityConnection connection)
+        {
+            connection = null!;
+            return _connections.TryGetValue(entityId, out var byType) && byType.TryGetValue(stateType, out connection!);
+        }
+
+        private void SetConnection(string entityId, Type stateType, EntityConnection connection)
+        {
+            if (!_connections.TryGetValue(entityId, out var byType))
+            {
+                byType = new Dictionary<Type, EntityConnection>();
+                _connections[entityId] = byType;
+            }
+            byType[stateType] = connection;
+        }
+
+        private bool RemoveConnection(string entityId, Type stateType, out EntityConnection? connection)
+        {
+            connection = null;
+            if (_connections.TryGetValue(entityId, out var byType) && byType.TryGetValue(stateType, out connection))
+            {
+                byType.Remove(stateType);
+                if (byType.Count == 0) _connections.Remove(entityId);
+                return true;
+            }
+            return false;
+        }
+
+        private List<EntityConnection> GetConnectionsForEntity(string entityId)
+        {
+            return _connections.TryGetValue(entityId, out var byType)
+                ? new List<EntityConnection>(byType.Values)
+                : new List<EntityConnection>();
+        }
+
         public async Task<TApiClient> GetServiceAsync<TApiClient>(string entityId) where TApiClient : class
         {
             var config = GetConfig<TApiClient>();
@@ -209,21 +254,14 @@ namespace SharedMeta.Client
 
             lock (_lock)
             {
-                // Check if already connected
-                if (_connections.TryGetValue(entityId, out existingConnection))
+                // Check if already connected under this exact state type — a second, different
+                // state type sharing the same entityId is a distinct, independent connection.
+                if (TryGetConnection(entityId, config.StateType, out existingConnection))
                 {
                     // Check if this specific API client already exists
                     if (existingConnection.ApiClients.TryGetValue(typeof(TApiClient), out var existingClient))
                     {
                         return (TApiClient)existingClient;
-                    }
-
-                    // Verify state type matches (multiple services must use same state)
-                    if (existingConnection.StateType != config.StateType)
-                    {
-                        throw new InvalidOperationException(
-                            $"Cannot add service '{typeof(TApiClient).Name}' with state type '{config.StateType.Name}' " +
-                            $"to entity '{entityId}' which uses state type '{existingConnection.StateType.Name}'");
                     }
                 }
             }
@@ -342,11 +380,11 @@ namespace SharedMeta.Client
             // Cache connection
             lock (_lock)
             {
-                if (!_connections.TryGetValue(entityId, out var connection))
+                if (!TryGetConnection(entityId, config.StateType, out var connection))
                 {
                     connection = newConnection ?? throw new InvalidOperationException(
                         "Internal: connection went missing between subscribe and cache.");
-                    _connections[entityId] = connection;
+                    SetConnection(entityId, config.StateType, connection);
                 }
                 else if (newConnection != null && !ReferenceEquals(connection, newConnection))
                 {
@@ -367,16 +405,38 @@ namespace SharedMeta.Client
 
         public Task DisconnectAsync(string entityId)
         {
+            // Disconnects every state-type connection sharing this entityId (was: the single
+            // flat entry). Back-compat: identical behavior to before when only one exists.
+            List<EntityConnection>? connections = null;
+            lock (_lock)
+            {
+                if (_connections.TryGetValue(entityId, out var byType))
+                {
+                    connections = new List<EntityConnection>(byType.Values);
+                    _connections.Remove(entityId);
+                }
+            }
+
+            if (connections != null)
+                foreach (var connection in connections)
+                    connection.Dispose();
+            return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Disconnects only the connection for <typeparamref name="TState"/> under
+        /// <paramref name="entityId"/>, leaving any other state-type connections sharing the
+        /// same entityId (e.g. Inventory/Profile/Wallet all keyed by playerId) intact.
+        /// </summary>
+        public Task DisconnectAsync<TState>(string entityId) where TState : class, ISharedState
+        {
             EntityConnection? connection;
             lock (_lock)
             {
-                if (!_connections.TryGetValue(entityId, out connection))
-                    return Task.CompletedTask;
-
-                _connections.Remove(entityId);
+                RemoveConnection(entityId, typeof(TState), out connection);
             }
 
-            connection.Dispose();
+            connection?.Dispose();
             return Task.CompletedTask;
         }
 
@@ -384,13 +444,13 @@ namespace SharedMeta.Client
         {
             lock (_lock)
             {
-                if (_connections.TryGetValue(entityId, out var connection))
+                if (TryGetConnection(entityId, typeof(TState), out var connection))
                 {
                     return (TState)connection.StateContainer.State;
                 }
             }
 
-            throw new InvalidOperationException($"Not connected to entity '{entityId}'");
+            throw new InvalidOperationException($"Not connected to entity '{entityId}' with state type '{typeof(TState).Name}'");
         }
 
         /// <summary>
@@ -404,9 +464,18 @@ namespace SharedMeta.Client
         /// </summary>
         public bool TryGetService<TApiClient>(string entityId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out TApiClient? api) where TApiClient : class
         {
+            // Unregistered TApiClient is a caller bug elsewhere, not a "not subscribed yet"
+            // condition — but TryGetService's contract is "never throws", so degrade to false
+            // rather than escalate via GetConfig<TApiClient>()'s throw.
+            if (!_serviceConfigs.TryGetValue(typeof(TApiClient), out var config))
+            {
+                api = null;
+                return false;
+            }
+
             lock (_lock)
             {
-                if (_connections.TryGetValue(entityId, out var connection)
+                if (TryGetConnection(entityId, config.StateType, out var connection)
                     && connection.ApiClients.TryGetValue(typeof(TApiClient), out var existing))
                 {
                     api = (TApiClient)existing;
@@ -429,7 +498,7 @@ namespace SharedMeta.Client
         {
             lock (_lock)
             {
-                if (_connections.TryGetValue(entityId, out var connection))
+                if (TryGetConnection(entityId, typeof(TState), out var connection))
                 {
                     if (connection.StateContainer is EntityStateContainer<TState> typed)
                         return typed;
@@ -437,28 +506,73 @@ namespace SharedMeta.Client
                         $"Entity '{entityId}' state container is of type '{connection.StateType.Name}', not '{typeof(TState).Name}'.");
                 }
             }
-            throw new InvalidOperationException($"Not connected to entity '{entityId}'");
+            throw new InvalidOperationException($"Not connected to entity '{entityId}' with state type '{typeof(TState).Name}'");
         }
 
+        /// <summary>
+        /// Look up a config by type across every connection sharing <paramref name="entityId"/>
+        /// (e.g. Inventory/Profile/Wallet all keyed by the same playerId). Returns null when no
+        /// connection under this entityId exposes <typeparamref name="TConfig"/>. Throws if two
+        /// or more do — use <see cref="GetEntityConfig{TState, TConfig}"/> to disambiguate that
+        /// rare case.
+        /// </summary>
         public TConfig? GetEntityConfig<TConfig>(string entityId) where TConfig : class
         {
             lock (_lock)
             {
-                if (_connections.TryGetValue(entityId, out var connection))
+                TConfig? match = null;
+                int matchCount = 0;
+                foreach (var connection in GetConnectionsForEntity(entityId))
                 {
-                    if (connection.Config is TConfig legacy) return legacy;
-                    // 0.33.0+ fall back to [ServiceConfig] entries — the legacy Config field
-                    // stays null for services that only declare [ServiceConfig].
-                    if (connection.Configs is { Count: > 0 } configs)
+                    var found = FindConfig<TConfig>(connection);
+                    if (found != null)
                     {
-                        foreach (var c in configs)
-                        {
-                            if (c is TConfig typed) return typed;
-                        }
+                        match = found;
+                        matchCount++;
                     }
                 }
-            }
 
+                if (matchCount > 1)
+                {
+                    throw new InvalidOperationException(
+                        $"Ambiguous GetEntityConfig<{typeof(TConfig).Name}>('{entityId}') — {matchCount} connections " +
+                        $"under this entityId expose {typeof(TConfig).Name}. Use " +
+                        $"GetEntityConfig<TState, {typeof(TConfig).Name}>('{entityId}') to disambiguate.");
+                }
+
+                return match;
+            }
+        }
+
+        /// <summary>
+        /// Disambiguating overload of <see cref="GetEntityConfig{TConfig}"/> for the rare case
+        /// where two different state types sharing an entityId both expose the same config type.
+        /// </summary>
+        public TConfig? GetEntityConfig<TState, TConfig>(string entityId)
+            where TState : class, ISharedState
+            where TConfig : class
+        {
+            lock (_lock)
+            {
+                if (TryGetConnection(entityId, typeof(TState), out var connection))
+                    return FindConfig<TConfig>(connection);
+            }
+            return null;
+        }
+
+        // Shared lookup: legacy single Config field first, then [ServiceConfig] entries.
+        private static TConfig? FindConfig<TConfig>(EntityConnection connection) where TConfig : class
+        {
+            if (connection.Config is TConfig legacy) return legacy;
+            // 0.33.0+ fall back to [ServiceConfig] entries — the legacy Config field
+            // stays null for services that only declare [ServiceConfig].
+            if (connection.Configs is { Count: > 0 } configs)
+            {
+                foreach (var c in configs)
+                {
+                    if (c is TConfig typed) return typed;
+                }
+            }
             return null;
         }
 
@@ -506,23 +620,26 @@ namespace SharedMeta.Client
             lock (_lock)
             {
                 var result = new List<SubscribedEntityInfo>(_connections.Count);
-                foreach (var (entityId, connection) in _connections)
+                foreach (var (entityId, byType) in _connections)
                 {
-                    // 0.33.0+ fall back to the first [ServiceConfig] entry when there's no
-                    // legacy primary — best-effort single-config summary for this debug snapshot
-                    // (structured as one Config/ConfigType pair; a state with multiple
-                    // [ServiceConfig] entries only surfaces the first here).
-                    var fallbackConfig = connection.Config ?? (connection.Configs is { Count: > 0 } cs ? cs[0] : null);
-                    result.Add(new SubscribedEntityInfo
+                    foreach (var connection in byType.Values)
                     {
-                        EntityId = entityId,
-                        StateType = connection.StateType,
-                        ConfigType = connection.ConfigType ?? fallbackConfig?.GetType(),
-                        ConfigVersion = connection.ConfigVersions is { Count: > 0 } cv ? cv[0] : default,
-                        ServiceNames = new List<string>(connection.LocalServiceNames),
-                        State = connection.StateContainer.State,
-                        Config = fallbackConfig,
-                    });
+                        // 0.33.0+ fall back to the first [ServiceConfig] entry when there's no
+                        // legacy primary — best-effort single-config summary for this debug snapshot
+                        // (structured as one Config/ConfigType pair; a state with multiple
+                        // [ServiceConfig] entries only surfaces the first here).
+                        var fallbackConfig = connection.Config ?? (connection.Configs is { Count: > 0 } cs ? cs[0] : null);
+                        result.Add(new SubscribedEntityInfo
+                        {
+                            EntityId = entityId,
+                            StateType = connection.StateType,
+                            ConfigType = connection.ConfigType ?? fallbackConfig?.GetType(),
+                            ConfigVersion = connection.ConfigVersions is { Count: > 0 } cv ? cv[0] : default,
+                            ServiceNames = new List<string>(connection.LocalServiceNames),
+                            State = connection.StateContainer.State,
+                            Config = fallbackConfig,
+                        });
+                    }
                 }
                 return result;
             }
@@ -561,11 +678,12 @@ namespace SharedMeta.Client
         /// <summary>
         /// Get the config for a subscribed entity (untyped). ICrossEntityResolver implementation.
         /// </summary>
-        object? ICrossEntityResolver.GetEntityConfig(string entityId)
+        object? ICrossEntityResolver.GetEntityConfig(string entityId, string stateTypeName)
         {
             lock (_lock)
             {
-                if (_connections.TryGetValue(entityId, out var connection))
+                if (_configsByStateTypeName.TryGetValue(stateTypeName, out var config)
+                    && TryGetConnection(entityId, config.StateType, out var connection))
                     return connection.Config;
             }
             return null;
@@ -575,11 +693,12 @@ namespace SharedMeta.Client
         /// 0.33.0+ Get every [ServiceConfig] entry for a subscribed entity (untyped, positional).
         /// ICrossEntityResolver implementation — the Configs counterpart to GetEntityConfig.
         /// </summary>
-        IReadOnlyList<object>? ICrossEntityResolver.GetEntityConfigs(string entityId)
+        IReadOnlyList<object>? ICrossEntityResolver.GetEntityConfigs(string entityId, string stateTypeName)
         {
             lock (_lock)
             {
-                if (_connections.TryGetValue(entityId, out var connection))
+                if (_configsByStateTypeName.TryGetValue(stateTypeName, out var config)
+                    && TryGetConnection(entityId, config.StateType, out var connection))
                     return connection.Configs;
             }
             return null;
@@ -588,16 +707,18 @@ namespace SharedMeta.Client
         /// <summary>
         /// Subscribe to a method being replayed from server broadcast.
         /// </summary>
+        /// <remarks>
+        /// Dead API — no real call sites in the framework (real subscriptions go through the
+        /// generated ApiClient's own broadcast handling). Since entityId alone no longer
+        /// identifies a single connection, this picks an arbitrary connection under
+        /// <paramref name="entityId"/> when more than one state type shares it.
+        /// </remarks>
         public IMethodSubscription OnMethodReplayed(string entityId, ushort methodId, Action<MethodReplayedContext> handler)
         {
-            // For INetwork-based architecture, subscriptions are handled via OnBroadcast event
-            // Return a subscription that wraps the event handler
             lock (_lock)
             {
-                if (_connections.TryGetValue(entityId, out var connection))
-                {
+                foreach (var connection in GetConnectionsForEntity(entityId))
                     return new NetworkMethodSubscription(connection.Network, methodId, handler);
-                }
             }
 
             throw new InvalidOperationException($"Not connected to entity '{entityId}'. Call GetServiceAsync first.");
@@ -606,14 +727,13 @@ namespace SharedMeta.Client
         /// <summary>
         /// Subscribe to a method being replayed with strongly-typed arguments.
         /// </summary>
+        /// <remarks>Dead API — see <see cref="OnMethodReplayed"/> remarks.</remarks>
         public IMethodSubscription OnMethodReplayed<TArgs>(string entityId, ushort methodId, Action<TArgs> handler)
         {
             lock (_lock)
             {
-                if (_connections.TryGetValue(entityId, out var connection))
-                {
+                foreach (var connection in GetConnectionsForEntity(entityId))
                     return new NetworkMethodSubscription<TArgs>(connection.Network, methodId, handler, _serializer);
-                }
             }
 
             throw new InvalidOperationException($"Not connected to entity '{entityId}'. Call GetServiceAsync first.");
@@ -647,27 +767,28 @@ namespace SharedMeta.Client
 
         #region ICrossEntityResolver
 
-        bool ICrossEntityResolver.IsSubscribed(string entityId)
+        bool ICrossEntityResolver.IsSubscribed(string entityId, string stateTypeName)
         {
             lock (_lock)
             {
-                return _connections.ContainsKey(entityId);
+                return _configsByStateTypeName.TryGetValue(stateTypeName, out var config)
+                    && TryGetConnection(entityId, config.StateType, out _);
             }
         }
 
         async Task ICrossEntityResolver.EnsureSubscribedAsync(string entityId, string stateTypeName)
         {
-            bool alreadyConnected;
-            lock (_lock)
-            {
-                alreadyConnected = _connections.ContainsKey(entityId);
-            }
-
-            if (alreadyConnected) return;
-
             // Find the config for this state type
             if (!_configsByStateTypeName.TryGetValue(stateTypeName, out var config))
                 throw new InvalidOperationException($"No service config registered for state type '{stateTypeName}'");
+
+            bool alreadyConnected;
+            lock (_lock)
+            {
+                alreadyConnected = TryGetConnection(entityId, config.StateType, out _);
+            }
+
+            if (alreadyConnected) return;
 
             // Create connection (subscribe to entity)
             var subResult = await _networkFactory(entityId, stateTypeName);
@@ -720,9 +841,9 @@ namespace SharedMeta.Client
 
             lock (_lock)
             {
-                if (!_connections.ContainsKey(entityId))
+                if (!TryGetConnection(entityId, config.StateType, out _))
                 {
-                    _connections[entityId] = newConnection;
+                    SetConnection(entityId, config.StateType, newConnection);
                     newConnection = null;
                 }
             }
@@ -731,21 +852,23 @@ namespace SharedMeta.Client
             newConnection?.Dispose();
         }
 
-        object ICrossEntityResolver.GetEntityState(string entityId)
+        object ICrossEntityResolver.GetEntityState(string entityId, string stateTypeName)
         {
             lock (_lock)
             {
-                if (_connections.TryGetValue(entityId, out var connection))
+                if (_configsByStateTypeName.TryGetValue(stateTypeName, out var config)
+                    && TryGetConnection(entityId, config.StateType, out var connection))
                     return connection.StateContainer.State;
             }
-            throw new InvalidOperationException($"Not connected to entity '{entityId}'. Call EnsureSubscribedAsync first.");
+            throw new InvalidOperationException($"Not connected to entity '{entityId}' with state type '{stateTypeName}'. Call EnsureSubscribedAsync first.");
         }
 
-        void ICrossEntityResolver.UpdateCachedState(string entityId, object newState)
+        void ICrossEntityResolver.UpdateCachedState(string entityId, string stateTypeName, object newState)
         {
             lock (_lock)
             {
-                if (_connections.TryGetValue(entityId, out var connection))
+                if (_configsByStateTypeName.TryGetValue(stateTypeName, out var config)
+                    && TryGetConnection(entityId, config.StateType, out var connection))
                     connection.StateContainer.ReplaceObject(newState);
             }
         }
@@ -808,7 +931,12 @@ namespace SharedMeta.Client
                     if (v.Status == Core.Transport.SubscriptionStatus.Failed)
                         continue; // defensive — Resume should have aborted upstream
 
-                    if (!_connections.TryGetValue(v.EntityId, out var connection))
+                    // 0.33.0+ StateTypeName disambiguates verdicts when two state types share an
+                    // entityId (e.g. Inventory/Profile/Wallet keyed by playerId) — without it a
+                    // verdict couldn't be correlated back to the right connection on Resume.
+                    if (string.IsNullOrEmpty(v.StateTypeName)
+                        || !_configsByStateTypeName.TryGetValue(v.StateTypeName, out var stateConfig)
+                        || !TryGetConnection(v.EntityId, stateConfig.StateType, out var connection))
                         continue;
 
                     if (v.StateBytes is not { Length: > 0 })
@@ -849,9 +977,10 @@ namespace SharedMeta.Client
         {
             lock (_lock)
             {
-                foreach (var connection in _connections.Values)
+                foreach (var byType in _connections.Values)
                 {
-                    connection.Dispose();
+                    foreach (var connection in byType.Values)
+                        connection.Dispose();
                 }
                 _connections.Clear();
             }
@@ -922,7 +1051,7 @@ namespace SharedMeta.Client
                     $"or for server-driven configs (recommended for real servers):\n\n" +
                     $"    resolver.RegisterConfigProvider<{configType.Name}>(\n" +
                     $"        new DownloadingConfigProvider<{configType.Name}>(\n" +
-                    $"            urlResolver: client.ConfigDownloadUrlResolver(stateTypeName),\n" +
+                    $"            urlResolver: client.ConfigDownloadUrlResolver(stateTypeName, typeof({configType.Name}).FullName!),\n" +
                     $"            downloader:  UnityConfigDownloader.DownloadAsync,\n" +
                     $"            serializer:  client.Serializer));\n\n" +
                     $"As of SharedMeta 0.17.0 the generator no longer silently registers a default-" +
@@ -1108,6 +1237,17 @@ namespace SharedMeta.Client
                 // through the optimistic / cross-optimistic / server-replace path.
                 if (broadcast.CallerId == Network.PlayerId) return;
 
+                // Ownership guard: when two state types share this entityId (e.g. Inventory/
+                // Profile/Wallet keyed by playerId), ClientDispatcher delivers every broadcast
+                // for the entityId to every registered connection's handler. Skip if this
+                // broadcast's owning service targets a different state type — mirrors the check
+                // already applied further down for pure-replay broadcasts. Unresolvable MethodId
+                // (owningConfig null — e.g. an older client that doesn't know a newer server
+                // method) falls through and applies, matching this method's pre-existing
+                // single-connection-per-entity behavior.
+                var owningConfig = _configByMethodId?.Invoke(broadcast.MethodId);
+                if (owningConfig != null && owningConfig.StateType != StateType) return;
+
                 if (broadcast.StateBytes is { Length: > 0 } sb)
                 {
                     var newState = _serializer!.Unpack(StateType, sb);
@@ -1158,9 +1298,9 @@ namespace SharedMeta.Client
                 // invoke the method against our state. Closes the gap pre-0.14.0 where
                 // foreign-service Optimistic / Server broadcasts were silently dropped
                 // by the per-ApiClient filter.
-                var foreignConfig = _configByMethodId?.Invoke(broadcast.MethodId);
+                // owningConfig already resolved above and passed the state-type ownership guard.
+                var foreignConfig = owningConfig;
                 if (foreignConfig?.EntityReplayDispatcher == null) return;
-                if (foreignConfig.StateType != StateType) return; // service targets different state type
 
                 try
                 {

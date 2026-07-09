@@ -119,7 +119,7 @@ namespace SharedMeta.Core.Transport
         /// Request the download URL for a config from the server.
         /// Returns null if no config or no download URL configured.
         /// </summary>
-        Task<string?> GetConfigDownloadUrlAsync(string stateTypeName, MetaConfigVersion version);
+        Task<string?> GetConfigDownloadUrlAsync(string configTypeName, MetaConfigVersion version);
 
         /// <summary>
         /// Resolve the <see cref="MetaConfigVersion"/> a <c>[StatelessMetaService]</c>'s linked

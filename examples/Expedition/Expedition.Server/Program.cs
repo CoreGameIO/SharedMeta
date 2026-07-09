@@ -1,3 +1,4 @@
+using Expedition.Server;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -47,7 +48,9 @@ builder.Services.AddSingleton<IMetaSerializer>(serializer);
 
 // Config provider (shared between Orleans silo and app-level endpoint)
 var configProvider = new ExpeditionConfigProvider($"http://localhost:{port}");
+var playerConfigProvider = new PlayerConfigProvider($"http://localhost:{port}");
 builder.Services.AddSingleton<IMetaConfigProvider<ExpeditionConfig>>(configProvider);
+builder.Services.AddSingleton<IMetaConfigProvider<PlayerConfig>>(playerConfigProvider);
 
 // Version policy:
 //   ServerVersion     = 2.0.0   — current server build
@@ -142,10 +145,15 @@ app.UseAuthorization();
 app.MapMetaAuth("/meta/auth");
 
 // Config download endpoint — serves serialized config bytes
-app.MapGet("/meta/config/{major:int}/{minor:int}", (int major, int minor, IMetaSerializer ser, IMetaConfigProvider<ExpeditionConfig> configProvider) =>
+app.MapGet("/meta/{configName}/{major:int}/{minor:int}", (string configName, int major, int minor, IMetaSerializer ser) =>
 {
-    var config = configProvider.GetConfig(new MetaConfigVersion(major, minor));
-    var bytes = ser.Pack(config);
+    var version = new MetaConfigVersion(major, minor);
+    var bytes = configName switch {
+        "ExpeditionConfig" => configProvider.GetDownloadData(version, serializer),
+        "PlayerConfig" => playerConfigProvider.GetDownloadData(version, serializer),
+        _ => throw new Exception($"Unknown config {configName}")
+    };
+
     return Results.Bytes(bytes, "application/octet-stream");
 });
 
@@ -171,57 +179,5 @@ if (useServerPatch)
 
 await app.RunAsync();
 
-/// <summary>
-/// Provides expedition config with two branches:
-///   1.x = lean economy (rare treasures, smaller rewards)
-///   2.x = boosted economy (more frequent treasures, bigger rewards)
-///
-/// Routing client → config branch is decided by <c>[MetaConfigVersion]</c> rules on
-/// <see cref="ExpeditionConfig"/>; this provider just produces config bytes when asked
-/// for a specific version. <see cref="ResolveLatestMatching"/> picks the latest patch
-/// in the requested branch (here: 1.0.0 / 2.0.0 — no patch deployments yet).
-/// </summary>
-public class ExpeditionConfigProvider : IMetaConfigProvider<ExpeditionConfig>
-{
-    private readonly string _baseUrl;
 
-    // GetConfig is called on the RPC hot path (per-call resolve, then cached per-grain).
-    // Memoize per (Major, Minor) so we never re-allocate the same branch twice.
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<(int, int), ExpeditionConfig> _branchCache = new();
 
-    public ExpeditionConfigProvider(string baseUrl)
-    {
-        _baseUrl = baseUrl.TrimEnd('/');
-    }
-
-    /// <summary>Default branch reported when no client version is known. 2.x is the latest deployed.</summary>
-    public MetaConfigVersion CurrentVersion => new(2, 0);
-
-    public ExpeditionConfig GetConfig(MetaConfigVersion version)
-        => _branchCache.GetOrAdd((version.Major, version.Minor), key => BuildConfig(key.Item1));
-
-    private static ExpeditionConfig BuildConfig(int major)
-    {
-        // Branch 2.x — boosted economy, schema-2 (post-migration).
-        if (major >= 2)
-        {
-            return new ExpeditionConfig
-            {
-                TreasurePercent = 25,    // ↑ from default 8 (much more loot scattered on the map)
-                TreasureReward  = 75,    // ↑ from default 25 (3× per chest)
-            };
-        }
-
-        // Branch 1.x — lean economy (legacy clients on the 1.2 line).
-        return new ExpeditionConfig
-        {
-            TreasurePercent = 5,         // ↓ from default 8 (rare treasures)
-            TreasureReward  = 10,        // ↓ from default 25 (small reward per chest)
-        };
-    }
-
-    public MetaConfigVersion ResolveLatestMatching(int major, int minor) => new(major, minor, 0);
-
-    public string? GetDownloadUrl(MetaConfigVersion version)
-        => $"{_baseUrl}/meta/config/{version.Major}/{version.Minor}";
-}

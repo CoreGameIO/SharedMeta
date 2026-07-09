@@ -26,7 +26,14 @@ namespace SharedMeta.Core
         /// Check if entity is already subscribed (synchronous, no network).
         /// Called by generated LocalEntityCaller before accessing state.
         /// </summary>
-        bool IsSubscribed(string entityId);
+        /// <param name="entityId">Entity ID.</param>
+        /// <param name="stateTypeName">
+        /// Full name of the target state type. entityId alone is not a unique key — the server
+        /// addresses entities by (state type, entityId), so the same entityId string is a valid,
+        /// independent identity across different state types (e.g. Inventory/Profile/Wallet all
+        /// keyed by the same playerId under the UserOwned convention).
+        /// </param>
+        bool IsSubscribed(string entityId, string stateTypeName);
 
         /// <summary>
         /// Ensure entity is subscribed. No-op if already subscribed.
@@ -38,7 +45,9 @@ namespace SharedMeta.Core
         /// Get the local state object for a subscribed entity.
         /// Throws if not subscribed.
         /// </summary>
-        object GetEntityState(string entityId);
+        /// <param name="entityId">Entity ID.</param>
+        /// <param name="stateTypeName">Full name of the target state type — see <see cref="IsSubscribed"/>.</param>
+        object GetEntityState(string entityId, string stateTypeName);
 
         /// <summary>
         /// Overwrite the cached state reference for an entity. Called by generated
@@ -47,13 +56,18 @@ namespace SharedMeta.Core
         /// observe the same fresh instance the ApiClient now holds. No-op if the entity
         /// is not subscribed.
         /// </summary>
-        void UpdateCachedState(string entityId, object newState);
+        /// <param name="entityId">Entity ID.</param>
+        /// <param name="stateTypeName">Full name of the target state type — see <see cref="IsSubscribed"/>.</param>
+        /// <param name="newState">The new state instance.</param>
+        void UpdateCachedState(string entityId, string stateTypeName, object newState);
 
         /// <summary>
         /// Get the config object for a subscribed entity. Returns null if no config.
         /// Used by generated LocalEntityCaller to propagate Config to cross-entity context.
         /// </summary>
-        object? GetEntityConfig(string entityId);
+        /// <param name="entityId">Entity ID.</param>
+        /// <param name="stateTypeName">Full name of the target state type — see <see cref="IsSubscribed"/>.</param>
+        object? GetEntityConfig(string entityId, string stateTypeName);
 
         /// <summary>
         /// 0.33.0+ Get every <c>[ServiceConfig]</c> entry for a subscribed entity, positional
@@ -61,7 +75,9 @@ namespace SharedMeta.Core
         /// LocalEntityCaller to propagate Configs to cross-entity context — the
         /// <see cref="GetEntityConfig"/> counterpart for the symmetric [ServiceConfig] list.
         /// </summary>
-        IReadOnlyList<object>? GetEntityConfigs(string entityId);
+        /// <param name="entityId">Entity ID.</param>
+        /// <param name="stateTypeName">Full name of the target state type — see <see cref="IsSubscribed"/>.</param>
+        IReadOnlyList<object>? GetEntityConfigs(string entityId, string stateTypeName);
 
         /// <summary>
         /// Serializer for creating client MetaContext.

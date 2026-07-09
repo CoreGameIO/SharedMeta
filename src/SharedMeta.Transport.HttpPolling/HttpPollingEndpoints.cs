@@ -275,7 +275,7 @@ namespace SharedMeta.Transport.HttpPolling
             {
                 // 0.26.4 bug-fix: include request.ConfigPatchVersion (was dropped — see MetaHub).
                 var url = configUrlResolver?.GetDownloadUrl(
-                    request.StateTypeName,
+                    request.ConfigTypeName,
                     new SharedMeta.Core.MetaConfigVersion(request.ConfigMajorVersion, request.ConfigMinorVersion, request.ConfigPatchVersion));
                 var response = new ConfigDownloadUrlResponse { Success = true, DownloadUrl = url };
                 return Results.Json(response, MetaJsonContext.Default.ConfigDownloadUrlResponse);

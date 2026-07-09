@@ -9,17 +9,17 @@ using SharedMeta.Server.Core;
 namespace SharedMeta.Server
 {
     /// <summary>
-    /// 0.26.2+: Two paired helpers that wire a host-managed HTTP endpoint for SharedMeta
+    /// Two paired helpers that wire a host-managed HTTP endpoint for SharedMeta
     /// versioned config delivery and a matching <see cref="IConfigDownloadUrlResolver"/>
     /// that emits URLs targeting the same route. Eliminates the boilerplate where every
-    /// host repeats ~25 lines of <c>MapGet("/meta/config/{stateType}/{version}", ...)</c>
+    /// host repeats ~25 lines of <c>MapGet("/meta/config/{configType}/{version}", ...)</c>
     /// plus a custom resolver that builds the URL by hand.
     /// </summary>
     public static class MetaConfigHttpExtensions
     {
         /// <summary>
         /// Register an <see cref="IConfigDownloadUrlResolver"/> that builds absolute URLs in the
-        /// form <c>{publicBaseUrl}{routePrefix}/{stateTypeName}/{major}.{minor}.{patch}</c> —
+        /// form <c>{publicBaseUrl}{routePrefix}/{configTypeName}/{major}.{minor}.{patch}</c> —
         /// symmetric with <see cref="MapMetaConfigDownload{TConfig}"/>. The resolver ignores
         /// what's actually registered as <see cref="IMetaConfigProvider{TConfig}"/> and assumes
         /// the host serves bytes for every requested version (typical when paired with
@@ -73,10 +73,10 @@ namespace SharedMeta.Server
             string routePrefix = "/meta/config")
         {
             if (endpoints is null) throw new ArgumentNullException(nameof(endpoints));
-            var route = NormalizeRoute(routePrefix) + "/{stateType}/{version}";
+            var route = NormalizeRoute(routePrefix) + "/{configType}/{version}";
 
-            return endpoints.MapGet(route, (
-                string stateType,
+            return endpoints.MapGet(route, async (
+                string configType,
                 string version,
                 IConfigByteSource source,
                 IMetaSerializer serializer) =>
@@ -94,18 +94,18 @@ namespace SharedMeta.Server
                 byte[]? bytes;
                 try
                 {
-                    bytes = source.GetBytes(serializer, stateType, v);
+                    bytes = await source.GetBytesAsync(serializer, configType, v);
                 }
                 catch (Exception ex)
                 {
                     return Results.Problem(
-                        $"Config materialization failed for state '{stateType}' v{v.Major}.{v.Minor}.{v.Patch}: {ex.Message}",
+                        $"Config materialization failed for config '{configType}' v{v.Major}.{v.Minor}.{v.Patch}: {ex.Message}",
                         statusCode: 500);
                 }
 
                 if (bytes is null)
                 {
-                    return Results.NotFound($"No config registered for state '{stateType}'.");
+                    return Results.NotFound($"No config '{configType}' registered.");
                 }
 
                 return Results.Bytes(bytes, "application/octet-stream");
@@ -187,8 +187,8 @@ namespace SharedMeta.Server
                 _routePrefix = NormalizeRoute(routePrefix);
             }
 
-            public string? GetDownloadUrl(string stateTypeName, MetaConfigVersion version)
-                => $"{_publicBaseUrl}{_routePrefix}/{stateTypeName}/{version.Major}.{version.Minor}.{version.Patch}";
+            public string? GetDownloadUrl(string configTypeName, MetaConfigVersion version)
+                => $"{_publicBaseUrl}{_routePrefix}/{configTypeName}/{version.Major}.{version.Minor}.{version.Patch}";
         }
     }
 }

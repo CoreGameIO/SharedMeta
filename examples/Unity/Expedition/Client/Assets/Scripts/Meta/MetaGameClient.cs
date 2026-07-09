@@ -145,11 +145,7 @@ public class MetaGameClient : IDisposable
         // — without this the auto-registered StaticConfigProvider<ExpeditionConfig>(new()) would
         // hand out the C# field defaults and the v1/v2 difference wouldn't surface in gameplay.
         // RegisterConfigProvider clobbers, so order vs. RegisterAllServices doesn't matter.
-        Client.Resolver.RegisterConfigProvider<ExpeditionConfig>(
-            new DownloadingConfigProvider<ExpeditionConfig>(
-                urlResolver: Client.ConfigDownloadUrlResolver(typeof(ExpeditionState).FullName!),
-                downloader:  UnityConfigDownloader.DownloadAsync,
-                serializer:  Client.Serializer));
+        Client.UnityRegisterDownloadingConfigProvider<ExpeditionConfig>();
 
         Client.Resolver.RegisterAllServices();
 
