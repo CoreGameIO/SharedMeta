@@ -975,17 +975,23 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             executedConfigVersions.AddRange(serviceConfigVersions);
             _pooledResponseOp.ExecutedConfigVersions = executedConfigVersions;
 
-            // Populate pooled broadcast — the form sent to OTHER subscribers. CallerId is
-            // set so subscribers can attribute the op to the originator on their side.
-            // Cross-entity broadcasts (isClientOriginated=false) NULL the CallerId so the
-            // outer caller's client doesn't filter them as own-RPC echoes — the outer caller
-            // didn't directly RPC THIS entity, just transitively touched it through another
-            // entity's method. Direct subscribers of THIS entity still get the broadcast;
-            // they just lose cross-entity attribution (the broadcast wasn't directly theirs).
+            // Populate pooled broadcast — the form sent to OTHER subscribers. CallerId always
+            // carries the true originator so replay on every recipient attributes the op
+            // correctly — Context.CallerId, trigger replay, and diagnostics all read it. This
+            // matters even when the recipient IS the originator of a cross-entity call: in
+            // Server-mode cross-entity the originator stays subscribed to the target (its client
+            // Replayer no-op'd the call) and must replay this broadcast under the real caller id.
+            //
+            // Own-RPC echo suppression is NOT done by blanking CallerId. The server already
+            // excludes the originator from fan-out whenever it applied the effect locally
+            // (EntityGrain.DistributeBroadcasts excludePlayerId — direct calls always, cross-
+            // entity when CrossOptimistic), so a recipient only ever sees broadcasts it did not
+            // already apply. Blanking CallerId used to exist solely to slip cross-entity
+            // broadcasts past a client-side CallerId==PlayerId filter that has been removed.
             ResetMetaOperation(_pooledBroadcastOp);
             _pooledBroadcastOp.MethodId = call.MethodId;
             _pooledBroadcastOp.Payload = call.Payload;
-            _pooledBroadcastOp.CallerId = isClientOriginated ? call.CallerId : null;
+            _pooledBroadcastOp.CallerId = call.CallerId;
             _pooledBroadcastOp.ReplayPayload = replayPayload;
             _pooledBroadcastOp.PatchBytes = patchBytes;
             _pooledBroadcastOp.RandomScrollDelta = randomScrollDelta;

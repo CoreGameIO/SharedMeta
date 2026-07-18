@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.34.0] - 2026-07-18
+
+### Fixed
+
+- Cross-entity broadcasts preserve the real originator `CallerId`, so a Server-mode cross-entity call replays under the correct `Context.CallerId` on every subscriber — including a subscriber that is itself the caller (host-mode: server + client on one `MetaClient`). Previously the replayed method saw `Context.CallerId == null`.
+
+### Changed
+
+- Own-RPC echo suppression is now server-side only (fan-out excludes the originator when it already applied the effect locally); the client-side `CallerId == PlayerId` broadcast filters are removed. Lockstep client/server upgrade required — a 0.34.0 server paired with a 0.33.x client would drop self-addressed Server-mode cross-entity broadcasts.
+
 ## [0.33.0] - 2026-07-06
 
 ### Added

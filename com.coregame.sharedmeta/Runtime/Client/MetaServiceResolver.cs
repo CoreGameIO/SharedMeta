@@ -1233,9 +1233,14 @@ namespace SharedMeta.Client
 
             private void HandleEntityBroadcast(NetworkBroadcast broadcast)
             {
-                // Echoed broadcast for our own RPC — server-side replay already happened locally
-                // through the optimistic / cross-optimistic / server-replace path.
-                if (broadcast.CallerId == Network.PlayerId) return;
+                // No own-RPC echo filter here. The server excludes the originator from fan-out
+                // whenever it already applied the effect locally (EntityGrain.DistributeBroadcasts
+                // excludePlayerId — direct calls always, cross-entity when CrossOptimistic), so a
+                // received broadcast is never a duplicate of a local application. A CallerId==
+                // PlayerId check would additionally be wrong: it drops legitimate Server-mode
+                // cross-entity broadcasts the originator IS meant to replay (its Replayer no-op'd
+                // the call), and it misfires when two roles share one PlayerId (host-mode
+                // server+client on a single MetaClient).
 
                 // Ownership guard: when two state types share this entityId (e.g. Inventory/
                 // Profile/Wallet keyed by playerId), ClientDispatcher delivers every broadcast

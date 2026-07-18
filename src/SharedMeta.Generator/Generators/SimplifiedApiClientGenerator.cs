@@ -2002,9 +2002,9 @@ namespace SharedMeta.Generator.Generators
         {
             sb.AppendLine("        private void HandleBroadcast(NetworkBroadcast broadcast)");
             sb.AppendLine("        {");
-            sb.AppendLine("            if (broadcast.CallerId == _network.PlayerId)");
-            sb.AppendLine("                return;");
-            sb.AppendLine();
+            sb.AppendLine("            // No own-RPC echo filter: the server excludes the originator from fan-out when");
+            sb.AppendLine("            // it already applied the effect locally (DistributeBroadcasts excludePlayerId),");
+            sb.AppendLine("            // so a received broadcast is never a duplicate of a local application.");
             // 0.24.0+ Route by client-local MethodId — the wire no longer carries
             // ServiceName. DispatchServiceBroadcast's switch has the per-service ids; the
             // subscriber dispatchers' switches own framework ids. A jump table on
