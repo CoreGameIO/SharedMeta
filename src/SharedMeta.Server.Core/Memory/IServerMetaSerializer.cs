@@ -24,8 +24,7 @@ namespace SharedMeta.Server.Core.Memory
         /// <see cref="ReadOnlyMemory{T}"/> previously returned by <see cref="IMetaSerializer.Pack{T}(T)"/>
         /// or written via <see cref="IMetaSerializer.Pack{T}(T,System.Buffers.IBufferWriter{byte})"/>
         /// against this serializer's scratch. Call at the start of each grain method entry
-        /// (HandleCallAsync / HandleQueryAsync / HandleSignalAsync / HandleExternalEventAsync /
-        /// SubscribeAsync) — the previous call's intermediate slices have already been
+        /// (HandleCallAsync / HandleQueryAsync / HandleSignalAsync / SubscribeAsync) — the previous call's intermediate slices have already been
         /// embedded into outgoing payloads or copied across grain boundaries by then.
         /// </summary>
         void ResetScratch();

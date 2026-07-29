@@ -65,7 +65,7 @@ namespace SharedMeta.Server.Core.Grains
         private MetaProviderBase<TState>? _activeProviderBase;
 
         // Per-activation scratch pool + grain-scoped serializer. All intermediate Pack(value)
-        // calls inside HandleCallAsync / HandleExternalEventAsync / SubscribeAsync write into
+        // calls inside HandleCallAsync / SubscribeAsync write into
         // this pool's byte[] and return ROM slices — no per-call GC alloc. Reset before each
         // grain method entry; the rom slices from the previous call become invalid then.
         private readonly Memory.ScratchBufferPool _scratchPool = new(initialCapacity: 8192);
@@ -1023,58 +1023,6 @@ namespace SharedMeta.Server.Core.Grains
             ResetPersistenceTracking();
             _logger.EntityStateInitialized(typeof(TState).Name, _entityId, state.Version);
             return true;
-        }
-
-        public async ValueTask<EntityCallResult> HandleExternalEventAsync(
-            ushort methodId,
-            byte[] eventData,
-            string? callerId = null)
-        {
-            if (_provider == null)
-            {
-                return new EntityCallResult { Error = "Provider not initialized" };
-            }
-
-            var state = _persistentState.State;
-            var operationSequence = ++state.EntitySequenceNumber;
-
-            try
-            {
-                var providerResult = await _provider.HandleExternalEventAsync(methodId, eventData, callerId);
-
-                ReadOnlyMemory<byte> eventPayload = default;
-                if (_provider is MetaProviderBase<TState> mpbTake)
-                    eventPayload = mpbTake.TakeOutgoingEventBroadcast();
-
-                // The event payload is the same ROM-over-byte[] handed to subscribers AND to
-                // the originating caller. With Orleans [Immutable] markers on EntityBroadcast /
-                // EntityCallResult, no in-silo deep-copy happens; GC reclaims when both fan-out
-                // sends and the caller's response packet have evicted.
-                await DistributeBroadcasts(
-                    eventPayload,
-                    default,
-                    string.Empty, string.Empty, methodId,
-                    operationSequence, excludePlayerId: null);
-
-                return new EntityCallResult
-                {
-                    EntitySequenceNumber = operationSequence,
-                    OpBytes = eventPayload,  // identical shape for the originator
-                };
-            }
-            catch (Exception ex)
-            {
-                _logger.ErrorHandlingExternalEvent(ex);
-                return new EntityCallResult
-                {
-                    EntitySequenceNumber = operationSequence,
-                    Error = ex.Message
-                };
-            }
-            finally
-            {
-                await PersistIfNeeded(forcePersist: false);
-            }
         }
 
         /// <summary>

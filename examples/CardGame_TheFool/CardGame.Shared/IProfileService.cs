@@ -9,8 +9,14 @@ namespace CardGame.Shared
     /// Player profile service interface.
     /// Each player has their own profile entity.
     /// </summary>
-    [MetaService(StateType = typeof(ProfileState), SubscriberInterfaces = new[] { typeof(ILobbySubscriber) })]
-    public interface IProfileService : IMetaService
+    /// <remarks>
+    /// Inherits <see cref="ILobbyListener"/> so the matchmaking callbacks are part of this
+    /// service's contract — dispatch and the generated APIs are typed on this interface. Their
+    /// <c>[MetaMethod]</c> sits on <see cref="ProfileService"/>, since the declarations
+    /// themselves live in the framework assembly and carry no syntax here.
+    /// </remarks>
+    [MetaService(StateType = typeof(ProfileState))]
+    public interface IProfileService : IMetaService, ILobbyListener
     {
         /// <summary>
         /// Set player display name.

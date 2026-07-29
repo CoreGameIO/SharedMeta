@@ -1920,31 +1920,78 @@ public partial class CardGameServiceImpl : ICardGameService
 
 Triggers execute server-side as nested operations within the parent call. The trigger's result is included in `TriggerOperations` of the response.
 
-### Subscriber Interfaces (Framework Events)
+### Framework Contracts (Lobby / Matchmaking)
 
-Subscribe a service to framework events (e.g., matchmaking):
+A framework contract like `ILobbyListener` is an ordinary interface — nothing about it is
+special-cased by the dispatcher. Wire it up in two places:
 
 ```csharp
-[MetaService(
-    StateType = typeof(ProfileState),
-    SubscriberInterfaces = new[] { typeof(ILobbySubscriber) })]
-public interface IProfileService : IMetaService
+// 1. Inherit it on the service interface: dispatch and the generated APIs are typed on this.
+[MetaService(StateType = typeof(ProfileState))]
+public interface IProfileService : IMetaService, ILobbyListener { }
+
+// 2. Put [MetaMethod] on the implementation. The declarations live in the framework assembly
+//    and carry no syntax in your compilation, so the attribute has to go here - that is what
+//    assigns a method id, emits the dispatcher case and enables client-side replay.
+[MetaServiceImpl(typeof(IProfileService), typeof(ProfileState))]
+public partial class ProfileService : IProfileService
 {
-    [ServiceTrigger(Service = typeof(ILobbySubscriber), Method = "OnMatchFound")]
-    void HandleMatchFound();
+    [MetaMethod(Alias = "OnMatchFound", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+    public void OnMatchFound(MatchFoundEvent e)
+    {
+        State.IsSearching = false;
+        State.CurrentGameId = e.MatchId;
+    }
+    // ... OnMatchCancelled, OnMatchmakingUpdate
 }
 ```
 
-When a `LobbyGrain` calls `EntityGrain.HandleExternalEventAsync("ILobbySubscriber", "OnMatchFound", data)`, the service trigger fires.
+`GenerateClientApi = false` keeps them server-originated: clients get no API, and the dispatcher
+rejects a client packet carrying their id. `Server` rather than `Notification` so the caller can
+await delivery and see a failure - `Notification` dispatches `[OneWay]` and has nothing to wait on.
+
+### Calling a service through its contract
+
+`ILobbyListener` carries `[MetaServiceContract]`, so the generator emits an awaitable mirror
+**into the contract's own assembly**:
+
+```csharp
+public interface ILobbyListenerServerApi
+{
+    Task OnMatchFoundAsync(string entityId, MatchFoundEvent @event);
+    // ...
+}
+```
+
+That placement is the point: `LobbyGrain` lives in the framework and cannot name `IProfileService`,
+but it can name the contract. The entity id is an argument rather than a binding, so one instance
+serves every target — inject it and keep it:
+
+```csharp
+public LobbyGrain(ILogger<LobbyGrain> logger, ILobbyListenerServerApi? players = null) { ... }
+
+await _players.OnMatchFoundAsync(entityId, evt);
+```
+
+The implementation is generated into the assembly of whichever service inherits the contract and
+registered in DI. Declare it nullable: a host may register a framework component whose contract the
+game does not use.
+
+Delivery is a normal dispatch - state mutates, subscribers get a broadcast, the entity persists,
+clients replay the method body - and it works on a cold entity, so an offline player still has the
+result waiting when they next subscribe.
+
+Declare your own contract the same way: put `[MetaServiceContract]` on an interface in an assembly
+both sides can see, inherit it on a `[MetaService]`, and the mirror plus the binding are generated.
 
 ### Client Method Subscriptions
 
 Subscribe to specific methods being replayed from broadcasts:
 
 ```csharp
-var sub = resolver.OnMethodReplayed<MatchFoundArgs>(
-    entityId, "ILobbySubscriber", "OnMatchFound",
-    args => Console.WriteLine($"Match found: {args.MatchId}")
+var sub = resolver.OnMethodReplayed<MatchFoundEvent>(
+    entityId, GameMethodIds.IProfileService_OnMatchFound_v0,
+    e => Console.WriteLine($"Match found: {e.MatchId}")
 );
 
 // Later:
@@ -3296,7 +3343,7 @@ SessionManagerGrain (per player)
   │
   ├──→ LobbyGrain (per game mode, singleton)
   │      │  Matchmaking queue, match formation
-  │      │  Notifies entities via HandleExternalEventAsync
+  │      │  Notifies entities via the generated contract server API
   │
   └──→ AuthGrain (per device)
          │  Device → PlayerId mapping
@@ -3579,21 +3626,20 @@ public async Task RequestMatch(int playerCount)
 
 1. Player calls `RequestMatch` → their profile entity calls `LobbyGrain.RequestMatchAsync()`
 2. `LobbyGrain` adds player to queue, periodically checks for enough players
-3. When match forms: calls `EntityGrain.HandleExternalEventAsync()` for each matched player
-4. Entity's `[ServiceTrigger]` fires, updating the player's state with match info
+3. When match forms: awaits `_players.OnMatchFoundAsync(entityId, evt)` per player
+4. That dispatches `OnMatchFound` on the player's profile entity, updating state with match info
 5. All subscribers of each entity receive the match notification as a broadcast
 
 ### Client-Side Match Notification
 
 ```csharp
 // Subscribe to match found event
-client.Resolver.OnMethodReplayed<MatchFoundArgs>(
+client.Resolver.OnMethodReplayed<MatchFoundEvent>(
     profileEntityId,
-    "ILobbySubscriber",
-    "OnMatchFound",
-    args =>
+    GameMethodIds.IProfileService_OnMatchFound_v0,
+    e =>
     {
-        Console.WriteLine($"Match found! ID: {args.MatchId}");
+        Console.WriteLine($"Match found! ID: {e.MatchId}");
         // Join the match entity
     }
 );
@@ -4088,7 +4134,6 @@ The runtime ignores the attribute. It is purely a marker for downstream tooling.
 | `[SharedState]` | Class | Marks shared state entity |
 | `[Tracked]` | Field | Push-based change tracking property for UI binding (client-only) |
 | `[Trigger]` | Method | Auto-execute after condition on another method |
-| `[ServiceTrigger]` | Method | Trigger on framework service event |
 | `[Subscribe]` | Event | Declare method subscription |
 | `[ServerMetaService]` | Interface | Server-only service (generates replayer) |
 | `[StatelessMetaService(typeof(TConfig))]` | Interface | No-entity service resolving only a linked `[MetaConfig]`. (0.33.0+) |
@@ -4124,7 +4169,6 @@ The runtime ignores the attribute. It is purely a marker for downstream tooling.
 | `ConfigType` | Type | null | Explicit config type for this service |
 | `DefaultConfig` | bool | false | Use config class with `[MetaConfig(Default = true)]`. Also opts the service into the generator's auto-`StaticConfigProvider<T>(new T())` fallback on the client (0.17.0+); without this flag, an explicit `RegisterConfigProvider<T>` is required and a missing one throws at first subscribe |
 | `AccessPolicy` | EntityAccessPolicy | Open | Subscribe access control |
-| `SubscriberInterfaces` | Type[] | empty | Framework event subscriptions |
 
 ---
 
@@ -4344,7 +4388,7 @@ Client → server wire-level W3C trace propagation (i.e., `traceparent` on `RpcC
 | **Session** | Per-player session management, reconnection with missed packet replay, request idempotency via RequestId, session supersede (single active session per player), optional server-side RPC reordering with stall notifications (0.8.0+) |
 | **Broadcast Ordering** | Per-entity sequence ordering, RPC broadcast bundling, deferred responses for gap filling |
 | **Authentication** | JWT (device-based), platform auth (Google Play Games / Apple / Steam), account linking and unlinking. Entity access policies (Open, OwnerOnly, UserOwned, Authorized) |
-| **Advanced** | Cross-entity calls via Orleans grains, server-side triggers (`[Trigger]`), framework service subscribers (`[ServiceTrigger]`), argument transformers (stateless and state-aware), per-method `ForcePersist` |
+| **Advanced** | Cross-entity calls via Orleans grains, server-side triggers (`[Trigger]`), framework contracts inherited by a service (e.g. `ILobbyListener`), argument transformers (stateless and state-aware), per-method `ForcePersist` |
 | **Deterministic Random** | `Context.Random` (optimistic, xoshiro128**) — identical on client and server. `Context.ServerRandom` — server-only with replay. ScrollId delta for desync detection |
 | **Time Sync** | `Context.ServerTimeTicks` — synchronized UTC ticks for deterministic time-based mechanics (cooldowns, timers, regeneration) |
 | **Desync Detection** | Three layers: Result mismatch, Random scroll mismatch, **Patch CRC** (deep desync, 0.7.0+) — field-level state mutation tracking that catches "return value matched but state diverged". Optional server-side reporting + JSON renderer with `PatchSchema` for human-readable diff (0.7.0+) |

@@ -2,6 +2,7 @@ using System.Text;
 using System.Linq;
 using System.Collections.Generic;
 using Microsoft.CodeAnalysis;
+using SharedMeta.Generator.Utilities;
 
 namespace SharedMeta.Generator.Generators
 {
@@ -17,7 +18,14 @@ namespace SharedMeta.Generator.Generators
         public string StateTypeName { get; set; } = "";
         public string StateTypeFullName { get; set; } = "";
         public string Namespace { get; set; } = "";
-        public List<string> SubscriberInterfaces { get; set; } = new();
+        /// <summary>Namespace of the service interface — where its <c>{Base}ServerApi</c> is emitted.</summary>
+        public string InterfaceNamespace { get; set; } = "";
+        /// <summary>
+        /// Every <c>[MetaServiceContract]</c> this service inherits. Drives the generated
+        /// implementation of each contract's mirror, which is what lets framework code reach the
+        /// service without naming it.
+        /// </summary>
+        public List<INamedTypeSymbol> Contracts { get; set; } = new();
         public List<string> ServerDependencies { get; set; } = new();
         public List<MethodSignatureInfo> MethodSignatures { get; set; } = new();
         public int AccessPolicy { get; set; } // 0=Open, 1=Authorized, 2=OwnerOnly
@@ -130,7 +138,7 @@ namespace SharedMeta.Generator.Generators
         /// <summary>
         /// Analyze a [MetaServiceImpl] class and extract info.
         /// </summary>
-        public static ServiceImplInfo? Analyze(INamedTypeSymbol symbol)
+        public static ServiceImplInfo? Analyze(INamedTypeSymbol symbol, Compilation compilation)
         {
             // Check for [MetaServiceImpl] attribute
             var attr = symbol.GetAttributes().FirstOrDefault(a =>
@@ -156,10 +164,11 @@ namespace SharedMeta.Generator.Generators
                 ImplClassFullName = symbol.ToDisplayString(),
                 StateTypeName = stateType.Name,
                 StateTypeFullName = stateType.ToDisplayString(),
-                Namespace = symbol.ContainingNamespace.ToDisplayString()
+                Namespace = symbol.ContainingNamespace.ToDisplayString(),
+                InterfaceNamespace = serviceInterface.ContainingNamespace.ToDisplayString(),
+                Contracts = MetaServiceContractApiGenerator.ContractsOf(serviceInterface)
             };
 
-            // Get subscriber interfaces from the service interface's [MetaService] attribute
             var metaServiceAttr = serviceInterface.GetAttributes().FirstOrDefault(a =>
                 a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaServiceAttribute");
 
@@ -183,21 +192,6 @@ namespace SharedMeta.Generator.Generators
                     return info;
                 }
             }
-            if (metaServiceAttr != null)
-            {
-                var subscriberArg = metaServiceAttr.NamedArguments.FirstOrDefault(a => a.Key == "SubscriberInterfaces");
-                if (!subscriberArg.Value.IsNull && subscriberArg.Value.Values.Length > 0)
-                {
-                    foreach (var val in subscriberArg.Value.Values)
-                    {
-                        if (val.Value is INamedTypeSymbol subscriberType)
-                        {
-                            info.SubscriberInterfaces.Add(subscriberType.ToDisplayString());
-                        }
-                    }
-                }
-            }
-
             // Read AccessPolicy from [MetaService] attribute
             if (metaServiceAttr != null)
             {
@@ -361,10 +355,18 @@ namespace SharedMeta.Generator.Generators
                 }
             }
 
-            // Collect method signatures from the service interface for validation
-            foreach (var member in serviceInterface.GetMembers().OfType<IMethodSymbol>())
+            // The service's full method surface. Impl-declared methods are part of it: without
+            // them the provider's methodId switch has no case and the call fails at dispatch with
+            // "Unknown method id", even though every other generator emitted the method.
+            var surface = serviceInterface.GetMembers()
+                .OfType<IMethodSymbol>()
+                .Where(m => m.MethodKind == MethodKind.Ordinary)
+                .ToList();
+            surface.AddRange(ImplDeclaredMethods.SymbolsForService(serviceInterface, compilation));
+
+            // Collect method signatures for validation
+            foreach (var member in surface)
             {
-                if (member.MethodKind != MethodKind.Ordinary) continue;
 
                 // Get method alias from [MetaMethod] attribute
                 var metaMethodAttr = member.GetAttributes().FirstOrDefault(a =>
@@ -641,6 +643,9 @@ namespace SharedMeta.Generator.Generators
             GenerateConfigByteSource(sb, byStateType);
             sb.AppendLine();
 
+            // 3d. Generate the [MetaServiceContract] → service binding, when any service has one
+            GenerateContractApis(sb, services);
+
             // 4. Generate ConfigureMeta extension method
             GenerateConfigureMetaExtension(sb, byStateType, allServerDeps, rootNamespace, hasOrleansConfig);
             sb.AppendLine();
@@ -741,6 +746,9 @@ namespace SharedMeta.Generator.Generators
             GenerateConfigByteSource(sb, byStateType);
             sb.AppendLine();
 
+            // 3d. Generate the [MetaServiceContract] → service binding, when any service has one
+            GenerateContractApis(sb, services);
+
             // 4. Generate ConfigureMeta extension method
             GenerateConfigureMetaExtension(sb, byStateType, allServerDeps, rootNamespace, hasOrleansConfig);
             sb.AppendLine();
@@ -780,21 +788,6 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
             sb.AppendLine();
 
-            // GetSubscriberDispatcher
-            sb.AppendLine("        public override SubscriberDispatcher? GetSubscriberDispatcher(string serviceName)");
-            sb.AppendLine("        {");
-            sb.AppendLine("            return serviceName switch");
-            sb.AppendLine("            {");
-            foreach (var service in services.Where(s => s.SubscriberInterfaces.Count > 0))
-            {
-                var baseName = GetBaseName(service.InterfaceName);
-                sb.AppendLine($"                \"{service.InterfaceName}\" => (svc, methodId, data, ser) => global::{service.Namespace}.Server.{baseName}SubscriberDispatcher.Dispatch(svc, methodId, data, ser),");
-            }
-            sb.AppendLine("                _ => null");
-            sb.AppendLine("            };");
-            sb.AppendLine("        }");
-            sb.AppendLine();
-
             // CreateService
             sb.AppendLine("        public override object CreateService(string serviceName)");
             sb.AppendLine("        {");
@@ -819,7 +812,6 @@ namespace SharedMeta.Generator.Generators
         {
             var stateTypeName = services.First().StateTypeName;
             var className = $"Generated{stateTypeName}MetaProvider";
-            var servicesWithSubscribers = services.Where(s => s.SubscriberInterfaces.Count > 0).ToList();
 
             sb.AppendLine($"    /// <summary>");
             sb.AppendLine($"    /// Generated MetaProvider for {stateTypeName}.");
@@ -1384,26 +1376,6 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                _ => throw new InvalidOperationException($\"Unknown method id: {methodId}\")");
             sb.AppendLine("            };");
             sb.AppendLine("        }");
-
-            // Override DispatchEvent if there are subscriber interfaces. 0.24.0+: dispatch
-            // by framework subscriber methodId (FrameworkMethodIds.*) rather than the
-            // legacy (subscriberInterface, methodName) string pair. We fan out to every
-            // service-side SubscriberDispatcher; each one's switch only matches the ids
-            // belonging to interfaces it implements, so non-matching ones return null and
-            // exit cheaply. Service count per state is small in practice.
-            if (servicesWithSubscribers.Count > 0)
-            {
-                sb.AppendLine();
-                sb.AppendLine("        protected override System.Threading.Tasks.ValueTask<DispatchResult> DispatchEvent(ushort methodId, System.ReadOnlyMemory<byte> eventData)");
-                sb.AppendLine("        {");
-                foreach (var service in servicesWithSubscribers)
-                {
-                    var baseName = GetBaseName(service.InterfaceName);
-                    sb.AppendLine($"            global::{service.Namespace}.Server.{baseName}SubscriberDispatcher.Dispatch(Get{baseName}(), methodId, eventData, Context.Serializer);");
-                }
-                sb.AppendLine("            return new System.Threading.Tasks.ValueTask<DispatchResult>(new DispatchResult());");
-                sb.AppendLine("        }");
-            }
 
             sb.AppendLine();
 
@@ -2254,6 +2226,70 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("    }");
         }
 
+        /// <summary>
+        /// Implements each <c>[MetaServiceContract]</c>'s mirror against the service that inherits
+        /// it, so code which cannot name the game's service — a framework grain delivering into a
+        /// player's entity — can still make a typed, awaited call.
+        /// </summary>
+        /// <remarks>
+        /// One instance serves every entity: the id is a call argument, so consumers inject this
+        /// once and keep it. Each call constructs the per-entity <c>{Service}ServerApi</c>, which
+        /// is a grain reference and a couple of fields.
+        /// </remarks>
+        private static void GenerateContractApis(StringBuilder sb, List<ServiceImplInfo> services)
+        {
+            var bindings = services
+                .SelectMany(s => s.Contracts.Select(c => (Contract: c, Service: s)))
+                .ToList();
+            if (bindings.Count == 0) return;
+
+            foreach (var group in bindings.GroupBy(b => b.Contract.ToDisplayString()))
+            {
+                if (group.Count() > 1)
+                {
+                    var names = string.Join(", ", group.Select(b => b.Service.InterfaceFullName));
+                    sb.AppendLine($"#error SharedMeta: {group.Key} is inherited by more than one meta service ({names}). A contract resolves to one service — keep it on one, or implement the contract API yourself.");
+                    sb.AppendLine();
+                    return;
+                }
+            }
+
+            foreach (var (contract, service) in bindings)
+            {
+                var apiName = MetaServiceContractApiGenerator.ApiNameFor(contract);
+                var apiFqn = MetaServiceContractApiGenerator.ApiFqnFor(contract);
+                var className = "Generated" + apiName.Substring(1);
+                var extensions = $"global::{service.InterfaceNamespace}.Server.{GetBaseName(service.InterfaceName)}ServerApiExtensions";
+                var serviceFqn = $"global::{service.InterfaceFullName}";
+
+                sb.AppendLine("    /// <summary>");
+                sb.AppendLine($"    /// Routes {contract.Name} calls to {service.InterfaceName}.");
+                sb.AppendLine("    /// </summary>");
+                sb.AppendLine($"    public sealed class {className} : {apiFqn}");
+                sb.AppendLine("    {");
+                sb.AppendLine("        private readonly global::SharedMeta.Server.Core.IMetaServerApiFactory _factory;");
+                sb.AppendLine();
+                sb.AppendLine($"        public {className}(global::SharedMeta.Server.Core.IMetaServerApiFactory factory)");
+                sb.AppendLine("            => _factory = factory;");
+
+                foreach (var member in MetaServiceContractApiGenerator.MembersOf(contract))
+                {
+                    var name = MetaServiceContractApiGenerator.MirrorMethodName(member);
+                    var returnType = MetaServiceContractApiGenerator.MirrorReturnType(member.ReturnType);
+                    var declared = member.Parameters.Select(prm => $"{prm.Type.ToDisplayString()} @{prm.Name}");
+                    var parameters = string.Join(", ", new[] { "string entityId" }.Concat(declared));
+                    var arguments = string.Join(", ", member.Parameters.Select(prm => "@" + prm.Name));
+
+                    sb.AppendLine();
+                    sb.AppendLine($"        public {returnType} {name}({parameters})");
+                    sb.AppendLine($"            => {extensions}.GetServerApi<{serviceFqn}>(_factory, entityId).{name}({arguments});");
+                }
+
+                sb.AppendLine("    }");
+                sb.AppendLine();
+            }
+        }
+
         private static void GenerateConfigureMetaExtension(
             StringBuilder sb,
             Dictionary<string, List<ServiceImplInfo>> byStateType,
@@ -2315,6 +2351,25 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions");
             sb.AppendLine("                .TryAddSingleton<SharedMeta.Server.Core.IMetaServerApiFactory, SharedMeta.Server.Core.MetaServerApiFactory>(services);");
             sb.AppendLine();
+
+            var contractBindings = byStateType.Values.SelectMany(v => v)
+                .SelectMany(s => s.Contracts)
+                .GroupBy(c => c.ToDisplayString())
+                .Select(g => g.First())
+                .ToList();
+            if (contractBindings.Count > 0)
+            {
+                sb.AppendLine("            // Lets framework code reach a game service by contract, without naming it.");
+                foreach (var contract in contractBindings)
+                {
+                    var apiName = MetaServiceContractApiGenerator.ApiNameFor(contract);
+                    var apiFqn = MetaServiceContractApiGenerator.ApiFqnFor(contract);
+                    sb.AppendLine("            Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions");
+                    sb.AppendLine($"                .TryAddSingleton<{apiFqn}, Generated{apiName.Substring(1)}>(services);");
+                }
+                sb.AppendLine();
+            }
+
             sb.AppendLine("            // 0.24.0+ Register the generated MetaServerSignature singleton so EntityGrain can");
             sb.AppendLine("            // resolve server-side method ids for the wire MetaOperation.MethodId field, and");
             sb.AppendLine("            // ClientSignatureRegistry can compute per-client capability + method-id maps.");

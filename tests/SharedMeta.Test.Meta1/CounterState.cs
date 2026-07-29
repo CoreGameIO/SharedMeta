@@ -38,6 +38,15 @@ namespace SharedMeta.Test.Meta1
         /// Tracked counter for testing push-based change tracking.
         /// </summary>
         [MemoryPackOrder(4), MemoryPackInclude, Tracked] private int _reactiveCounter;
+
+        /// <summary>
+        /// Last match id delivered through ILobbyListener. Proves a lobby notification reached
+        /// the service body rather than merely being dispatched.
+        /// </summary>
+        [MemoryPackOrder(5)] public string? LastMatchId { get; set; }
+
+        /// <summary>Number of lobby notifications applied, of any kind.</summary>
+        [MemoryPackOrder(6)] public int LobbyNotifications { get; set; }
     }
 
     /// <summary>

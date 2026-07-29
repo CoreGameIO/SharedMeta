@@ -155,8 +155,11 @@ namespace SharedMeta.Generator.Generators
             var methodIdConst = "global::" + namespaceName + ".Generated.GameMethodIds."
                 + SignatureHashGenerator.MakeMethodIdConstName(interfaceName, alias, version);
 
-            var parameters = string.Join(", ", method.Parameters.Select(p => $"{p.Type.ToDisplayString()} {p.Name}"));
-            var paramNames = method.Parameters.Select(p => p.Name).ToList();
+            // Symbol names carry no @ escape, so a parameter legitimately called `event` or
+            // `params` in source would emit a keyword here. Escaping unconditionally is valid for
+            // ordinary identifiers too, which keeps this free of a keyword table.
+            var parameters = string.Join(", ", method.Parameters.Select(p => $"{p.Type.ToDisplayString()} @{p.Name}"));
+            var paramNames = method.Parameters.Select(p => "@" + p.Name).ToList();
             var (_, innerType) = ParseReturnType(method.ReturnType.ToDisplayString());
 
             var methodName = method.Name.EndsWith("Async") ? method.Name : method.Name + "Async";

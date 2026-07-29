@@ -81,6 +81,21 @@ namespace SharedMeta.Generator
                 }
             });
 
+            // [MetaServiceContract] → awaitable mirror, emitted into the contract's own assembly
+            // so framework code that cannot reference the game still has a typed entry point.
+            var contractPipeline = context.SyntaxProvider.ForAttributeWithMetadataName(
+                "SharedMeta.Core.MetaServiceContractAttribute",
+                predicate: static (node, _) => node is Microsoft.CodeAnalysis.CSharp.Syntax.InterfaceDeclarationSyntax,
+                transform: static (ctx, _) => ctx.TargetSymbol as INamedTypeSymbol
+            ).Where(static symbol => symbol != null);
+
+            context.RegisterSourceOutput(contractPipeline, (spc, symbol) =>
+            {
+                var source = MetaServiceContractApiGenerator.Generate(symbol!);
+                if (source != null)
+                    spc.AddSource($"{symbol!.Name}ServerApi.g.cs", source);
+            });
+
             // Context Injection (Partial Classes)
             var implPipeline = context.SyntaxProvider.ForAttributeWithMetadataName(
                 "SharedMeta.Core.MetaServiceImplAttribute",
@@ -115,13 +130,6 @@ namespace SharedMeta.Generator
                 // <SharedMetaDisableReadOnlyValidator>true</SharedMetaDisableReadOnlyValidator>.
                 // Kept here as a comment so the connection between the impl pipeline and the
                 // validator is visible at the wiring site; actual call is at the bottom of Initialize().
-
-                // Subscriber dispatcher (for framework service events)
-                var subscriberSource = SubscriberDispatcherGenerator.Generate(node, symbol);
-                if (subscriberSource != null)
-                {
-                    spc.AddSource($"{symbol.Name}.SubscriberDispatcher.g.cs", subscriberSource);
-                }
             });
 
             // 0.20.0: Entity-caller helper classes (Interface + Recorder/Replayer/
@@ -405,7 +413,7 @@ namespace SharedMeta.Generator
                 {
                     var symbol = ctx.TargetSymbol as INamedTypeSymbol;
                     if (symbol == null) return null;
-                    return ServerMetaConfigurationGenerator.Analyze(symbol);
+                    return ServerMetaConfigurationGenerator.Analyze(symbol, ctx.SemanticModel.Compilation);
                 }
             ).Where(static info => info != null);
 
@@ -472,7 +480,7 @@ namespace SharedMeta.Generator
                     var typesWithAttr = GetTypesWithAttribute(assemblySymbol.GlobalNamespace, metaServiceImplAttrName);
                     foreach (var typeSymbol in typesWithAttr)
                     {
-                        var info = ServerMetaConfigurationGenerator.Analyze(typeSymbol);
+                        var info = ServerMetaConfigurationGenerator.Analyze(typeSymbol, compilation);
                         if (info != null)
                         {
                             implInfos.Add(info);

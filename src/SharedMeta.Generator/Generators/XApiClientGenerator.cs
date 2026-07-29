@@ -157,7 +157,7 @@ namespace SharedMeta.Generator.Generators
             if (subscriberInterfaces.Count > 0)
             {
                 sb.AppendLine();
-                sb.AppendLine("        // Events from subscriber interfaces (ILobbySubscriber, etc.)");
+                sb.AppendLine("        // Events from subscriber interfaces (ILobbyListener, etc.)");
                 foreach (var subscriber in subscriberInterfaces)
                 {
                     foreach (var method in subscriber.Methods)

@@ -6,10 +6,23 @@ using Orleans;
 namespace SharedMeta.Core.Framework
 {
     /// <summary>
-    /// Subscriber interface for Lobby service events.
-    /// Meta services implement this to receive matchmaking notifications.
+    /// Matchmaking callbacks the lobby invokes on a player's entity. Wire it up in two places:
+    /// inherit it on the <c>[MetaService]</c> interface that owns the player's state (dispatch
+    /// and the generated APIs are typed on that interface), and mark each implementing method
+    /// <c>[MetaMethod(Mode = ExecutionMode.Server, GenerateClientApi = false)]</c> on the
+    /// <c>[MetaServiceImpl]</c> class. The attribute has to go on the implementation because the
+    /// declarations here live in the framework assembly and carry no syntax in the game's
+    /// compilation; putting it there is what gives each method a game method id, a dispatcher
+    /// entry and client-side replay.
     /// </summary>
-    public interface ILobbySubscriber : IFrameworkServiceSubscriber
+    /// <remarks>
+    /// A plain contract, not a framework hook — nothing here is special-cased by the dispatcher.
+    /// <c>[MetaServiceContract]</c> makes the generator emit <c>ILobbyListenerServerApi</c>
+    /// beside it, which is how <c>LobbyGrain</c> reaches a player's entity without being able to
+    /// name the game's service type.
+    /// </remarks>
+    [MetaServiceContract]
+    public interface ILobbyListener
     {
         /// <summary>
         /// Called when a match has been found for the player.

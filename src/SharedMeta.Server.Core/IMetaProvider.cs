@@ -76,16 +76,6 @@ namespace SharedMeta.Server.Core
     }
 
     /// <summary>
-    /// Result of handling an external event. Single pre-serialized broadcast — external events
-    /// don't go through force-patch tailoring so one variant suffices. Pool ownership for the
-    /// outgoing bytes is exposed via <c>MetaProviderBase.TakeOutgoingEventBroadcast</c>.
-    /// </summary>
-    public readonly struct HandleEventResult
-    {
-        public ReadOnlyMemory<byte> BroadcastBytes { get; init; }
-    }
-
-    /// <summary>
     /// Business logic provider for EntityGrain.
     /// All game-specific logic is handled through this interface.
     /// EntityGrain remains a thin wrapper with no knowledge of specific services.
@@ -132,21 +122,6 @@ namespace SharedMeta.Server.Core
         /// (legacy callers, tests).
         /// </param>
         ValueTask<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true, bool requirePatchForFanOut = false, long entitySequenceNumber = 0);
-
-        /// <summary>
-        /// Handle an external event from a framework service asynchronously.
-        /// 0.24.0+ ushort identifier (from <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/>
-        /// for framework subscribers) replaces the legacy <c>(subscriberInterface, methodName)</c>
-        /// string pair on the wire and at the dispatch site.
-        /// </summary>
-        /// <param name="methodId">Framework subscriber method id (see <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/>).</param>
-        /// <param name="eventData">The serialized event data.</param>
-        /// <param name="callerId">Optional caller ID.</param>
-        /// <returns>Broadcasts to distribute.</returns>
-        ValueTask<HandleEventResult> HandleExternalEventAsync(
-            ushort methodId,
-            ReadOnlyMemory<byte> eventData,
-            string? callerId = null);
 
         /// <summary>
         /// Get the current state bytes for snapshot.

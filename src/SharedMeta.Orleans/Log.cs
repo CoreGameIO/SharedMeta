@@ -22,12 +22,13 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Information, Message = "Match formed: {MatchId} with {PlayerCount} players")]
     public static partial void MatchFormed(this ILogger logger, string matchId, int playerCount);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "State type '{StateTypeName}' not found in resolver")]
-    public static partial void StateTypeNotFound(this ILogger logger, string stateTypeName);
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Notified {ProfileEntityId} of {EventName}")]
+    public static partial void PlayerNotified(this ILogger logger, string profileEntityId, string eventName);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Notified {ProfileEntityId}.{MethodName} via grain")]
-    public static partial void PlayerNotified(this ILogger logger, string profileEntityId, string methodName);
+    [LoggerMessage(Level = LogLevel.Error, Message = "Error notifying {ProfileEntityId} of {EventName}")]
+    public static partial void ErrorNotifyingPlayer(this ILogger logger, Exception ex, string profileEntityId, string eventName);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Error notifying player {ProfileEntityId}.{MethodName}")]
-    public static partial void ErrorNotifyingPlayer(this ILogger logger, Exception ex, string profileEntityId, string methodName);
+    [LoggerMessage(Level = LogLevel.Warning,
+        Message = "No service inherits ILobbyListener — dropping {EventName} for {ProfileEntityId}. Add it to a [MetaService] interface's base list so the generator binds it.")]
+    public static partial void LobbyListenerMissing(this ILogger logger, string profileEntityId, string eventName);
 }

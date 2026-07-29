@@ -75,16 +75,6 @@ namespace SharedMeta.Server.Core.Grains
         Task HandleCallFromEntityOneWayAsync(RpcCall call);
 
         /// <summary>
-        /// Handle an external event (from framework services like Lobby).
-        /// Broadcasts to ALL subscribers. 0.24.0+ identifies the subscriber method by
-        /// <c>ushort</c> id from <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/>.
-        /// </summary>
-        ValueTask<EntityCallResult> HandleExternalEventAsync(
-            ushort methodId,
-            byte[] eventData,
-            string? callerId = null);
-
-        /// <summary>
         /// Execute a query call (no subscription required).
         /// Read-only: no state sync, no broadcasts, no replay, no sequence number changes.
         /// </summary>

@@ -236,13 +236,6 @@ namespace SharedMeta.Core
         public bool DefaultConfig { get; set; }
 
         /// <summary>
-        /// Framework subscriber interfaces implemented by this service.
-        /// Used to generate subscriber method invokers for client-side replay.
-        /// Example: SubscriberInterfaces = new[] { typeof(ILobbySubscriber) }
-        /// </summary>
-        public Type[]? SubscriberInterfaces { get; set; }
-
-        /// <summary>
         /// Access policy for entities of this service's state type.
         /// Controls who can subscribe to the entity.
         /// If multiple services share the same state type, the most restrictive policy wins.
@@ -721,6 +714,27 @@ namespace SharedMeta.Core
         }
     }
 
+    /// <summary>
+    /// Marks an interface as a contract a meta service can inherit, so server code can address
+    /// that service through the contract instead of naming the game's service type.
+    /// </summary>
+    /// <remarks>
+    /// The generator emits an awaitable mirror, <c>I{Contract}ServerApi</c>, into the contract's
+    /// own assembly — a `void OnX(TEvent)` member becomes `Task OnXAsync(string entityId, TEvent)`.
+    /// Inject the mirror and call any entity through it; the implementation is generated into the
+    /// assembly of whichever service inherits the contract and registered in DI.
+    /// <para>
+    /// The mirror has to live beside the contract because its consumer is code that cannot
+    /// reference the game — a framework grain delivering into a player's entity, say. That is the
+    /// whole reason this exists rather than server code just calling
+    /// <c>GetServerApi&lt;IGameService&gt;(...)</c> directly.
+    /// </para>
+    /// </remarks>
+    [AttributeUsage(AttributeTargets.Interface)]
+    public class MetaServiceContractAttribute : Attribute
+    {
+    }
+
     [AttributeUsage(AttributeTargets.Interface)]
     public class ServerMetaServiceAttribute : Attribute
     {
@@ -860,37 +874,6 @@ namespace SharedMeta.Core
     /// </summary>
     [AttributeUsage(AttributeTargets.Parameter)]
     public class SkipTransformAttribute : Attribute
-    {
-    }
-
-    /// <summary>
-    /// Defines a trigger that fires when a framework service event is received.
-    /// Use this to trigger MetaMethods in response to service events (e.g., Lobby.OnMatchFound).
-    /// </summary>
-    [AttributeUsage(AttributeTargets.Method)]
-    public class ServiceTriggerAttribute : Attribute
-    {
-        /// <summary>
-        /// The subscriber interface type (e.g., typeof(ILobbySubscriber)).
-        /// </summary>
-        public Type Service { get; set; } = null!;
-
-        /// <summary>
-        /// The method name on the subscriber interface that triggers this (e.g., "OnMatchFound").
-        /// </summary>
-        public string Method { get; set; } = "";
-
-        /// <summary>
-        /// Optional boolean method name to check before executing.
-        /// </summary>
-        public string Condition { get; set; } = "";
-    }
-
-    /// <summary>
-    /// Marker interface for framework service subscriber interfaces.
-    /// Implement this on interfaces like ILobbySubscriber.
-    /// </summary>
-    public interface IFrameworkServiceSubscriber
     {
     }
 

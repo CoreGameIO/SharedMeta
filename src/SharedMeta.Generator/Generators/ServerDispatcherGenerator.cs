@@ -85,6 +85,14 @@ namespace SharedMeta.Generator.Generators
                 sbServer.AppendLine("using MemoryPack;");
             }
             sbServer.AppendLine($"using {namespaceName};");
+            // Impl-declared methods keep the type names their own file wrote; nothing guarantees
+            // those resolve here, so bring in the namespaces their signatures reference.
+            foreach (var implNs in ImplDeclaredMethods.SignatureNamespacesForService(interfaceSymbol, compilation))
+            {
+                if (implNs is "System" or "System.Collections.Generic" or "System.Threading.Tasks"
+                    or "SharedMeta.Core" || implNs == namespaceName) continue;
+                sbServer.AppendLine($"using {implNs};");
+            }
             // Dispatcher results are packed via Context.Serializer (GrainScopedSerializer on
             // the server path) — serializer.Pack<T>(T) returns ROM<byte> over per-grain scratch.
             sbServer.AppendLine($"namespace {namespaceName}.Server");

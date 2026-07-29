@@ -87,10 +87,12 @@ namespace SharedMeta.Serialization.MemoryPack
             if (_completed) throw new InvalidOperationException("Writer already completed.");
 
             // Reserve 4 bytes for the length prefix; backfill after MemoryPack writes the value.
+            // Grow BEFORE advancing: _index must never exceed the buffer, or the next growth
+            // copies AsSpan(0, _index) out of range. Costs one write per payload to hit —
+            // the prefix has to land in the final 3 bytes of the current buffer.
             var lengthStart = _index;
+            EnsureCapacity(4);
             _index += 4;
-            // Ensure the prefix bytes exist (will be needed even if Serialize writes zero bytes).
-            EnsureCapacity(0);
             var contentStart = _index;
 
             MemoryPackSerializer.Serialize<T, MemoryPackPayloadWriter>(this, value);

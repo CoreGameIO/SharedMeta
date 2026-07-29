@@ -337,5 +337,36 @@ namespace SharedMeta.Test.Meta1
             aux.AuxMutateOpInPlace(op);
             return op.ServerTimeTicks;  // 999 if by-reference, 0 if by-value (serialized)
         }
+
+        // ── ILobbyListener ──────────────────────────────────────────────
+        // The contract is declared in SharedMeta.Core, so these declarations have no syntax in
+        // this compilation and [MetaMethod] has to sit on the implementation to introduce them
+        // into the service surface. GenerateClientApi = false keeps them unreachable from a
+        // client; Server rather than Notification so delivery is awaitable.
+
+        [MetaMethod(Alias = "OnMatchFound", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+        public void OnMatchFound(SharedMeta.Core.Framework.MatchFoundEvent @event)
+        {
+            // Gives a test a way to fail the target on purpose — the point of an awaited
+            // contract call is that the caller learns about it.
+            if (string.IsNullOrEmpty(@event.MatchId))
+                throw new InvalidOperationException("MatchId is required.");
+
+            Context.State.LastMatchId = @event.MatchId;
+            Context.State.LobbyNotifications++;
+        }
+
+        [MetaMethod(Alias = "OnMatchCancelled", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+        public void OnMatchCancelled(SharedMeta.Core.Framework.MatchCancelledEvent @event)
+        {
+            Context.State.LastMatchId = null;
+            Context.State.LobbyNotifications++;
+        }
+
+        [MetaMethod(Alias = "OnMatchmakingUpdate", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+        public void OnMatchmakingUpdate(SharedMeta.Core.Framework.MatchmakingUpdateEvent @event)
+        {
+            Context.State.LobbyNotifications++;
+        }
     }
 }

@@ -1101,31 +1101,53 @@ public partial class CardGameServiceImpl : ICardGameService
 
 Triggers execute server-side as nested operations within the parent call.
 
-### Subscriber Interfaces (Framework Events)
+### Framework Contracts (Lobby / Matchmaking)
 
-Subscribe a service to framework events (e.g., matchmaking):
+`ILobbyListener` is an ordinary interface — nothing about it is special-cased by the
+dispatcher. Wire it up in two places:
 
 ```csharp
-[MetaService(
-    StateType = typeof(ProfileState),
-    SubscriberInterfaces = new[] { typeof(ILobbySubscriber) })]
-public interface IProfileService : IMetaService
+// 1. Inherit on the service interface — dispatch and the generated APIs are typed on this.
+[MetaService(StateType = typeof(ProfileState))]
+public interface IProfileService : IMetaService, ILobbyListener { }
+
+// 2. [MetaMethod] on the implementation. The declarations live in the framework assembly and
+//    carry no syntax here, so the attribute has to sit on the impl — that is what assigns a
+//    method id, emits the dispatcher case and enables client-side replay.
+[MetaServiceImpl(typeof(IProfileService), typeof(ProfileState))]
+public partial class ProfileService : IProfileService
 {
-    [ServiceTrigger(Service = typeof(ILobbySubscriber), Method = "OnMatchFound")]
-    void HandleMatchFound();
+    [MetaMethod(Alias = "OnMatchFound", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+    public void OnMatchFound(MatchFoundEvent e) => State.CurrentGameId = e.MatchId;
 }
 ```
 
-When `LobbyGrain` calls `EntityGrain.HandleExternalEventAsync("ILobbySubscriber", "OnMatchFound", data)`, the service trigger fires.
+`Notification` makes them server-originated only — no client API, and the dispatcher rejects a
+client packet carrying their id.
+
+`ILobbyListener` carries `[MetaServiceContract]`, so the generator emits the awaitable mirror
+`ILobbyListenerServerApi` into the contract's assembly — that is how `LobbyGrain` calls a
+service it cannot name:
+
+```csharp
+// entity id is an argument, so one injected instance serves every target
+public LobbyGrain(ILogger<LobbyGrain> logger, ILobbyListenerServerApi? players = null) { ... }
+await _players.OnMatchFoundAsync(entityId, evt);
+```
+
+The implementation is generated into the assembly of the service that inherits the contract and
+registered in DI (declare it nullable — a game need not use it). Delivery is a normal dispatch
+(state, broadcast, persistence, replay) and works on a cold entity — an offline player finds the
+result waiting on next subscribe.
 
 ### Client Method Subscriptions
 
 Subscribe to specific methods being replayed from broadcasts:
 
 ```csharp
-var sub = resolver.OnMethodReplayed<MatchFoundArgs>(
-    entityId, "ILobbySubscriber", "OnMatchFound",
-    args => Console.WriteLine($"Match found: {args.MatchId}")
+var sub = resolver.OnMethodReplayed<MatchFoundEvent>(
+    entityId, GameMethodIds.IProfileService_OnMatchFound_v0,
+    e => Console.WriteLine($"Match found: {e.MatchId}")
 );
 
 // Later:
@@ -1226,15 +1248,15 @@ public async Task RequestMatch(int playerCount)
 **Flow:**
 1. Player calls `RequestMatch` → profile entity calls `LobbyGrain.RequestMatchAsync()`
 2. `LobbyGrain` adds player to queue, checks for enough players
-3. When match forms: calls `EntityGrain.HandleExternalEventAsync()` for each matched player
-4. Entity's `[ServiceTrigger]` fires, updating state with match info
+3. When match forms: awaits `_players.OnMatchFoundAsync(entityId, evt)` per player
+4. That dispatches `OnMatchFound` on the profile entity, updating state with match info
 5. All subscribers receive the match notification as a broadcast
 
 **Client-side notification:**
 ```csharp
-client.Resolver.OnMethodReplayed<MatchFoundArgs>(
-    profileEntityId, "ILobbySubscriber", "OnMatchFound",
-    args => Console.WriteLine($"Match found! ID: {args.MatchId}")
+client.Resolver.OnMethodReplayed<MatchFoundEvent>(
+    profileEntityId, GameMethodIds.IProfileService_OnMatchFound_v0,
+    e => Console.WriteLine($"Match found! ID: {e.MatchId}")
 );
 
 await profileApi.RequestMatchAsync(2);
@@ -1440,7 +1462,6 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `[ServiceConfig(typeof(TConfig), "Name")]` | Interface | Independently-versioned config, repeatable, all symmetric (no privileged "primary") — resolves synchronously in every execution mode; replaces `[MetaService].ConfigType`/`DefaultConfig` (obsolete but functional). (0.33.0+) |
 | `[Tracked]` | Field | Push-based change tracking — generates property with tracking setter |
 | `[Trigger]` | Method | Auto-execute after condition on another method |
-| `[ServiceTrigger]` | Method | Trigger on framework service event |
 | `[ServerMetaService]` | Interface | Server-only service (generates replayer) |
 | `[StatelessMetaService]` | Interface | No-entity service resolving only a linked `[MetaConfig]` |
 | `[StatelessMetaServiceImpl]` | Class | Impl for `[StatelessMetaService]` — injects only a typed `Config` property |
@@ -1473,7 +1494,6 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `ConfigType` | Type | null | Explicit config type for this service |
 | `DefaultConfig` | bool | false | Use config class with `[MetaConfig(Default = true)]`. Also opts the service into the generator's auto-`StaticConfigProvider<T>(new T())` fallback on the client (0.17.0+); without this flag, an explicit `RegisterConfigProvider<T>` is required and a missing one throws at first subscribe |
 | `AccessPolicy` | EntityAccessPolicy | Open | Subscribe access control |
-| `SubscriberInterfaces` | Type[] | empty | Framework event subscriptions (e.g. ILobbySubscriber) |
 | `PatchTracking` | bool | true | (0.24.2+) Allow the auto-generated `{Impl}_PatchTracked` copy for force-patch. `false` = opt out: no copy, force-patch clients rejected at negotiation/subscribe instead of served an empty patch. Set false only when the body can't be copy-compatible. See *ServerPatch → Patch-tracking copy* |
 
 ---

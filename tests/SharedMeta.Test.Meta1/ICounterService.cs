@@ -1,4 +1,5 @@
 using SharedMeta.Core;
+using SharedMeta.Core.Framework;
 
 namespace SharedMeta.Test.Meta1
 {
@@ -8,7 +9,7 @@ namespace SharedMeta.Test.Meta1
     /// </summary>
     [MetaService(StateType = typeof(CounterState))]
     [ServiceConfig(typeof(CounterConfig), "Config")]
-    public interface ICounterService : IMetaService
+    public interface ICounterService : IMetaService, ILobbyListener
     {
         /// <summary>
         /// Add a random value to the counter.

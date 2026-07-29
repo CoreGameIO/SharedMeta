@@ -167,6 +167,40 @@ namespace SharedMeta.Generator.Utilities
             ForService(serviceInterface, compilation).Select(m => m.Symbol).ToList();
 
         /// <summary>
+        /// Namespaces the impl-declared signatures reference, for generators that print parameter
+        /// and return types as they were written in the impl file. Those names resolve there but
+        /// not in a generated file with a different using set — an inherited contract's argument
+        /// types usually live in the assembly that owns the contract, not the game's.
+        /// </summary>
+        public static List<string> SignatureNamespacesForService(INamedTypeSymbol serviceInterface, Compilation compilation)
+        {
+            var namespaces = new SortedSet<string>(System.StringComparer.Ordinal);
+            foreach (var method in ForService(serviceInterface, compilation))
+            {
+                CollectNamespaces(method.Symbol.ReturnType, namespaces);
+                foreach (var parameter in method.Symbol.Parameters)
+                    CollectNamespaces(parameter.Type, namespaces);
+            }
+            return namespaces.ToList();
+        }
+
+        private static void CollectNamespaces(ITypeSymbol type, SortedSet<string> into)
+        {
+            switch (type)
+            {
+                case IArrayTypeSymbol array:
+                    CollectNamespaces(array.ElementType, into);
+                    return;
+                case INamedTypeSymbol named:
+                    if (named.ContainingNamespace is { IsGlobalNamespace: false } ns)
+                        into.Add(ns.ToDisplayString());
+                    foreach (var argument in named.TypeArguments)
+                        CollectNamespaces(argument, into);
+                    return;
+            }
+        }
+
+        /// <summary>
         /// Assemblies that may declare an impl for this service: the one being compiled, and the
         /// one declaring the interface when the service arrives as a reference.
         /// </summary>

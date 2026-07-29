@@ -86,7 +86,6 @@ namespace SharedMeta.Generator.Generators
         public string? StateTypeName { get; set; }
         public string? StateTypeFullName { get; set; }
         public string Namespace { get; set; } = "";
-        public List<string> SubscriberInterfaces { get; set; } = new();
         public List<MethodSignatureInfo> MethodSignatures { get; set; } = new();
 
         /// <summary>0.22.0+ Fully-qualified config class bound to this service via
@@ -172,19 +171,6 @@ namespace SharedMeta.Generator.Generators
                         MinConfigVersion = minVer,
                         Reason = reason,
                     });
-                }
-            }
-
-            // Get subscriber interfaces
-            var subscriberInterfacesArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "SubscriberInterfaces");
-            if (!subscriberInterfacesArg.Value.IsNull && subscriberInterfacesArg.Value.Values.Length > 0)
-            {
-                foreach (var val in subscriberInterfacesArg.Value.Values)
-                {
-                    if (val.Value is INamedTypeSymbol subscriberType)
-                    {
-                        info.SubscriberInterfaces.Add(subscriberType.ToDisplayString());
-                    }
                 }
             }
 
@@ -406,13 +392,6 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
 
             sb.AppendLine("        /// <summary>");
-            sb.AppendLine("        /// Get the subscriber dispatcher for a service.");
-            sb.AppendLine("        /// Override in server implementation.");
-            sb.AppendLine("        /// </summary>");
-            sb.AppendLine("        public abstract SubscriberDispatcher? GetSubscriberDispatcher(string serviceName);");
-            sb.AppendLine();
-
-            sb.AppendLine("        /// <summary>");
             sb.AppendLine("        /// Create a new instance of the service implementation.");
             sb.AppendLine("        /// Override in server implementation.");
             sb.AppendLine("        /// </summary>");
@@ -428,12 +407,6 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("    /// nested methodVersion subroute.</remarks>");
             sb.AppendLine("    public delegate System.Threading.Tasks.ValueTask<DispatchResult> ServerDispatcher(");
             sb.AppendLine("        object service, ushort methodId, byte[] payload, IMetaSerializer serializer);");
-            sb.AppendLine();
-            sb.AppendLine("    /// <summary>Delegate for dispatching subscriber events to services.</summary>");
-            sb.AppendLine("    /// <remarks>0.24.0+: <c>methodId</c> is the framework subscriber method id from");
-            sb.AppendLine("    /// <see cref=\"global::SharedMeta.Core.Framework.FrameworkMethodIds\"/>.</remarks>");
-            sb.AppendLine("    public delegate System.Collections.Generic.List<(string serviceName, string methodName, byte[]? resultBytes)>? SubscriberDispatcher(");
-            sb.AppendLine("        object service, ushort methodId, byte[] eventData, IMetaSerializer serializer);");
 
             sb.AppendLine("}");
 

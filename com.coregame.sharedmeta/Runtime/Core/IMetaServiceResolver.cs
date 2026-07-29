@@ -131,13 +131,12 @@ namespace SharedMeta.Core
 
         /// <summary>
         /// Subscribe to a method being replayed from server broadcast. 0.24.0+ keyed by
-        /// client-local <c>MethodId</c> from <c>GameMethodIds</c> /
-        /// <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/> — the wire no longer
-        /// carries service/method names. Use to react to service events (e.g.
-        /// <c>FrameworkMethodIds.ILobbySubscriber_OnMatchFound</c>).
+        /// client-local <c>MethodId</c> from <c>GameMethodIds</c> — the wire no longer carries
+        /// service/method names. Use to react to a method another actor drove, including one a
+        /// server-originated call applied (e.g. <c>GameMethodIds.IProfileService_OnMatchFound_v0</c>).
         /// </summary>
         /// <param name="entityId">Entity ID to subscribe on</param>
-        /// <param name="methodId">Client-local method id from GameMethodIds / FrameworkMethodIds</param>
+        /// <param name="methodId">Client-local method id from GameMethodIds</param>
         /// <param name="handler">Handler to invoke when the method is replayed</param>
         /// <returns>Subscription handle - dispose to unsubscribe</returns>
         IMethodSubscription OnMethodReplayed(string entityId, ushort methodId, Action<MethodReplayedContext> handler);
@@ -240,13 +239,6 @@ namespace SharedMeta.Core
         /// Legacy - not used in INetwork-based architecture.
         /// </summary>
         public Func<object, string, Task>? ConnectFactory { get; init; }
-
-        /// <summary>
-        /// Additional invoker factories for subscriber interfaces.
-        /// Key is the service/interface name (e.g., "ILobbySubscriber").
-        /// Used to register framework subscriber method handlers.
-        /// </summary>
-        public Dictionary<string, Func<Func<object>, LocalMethodInvoker>>? AdditionalInvokerFactories { get; init; }
 
         /// <summary>
         /// Callback to refresh state in an existing API client after reconnect.

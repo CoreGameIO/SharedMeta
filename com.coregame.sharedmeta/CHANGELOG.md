@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.36.0] - 2026-07-29
+
+### Changed
+
+- **Breaking:** framework subscriber interfaces are gone as a mechanism. `ILobbyListener` is now an ordinary contract carrying `[MetaServiceContract]`: inherit it on the `[MetaService]` interface and mark each implementing method `[MetaMethod(Mode = ExecutionMode.Server, GenerateClientApi = false)]` on the impl class. Its methods get a real game method id, a dispatcher case and client-side replay like any other meta method. Migration: rename `ILobbySubscriber` to `ILobbyListener` (nothing is subscribed to — the lobby sends a message and awaits the answer), drop `SubscriberInterfaces = new[] { typeof(ILobbySubscriber) }` from `[MetaService]`, add `, ILobbyListener` to the interface's base list, add `[MetaMethod]` to the three impl methods.
+- `[MetaServiceContract]` — marks an interface a meta service can inherit so server code can address that service by contract. The generator emits an awaitable mirror `I{Contract}ServerApi` **into the contract's own assembly**, which is what lets code that cannot reference the game make a typed call:
+  ```csharp
+  public LobbyGrain(ILogger<LobbyGrain> logger, ILobbyListenerServerApi? players = null) { ... }
+  await _players.OnMatchFoundAsync(entityId, evt);
+  ```
+  Every `void OnX(TEvent)` becomes `Task OnXAsync(string entityId, TEvent)` — the entity id is an argument, not a binding, so one injected instance serves every target. The implementation is generated into the assembly of whichever service inherits the contract and registered in DI; declare the dependency nullable, since a game need not inherit the contract.
+- **Breaking, wire:** subscriber events no longer carry a hand-assigned id from the `0xF000` framework range — they use the per-game id space. Requires a lockstep client/server redeploy for a game that uses the lobby.
+- **Breaking:** removed `MetaService.SubscriberInterfaces`, `IFrameworkServiceSubscriber`, `[ServiceTrigger]`, `FrameworkMethodIds`, `IEntityGrain.HandleExternalEventAsync`, `IMetaProvider.HandleExternalEventAsync`, `HandleEventResult`, and the generated `{Impl}SubscriberDispatcher` / `SubscriberLocalInvoker` / `SubscriberEvents`. `[ServiceTrigger]` never reached the client: the subscriber dispatcher's trigger list was discarded, so its method ran server-side only and the state diverged. Use a direct call from the method body, or the ordinary `[Trigger]`, which does replay.
+- `LobbyGrain` delivers through the contract API instead of reaching into the entity grain, and **awaits** each delivery — a target-side failure now surfaces to the caller instead of being swallowed. It routes through `{Service}ServerApi`, so a match outcome is a normal dispatch (state, broadcast, persistence, replay) and works on a cold entity. A host with no service inheriting the contract logs and drops instead of failing activation.
+- Client-side subscriber events (`api.OnMatchFound_Replayed`) are replaced by the ones the general path already generates for every method, plus `resolver.OnMethodReplayed<MatchFoundEvent>(entityId, GameMethodIds.IProfileService_OnMatchFound_v0, ...)`.
+- Removed the unused `ServiceRegistration.AdditionalInvokerFactories` and two generators that were never wired into the pipeline (`MetaProviderBaseGenerator`, subscriber dispatcher emission).
+
+### Fixed
+
+- A `[MetaMethod]` on an implementation was missing from the generated provider's dispatch switch, so calling it failed with "Unknown method id" even though every other generator emitted it. Affected any service inheriting its contract from another assembly — the 0.35.0 feature had no user until now.
+- `{Service}ServerApi` escapes parameter identifiers, so a method whose parameter is named after a C# keyword (`@event` is the common one) no longer emits uncompilable code.
+- The generated dispatcher and API client emit usings for the namespaces an impl-declared method's signature references. Previously an inherited contract whose argument types live in the declaring assembly produced CS0246 in generated code.
+- `MemoryPackPayloadWriter.Write` reserved the 4-byte length prefix by advancing the write index before growing the buffer, so a prefix landing in its last 3 bytes pushed the index past the end and the next growth threw `ArgumentOutOfRangeException` copying out of range. Hit any payload long enough to cross a growth boundary — a `[ServerMetaService]` recorder with a few dozen entries (e.g. a deck shuffle) reproduced it reliably, short payloads never did.
+
 ## [0.35.0] - 2026-07-28
 
 ### Added

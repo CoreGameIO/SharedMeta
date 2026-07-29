@@ -5,9 +5,7 @@ namespace SharedMeta.Core
 {
     /// <summary>
     /// Delegate for invoking a method locally during replay (void methods).
-    /// 0.24.0+ dispatches by <c>ushort methodId</c>. Framework subscriber methods (lobby /
-    /// matchmaking events) use the high-range id space defined in
-    /// <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/>.
+    /// 0.24.0+ dispatches by <c>ushort methodId</c> from <c>GameMethodIds</c>.
     /// </summary>
     public delegate void LocalMethodInvoker(ushort methodId, byte[] argsBytes, IMetaSerializer serializer);
 
@@ -141,12 +139,11 @@ namespace SharedMeta.Core
 
         /// <summary>
         /// Subscribe to a method being replayed from server broadcast. 0.24.0+ keyed by
-        /// client-local <c>MethodId</c> from <c>GameMethodIds</c> /
-        /// <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/> — the wire no longer
-        /// carries service/method names. Fires when another client's action is replayed
-        /// locally. Returns a subscription handle that can be disposed to unsubscribe.
+        /// client-local <c>MethodId</c> from <c>GameMethodIds</c> — the wire no longer carries
+        /// service/method names. Fires when another client's action is replayed locally.
+        /// Returns a subscription handle that can be disposed to unsubscribe.
         /// </summary>
-        /// <param name="methodId">Client-local method id from GameMethodIds / FrameworkMethodIds</param>
+        /// <param name="methodId">Client-local method id from GameMethodIds</param>
         /// <param name="handler">Handler to invoke when the method is replayed</param>
         IMethodSubscription OnMethodReplayed(ushort methodId, Action<MethodReplayedContext> handler);
 
@@ -166,8 +163,7 @@ namespace SharedMeta.Core
     /// </summary>
     public class MethodReplayedContext
     {
-        /// <summary>0.24.0+ Client-local method id from <c>GameMethodIds</c> /
-        /// <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/>.</summary>
+        /// <summary>0.24.0+ Client-local method id from <c>GameMethodIds</c>.</summary>
         public ushort MethodId { get; init; }
         public string? CallerId { get; init; }
         public byte[] ArgsBytes { get; init; } = Array.Empty<byte>();

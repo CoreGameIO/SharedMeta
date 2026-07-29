@@ -907,10 +907,25 @@ public interface IProfileService : IMetaService
 }
 ```
 
-### Subscribers (cross-entity events)
+### Framework contracts (e.g. matchmaking)
+Inherit the contract on the service interface, and mark each implementing method
+`[MetaMethod(Mode = ExecutionMode.Server, GenerateClientApi = false)]` on the impl class — the
+declarations live in the framework assembly, so the attribute has to sit on your implementation.
 ```csharp
-[MetaService(StateType = typeof(GameState), Subscriber = typeof(ILobbySubscriber))]
-public interface IGameService : IMetaService { ... }
+[MetaService(StateType = typeof(ProfileState))]
+public interface IProfileService : IMetaService, ILobbyListener { }
+
+[MetaServiceImpl(typeof(IProfileService), typeof(ProfileState))]
+public partial class ProfileService : IProfileService
+{
+    [MetaMethod(Alias = "OnMatchFound", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+    public void OnMatchFound(MatchFoundEvent e) => State.CurrentGameId = e.MatchId;
+}
+```
+Server code reaches the service through the generated mirror of the contract — inject it once,
+pass the entity id per call:
+```csharp
+await _players.OnMatchFoundAsync(entityId, evt);
 ```
 
 ---

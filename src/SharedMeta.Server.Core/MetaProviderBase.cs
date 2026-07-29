@@ -349,7 +349,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     }
 
     // ── Outgoing bytes ────────────────────────────────────────────────────
-    // Filled by serialization paths inside HandleCallAsync / HandleExternalEventAsync; taken
+    // Filled by serialization paths inside HandleCallAsync; taken
     // by EntityGrain via TakeOutgoing* before wrapping into wire fields. Backed by GC byte[]
     // (fresh per RPC) — no refcount, no pool registry. The receiving grain holds the bytes
     // through Orleans [Immutable] share-by-reference until GC reclaims them.
@@ -384,13 +384,6 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     {
         var p = _outgoingBroadcastPatch;
         _outgoingBroadcastPatch = default;
-        return p;
-    }
-
-    public ReadOnlyMemory<byte> TakeOutgoingEventBroadcast()
-    {
-        var p = _outgoingEventBroadcast;
-        _outgoingEventBroadcast = default;
         return p;
     }
 
@@ -467,16 +460,6 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// </summary>
     protected virtual Task DispatchSignal(ushort methodId, ReadOnlyMemory<byte> payload)
         => Task.CompletedTask;
-
-    /// <summary>
-    /// Dispatch an external event. Override in derived class if needed.
-    /// 0.24.0+ dispatches by <see cref="SharedMeta.Core.Framework.FrameworkMethodIds"/> ushort
-    /// constants rather than <c>(subscriberInterface, methodName)</c> string pair.
-    /// </summary>
-    protected virtual ValueTask<DispatchResult> DispatchEvent(ushort methodId, ReadOnlyMemory<byte> eventData)
-    {
-        return new ValueTask<DispatchResult>(new DispatchResult { ResultBytes = default, TriggersToExecute = null });
-    }
 
     /// <summary>
     /// Create a patch wrapper for the current state. Override in generated code.
@@ -1226,77 +1209,6 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             ResultBytes = result.ResultBytes,
             EntitySequenceNumber = 0  // self-call shares outer's sequence; no separate seq increment
         };
-    }
-
-    public async ValueTask<HandleEventResult> HandleExternalEventAsync(
-        ushort methodId,
-        ReadOnlyMemory<byte> eventData,
-        string? callerId = null)
-    {
-        if (MetaContext == null || Context == null)
-        {
-            return new HandleEventResult();
-        }
-
-        try
-        {
-            MetaContext.CallerId = callerId;
-            MetaContext.ServerTimeTicks = DateTime.UtcNow.Ticks;
-            MetaContextAccessor.Current = MetaContext;
-
-            // Reclaim any pool buffers / outgoing tokens left over from the previous call.
-            FlushPendingNamedScrollReturns();
-            _scratchPool.Reset();
-            (Context.Serializer as Memory.IServerMetaSerializer)?.ResetScratch();
-
-            MetaContext.BeginOperation();
-            var result = await DispatchEvent(methodId, eventData);
-            // result.ResultBytes is byte[]-backed (dispatcher no longer pools). It's embedded
-            // into the broadcast op below and GC reclaims after the op is packed.
-
-            // Replay payload: copy recorder's ROM into per-grain scratch pool so it survives.
-            var rom = MetaContext.EndOperation();
-            ReadOnlyMemory<byte> replayPayload;
-            if (!rom.IsEmpty)
-            {
-                _intermediateWriter.Reset(); var w = _intermediateWriter;
-                var span = w.GetSpan(rom.Length);
-                rom.Span.CopyTo(span);
-                w.Advance(rom.Length);
-                replayPayload = w.WrittenMemory;
-            }
-            else
-            {
-                replayPayload = default;
-            }
-
-            // Populate pooled broadcast for this event and serialize. Wire identifier is the
-            // framework subscriber method id (high-range ushort from FrameworkMethodIds);
-            // client-side dispatch keys on this. ServiceName/MethodName left empty — they're
-            // diagnostic only and not used by per-method routing anymore.
-            ResetMetaOperation(_pooledBroadcastOp);
-            _pooledBroadcastOp.MethodId = methodId;
-            _pooledBroadcastOp.Payload = eventData;
-            _pooledBroadcastOp.ReplayPayload = replayPayload;
-            _pooledBroadcastOp.ServerTimeTicks = MetaContext.ServerTimeTicks;
-            _pooledBroadcastOp.ExecutedConfigVersions = new List<MetaConfigVersion>(1) { MetaContext.ConfigVersion };
-
-            var broadcastBytes = PackBytes(Context.Serializer, _pooledBroadcastOp);
-            _outgoingEventBroadcast = broadcastBytes;
-            return new HandleEventResult
-            {
-                BroadcastBytes = broadcastBytes,
-            };
-        }
-        catch (Exception ex)
-        {
-            Logger.ProviderEventError(ex, "(framework)", "id=" + methodId);
-            return new HandleEventResult();
-        }
-        finally
-        {
-            MetaContextAccessor.Current = null;
-        }
     }
 
     // Per-method validation (is-a-query-method, IsClientCallable, IsOpenAccessQuery +

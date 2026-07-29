@@ -145,7 +145,7 @@ namespace SharedMeta.Core.Network
         /// <summary>
         /// 0.24.0+ Client's local global method index (already translated from server's id
         /// via <c>ClientSignatureAnnotated.ServerToClient</c>). Generated broadcast handlers
-        /// dispatch on this against <c>GameMethodIds</c> / <c>FrameworkMethodIds</c> constants
+        /// dispatch on this against <c>GameMethodIds</c> constants
         /// — a jump table on <c>ushort</c> instead of string-pair matching. <c>ushort.MaxValue</c>
         /// when the server emitted a method the client doesn't know — handler ignores.
         /// </summary>

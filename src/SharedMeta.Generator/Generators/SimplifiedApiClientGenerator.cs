@@ -128,40 +128,6 @@ namespace SharedMeta.Generator.Generators
             if (compilation != null)
                 methods.AddRange(ImplDeclaredMethods.SyntaxForService(symbol, compilation));
 
-            // Get subscriber interfaces from attribute
-            var subscriberInterfacesArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "SubscriberInterfaces");
-            var subscriberInterfaces = new List<SubscriberInterfaceInfo>();
-            if (!subscriberInterfacesArg.Value.IsNull && subscriberInterfacesArg.Value.Values.Length > 0)
-            {
-                foreach (var val in subscriberInterfacesArg.Value.Values)
-                {
-                    if (val.Value is INamedTypeSymbol subscriberType)
-                    {
-                        var info = new SubscriberInterfaceInfo
-                        {
-                            Name = subscriberType.Name,
-                            FullName = subscriberType.ToDisplayString()
-                        };
-                        foreach (var member in subscriberType.GetMembers().OfType<IMethodSymbol>())
-                        {
-                            if (member.Parameters.Length == 1)
-                            {
-                                info.Methods.Add(new SubscriberMethodInfo
-                                {
-                                    MethodName = member.Name,
-                                    EventTypeName = member.Parameters[0].Type.ToDisplayString(),
-                                    IsAsync = !member.ReturnsVoid && member.ReturnType.ToDisplayString().StartsWith("System.Threading.Tasks.Task")
-                                });
-                            }
-                        }
-                        if (info.Methods.Count > 0)
-                        {
-                            subscriberInterfaces.Add(info);
-                        }
-                    }
-                }
-            }
-
             // Detect serializer type
             var serializer = compilation != null ? SerializerDetector.Detect(compilation) : DetectedSerializer.Generic;
 
@@ -217,6 +183,13 @@ namespace SharedMeta.Generator.Generators
             {
                 sb.AppendLine("using MemoryPack;");
             }
+            EmitImplDeclaredUsings(sb, symbol, compilation, alreadyEmitted: new[]
+            {
+                "System", "System.Collections.Generic", "System.Threading.Tasks",
+                "SharedMeta.Core", "SharedMeta.Core.Packets", "SharedMeta.Core.Network",
+                "SharedMeta.Core.Diagnostics", "SharedMeta.Core.Random", "SharedMeta.Core.Patch",
+                "SharedMeta.Client", "SharedMeta.Core.Logging", namespaceName,
+            });
             sb.AppendLine($"namespace {namespaceName}.Client");
             sb.AppendLine("{");
 
@@ -322,20 +295,6 @@ namespace SharedMeta.Generator.Generators
                 }
             }
 
-            // Subscriber events
-            if (subscriberInterfaces.Count > 0)
-            {
-                sb.AppendLine();
-                sb.AppendLine("        // Subscriber interface events");
-                foreach (var subscriber in subscriberInterfaces)
-                {
-                    foreach (var method in subscriber.Methods)
-                    {
-                        var eventName = GetEventName(method.MethodName);
-                        sb.AppendLine($"        public event Action<{method.EventTypeName}>? {eventName};");
-                    }
-                }
-            }
             sb.AppendLine();
 
             // State refresh event
@@ -495,7 +454,7 @@ namespace SharedMeta.Generator.Generators
             GenerateContextMethods(sb, stateTypeName, hasDeepDesync);
 
             // Broadcast handling
-            GenerateHandleBroadcast(sb, methods, interfaceName, namespaceName, implClassName, stateTypeName, subscriberInterfaces, serializer);
+            GenerateHandleBroadcast(sb, methods, interfaceName, namespaceName, implClassName, stateTypeName, serializer);
 
             // Trigger replay
             GenerateTriggerReplayMethods(sb, methods, stateTypeName, interfaceName, namespaceName);
@@ -2003,53 +1962,52 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
         }
 
+        /// <summary>
+        /// Impl-declared methods keep the type names their own file wrote. Nothing guarantees
+        /// those resolve here, so bring in the namespaces their signatures actually reference.
+        /// </summary>
+        private static void EmitImplDeclaredUsings(
+            StringBuilder sb, INamedTypeSymbol symbol, Compilation? compilation, string[] alreadyEmitted)
+        {
+            if (compilation == null) return;
+            foreach (var ns in ImplDeclaredMethods.SignatureNamespacesForService(symbol, compilation))
+            {
+                if (System.Array.IndexOf(alreadyEmitted, ns) >= 0) continue;
+                sb.AppendLine($"using {ns};");
+            }
+        }
+
         private static void GenerateHandleBroadcast(StringBuilder sb,
             List<MethodDeclarationSyntax> methods,
             string interfaceName, string namespaceName, string implClassName, string? stateTypeName,
-            List<SubscriberInterfaceInfo> subscriberInterfaces, DetectedSerializer serializer)
+            DetectedSerializer serializer)
         {
             sb.AppendLine("        private void HandleBroadcast(NetworkBroadcast broadcast)");
             sb.AppendLine("        {");
             sb.AppendLine("            // No own-RPC echo filter: the server excludes the originator from fan-out when");
             sb.AppendLine("            // it already applied the effect locally (DistributeBroadcasts excludePlayerId),");
             sb.AppendLine("            // so a received broadcast is never a duplicate of a local application.");
-            // 0.24.0+ Route by client-local MethodId — the wire no longer carries
-            // ServiceName. DispatchServiceBroadcast's switch has the per-service ids; the
-            // subscriber dispatchers' switches own framework ids. A jump table on
-            // ushort is cheap, and the inner switch is the existing failure boundary
-            // (default branch logs unknown id).
-            // Service may consist entirely of Query/Signal methods (no broadcasts) with no
-            // subscriber interfaces — in that case emit no switch at all rather than an
-            // empty body whose dispatch branches would be unreachable / malformed.
+            // 0.24.0+ Route by client-local MethodId — the wire no longer carries ServiceName.
+            // A jump table on ushort is cheap, and DispatchServiceBroadcast's inner switch is the
+            // existing failure boundary (default branch logs unknown id).
+            // Service may consist entirely of Query/Signal methods (no broadcasts) — in that case
+            // emit no switch at all rather than an empty body whose dispatch branches would be
+            // unreachable / malformed.
             var broadcastingMethods = methods.Where(m => !IsQueryMethod(m) && !IsLocalQueryMethod(m) && !IsSignalMethod(m)).ToList();
-            if (broadcastingMethods.Count > 0 || subscriberInterfaces.Count > 0)
+            if (broadcastingMethods.Count > 0)
             {
                 sb.AppendLine("            switch (broadcast.MethodId)");
                 sb.AppendLine("            {");
-                if (broadcastingMethods.Count > 0)
+                foreach (var method in broadcastingMethods)
                 {
-                    foreach (var method in broadcastingMethods)
-                    {
-                        var alias = GetMethodAlias(method, method.Identifier.Text);
-                        var version = GetMethodVersion(method);
-                        var idConst = "global::" + namespaceName + ".Generated.GameMethodIds." +
-                            SignatureHashGenerator.MakeMethodIdConstName(interfaceName, alias, version);
-                        sb.AppendLine($"                case {idConst}:");
-                    }
-                    sb.AppendLine("                    DispatchServiceBroadcast(broadcast);");
-                    sb.AppendLine("                    return;");
+                    var alias = GetMethodAlias(method, method.Identifier.Text);
+                    var version = GetMethodVersion(method);
+                    var idConst = "global::" + namespaceName + ".Generated.GameMethodIds." +
+                        SignatureHashGenerator.MakeMethodIdConstName(interfaceName, alias, version);
+                    sb.AppendLine($"                case {idConst}:");
                 }
-
-                foreach (var subscriber in subscriberInterfaces)
-                {
-                    foreach (var method in subscriber.Methods)
-                    {
-                        sb.AppendLine($"                case global::SharedMeta.Core.Framework.FrameworkMethodIds.{subscriber.Name}_{method.MethodName}:");
-                    }
-                    sb.AppendLine($"                    Dispatch{subscriber.Name}Broadcast(broadcast);");
-                    sb.AppendLine("                    return;");
-                }
-
+                sb.AppendLine("                    DispatchServiceBroadcast(broadcast);");
+                sb.AppendLine("                    return;");
                 sb.AppendLine("            }");
             }
             sb.AppendLine("        }");
@@ -2104,78 +2062,6 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
             sb.AppendLine();
 
-            // Subscriber dispatchers — replay service method to update state, then fire event
-            var subscriberApplierName = stateTypeName + "PatchApplier";
-            foreach (var subscriber in subscriberInterfaces)
-            {
-                sb.AppendLine($"        private void Dispatch{subscriber.Name}Broadcast(NetworkBroadcast broadcast)");
-                sb.AppendLine("        {");
-                sb.AppendLine("            var _tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
-                sb.AppendLine("            try");
-                sb.AppendLine("            {");
-                // 0.24.0+ Switch on MethodId — framework subscriber ids live in FrameworkMethodIds
-                // (high range, hand-defined) so each interface's methods carry a fixed wire id.
-                sb.AppendLine("            switch (broadcast.MethodId)");
-                sb.AppendLine("            {");
-
-                foreach (var method in subscriber.Methods)
-                {
-                    var eventName = GetEventName(method.MethodName);
-                    sb.AppendLine($"                case global::SharedMeta.Core.Framework.FrameworkMethodIds.{subscriber.Name}_{method.MethodName}:");
-                    sb.AppendLine("                {");
-                    if (serializer == DetectedSerializer.MemoryPack)
-                    {
-                        sb.AppendLine($"                    var @event = MemoryPackSerializer.Deserialize<{method.EventTypeName}>(broadcast.ArgsBytes)!;");
-                    }
-                    else
-                    {
-                        sb.AppendLine($"                    var @event = _serializer.Unpack<{method.EventTypeName}>(broadcast.ArgsBytes)!;");
-                    }
-
-                    // State-data paths: state already applied by EntityConnection's entity-level handler.
-                    // Per-ApiClient bookkeeping (random skip) still happens here.
-                    sb.AppendLine("                    if (broadcast.StateBytes is { Length: > 0 })");
-                    sb.AppendLine("                    {");
-                    sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
-                    sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
-                    sb.AppendLine("                    }");
-                    sb.AppendLine("                    else if (broadcast.PatchBytes is { Length: > 0 })");
-                    sb.AppendLine("                    {");
-                    sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
-                    sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
-                    sb.AppendLine("                    }");
-                    sb.AppendLine("                    else");
-                    sb.AppendLine("                    {");
-                    sb.AppendLine("                        SetContext(broadcast.ReplayContext, broadcast.CallerId, broadcast.ServerTimeTicks, broadcast.ExecutedConfigVersions is { Count: > 0 } ? broadcast.ExecutedConfigVersions[0] : default);");
-                    if (method.IsAsync)
-                    {
-                        sb.AppendLine($"                        BroadcastValidator.EnsureSyncCompletion(_service.{method.MethodName}(@event), ServiceName, \"{method.MethodName}\");");
-                    }
-                    else
-                    {
-                        sb.AppendLine($"                        _service.{method.MethodName}(@event);");
-                    }
-                    sb.AppendLine("                        ClearContext();");
-                    sb.AppendLine($"                        _stateContainer.NotifyMutated();");
-                    sb.AppendLine("                    }");
-
-                    // Replay trigger operations if any
-                    sb.AppendLine("                    ReplayTriggerOperations(broadcast.TriggerOperations, broadcast.CallerId, broadcast.ServerTimeTicks);");
-
-                    sb.AppendLine($"                    {eventName}?.Invoke(@event);");
-                    sb.AppendLine("                    break;");
-                    sb.AppendLine("                }");
-                }
-
-                sb.AppendLine("            }");
-                sb.AppendLine("            _tracker.FlushAndNotify();");
-                sb.AppendLine("            // MutationCount / OnStateMutated already fired by entity-level handler (state-data");
-                sb.AppendLine("            // path) or by the explicit NotifyMutated above (pure replay path).");
-                sb.AppendLine("            }");
-                sb.AppendLine("            catch (Exception ex) { _tracker.Discard(); SetError(ex, broadcast.MethodId); throw; }");
-                sb.AppendLine("        }");
-                sb.AppendLine();
-            }
         }
 
         private static void GenerateTriggerReplayMethods(StringBuilder sb, List<MethodDeclarationSyntax> methods, string? stateTypeName,
@@ -2797,18 +2683,5 @@ namespace SharedMeta.Generator.Generators
             return $"On{methodName}_Replayed";
         }
 
-        private class SubscriberInterfaceInfo
-        {
-            public string Name { get; set; } = "";
-            public string FullName { get; set; } = "";
-            public List<SubscriberMethodInfo> Methods { get; } = new();
-        }
-
-        private class SubscriberMethodInfo
-        {
-            public string MethodName { get; set; } = "";
-            public string EventTypeName { get; set; } = "";
-            public bool IsAsync { get; set; }
-        }
     }
 }

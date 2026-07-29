@@ -27,7 +27,6 @@ namespace SharedMeta.Orleans.Grains
         [Id(1)] public string PlayerId { get; set; } = "";
         [Id(2)] public int PlayerCount { get; set; }
         [Id(3)] public string GameMode { get; set; } = "";
-        [Id(4)] public string StateTypeName { get; set; } = "ProfileState";
     }
 
     /// <summary>

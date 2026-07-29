@@ -9,7 +9,7 @@ namespace CardGame.Shared
     /// Handles player profile state and lobby interactions.
     /// </summary>
     [MetaServiceImpl(typeof(IProfileService), typeof(ProfileState), typeof(ILobbyRequester), typeof(IProfileService))]
-    public partial class ProfileService : IProfileService, ILobbySubscriber
+    public partial class ProfileService : IProfileService, ILobbyListener
     {
         // state shorthand - Context is injected by generator
         private ProfileState state => Context.State;
@@ -99,9 +99,16 @@ namespace CardGame.Shared
         }
 
         // ============================================
-        // ILobbySubscriber implementation
+        // ILobbyListener implementation
+        //
+        // The contract lives in the framework, so [MetaMethod] sits here rather than on
+        // IProfileService — that is what gives these methods a game method id, a dispatcher
+        // entry and client-side replay. GenerateClientApi = false keeps them server-originated;
+        // Server rather than Notification so the lobby can await delivery and see a failure —
+        // Notification dispatches [OneWay] and has nothing to wait on.
         // ============================================
 
+        [MetaMethod(Alias = "OnMatchFound", Mode = ExecutionMode.Server, GenerateClientApi = false)]
         public void OnMatchFound(MatchFoundEvent @event)
         {
             state.IsSearching = false;
@@ -109,12 +116,14 @@ namespace CardGame.Shared
             state.CurrentGameId = @event.MatchId;
         }
 
+        [MetaMethod(Alias = "OnMatchCancelled", Mode = ExecutionMode.Server, GenerateClientApi = false)]
         public void OnMatchCancelled(MatchCancelledEvent @event)
         {
             state.IsSearching = false;
             state.SearchGameMode = null;
         }
 
+        [MetaMethod(Alias = "OnMatchmakingUpdate", Mode = ExecutionMode.Server, GenerateClientApi = false)]
         public void OnMatchmakingUpdate(MatchmakingUpdateEvent @event)
         {
             // Could update UI with queue position, etc.

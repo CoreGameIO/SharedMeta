@@ -6,9 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Orleans;
 using Orleans.Runtime;
-using SharedMeta.Core;
 using SharedMeta.Core.Framework;
-using SharedMeta.Server.Core.Grains;
 
 namespace SharedMeta.Orleans.Grains
 {
@@ -19,18 +17,19 @@ namespace SharedMeta.Orleans.Grains
     public class LobbyGrain : Grain, ILobbyGrain
     {
         private readonly List<LobbyWaitingPlayer> _waitingPlayers = new();
-        private readonly IMetaSerializer _serializer;
-        private readonly IGrainFactory _grainFactory;
-        private readonly IEntityGrainResolver _entityGrainResolver;
+        private readonly ILobbyListenerServerApi? _players;
         private readonly ILogger<LobbyGrain> _logger;
         private IDisposable? _timeoutTimer;
 
-        public LobbyGrain(IMetaSerializer serializer, IGrainFactory grainFactory, IEntityGrainResolver entityGrainResolver, ILogger<LobbyGrain> logger)
+        /// <param name="players">
+        /// Null when no meta service inherits <c>ILobbyListener</c> — matches still form and are
+        /// reported, but nothing is delivered. Failing activation instead would break hosts that
+        /// register the lobby without using it.
+        /// </param>
+        public LobbyGrain(ILogger<LobbyGrain> logger, ILobbyListenerServerApi? players = null)
         {
-            _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
-            _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
-            _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _players = players;
         }
 
         public override Task OnActivateAsync(CancellationToken cancellationToken)
@@ -104,11 +103,7 @@ namespace SharedMeta.Orleans.Grains
             _waitingPlayers.Remove(player);
             _logger.PlayerLeftQueue(player.PlayerId, gameMode);
 
-            // Notify the player that matchmaking was cancelled
-            await NotifyPlayerAsync(profileEntityId, player.StateTypeName, SharedMeta.Core.Framework.FrameworkMethodIds.ILobbySubscriber_OnMatchCancelled, new MatchCancelledEvent
-            {
-                Reason = MatchCancelReason.PlayerCancelled
-            });
+            await NotifyMatchCancelledAsync(profileEntityId, MatchCancelReason.PlayerCancelled);
 
             return true;
         }
@@ -158,48 +153,57 @@ namespace SharedMeta.Orleans.Grains
                     // Notify all players
                     for (int i = 0; i < matchPlayers.Count; i++)
                     {
-                        var player = matchPlayers[i];
-                        await NotifyPlayerAsync(
-                            player.ProfileEntityId,
-                            player.StateTypeName,
-                            SharedMeta.Core.Framework.FrameworkMethodIds.ILobbySubscriber_OnMatchFound,
-                            new MatchFoundEvent
-                            {
-                                MatchId = matchId,
-                                PlayerIds = playerIds,
-                                GameMode = gameMode,
-                                PlayerSlot = i
-                            });
+                        await NotifyMatchFoundAsync(matchPlayers[i].ProfileEntityId, new MatchFoundEvent
+                        {
+                            MatchId = matchId,
+                            PlayerIds = playerIds,
+                            GameMode = gameMode,
+                            PlayerSlot = i
+                        });
                     }
                 }
             }
         }
 
-        private async Task NotifyPlayerAsync<TEvent>(string profileEntityId, string stateTypeName, ushort methodId, TEvent @event)
+        private async Task NotifyMatchFoundAsync(string profileEntityId, MatchFoundEvent @event)
         {
+            const string what = nameof(MatchFoundEvent);
+            if (_players == null)
+            {
+                _logger.LobbyListenerMissing(profileEntityId, what);
+                return;
+            }
+
             try
             {
-                // Serialize the event
-                var eventBytes = _serializer.Pack(@event).ToArray();
-
-                // Resolve entity grain via generated switch (no reflection)
-                var grain = _entityGrainResolver.GetEntityGrain(_grainFactory, stateTypeName, profileEntityId);
-                if (grain == null)
-                {
-                    _logger.StateTypeNotFound(stateTypeName);
-                    return;
-                }
-
-                // Call HandleExternalEventAsync — 0.24.0+ identifies the subscriber method
-                // by framework methodId (e.g. FrameworkMethodIds.ILobbySubscriber_OnMatchFound)
-                // rather than the legacy (subscriberInterface, methodName) string pair.
-                await grain.HandleExternalEventAsync(methodId, eventBytes, null);
-
-                _logger.PlayerNotified(profileEntityId, "methodId=" + methodId);
+                await _players.OnMatchFoundAsync(profileEntityId, @event);
+                _logger.PlayerNotified(profileEntityId, what);
             }
             catch (Exception ex)
             {
-                _logger.ErrorNotifyingPlayer(ex, profileEntityId, "methodId=" + methodId);
+                // Contained on purpose: one player's entity rejecting the call must not abort the
+                // match for the others still being notified in the same loop.
+                _logger.ErrorNotifyingPlayer(ex, profileEntityId, what);
+            }
+        }
+
+        private async Task NotifyMatchCancelledAsync(string profileEntityId, MatchCancelReason reason)
+        {
+            const string what = nameof(MatchCancelledEvent);
+            if (_players == null)
+            {
+                _logger.LobbyListenerMissing(profileEntityId, what);
+                return;
+            }
+
+            try
+            {
+                await _players.OnMatchCancelledAsync(profileEntityId, new MatchCancelledEvent { Reason = reason });
+                _logger.PlayerNotified(profileEntityId, what);
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorNotifyingPlayer(ex, profileEntityId, what);
             }
         }
 

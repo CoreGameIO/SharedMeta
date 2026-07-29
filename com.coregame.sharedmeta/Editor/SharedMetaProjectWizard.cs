@@ -795,9 +795,10 @@ namespace SharedMeta.Editor
             sb.AppendLine($"namespace {ns}");
             sb.AppendLine("{");
             sb.AppendLine("    [MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned,");
-            sb.AppendLine("        DefaultConfig = true,");
-            sb.AppendLine("        SubscriberInterfaces = new[] { typeof(ILobbySubscriber) })]");
-            sb.AppendLine("    public interface IProfileService : IMetaService");
+            sb.AppendLine("        DefaultConfig = true)]");
+            sb.AppendLine("    // ILobbyListener is inherited here so dispatch and the generated APIs know the");
+            sb.AppendLine("    // matchmaking callbacks; their [MetaMethod] sits on ProfileService.");
+            sb.AppendLine("    public interface IProfileService : IMetaService, ILobbyListener");
             sb.AppendLine("    {");
             sb.AppendLine("        [MetaMethod(Alias = \"Init\", Mode = ExecutionMode.Server)]");
             sb.AppendLine("        void Init(string playerId);");
@@ -828,7 +829,7 @@ namespace SharedMeta.Editor
             sb.AppendLine($"namespace {ns}");
             sb.AppendLine("{");
             sb.AppendLine("    [MetaServiceImpl(typeof(IProfileService), typeof(ProfileState), typeof(ILobbyRequester))]");
-            sb.AppendLine("    public partial class ProfileService : IProfileService, ILobbySubscriber");
+            sb.AppendLine("    public partial class ProfileService : IProfileService, ILobbyListener");
             sb.AppendLine("    {");
             sb.AppendLine("        public void Init(string playerId)");
             sb.AppendLine("        {");
@@ -863,14 +864,19 @@ namespace SharedMeta.Editor
             sb.AppendLine("            else if (result == -1) State.Losses++;");
             sb.AppendLine("        }");
             sb.AppendLine();
-            sb.AppendLine("        // ILobbySubscriber");
+            sb.AppendLine("        // ILobbyListener — declared in the framework assembly, so [MetaMethod] has");
+            sb.AppendLine("        // to sit on the implementation for these to become meta methods.");
+            sb.AppendLine("        [MetaMethod(Alias = \"OnMatchFound\", Mode = ExecutionMode.Server, GenerateClientApi = false)]");
             sb.AppendLine("        public void OnMatchFound(MatchFoundEvent e)");
             sb.AppendLine("        {");
             sb.AppendLine("            State.IsSearching = false;");
             sb.AppendLine("            State.CurrentGameId = e.MatchId;");
             sb.AppendLine("        }");
             sb.AppendLine();
+            sb.AppendLine("        [MetaMethod(Alias = \"OnMatchCancelled\", Mode = ExecutionMode.Server, GenerateClientApi = false)]");
             sb.AppendLine("        public void OnMatchCancelled(MatchCancelledEvent e) => State.IsSearching = false;");
+            sb.AppendLine();
+            sb.AppendLine("        [MetaMethod(Alias = \"OnMatchmakingUpdate\", Mode = ExecutionMode.Server, GenerateClientApi = false)]");
             sb.AppendLine("        public void OnMatchmakingUpdate(MatchmakingUpdateEvent e) { }");
             sb.AppendLine("    }");
             sb.AppendLine("}");
@@ -3102,22 +3108,27 @@ void Defend(Card card);
 void OnDefendComplete();
 ```
 
-### Subscriber Interfaces — framework events (e.g. matchmaking):
+### Framework contracts (e.g. matchmaking) — inherit + annotate the impl:
 ```csharp
-[MetaService(StateType = typeof(ProfileState),
-    SubscriberInterfaces = new[] { typeof(ILobbySubscriber) })]
-public interface IProfileService : IMetaService
+[MetaService(StateType = typeof(ProfileState))]
+public interface IProfileService : IMetaService, ILobbyListener { }
+
+[MetaServiceImpl(typeof(IProfileService), typeof(ProfileState))]
+public partial class ProfileService : IProfileService
 {
-    [ServiceTrigger(Service = typeof(ILobbySubscriber), Method = ""OnMatchFound"")]
-    void HandleMatchFound();
+    [MetaMethod(Alias = ""OnMatchFound"", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+    public void OnMatchFound(MatchFoundEvent e) => State.CurrentGameId = e.MatchId;
 }
 ```
+The attribute goes on the implementation because the declarations live in the framework
+assembly. GenerateClientApi = false makes them server-originated only; Server rather than
+Notification so the caller can await delivery.
 
 ### Client-side subscriptions:
 ```csharp
-var sub = resolver.OnMethodReplayed<MatchFoundArgs>(
-    entityId, ""ILobbySubscriber"", ""OnMatchFound"",
-    args => Console.WriteLine($""Match found: {args.MatchId}""));
+var sub = resolver.OnMethodReplayed<MatchFoundEvent>(
+    entityId, GameMethodIds.IProfileService_OnMatchFound_v0,
+    e => Console.WriteLine($""Match found: {e.MatchId}""));
 sub.Dispose(); // when done
 ```
 
@@ -3160,7 +3171,7 @@ public async Task RequestMatch(int playerCount)
 }
 ```
 
-Flow: RequestMatch -> LobbyGrain queue -> match forms -> HandleExternalEventAsync -> [ServiceTrigger] fires -> broadcast to subscribers.
+Flow: RequestMatch -> LobbyGrain queue -> match forms -> injected ILobbyListenerServerApi -> OnMatchFound dispatches on the profile entity -> broadcast to subscribers.
 
 ---
 
@@ -3206,11 +3217,10 @@ The source generator (`CoreGame.SharedMeta.Generator`) produces:
 
 | Attribute | Target | Description |
 |-----------|--------|-------------|
-| `[MetaService]` | Interface | Marks shared service (StateType, AccessPolicy, SubscriberInterfaces) |
+| `[MetaService]` | Interface | Marks shared service (StateType, AccessPolicy) |
 | `[MetaMethod]` | Method | Execution mode, Alias, Version, GenerateClientApi, SkipServerOnFalse, ForcePersist |
 | `[MetaServiceImpl]` | Class | Marks implementation for context injection |
 | `[Trigger]` | Method | Auto-execute after condition on another method |
-| `[ServiceTrigger]` | Method | Trigger on framework service event |
 | `[Transformer]` | Class | Register argument transformer |
 | `[Transform]` | Parameter | Explicit transformer for parameter |
 | `[SkipTransform]` | Parameter | Disable auto-transformation |
