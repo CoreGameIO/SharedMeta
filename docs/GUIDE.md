@@ -1220,6 +1220,60 @@ api.RecordTelemetrySignal("purchase", jsonBlob);     // same
 
 **Error handling:** server-side exceptions are caught in `MetaProviderBase.HandleSignalAsync` and logged via `Logger.ProviderCallError`. They never reach the client. If you need confirmation of delivery, don't use Signal — use a regular method or a Query.
 
+### Calling a Service from Server Code — `{Service}ServerApi` — 0.35.0+
+
+Server code that is not itself running inside a meta call — admin tooling, framework grains, background jobs — has no `MetaContext` and therefore no cross-entity accessor. `{Service}ServerApi` is the entry point for that case, generated for every `[MetaService]` that declares a `StateType`:
+
+```csharp
+await grainFactory.GetServerApi<IProfileService>(playerId).AddResourcesAsync("gold", 500);
+```
+
+It routes through `IEntityGrainBase.HandleCallFromEntityAsync`, the same server-internal entry cross-entity calls use, so the call is an ordinary dispatch — replay recording, broadcast to every subscriber, persistence and sequence advance all happen, and a connected player sees the effect immediately. The entity needs no active subscriber: a cold entity activates, runs its migration ladder and persists.
+
+`Mode = Notification` methods route to the `[OneWay]` grain entry instead; the returned Task completes on dispatch, not on the target's completion. Errors surface as `InvalidOperationException` rather than being swallowed — a server-originated call has no client response channel to carry them.
+
+**Declaring an admin method.** Nothing special is required — it is an ordinary meta method that clients cannot call:
+
+```csharp
+[MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned)]
+public interface IProfileService : IMetaService
+{
+    [MetaMethod(Mode = ExecutionMode.Server, GenerateClientApi = false)]
+    void AddResources(string resource, int amount);
+}
+```
+
+The server API deliberately includes `GenerateClientApi = false` methods — that combination is the point: a surface reachable only from inside the silo. Authorization is the caller's responsibility; there is no per-method access policy on this path, because reaching the class already means running as the server.
+
+**Where it is emitted.** Shared projects get it behind `#if SHAREDMETA_SERVER` (so Unity and client builds, which have no Orleans, skip it). Server projects generate their own copy from referenced assemblies — without that pass the API would exist in no compiled assembly, since shared projects do not define the symbol.
+
+**Hosting the admin surface.** For a web admin panel, put a thin ASP.NET endpoint in the silo host and call the server API from there; authorization uses the usual ASP.NET mechanisms. An external .NET tool can also connect as an Orleans client and call it directly, at the cost of referencing the game's shared assembly and `SharedMeta.Server.Core`.
+
+### Inheriting a Service Contract — `[MetaMethod]` on the Implementation — 0.35.0+
+
+Method ids and the client's broadcast-replay switch are built per compilation from method **declarations**. A `[MetaService]` interface that only inherits its contract from a referenced assembly has no declarations of its own, so it would generate nothing at all. Declare the contract's `[MetaMethod]` on the implementing class instead:
+
+```csharp
+// referenced package
+public interface ILobbyRequester
+{
+    void OnMatchFound(MatchFoundEvent evt);
+}
+
+// game
+[MetaService(StateType = typeof(ProfileState))]
+public interface IProfileLobbyService : IMetaService, ILobbyRequester { }   // empty
+
+[MetaServiceImpl(typeof(IProfileLobbyService), typeof(ProfileState))]
+public partial class ProfileLobbyService : IProfileLobbyService
+{
+    [MetaMethod(Mode = ExecutionMode.Notification)]
+    public void OnMatchFound(MatchFoundEvent evt) { State.MatchId = evt.MatchId; }
+}
+```
+
+The method then gets an id, a dispatcher case and a client replay case exactly like an interface-declared one. The base interface still supplies the signature guarantee — the class must implement the inherited member, so an argument-shape drift is a compile error rather than a silent protocol break. Generated code calls through the interface-typed variable, and the compiler resolves the inherited member.
+
 ### Notification Methods (Entity → Entity Fire-and-Forget) — 0.22.0+
 
 Peer of Signal on the cross-entity axis. **Signal** is "client → entity, no wait"; **Notification** is "entity → entity, no wait". Use when one entity needs to inform another about a state change without blocking on the round-trip.
@@ -1258,7 +1312,7 @@ public partial class ProfileService : IProfileService
 
 **Contract:**
 - Return type must be `Task` or `void` — no `Task<T>` (there is no return value)
-- `GenerateClientApi = false` is implicit — clients never originate Notifications
+- `GenerateClientApi = false` is implicit — clients never originate Notifications. Enforced on both sides since 0.35.0: no client API is generated, the dispatcher rejects a client-originated call, and negotiation marks the method `Rejected` while still mapping server→client so broadcasts replay normally. Before 0.35.0 only the client-side suppression happened, so a forged packet carrying the method id reached the body.
 - Cannot combine with `Sync`, `SkipServerOnFalse`, `ForcePersist`
 - Cannot be overridden at runtime — structural trait
 - Generator emits cross-entity caller as `void {Method}(args)` (not `Task {Method}Async(args)`) — any pre-0.22.0 `await GetIFoo(id).BarAsync(...)` call site is forced to compile-error and migrate

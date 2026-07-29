@@ -960,6 +960,15 @@ namespace SharedMeta.Generator.Generators
 
             if (hasAnyConfigProvider)
             {
+                // Every config resolution funnels its incoming version through this. A
+                // server-originated call (admin action, framework grain, timer) carries no
+                // CallerClientVersion, and providers reject a missing version outright — each
+                // resolution site that forgot to substitute was its own latent
+                // "clientAppVersion is required" crash.
+                sb.AppendLine();
+                sb.AppendLine("        private string? EffectiveClientVersion(string? clientVersion)");
+                sb.AppendLine("            => string.IsNullOrEmpty(clientVersion) ? _configVersionResolver?.CurrentClientVersion : clientVersion;");
+
                 sb.AppendLine();
                 sb.AppendLine("        protected override void OnInitialize(Microsoft.Extensions.Logging.ILogger? logger)");
                 sb.AppendLine("        {");
@@ -1002,6 +1011,7 @@ namespace SharedMeta.Generator.Generators
                 // for Private (and Shared) scopes; Global never reaches here.
                 sb.AppendLine("        public override void EstablishConfigPinsFromClientVersion(string? clientVersion)");
                 sb.AppendLine("        {");
+                sb.AppendLine("            clientVersion = EffectiveClientVersion(clientVersion);");
                 if (configType != null)
                 {
                     sb.AppendLine("            if (_configProvider != null)");
@@ -1096,7 +1106,10 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"            = SharedMeta.Core.MetaConfigVersionResolver.ForType(typeof({configType}));");
                 sb.AppendLine();
                 sb.AppendLine("        public override SharedMeta.Core.MetaConfigVersion ResolveClientConfigVersion(string? clientVersion)");
-                sb.AppendLine("            => _configProvider?.ResolveForClient(clientVersion, _configVersionPolicyResolver) ?? ConfigVersion;");
+                sb.AppendLine("        {");
+                sb.AppendLine("            if (_configProvider == null) return ConfigVersion;");
+                sb.AppendLine("            return _configProvider.ResolveForClient(EffectiveClientVersion(clientVersion), _configVersionPolicyResolver);");
+                sb.AppendLine("        }");
                 sb.AppendLine();
 
                 // 0.21.0: scope-aware effective version for the subscribe response — mirrors
@@ -1160,20 +1173,12 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine("            // cap) keep using ResolveClientConfigVersion directly — pin only applies to");
                     sb.AppendLine("            // per-call config materialization. Cache by clientVersion still; cache miss");
                     sb.AppendLine("            // path resolves: pin first, then ResolveClientConfigVersion.");
-                    sb.AppendLine("            // 0.21.0 strict: when no pin AND no real clientVersion (server-internal");
-                    sb.AppendLine("            // cold call into a Private/Shared entity from a timer / background job),");
-                    sb.AppendLine("            // substitute IConfigVersionResolver.CurrentClientVersion. Throws below if");
-                    sb.AppendLine("            // neither is available — fail-loud surface for misconfigured server-internal callers.");
+                    sb.AppendLine("            // clientVersion already carries the effective version: the caller's own, or the");
+                    sb.AppendLine("            // entity owner's when the call is server-originated (MetaProviderBase resolves");
+                    sb.AppendLine("            // it). EffectiveClientVersion only backstops an entity that never had a");
+                    sb.AppendLine("            // subscriber, where there is no player to be wrong about.");
                     sb.AppendLine($"            bool _hasPin = TryGetConfigPin(typeof({configType}).FullName!, out var _pinned);");
-                    sb.AppendLine("            string? _effectiveClient = clientVersion;");
-                    sb.AppendLine("            if (!_hasPin && string.IsNullOrEmpty(_effectiveClient))");
-                    sb.AppendLine("            {");
-                    sb.AppendLine("                _effectiveClient = _configVersionResolver?.CurrentClientVersion;");
-                    sb.AppendLine("                if (string.IsNullOrEmpty(_effectiveClient))");
-                    sb.AppendLine("                    throw new System.InvalidOperationException(");
-                    sb.AppendLine($"                        \"Cold call into '{stateTypeFullName}' without CallerClientVersion and no IConfigVersionResolver.CurrentClientVersion configured. \" +");
-                    sb.AppendLine("                        \"Register IConfigVersionResolver in DI or pass CallerClientVersion explicitly from the calling code.\");");
-                    sb.AppendLine("            }");
+                    sb.AppendLine("            var _effectiveClient = EffectiveClientVersion(clientVersion);");
                     sb.AppendLine("            var key = _effectiveClient ?? string.Empty;");
                     sb.AppendLine("            if (!_configCacheByClient.TryGetValue(key, out var cached))");
                     sb.AppendLine("            {");
@@ -1312,6 +1317,7 @@ namespace SharedMeta.Generator.Generators
 
                 sb.AppendLine("        protected override SharedMeta.Core.MetaConfigVersion[] GetCachedServiceConfigVersionsForClient(string? clientVersion)");
                 sb.AppendLine("        {");
+                sb.AppendLine("            clientVersion = EffectiveClientVersion(clientVersion);");
                 sb.AppendLine($"            var _result = new SharedMeta.Core.MetaConfigVersion[{serviceConfigTypes.Count}];");
                 for (int i = 0; i < serviceConfigTypes.Count; i++)
                 {
@@ -2302,6 +2308,11 @@ namespace SharedMeta.Generator.Generators
 
             sb.AppendLine("            // Register entity grain resolver");
             sb.AppendLine("            services.AddSingleton<SharedMeta.Server.Core.Grains.IEntityGrainResolver>(GeneratedEntityGrainResolver.Instance);");
+            sb.AppendLine();
+            sb.AppendLine("            // DI handle for the generated {Service}ServerApi accessors, so callers never have to");
+            sb.AppendLine("            // resolve and pass a serializer that DI already holds.");
+            sb.AppendLine("            Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions");
+            sb.AppendLine("                .TryAddSingleton<SharedMeta.Server.Core.IMetaServerApiFactory, SharedMeta.Server.Core.MetaServerApiFactory>(services);");
             sb.AppendLine();
             sb.AppendLine("            // 0.24.0+ Register the generated MetaServerSignature singleton so EntityGrain can");
             sb.AppendLine("            // resolve server-side method ids for the wire MetaOperation.MethodId field, and");

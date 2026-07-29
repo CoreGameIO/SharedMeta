@@ -59,6 +59,17 @@ namespace SharedMeta.Generator
                     spc.AddSource($"{baseName}QueryApi.g.cs", querySource);
                 }
 
+                // Server-side service API — lets server code (admin tooling, framework grains,
+                // background jobs) invoke meta methods on an entity as an ordinary dispatch.
+                var serverApiSource = ServerApiGenerator.Generate(symbol, ctx.SemanticModel.Compilation);
+                if (serverApiSource != null)
+                {
+                    var baseName = interfaceName.StartsWith("I") && interfaceName.Length > 1 && char.IsUpper(interfaceName[1])
+                        ? interfaceName.Substring(1)
+                        : interfaceName;
+                    spc.AddSource($"{baseName}ServerApi.g.cs", serverApiSource);
+                }
+
                 // Service Registration Extensions (DI registration)
                 var registrationSource = ServiceRegistrationGenerator.Generate(node, symbol, ctx.SemanticModel.Compilation);
                 if (registrationSource != null)
@@ -318,7 +329,7 @@ namespace SharedMeta.Generator
                 {
                     var symbol = ctx.TargetSymbol as INamedTypeSymbol;
                     if (symbol == null) return null;
-                    return GameServiceDiscoveryGenerator.Analyze(symbol);
+                    return GameServiceDiscoveryGenerator.Analyze(symbol, ctx.SemanticModel.Compilation);
                 }
             ).Where(static info => info != null);
 
@@ -481,6 +492,26 @@ namespace SharedMeta.Generator
                 if (!string.IsNullOrEmpty(source))
                 {
                     spc.AddSource("ServerMetaConfiguration.g.cs", source!);
+                }
+
+                // Server APIs for the referenced services. The shared assembly emits these too, but
+                // fenced behind SHAREDMETA_SERVER, which shared projects do not define — so without
+                // this pass the API would exist in no compiled assembly at all.
+                var emittedServerApis = new HashSet<string>();
+                foreach (var impl in implInfos)
+                {
+                    var serviceSymbol = compilation.GetTypeByMetadataName(impl.InterfaceFullName);
+                    if (serviceSymbol == null) continue;
+                    if (!emittedServerApis.Add(impl.InterfaceFullName)) continue;
+
+                    var apiSource = ServerApiGenerator.Generate(serviceSymbol, compilation, emitServerGuard: false);
+                    if (string.IsNullOrEmpty(apiSource)) continue;
+
+                    var apiBaseName = impl.InterfaceName.StartsWith("I") && impl.InterfaceName.Length > 1
+                        && char.IsUpper(impl.InterfaceName[1])
+                        ? impl.InterfaceName.Substring(1)
+                        : impl.InterfaceName;
+                    spc.AddSource($"{apiBaseName}ServerApi.g.cs", apiSource!);
                 }
             });
 

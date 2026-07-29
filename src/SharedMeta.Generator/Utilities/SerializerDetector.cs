@@ -69,6 +69,53 @@ namespace SharedMeta.Generator.Utilities
         }
 
         /// <summary>
+        /// Detect the serializer as decided by <paramref name="assembly"/>, not by the compilation
+        /// currently running the generator.
+        /// </summary>
+        /// <remarks>
+        /// Argument packing has to match the dispatcher that unpacks it, and the dispatcher is
+        /// generated into the assembly declaring the service. A server project that references
+        /// MemoryPack while its shared assembly does not would otherwise pack raw MemoryPack against
+        /// a dispatcher reading the length-prefixed <c>IPayloadWriter</c> format: the reader consumes
+        /// a length prefix out of member data and produces a plausible-looking object whose
+        /// collections are empty. Silent, and invisible to any client call, since these are exactly
+        /// the methods clients cannot reach.
+        /// </remarks>
+        public static DetectedSerializer DetectForAssembly(IAssemblySymbol assembly, Compilation compilation)
+        {
+            // Same assembly — the compilation-level answer already reflects it, and only that path
+            // sees a source-declared [assembly: MetaSerializer].
+            if (SymbolEqualityComparer.Default.Equals(assembly, compilation.Assembly))
+                return Detect(compilation);
+
+            var metaSerializerAttr = assembly
+                .GetAttributes()
+                .FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == MetaSerializerAttributeName);
+
+            if (metaSerializerAttr != null &&
+                metaSerializerAttr.ConstructorArguments.Length > 0 &&
+                metaSerializerAttr.ConstructorArguments[0].Value is int typeValue)
+            {
+                switch (typeValue)
+                {
+                    case 1: return DetectedSerializer.MemoryPack;
+                    case 2: return DetectedSerializer.Generic;
+                    // Auto falls through to reference detection.
+                }
+            }
+
+            foreach (var module in assembly.Modules)
+            {
+                foreach (var referenced in module.ReferencedAssemblies)
+                {
+                    if (referenced.Name == MemoryPackAssemblyName) return DetectedSerializer.MemoryPack;
+                }
+            }
+
+            return DetectedSerializer.Generic;
+        }
+
+        /// <summary>
         /// Check if MemoryPack is available in the compilation.
         /// </summary>
         public static bool HasMemoryPack(Compilation compilation)

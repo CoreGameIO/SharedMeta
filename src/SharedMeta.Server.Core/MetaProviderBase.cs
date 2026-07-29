@@ -804,14 +804,30 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         {
             // Per-call config resolution: each call computes against the config branch
             // appropriate for its caller. Cached internally so it costs O(1) per call.
-            var perCallConfig = GetCachedConfigForClient(call.CallerClientVersion);
+            // Server-originated calls have no caller version and resolve against the entity
+            // owner's — one version for every config, so a multi-config entity stays consistent.
+            var callerVersion = EffectiveCallerVersion(call);
+
+            // The sync getters below can only read an already-materialized config; an async-backed
+            // provider (registry round-trip) has nothing cached for a version no one subscribed
+            // under. Warm it first rather than requiring the version to have been seen before —
+            // a config must be resolvable for whatever version the call runs as, not only for
+            // versions that happen to be cached. Only on the server-originated path: a real
+            // client's version was warmed at subscribe.
+            if (string.IsNullOrEmpty(call.CallerClientVersion))
+            {
+                await InitializeConfigAsync(ResolveClientConfigVersion(callerVersion));
+                await InitializeConfigsAsync(callerVersion);
+            }
+
+            var perCallConfig = GetCachedConfigForClient(callerVersion);
             if (perCallConfig != null)
             {
                 MetaContext.Config = perCallConfig;
-                MetaContext.ConfigVersion = ResolveClientConfigVersion(call.CallerClientVersion);
+                MetaContext.ConfigVersion = ResolveClientConfigVersion(callerVersion);
             }
             // 0.33.0+ [ServiceConfig] entries — each independently versioned/published.
-            MetaContext.Configs = GetCachedServiceConfigsForClient(call.CallerClientVersion);
+            MetaContext.Configs = GetCachedServiceConfigsForClient(callerVersion);
         }
 
         // Expose current schema version on the context so service code can branch on it
@@ -821,7 +837,9 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         try
         {
             MetaContext.CallerId = call.CallerId;
-            MetaContext.CallerClientVersion = call.CallerClientVersion;
+            // Effective, not raw: service code branching on the caller's version must see the same
+            // version the configs around it were resolved against.
+            MetaContext.CallerClientVersion = EffectiveCallerVersion(call);
             MetaContext.IsCrossOptimistic = call.IsCrossOptimistic;
             MetaContext.ServerTimeTicks = call.ServerTimeTicks;
             MetaContext.IsClientCall = isClientOriginated;
@@ -1505,6 +1523,28 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// Config version for this entity. Set during activation via InitializeConfig.
     /// </summary>
     public MetaConfigVersion ConfigVersion { get; private set; }
+
+    /// <summary>
+    /// App version of the client this entity belongs to, supplied by <c>EntityGrain</c> from its
+    /// persisted subscribers. Stands in for the caller's version on server-originated calls, which
+    /// have no client behind them.
+    /// </summary>
+    /// <remarks>
+    /// Acting on a player's entity under the server's own current version would run logic that
+    /// player's build may not have, and could advance state migration past what their client can
+    /// read — so the owner's version is the honest anchor. Every config the call resolves comes
+    /// from this one version, which is what keeps a multi-config entity internally consistent.
+    /// Null when the entity has never had a subscriber; resolution then falls back to the server
+    /// default, since there is no player to be wrong about.
+    /// </remarks>
+    public string? OwnerClientVersion { get; set; }
+
+    /// <summary>
+    /// Version to resolve this call's configs against: the caller's own when a client is behind it
+    /// (or the server API was given an explicit one), otherwise the entity owner's.
+    /// </summary>
+    protected string? EffectiveCallerVersion(RpcCall call)
+        => string.IsNullOrEmpty(call.CallerClientVersion) ? OwnerClientVersion : call.CallerClientVersion;
 
     /// <summary>
     /// Records the version. Generated providers additionally materialize

@@ -3,6 +3,7 @@ using System.Linq;
 using System.Collections.Generic;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using SharedMeta.Generator.Utilities;
 
 namespace SharedMeta.Generator.Generators
 {
@@ -128,7 +129,7 @@ namespace SharedMeta.Generator.Generators
         /// <summary>
         /// Analyze a [MetaService] interface and extract info for discovery.
         /// </summary>
-        public static DiscoveredServiceInfo? Analyze(INamedTypeSymbol symbol)
+        public static DiscoveredServiceInfo? Analyze(INamedTypeSymbol symbol, Compilation? compilation = null)
         {
             // Check for [MetaService] attribute
             var attr = symbol.GetAttributes().FirstOrDefault(a =>
@@ -192,8 +193,15 @@ namespace SharedMeta.Generator.Generators
             // whether a ForceServerPatch verdict is serveable or must degrade to Reject.
             info.PatchTrackingAvailable = PatchTrackingPolicy.PatchTrackingAvailable(symbol);
 
-            // Collect method signatures for hash validation
-            foreach (var member in symbol.GetMembers().OfType<IMethodSymbol>())
+            // Collect method signatures for hash validation. Methods whose contract is inherited
+            // from a base interface are declared on the implementing class instead — they must be
+            // in this list or they would get no method id, and every other generator switches on
+            // ids emitted here.
+            var surface = symbol.GetMembers().OfType<IMethodSymbol>().ToList();
+            if (compilation != null)
+                surface.AddRange(ImplDeclaredMethods.SymbolsForService(symbol, compilation));
+
+            foreach (var member in surface)
             {
                 if (member.MethodKind != MethodKind.Ordinary) continue;
 
@@ -217,8 +225,10 @@ namespace SharedMeta.Generator.Generators
                     if (!versionArg.Value.IsNull && versionArg.Value.Value is int v) methodVersion = v;
                     var minCompatArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "MinCompatibleVersion");
                     if (!minCompatArg.Value.IsNull && minCompatArg.Value.Value is int mcv) minCompatibleVersion = mcv;
-                    var genApiArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "GenerateClientApi");
-                    if (!genApiArg.Value.IsNull && genApiArg.Value.Value is bool g) generateClientApi = g;
+                    // Resolved through the shared rule so the server signature advertises the same
+                    // client-callability the dispatcher gate enforces — including modes that are
+                    // server-only without an explicit flag.
+                    generateClientApi = !MetaMethodFacts.IsClientApiSuppressed(member);
                     // 0.26.6+: SnapshotTiming enum value comes through as int from attribute args.
                     var deepCheckArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "DeepStateCheck");
                     if (!deepCheckArg.Value.IsNull && deepCheckArg.Value.Value is int dsc) deepStateCheck = dsc;

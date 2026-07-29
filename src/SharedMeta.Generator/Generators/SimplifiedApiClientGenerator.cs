@@ -122,6 +122,12 @@ namespace SharedMeta.Generator.Generators
 
             var methods = node.Members.OfType<MethodDeclarationSyntax>().ToList();
 
+            // Methods whose contract is inherited from a base interface have no declaration on this
+            // node; their [MetaMethod] sits on the implementing class. The client still needs them —
+            // it replays their broadcasts to keep local state in sync.
+            if (compilation != null)
+                methods.AddRange(ImplDeclaredMethods.SyntaxForService(symbol, compilation));
+
             // Get subscriber interfaces from attribute
             var subscriberInterfacesArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "SubscriberInterfaces");
             var subscriberInterfaces = new List<SubscriberInterfaceInfo>();
@@ -263,7 +269,9 @@ namespace SharedMeta.Generator.Generators
                 var scTypeName = scType!.ToDisplayString();
                 sb.AppendLine();
                 sb.AppendLine($"        /// <summary>Config '{scName}' declared via [ServiceConfig] on {interfaceName}.</summary>");
-                sb.AppendLine($"        public {scTypeName} {scName} => ({scTypeName})_serviceConfigs![{i}]!;");
+                // By type, not by index — _serviceConfigs is the entity's union across services,
+                // so this service's declaration order is not that list's order.
+                sb.AppendLine($"        public {scTypeName} {scName} => global::SharedMeta.Core.ServiceConfigLookup.Find<{scTypeName}>(_serviceConfigs)!;");
             }
 
             sb.AppendLine($"        private const string ServiceName = \"{interfaceName}\";");
@@ -2668,26 +2676,7 @@ namespace SharedMeta.Generator.Generators
         /// entities invoke the method cross-entity.
         /// </summary>
         private static bool IsGenerateClientApiFalse(MethodDeclarationSyntax method)
-        {
-            var metaMethod = method.AttributeLists.SelectMany(a => a.Attributes)
-                .FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
-            if (metaMethod?.ArgumentList == null) return false;
-            foreach (var arg in metaMethod.ArgumentList.Arguments)
-            {
-                if (arg.NameEquals?.Name.Identifier.Text == "GenerateClientApi"
-                    && arg.Expression is LiteralExpressionSyntax lit
-                    && lit.Token.Text == "false")
-                    return true;
-                // 0.22.0+: Mode = ExecutionMode.Notification is implicitly server-only — clients
-                // never originate notifications, so the client ApiClient surface skips them
-                // without requiring an explicit GenerateClientApi = false.
-                if (arg.NameEquals?.Name.Identifier.Text == "Mode"
-                    && arg.Expression is MemberAccessExpressionSyntax modeAccess
-                    && modeAccess.Name.Identifier.Text == "Notification")
-                    return true;
-            }
-            return false;
-        }
+            => MetaMethodFacts.IsClientApiSuppressed(method);
 
         /// <summary>
         /// Generates deep desync CRC comparison using PatchNode from the service's PatchWrapper.

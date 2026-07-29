@@ -319,6 +319,45 @@ api.NotifyHeartbeatSignal(DateTime.UtcNow.Ticks);  // returns instantly
 
 **Transport shape:** InProcess dispatches directly to the grain; SignalR uses `HubConnection.SendAsync`; HttpPolling POSTs to `/meta-http/signal` and responds `202 Accepted` before execution completes.
 
+### Calling a Service from Server Code — `{Service}ServerApi` — 0.35.0+
+
+For server code that is not itself running inside a meta call: admin tooling, framework grains, background jobs. Generated per `[MetaService]` that declares a `StateType`.
+
+```csharp
+await grainFactory.GetServerApi<IProfileService>(playerId).AddResourcesAsync("gold", 500);
+```
+
+Routes through `IEntityGrainBase.HandleCallFromEntityAsync` — the same server-internal entry cross-entity calls use. The call is an ordinary dispatch: replay recording, broadcast to every subscriber, persistence, sequence advance. No subscriber is required; a cold entity activates, migrates and persists. `Mode = Notification` methods route to the `[OneWay]` entry instead and return a Task that completes on dispatch.
+
+Errors surface as `InvalidOperationException` — a server-originated call has no client response channel to carry them.
+
+**Admin methods:** declare them like any other meta method and add `GenerateClientApi = false`. The server API includes them precisely because clients can't reach them:
+
+```csharp
+[MetaMethod(Mode = ExecutionMode.Server, GenerateClientApi = false)]
+void AddResources(string resource, int amount);
+```
+
+Authorization is the caller's responsibility — reaching this class already means running inside the silo. Emitted into shared projects behind `#if SHAREDMETA_SERVER` and into server projects from referenced assemblies.
+
+### Inheriting a Service Contract — `[MetaMethod]` on the Implementation — 0.35.0+
+
+Method ids and client broadcast replay are built per compilation from method **declarations**, so a `[MetaService]` interface that merely inherits a contract from a referenced assembly would generate nothing. Put `[MetaMethod]` on the implementing class instead and the method joins the service surface normally:
+
+```csharp
+[MetaService(StateType = typeof(ProfileState))]
+public interface IProfileLobbyService : IMetaService, ILobbyRequester { }   // empty
+
+[MetaServiceImpl(typeof(IProfileLobbyService), typeof(ProfileState))]
+public partial class ProfileLobbyService : IProfileLobbyService
+{
+    [MetaMethod(Mode = ExecutionMode.Notification)]
+    public void OnMatchFound(MatchFoundEvent evt) { State.MatchId = evt.MatchId; }
+}
+```
+
+The base interface still guarantees the signature: the class must implement the inherited member, so argument drift is a compile error, not a silent protocol break. Generated code calls through the interface-typed variable and the compiler resolves the inherited member.
+
 ### Notification Methods (Entity → Entity Fire-and-Forget) — 0.22.0+
 
 Peer of Signal on the cross-entity axis — Signal is "client → entity, no wait", Notification is "entity → entity, no wait". Use when the caller doesn't need to block on the target's completion.
@@ -350,7 +389,7 @@ public partial class ProfileService : IProfileService
 
 **Constraints (validated via `#error`):**
 - Return type must be `Task` or `void` — no `Task<T>` (no value to return)
-- Implicit `GenerateClientApi = false` — clients never originate Notifications (the `IsGenerateClientApiFalse` helper auto-returns true for `Mode = Notification`)
+- Implicit `GenerateClientApi = false` — clients never originate Notifications. Enforced on both sides since 0.35.0: no client API is generated, the dispatcher rejects a client-originated call, and negotiation marks the method `Rejected` while still mapping server→client so broadcasts replay. (Before 0.35.0 only the client-side suppression happened — a forged packet reached the body.)
 - Cannot be overridden at runtime — structural trait
 
 **Caller-side effects you lose:**
@@ -1358,6 +1397,7 @@ The SharedMeta source generator (`CoreGame.SharedMeta.Generator`) produces:
 |-------|-----------------|
 | `[MetaService]` interface | `*Dispatcher.g.cs` — server-side method routing |
 | `[MetaService]` interface | `*ApiClient.g.cs` — typed client API with async methods |
+| `[MetaService]` interface | `*ServerApi.g.cs` — typed server-side API for calling the service from server code |
 | `[MetaService]` interface | `*ServiceExtensions.g.cs` — DI registration helpers |
 | `[MetaServiceImpl]` class | `*.Context.g.cs` — Context/State/dependency injection |
 | `ISharedState` class | `*PatchWrapper.g.cs` — change tracking for ServerPatch mode (nested-object fields have get+set via implicit operator; collections have get+set for reassignment) |

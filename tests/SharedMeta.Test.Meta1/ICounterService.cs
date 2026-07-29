@@ -49,6 +49,14 @@ namespace SharedMeta.Test.Meta1
         int AddClamped(int value);
 
         /// <summary>
+        /// Admin-shaped method: server-only, single complex argument carrying a collection.
+        /// Returns the number of dictionary entries it actually received, so a test can tell an
+        /// argument that arrived intact from one that arrived default-constructed.
+        /// </summary>
+        [MetaMethod(Alias = "ApplyGrant", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+        int ApplyGrant(GrantRequest request);
+
+        /// <summary>
         /// Throws if value is negative. Used to test framework-level error handling.
         /// Uses Optimistic mode so the exception fires during local execution (where SetError is).
         /// </summary>

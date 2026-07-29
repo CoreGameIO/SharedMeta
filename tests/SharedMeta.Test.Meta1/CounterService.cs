@@ -114,6 +114,14 @@ namespace SharedMeta.Test.Meta1
             return clamped;
         }
 
+        public int ApplyGrant(GrantRequest request)
+        {
+            var state = GetState();
+            foreach (var amount in request.Currencies.Values)
+                state.Sum += amount;
+            return request.Currencies.Count;
+        }
+
         public void ThrowIfNegative(int value)
         {
             if (value < 0)

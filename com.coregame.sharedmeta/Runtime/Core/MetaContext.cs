@@ -187,16 +187,25 @@ namespace SharedMeta.Core
         public MetaConfigVersion ConfigVersion { get; set; }
 
         /// <summary>
-        /// Configs declared via <see cref="ServiceConfigAttribute"/> on the service interface —
-        /// each independently versioned/published, all symmetric (no privileged "primary").
-        /// Positional: index corresponds to attribute declaration order. Generated named typed
-        /// accessors read this list by literal index (e.g. Context.Configs[0]). Resolved
-        /// synchronously in every execution mode, same per-call cache mechanism as the legacy
-        /// <see cref="Config"/>. Null or empty when the service has no [ServiceConfig] attributes.
-        /// Independent of <see cref="Config"/>/<see cref="ConfigVersion"/>, which continue to be
-        /// populated only by the legacy <c>[MetaService(ConfigType=...)]</c> path.
+        /// Configs declared via <see cref="ServiceConfigAttribute"/> — resolved synchronously in
+        /// every execution mode, same per-call cache mechanism as the legacy <see cref="Config"/>.
+        /// Null or empty when no service on this entity declares any. Independent of
+        /// <see cref="Config"/>/<see cref="ConfigVersion"/>, which stay on the legacy
+        /// <c>[MetaService(ConfigType=...)]</c> path.
+        /// <para>
+        /// The list is per ENTITY, not per service: several services can share one state, and this
+        /// holds the union of their declarations, deduplicated by type. Read it through
+        /// <see cref="GetServiceConfig{TConfig}"/> — a service's own declaration order is not this
+        /// list's order, so a service-local index would address another service's config.
+        /// </para>
         /// </summary>
         public IReadOnlyList<object>? Configs { get; set; }
+
+        /// <summary>
+        /// The <see cref="Configs"/> entry of type <typeparamref name="TConfig"/>.
+        /// </summary>
+        public TConfig? GetServiceConfig<TConfig>() where TConfig : class
+            => ServiceConfigLookup.Find<TConfig>(Configs);
 
         /// <summary>
         /// Resolved <see cref="MetaConfigVersion"/> for each entry in <see cref="Configs"/>,

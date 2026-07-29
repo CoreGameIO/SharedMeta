@@ -30,6 +30,12 @@ namespace SharedMeta.Generator.Generators
         {
             var methods = node.Members.OfType<MethodDeclarationSyntax>().ToList();
 
+            // Methods whose contract is inherited from a base interface have no declaration on this
+            // node; their [MetaMethod] sits on the implementing class. Dispatch targets an
+            // interface-typed variable, so the inherited member resolves without further work.
+            if (interfaceSymbol != null && compilation != null)
+                methods.AddRange(ImplDeclaredMethods.SyntaxForService(interfaceSymbol, compilation));
+
             // Detect serializer type
             var serializer = compilation != null ? SerializerDetector.Detect(compilation) : DetectedSerializer.Generic;
 
@@ -757,6 +763,11 @@ namespace SharedMeta.Generator.Generators
         private static MetaMethodInfo ReadMetaMethodInfo(MethodDeclarationSyntax method)
         {
             var info = new MetaMethodInfo { Alias = method.Identifier.Text };
+
+            // Covers the explicit flag AND structurally server-only modes; the gate below must
+            // fire for both, otherwise a forged client packet reaches the method body.
+            info.GenerateClientApi = !MetaMethodFacts.IsClientApiSuppressed(method);
+
             var metaMethod = method.AttributeLists.SelectMany(a => a.Attributes)
                 .FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
             if (metaMethod?.ArgumentList == null) return info;
@@ -779,10 +790,8 @@ namespace SharedMeta.Generator.Generators
                         if (arg.Expression is LiteralExpressionSyntax fpLit)
                             info.ForcePersist = fpLit.Token.ValueText == "true";
                         break;
-                    case "GenerateClientApi":
-                        if (arg.Expression is LiteralExpressionSyntax gaLit && gaLit.Token.ValueText == "false")
-                            info.GenerateClientApi = false;
-                        break;
+                    // GenerateClientApi is resolved above via MetaMethodFacts — it also folds in
+                    // the implicit server-only modes, which this per-arg loop cannot see.
                     case "DeepStateCheck":
                         if (arg.Expression is MemberAccessExpressionSyntax dscAccess)
                         {

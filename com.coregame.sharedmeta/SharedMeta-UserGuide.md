@@ -702,6 +702,29 @@ See [docs/GUIDE.md § Notification Methods](../docs/GUIDE.md#notification-method
 
 ---
 
+## Calling a Service from Server Code (0.35.0+)
+
+Admin tools, framework grains and background jobs run outside any meta call, so they have no `Context` and no cross-entity accessor. The generator emits a typed server-side API for every service that declares a `StateType`:
+
+```csharp
+await grainFactory.GetServerApi<IProfileService>(playerId).AddResourcesAsync("gold", 500);
+```
+
+The call dispatches through the entity grain like any other: state changes are recorded, broadcast to every subscriber and persisted, so a connected player sees the effect right away. The entity doesn't need to be active — a cold one activates, migrates and persists.
+
+**Admin-only methods** are ordinary meta methods that clients cannot call:
+
+```csharp
+[MetaMethod(Mode = ExecutionMode.Server, GenerateClientApi = false)]
+void AddResources(string resource, int amount);
+```
+
+`GenerateClientApi = false` means no client API is generated **and** the server rejects a forged client packet — while the server API still exposes the method. Authorization is up to you: reaching this API already means running inside the silo. For a web admin panel, add a thin ASP.NET endpoint in the silo host and call the server API from it.
+
+This code is server-only — it compiles in your server project and is fenced out of Unity/client builds, which have no Orleans.
+
+---
+
 ## Deterministic Random
 
 **Never use `System.Random` in shared logic.** It causes desyncs.

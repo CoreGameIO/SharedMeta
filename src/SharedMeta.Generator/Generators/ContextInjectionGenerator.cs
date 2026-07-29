@@ -158,7 +158,9 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"        /// <summary>Config '{scName}' declared via [ServiceConfig] on {serviceInterfaceSymbol.Name} — independently versioned/published.</summary>");
                     sb.AppendLine($"        protected {scTypeName} {scName}");
                     sb.AppendLine($"        {{");
-                    sb.AppendLine($"            get => _serviceConfig_{scName} ?? ({scTypeName})Context.Configs![{i}]!;");
+                    // By type, not by index: Context.Configs is the union of every service on this
+                    // state, so this service's declaration order is not that list's order.
+                    sb.AppendLine($"            get => _serviceConfig_{scName} ?? Context.GetServiceConfig<{scTypeName}>()!;");
                     sb.AppendLine($"            set => _serviceConfig_{scName} = value;");
                     sb.AppendLine($"        }}");
                 }

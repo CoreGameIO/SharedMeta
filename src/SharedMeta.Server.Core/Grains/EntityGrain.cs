@@ -774,19 +774,7 @@ namespace SharedMeta.Server.Core.Grains
 
             try
             {
-                // Activate patch tracking when any subscriber needs the patch fallback
-                // (method-level MinCompatibleVersion mismatch OR service-level
-                // ConfigStructureBoundary trigger). The resulting broadcast carries BOTH
-                // ReplayPayload and PatchBytes; per-subscriber tailoring strips one on fan-out.
-                bool requirePatchForFanOut =
-                       (_forcePatchMethodRefs != null && call.MethodId < _forcePatchMethodRefs.Length && _forcePatchMethodRefs[call.MethodId] > 0)
-                    || _forcePatchServiceRefs.ContainsKey(callServiceName);
-                if (requirePatchForFanOut)
-                {
-                    SharedMeta.Server.Core.Telemetry.MetricEvents.Compat.ForcePatchApplied(
-                        callServiceName, callMethodName,
-                        _forcePatchServiceRefs.ContainsKey(callServiceName) ? "service" : "method");
-                }
+                bool requirePatchForFanOut = ShouldForcePatchForFanOut(call.MethodId, callServiceName, callMethodName);
 
                 // isClientOriginated: true → provider rejects [MetaMethod(GenerateClientApi=false)]
                 // methods. Cross-entity peers land at HandleCallFromEntityAsync below with false.
@@ -889,7 +877,19 @@ namespace SharedMeta.Server.Core.Grains
                 // calling entity's public method already authorized the originating client
                 // through its own access policy. [MetaMethod(GenerateClientApi=false)] methods
                 // are reachable here.
-                var providerResult = await _provider.HandleCallAsync(call, isClientOriginated: false, entitySequenceNumber: operationSequence);
+                bool requirePatchForFanOut = ShouldForcePatchForFanOut(call.MethodId, callServiceName, callMethodName);
+
+                // No client behind this call, so hand the provider the version of the player the
+                // entity belongs to. Recomputed per call rather than cached at activation: the
+                // subscriber set changes underneath us as players connect and drop.
+                if (_provider is MetaProviderBase<TState> mpbOwner)
+                    mpbOwner.OwnerClientVersion = ResolveOwnerClientVersion();
+
+                var providerResult = await _provider.HandleCallAsync(
+                    call,
+                    isClientOriginated: false,
+                    requirePatchForFanOut: requirePatchForFanOut,
+                    entitySequenceNumber: operationSequence);
                 forcePersist = providerResult.ForcePersist;
 
                 ReadOnlyMemory<byte> resultPayload = default;
@@ -1169,6 +1169,80 @@ namespace SharedMeta.Server.Core.Grains
             ref var count = ref System.Runtime.InteropServices.CollectionsMarshal
                 .GetValueRefOrAddDefault(_forcePatchServiceRefs, serviceName, out _);
             count++;
+        }
+
+        /// <summary>
+        /// Decides whether this call must produce a patch-bearing broadcast: some subscriber
+        /// needs the ServerPatch fallback (method-level MinCompatibleVersion mismatch, or
+        /// service-level ConfigStructureBoundary trigger). The resulting broadcast carries BOTH
+        /// ReplayPayload and PatchBytes; per-subscriber tailoring strips one on fan-out.
+        /// </summary>
+        /// <remarks>
+        /// Applied to server-originated calls (cross-entity, server-side service API, lobby
+        /// notifications) as well as client RPCs. A subscriber that cannot run the diverged
+        /// method body needs the diff regardless of who initiated the call — shipping a
+        /// replay-only broadcast to such a client makes it replay a body it is known to
+        /// disagree with, which is a silent desync.
+        /// </remarks>
+        private bool ShouldForcePatchForFanOut(ushort methodId, string serviceName, string methodName)
+        {
+            bool byMethod = _forcePatchMethodRefs != null
+                && methodId < _forcePatchMethodRefs.Length
+                && _forcePatchMethodRefs[methodId] > 0;
+            bool byService = _forcePatchServiceRefs.ContainsKey(serviceName);
+            if (!byMethod && !byService) return false;
+
+            SharedMeta.Server.Core.Telemetry.MetricEvents.Compat.ForcePatchApplied(
+                serviceName, methodName, byService ? "service" : "method");
+            return true;
+        }
+
+        /// <summary>
+        /// App version of the client this entity belongs to, from its persisted subscribers.
+        /// Null when it has never had one.
+        /// </summary>
+        /// <remarks>
+        /// Subscriber versions survive reactivation, unlike the runtime config pin, which is
+        /// dropped once the last subscriber leaves — so this still answers for an offline player,
+        /// which is exactly the admin case.
+        /// <para>
+        /// With several subscribers on a shared entity, the LOWEST version wins: running under the
+        /// oldest client's branch is the only choice that cannot drive state past what one of them
+        /// can read. Callers needing a different branch pass an explicit version to the server API.
+        /// </para>
+        /// </remarks>
+        private string? ResolveOwnerClientVersion()
+        {
+            string? lowest = null;
+            foreach (var subscriber in _persistentState.State.Subscribers.Values)
+            {
+                var version = subscriber.ClientVersion;
+                if (string.IsNullOrEmpty(version)) continue;
+                if (lowest == null || CompareClientVersions(version!, lowest) < 0) lowest = version;
+            }
+            return lowest;
+        }
+
+        /// <summary>
+        /// Ordinal Major.Minor.Patch comparison. Unparsable versions sort as 0.0.0, which keeps
+        /// them "oldest" and therefore the conservative pick.
+        /// </summary>
+        private static int CompareClientVersions(string left, string right)
+        {
+            ParseVersion(left, out var lMajor, out var lMinor, out var lPatch);
+            ParseVersion(right, out var rMajor, out var rMinor, out var rPatch);
+            if (lMajor != rMajor) return lMajor.CompareTo(rMajor);
+            if (lMinor != rMinor) return lMinor.CompareTo(rMinor);
+            return lPatch.CompareTo(rPatch);
+        }
+
+        private static void ParseVersion(string value, out int major, out int minor, out int patch)
+        {
+            major = minor = patch = 0;
+            var parts = value.Split('.');
+            if (parts.Length > 0) int.TryParse(parts[0], out major);
+            if (parts.Length > 1) int.TryParse(parts[1], out minor);
+            if (parts.Length > 2) int.TryParse(parts[2], out patch);
         }
 
         private void DecrementServiceRef(string serviceName)
