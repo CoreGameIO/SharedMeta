@@ -26,6 +26,7 @@ namespace SharedMeta.Server.Core.Session
         private readonly ILogger<SessionManagerGrain> _logger;
         private readonly IEntityGrainResolver _entityGrainResolver;
         private readonly SessionManagerOptions _options;
+        private readonly MetaServerSignature? _serverSignature;
 
         // Session state
         private readonly string _playerId;
@@ -211,6 +212,29 @@ namespace SharedMeta.Server.Core.Session
             return count;
         }
 
+        /// <summary>
+        /// State type of a cross-entity call's target. The call result carries only a methodId,
+        /// and a method belongs to a service which is bound to exactly one state — so the server
+        /// signature answers this outright.
+        /// </summary>
+        /// <remarks>
+        /// The sole-subscription fallback covers a host that registered no signature (bare test
+        /// harness): one subscription under that entityId is unambiguous. Returning "" when even
+        /// that is unclear keeps the bookkeeping inert rather than attributing a sequence bump to
+        /// the wrong entity, which would corrupt ordering for a real subscription.
+        /// </remarks>
+        private string ResolveCrossCallStateType(string entityId, ushort methodId)
+        {
+            var fromSignature = _serverSignature?.GetMethodEntry(methodId)?.StateTypeName;
+            if (!string.IsNullOrEmpty(fromSignature)) return fromSignature!;
+
+            if (_subscribedEntities.TryGetValue(entityId, out var byType) && byType.Count == 1)
+            {
+                foreach (var onlyStateType in byType.Keys) return onlyStateType;
+            }
+            return "";
+        }
+
         // 0.24.0+ Persistent state — see SessionManagerGrainState. Written on
         // graceful disconnect + OnDeactivateAsync; read on OnActivateAsync. Hot path doesn't write.
         private readonly IPersistentState<SessionManagerGrainState> _persistentState;
@@ -220,8 +244,10 @@ namespace SharedMeta.Server.Core.Session
             ILogger<SessionManagerGrain> logger,
             IEntityGrainResolver entityGrainResolver,
             [PersistentState("sessionMgr", "Default")] IPersistentState<SessionManagerGrainState> persistentState,
-            IOptions<SessionManagerOptions>? options = null)
+            IOptions<SessionManagerOptions>? options = null,
+            MetaServerSignature? serverSignature = null)
         {
+            _serverSignature = serverSignature;
             _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
@@ -964,14 +990,14 @@ namespace SharedMeta.Server.Core.Session
             {
                 foreach (var crossCall in result.CrossEntityCalls)
                 {
-                    // Known residual limitation: CrossEntityOperationInfo carries MethodId but no
-                    // state-type name, and there's no server-side MethodId->StateType registry
-                    // (unlike the client's _configsByMethodId) to resolve one. Cross-call ordering
-                    // bookkeeping is parked under a dedicated empty-string bucket, isolated from
-                    // this player's own (entityId, stateTypeName)-keyed subscriptions above — but
-                    // two cross-called sibling entities that happen to share an entityId with each
-                    // other would still conflate here. Narrow edge case, not fixed this pass.
-                    var crossState = GetOrCreateEntityState(crossCall.EntityId, "");
+                    // Must land in the SAME (entityId, stateTypeName) bucket the target's own
+                    // subscription uses. Keying this anywhere else silently strands the target:
+                    // its grain sequence keeps advancing on every cross-call while the session's
+                    // tracked value stands still, and the first direct call to that entity then
+                    // reads as a sequence gap, defers its response forever, and the client's
+                    // request never resolves.
+                    var crossState = GetOrCreateEntityState(
+                        crossCall.EntityId, ResolveCrossCallStateType(crossCall.EntityId, crossCall.MethodId));
                     if (crossState.KnownEntitySequence == crossCall.EntitySequenceNumber - 1)
                     {
                         crossState.KnownEntitySequence = crossCall.EntitySequenceNumber;

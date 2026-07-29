@@ -116,6 +116,15 @@ namespace SharedMeta.Core.Transport
         public string ServiceName { get; init; } = "";
         public string Alias { get; init; } = "";
 
+        /// <summary>
+        /// FQN of the state the owning service is bound to — the second half of an entity's
+        /// identity, since the same entityId is a valid, independent entity under a different
+        /// state type. Lets a server-side holder of a bare <c>methodId</c> (a cross-entity call
+        /// result, which carries no state type) address the right entity. Empty when the
+        /// service declares no state.
+        /// </summary>
+        public string StateTypeName { get; init; } = "";
+
         /// <summary><c>[MetaMethod(Version = N)]</c>. Zero for legacy/unversioned.</summary>
         public int Version { get; init; }
 

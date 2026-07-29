@@ -32,8 +32,4 @@
     <PackageReference Include="Serilog.AspNetCore" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="data\sessionMgr\" />
-  </ItemGroup>
-
 </Project>

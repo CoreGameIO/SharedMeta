@@ -980,9 +980,10 @@ namespace SharedMeta.Generator.Generators
                 }
                 // IConfigVersionResolver is optional server-wide infrastructure (Global-scope
                 // client-version substitution) — most projects never register it, so its absence
-                // is expected and stays silent.
+                // is a normal configuration, not a fault. Debug, not Error: an Error here is read
+                // as "the server is misconfigured" on every entity activation of a healthy host.
                 sb.AppendLine($"                try {{ _configVersionResolver = ServiceResolver(typeof(SharedMeta.Server.Core.IConfigVersionResolver)) as SharedMeta.Server.Core.IConfigVersionResolver; }}");
-                sb.AppendLine($"                catch (Exception e) {{ logger?.LogError(e, \"Unable resolve ConfigVersionResolver\"); }}");
+                sb.AppendLine($"                catch (Exception e) {{ logger?.LogDebug(e, \"No IConfigVersionResolver registered — server-originated calls fall back to the entity owner's version.\"); }}");
                 // Secondary/[ServiceConfig] providers are NOT optional — the state declared them,
                 // so a missing DI registration is a real misconfiguration. Previously caught and
                 // discarded silently: the field stayed null, GetCachedServiceConfigVersionsForClient

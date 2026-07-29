@@ -607,6 +607,16 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                SignatureHash = {SignatureHashGenerator.FormatHashLiteral(serverSignatureHash)},");
             sb.AppendLine("                Methods = new System.Collections.Generic.List<global::SharedMeta.Core.Transport.ServerMethodEntry>");
             sb.AppendLine("                {");
+            // State type per service, so a server-side holder of a bare methodId can address the
+            // owning entity. Deliberately NOT folded into serverSignatureHash: it says nothing
+            // about what a client may call, so folding it in would invalidate every cached
+            // annotation for a purely server-internal lookup.
+            var stateTypeByService = new Dictionary<string, string>(System.StringComparer.Ordinal);
+            foreach (var svc in services)
+            {
+                if (!string.IsNullOrEmpty(svc.InterfaceName) && !string.IsNullOrEmpty(svc.StateTypeFullName))
+                    stateTypeByService[svc.InterfaceName] = svc.StateTypeFullName!;
+            }
             // Global index assigned in canonical sort order — stable per server build.
             // Used as the server-side dispatch key (jump table on ushort) and as the
             // wire identifier after capability negotiation translates client local ids.
@@ -616,6 +626,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                    new global::SharedMeta.Core.Transport.ServerMethodEntry");
                 sb.AppendLine("                    {");
                 sb.AppendLine($"                        ServiceName = \"{s.ServiceName}\",");
+                sb.AppendLine($"                        StateTypeName = \"{(stateTypeByService.TryGetValue(s.ServiceName, out var stFqn) ? stFqn : "")}\",");
                 sb.AppendLine($"                        Alias = \"{s.MethodAlias}\",");
                 sb.AppendLine($"                        Version = {s.Version},");
                 sb.AppendLine($"                        MinCompatibleVersion = {s.MinCompatibleVersion},");
