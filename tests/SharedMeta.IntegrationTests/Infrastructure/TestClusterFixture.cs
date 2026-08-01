@@ -83,7 +83,9 @@ public class TestClusterFixture : IAsyncLifetime
     /// Server-side RPC reordering is configured globally on the silo via
     /// <see cref="SiloConfigurator.Configure"/> (<c>SessionManagerOptions.EnforceRpcOrder = true</c>).
     /// </summary>
-    public IMetaConnectionHandlerFactory CreateHandlerFactory(MetaTransportOptions? transportOptions = null)
+    public IMetaConnectionHandlerFactory CreateHandlerFactory(
+        MetaTransportOptions? transportOptions = null,
+        IPlayerIdentityValidator? identityValidator = null)
     {
         // 0.24.0+ Construct IClientSignatureRegistry + MetaServerSignature outside the silo
         // DI graph so MetaConnectionHandler can translate client→server MethodId on every RPC.
@@ -102,7 +104,8 @@ public class TestClusterFixture : IAsyncLifetime
             schemaRegistry: null,
             versionPolicy: null,
             signatureRegistry: sigRegistry,
-            serverSignature: serverSignature);
+            serverSignature: serverSignature,
+            identityValidator: identityValidator);
     }
 
     /// <summary>

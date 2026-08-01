@@ -182,5 +182,10 @@ namespace SharedMeta.Auth
         {
             return Task.FromResult(new List<string>(_state.State.AuthKeys));
         }
+
+        public Task<bool> HasKeysAsync()
+        {
+            return Task.FromResult(_state.State.AuthKeys.Count > 0);
+        }
     }
 }

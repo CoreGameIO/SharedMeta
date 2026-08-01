@@ -35,6 +35,11 @@ namespace SharedMeta.Server.Core.Transport
         /// mode every connection is treated as "negotiation disabled."
         /// </summary>
         private readonly Session.IClientSignatureRegistry? _signatureRegistry;
+        /// <summary>
+        /// Null when the host registered no identity source — the SessionConnect identity gate is
+        /// then skipped, matching pre-0.37.1 behaviour.
+        /// </summary>
+        private readonly IPlayerIdentityValidator? _identityValidator;
         private ISessionObserver? _observerRef;
         private Timer? _observerRenewalTimer;
         private static readonly TimeSpan ObserverRenewalInterval = TimeSpan.FromSeconds(60);
@@ -107,7 +112,8 @@ namespace SharedMeta.Server.Core.Transport
             SharedMeta.Core.Patch.IPatchSchemaRegistry? schemaRegistry = null,
             ClientVersionPolicy? versionPolicy = null,
             Session.IClientSignatureRegistry? signatureRegistry = null,
-            SharedMeta.Core.Transport.MetaServerSignature? serverSignature = null)
+            SharedMeta.Core.Transport.MetaServerSignature? serverSignature = null,
+            IPlayerIdentityValidator? identityValidator = null)
         {
             _connectionId = connectionId ?? throw new ArgumentNullException(nameof(connectionId));
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
@@ -120,6 +126,7 @@ namespace SharedMeta.Server.Core.Transport
             _versionPolicy = versionPolicy;
             _signatureRegistry = signatureRegistry;
             _serverSignature = serverSignature;
+            _identityValidator = identityValidator;
         }
 
         /// <summary>
@@ -150,6 +157,35 @@ namespace SharedMeta.Server.Core.Transport
                 if (string.IsNullOrEmpty(request.PlayerId))
                 {
                     return new SessionConnectResponse { Success = false, Error = "PlayerId is required" };
+                }
+
+                // Identity gate. A stateless JWT keeps authenticating a PlayerId whose account no
+                // longer exists (auth store wiped / account deleted) until the token expires, and
+                // every downstream grain — version grain, session manager, entity — would then
+                // materialise state for a player nobody can ever log in as again. Must run before
+                // those, since they all persist on first touch. Only meaningful when the PlayerId
+                // is claim-derived: with RequireAuthentication off it's whatever the client sent.
+                if (_identityValidator != null
+                    && _transportOptions?.RequireAuthentication == true
+                    && _transportOptions.ValidatePlayerIdentity)
+                {
+                    var identityKnown = await _identityValidator.ExistsAsync(request.PlayerId);
+                    if (!identityKnown)
+                    {
+                        _logger.LogWarning(
+                            "[Handler] Authentication rejected — PlayerId {PlayerId} carries a valid token but is unknown to the auth store",
+                            request.PlayerId);
+                        return new SessionConnectResponse
+                        {
+                            Success = false,
+                            FailureReason = SessionConnectFailureReason.IdentityUnknown,
+                            // Wording matters: client-side auth-failure detection commonly keys off
+                            // "Authentication" / "Unauthorized" in the message, and this rejection
+                            // must route to a full re-login rather than a plain connect retry.
+                            Error = $"Authentication rejected: player '{request.PlayerId}' is not known to this server. " +
+                                    "The token outlived its account — discard the cached token and log in again.",
+                        };
+                    }
                 }
 
                 // 0.24.0+ Optionally reject Hash=0 (legacy / opt-out clients). Hosts that have
@@ -1073,6 +1109,7 @@ namespace SharedMeta.Server.Core.Transport
         private readonly SharedMeta.Core.Patch.IPatchSchemaRegistry? _schemaRegistry;
         private readonly ClientVersionPolicy? _versionPolicy;
         private readonly Session.IClientSignatureRegistry? _signatureRegistry;
+        private readonly IPlayerIdentityValidator? _identityValidator;
 
         public MetaConnectionHandlerFactory(
             IGrainFactory grainFactory,
@@ -1083,7 +1120,8 @@ namespace SharedMeta.Server.Core.Transport
             SharedMeta.Core.Patch.IPatchSchemaRegistry? schemaRegistry = null,
             ClientVersionPolicy? versionPolicy = null,
             Session.IClientSignatureRegistry? signatureRegistry = null,
-            SharedMeta.Core.Transport.MetaServerSignature? serverSignature = null)
+            SharedMeta.Core.Transport.MetaServerSignature? serverSignature = null,
+            IPlayerIdentityValidator? identityValidator = null)
         {
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
@@ -1094,13 +1132,15 @@ namespace SharedMeta.Server.Core.Transport
             _versionPolicy = versionPolicy;
             _signatureRegistry = signatureRegistry;
             _serverSignature = serverSignature;
+            _identityValidator = identityValidator;
         }
 
         public IMetaConnectionHandler Create(string connectionId, IBroadcastSender broadcastSender)
         {
             var logger = _loggerFactory.CreateLogger<MetaConnectionHandler>();
             return new MetaConnectionHandler(connectionId, _grainFactory, _entityGrainResolver, broadcastSender, logger,
-                _transportOptions, _serializer, _schemaRegistry, _versionPolicy, _signatureRegistry, _serverSignature);
+                _transportOptions, _serializer, _schemaRegistry, _versionPolicy, _signatureRegistry, _serverSignature,
+                _identityValidator);
         }
     }
 }

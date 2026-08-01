@@ -17,6 +17,18 @@ namespace SharedMeta.Server.Core.Transport
         public bool RequireAuthentication { get; set; }
 
         /// <summary>
+        /// When true (default), <c>SessionConnect</c> asks the registered
+        /// <see cref="IPlayerIdentityValidator"/> whether the token's PlayerId still exists and
+        /// rejects it if not. Only takes effect together with <see cref="RequireAuthentication"/>:
+        /// without it a PlayerId is client-supplied rather than claim-derived, so there is no auth
+        /// store to check it against.
+        ///
+        /// Set to false when authenticated connections may legitimately carry identities the auth
+        /// store doesn't hold (service accounts, bots, externally minted tokens).
+        /// </summary>
+        public bool ValidatePlayerIdentity { get; set; } = true;
+
+        /// <summary>
         /// When true, clients can enable debug features (deep desync detection) via SetDebugOptions.
         /// Default: false (production safe). Enable during development/testing.
         /// </summary>

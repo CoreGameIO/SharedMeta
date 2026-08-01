@@ -3,7 +3,9 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.IdentityModel.Tokens;
+using SharedMeta.Server.Core.Transport;
 
 namespace SharedMeta.Auth
 {
@@ -28,6 +30,10 @@ namespace SharedMeta.Auth
 
             services.AddSingleton(options);
             services.AddSingleton<JwtTokenService>();
+
+            // Lets SessionConnect reject tokens whose account no longer exists. TryAdd so a host
+            // with its own identity source (registered before this call) keeps it.
+            services.TryAddSingleton<IPlayerIdentityValidator, AuthIndexPlayerIdentityValidator>();
 
             services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 .AddJwtBearer(jwt =>

@@ -2466,7 +2466,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                });");
             sb.AppendLine("            }");
             sb.AppendLine();
-            sb.AppendLine("            // Register MetaConnectionHandlerFactory with signature validator + transport options + serializer + schema registry + version policy + client signature registry + server signature");
+            sb.AppendLine("            // Register MetaConnectionHandlerFactory with signature validator + transport options + serializer + schema registry + version policy + client signature registry + server signature + player identity validator");
             sb.AppendLine("            services.AddSingleton<SharedMeta.Server.Core.Transport.IMetaConnectionHandlerFactory>(sp =>");
             sb.AppendLine("                new SharedMeta.Server.Core.Transport.MetaConnectionHandlerFactory(");
             sb.AppendLine("                    sp.GetRequiredService<Orleans.IGrainFactory>(),");
@@ -2477,7 +2477,8 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                    sp.GetService<SharedMeta.Core.Patch.IPatchSchemaRegistry>(),");
             sb.AppendLine("                    sp.GetService<SharedMeta.Server.Core.Transport.ClientVersionPolicy>(),");
             sb.AppendLine("                    sp.GetService<SharedMeta.Server.Core.Session.IClientSignatureRegistry>(),");
-            sb.AppendLine("                    sp.GetService<SharedMeta.Core.Transport.MetaServerSignature>()));");
+            sb.AppendLine("                    sp.GetService<SharedMeta.Core.Transport.MetaServerSignature>(),");
+            sb.AppendLine("                    sp.GetService<SharedMeta.Server.Core.Transport.IPlayerIdentityValidator>()));");
             sb.AppendLine();
 
             sb.AppendLine("            return services;");

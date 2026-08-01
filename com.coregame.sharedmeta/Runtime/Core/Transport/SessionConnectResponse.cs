@@ -139,6 +139,15 @@ namespace SharedMeta.Core.Transport
         /// whether to re-attempt subscribes from the game side.
         /// </summary>
         SubscriptionReclaimFailed = 2,
+
+        /// <summary>
+        /// The token authenticated, but its PlayerId is unknown to the server's auth store —
+        /// the account behind the token is gone (auth data wiped, environment reset, account
+        /// deleted) while the token itself is still within its lifetime. Not recoverable by
+        /// reconnecting: the client must discard the cached token and perform a full login,
+        /// which yields a fresh PlayerId. Retrying with the same credential loops forever.
+        /// </summary>
+        IdentityUnknown = 3,
     }
 
     /// <summary>

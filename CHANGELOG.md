@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.37.1] - 2026-08-01
+
+### Fixed
+
+- `SessionConnect` no longer accepts a token whose player no longer exists. A JWT is stateless, so wiping the auth store left valid tokens in client hands: the transport trusted the `sub` claim and entity grains lazily created empty state under a PlayerId nobody could log in as again — an orphan profile with no auth record, until the access token expired.
+
+### Added
+
+- `IPlayerIdentityValidator` (`SharedMeta.Server.Core.Transport`) — asked at `SessionConnect` whether the token's PlayerId is a known account. `AddMetaAuth` registers an auth-index-backed implementation (`TryAdd`, so a host's own registration wins); with nothing registered the check is skipped.
+- `SessionConnectFailureReason.IdentityUnknown` — rejection carries it, and the error message says "Authentication rejected", so existing client-side auth-failure handling (`MetaClientOptions.OnConnectAuthFailedAsync`) drops the cached token and re-logins instead of retrying the same dead credential.
+- `MetaTransportOptions.ValidatePlayerIdentity` (default `true`) — opt-out for hosts whose authenticated connections may legitimately carry identities the auth store doesn't hold (service accounts, externally minted tokens). The gate also requires `RequireAuthentication`: without it the PlayerId is client-supplied, not claim-derived.
+- `IAuthIndexGrain.HasKeysAsync()` — existence probe without allocating and serializing the key list.
+
 ## [0.37.0] - 2026-08-01
 
 ### Fixed

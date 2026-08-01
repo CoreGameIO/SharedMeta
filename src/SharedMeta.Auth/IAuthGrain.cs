@@ -56,6 +56,13 @@ namespace SharedMeta.Auth
 
         /// <summary>Get all auth keys linked to this player.</summary>
         Task<List<string>> GetKeysAsync();
+
+        /// <summary>
+        /// Whether this player has at least one auth key — i.e. whether the account exists at all.
+        /// Cheaper than <see cref="GetKeysAsync"/> for a pure existence probe: no list to allocate
+        /// and serialize back across the grain call.
+        /// </summary>
+        Task<bool> HasKeysAsync();
     }
 
     /// <summary>

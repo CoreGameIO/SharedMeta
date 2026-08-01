@@ -3068,6 +3068,43 @@ app.MapMetaHttpPolling("/meta").RequireAuthorization();
 
 Both options can be combined for defense-in-depth. `MetaTransportOptions.RequireAuthentication` is the safety net inside the framework — it works regardless of whether middleware is configured correctly.
 
+### Identity Validation (0.37.1+)
+
+A JWT is stateless — a signature, an expiry, a `sub` claim. Nothing in it ties back to a live account, so if the auth store is wiped (fresh environment, dropped volume, deleted account) every token already in client hands keeps authenticating until it expires. Without a check, the transport trusts `sub`, `SessionConnect` succeeds, and the entity grains lazily create empty state under a PlayerId nobody can ever log in as again: an orphan profile with no auth record behind it.
+
+`AddMetaAuth` registers an `IPlayerIdentityValidator` that answers from the auth index (a player exists while at least one auth key is linked to it). `SessionConnect` consults it before touching any grain and rejects an unknown identity with `SessionConnectFailureReason.IdentityUnknown`:
+
+```csharp
+builder.Services.AddMetaAuth(o => { o.SecretKey = "..."; });   // registers the validator
+builder.Services.AddSingleton(new MetaTransportOptions
+{
+    RequireAuthentication = true,      // required — the gate needs a claim-derived PlayerId
+    ValidatePlayerIdentity = true,     // default
+});
+```
+
+The rejection message starts with "Authentication rejected", so client-side auth-failure handling — including `MetaClientOptions.OnConnectAuthFailedAsync` — treats it as a credential problem: clear the cached token, log in again, get a real PlayerId. Retrying the connect with the same token would loop forever.
+
+Gate conditions, all required:
+
+| Condition | Why |
+|---|---|
+| An `IPlayerIdentityValidator` in DI | No implementation = no check. Hosts without `SharedMeta.Auth` supply their own or opt out by omission. |
+| `RequireAuthentication = true` | Without it the PlayerId is client-supplied rather than claim-derived — there is no auth store to check it against. |
+| `ValidatePlayerIdentity = true` (default) | Set to `false` when authenticated connections may legitimately carry identities the auth store doesn't hold: service accounts, bots, externally minted tokens. |
+
+Custom identity sources implement the interface directly and register before `AddMetaAuth` (which uses `TryAdd`):
+
+```csharp
+public class MyIdentityValidator(IMyAccountStore store) : IPlayerIdentityValidator
+{
+    public Task<bool> ExistsAsync(string playerId) => store.AccountExistsAsync(playerId);
+}
+builder.Services.AddSingleton<IPlayerIdentityValidator, MyIdentityValidator>();
+```
+
+`ExistsAsync` must already return true for a player created moments ago by a login — an implementation lagging behind account creation would reject the very client it just issued a token to. The bundled one is safe here because `AuthGrain.LoginAsync` writes the index entry before the endpoint mints the token.
+
 ### Client-Side Authentication
 
 Use `MetaAuth` — a cross-platform helper that works on both Unity (`UnityWebRequest`) and .NET (`HttpClient`):
