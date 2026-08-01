@@ -516,8 +516,6 @@ class SimulationClient : IAsyncDisposable
             }
         );
 
-        // Register transformers and services
-        TransformerRegistrations.RegisterAll(_client.TransformerRegistry);
         _client.Resolver.RegisterAllServices();
     }
 

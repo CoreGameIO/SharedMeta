@@ -285,7 +285,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"namespace {consumerNamespace}");
             sb.AppendLine("{");
             GenerateEntityCallerInterface(sb, depInterface, consumerNamespace);
-            GenerateEntityRecorderClass(sb, depInterface, consumerNamespace, serializer);
+            GenerateEntityRecorderClass(sb, depInterface, consumerNamespace, serializer, compilation);
             GenerateEntityReplayerClass(sb, depInterface, consumerNamespace);
             GenerateLocalEntityCallerClass(sb, depInterface, consumerNamespace, "");
             GenerateSiblingCallerClass(sb, depInterface);
@@ -885,7 +885,7 @@ namespace SharedMeta.Generator.Generators
         /// Generate entity recorder class for cross-entity calls.
         /// Implements the EntityCaller interface and calls via IServerRecordContext.
         /// </summary>
-        private static void GenerateEntityRecorderClass(StringBuilder sb, INamedTypeSymbol interfaceSymbol, string containingNamespace, DetectedSerializer serializer)
+        private static void GenerateEntityRecorderClass(StringBuilder sb, INamedTypeSymbol interfaceSymbol, string containingNamespace, DetectedSerializer serializer, Compilation? compilation)
         {
             var interfaceName = interfaceSymbol.Name;
             var interfaceFqn = interfaceSymbol.ToDisplayString();
@@ -919,14 +919,14 @@ namespace SharedMeta.Generator.Generators
             {
                 if (member.MethodKind == MethodKind.Ordinary)
                 {
-                    GenerateEntityRecorderMethod(sb, member, interfaceName, interfaceFqn, interfaceNamespace, serializer);
+                    GenerateEntityRecorderMethod(sb, member, interfaceName, interfaceFqn, interfaceNamespace, serializer, compilation);
                 }
             }
 
             sb.AppendLine("    }");
         }
 
-        private static void GenerateEntityRecorderMethod(StringBuilder sb, IMethodSymbol method, string interfaceName, string interfaceFqn, string interfaceNamespace, DetectedSerializer serializer)
+        private static void GenerateEntityRecorderMethod(StringBuilder sb, IMethodSymbol method, string interfaceName, string interfaceFqn, string interfaceNamespace, DetectedSerializer serializer, Compilation? compilation)
         {
             var methodName = method.Name;
             var returnType = method.ReturnType.ToDisplayString();
@@ -975,7 +975,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{interfaceFqn}), \"{methodName}\")]");
                 sb.AppendLine($"        public System.Threading.Tasks.Task {notifyMethodName}({parameters})");
                 sb.AppendLine("        {");
-                GenerateArgumentPacking(sb, method.Parameters, paramNames, serializer);
+                GenerateArgumentPacking(sb, method.Parameters, paramNames, serializer, compilation);
                 sb.AppendLine();
                 // OneWay carrier bytes MUST be independent of any scratch/pool the source might
                 // reset before the target finishes wire-serialize. Single-param MemoryPack path
@@ -1014,7 +1014,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        {");
 
             // Serialize arguments based on detected serializer
-            GenerateArgumentPacking(sb, method.Parameters, paramNames, serializer);
+            GenerateArgumentPacking(sb, method.Parameters, paramNames, serializer, compilation);
 
             // Call remote entity via context's CallEntityAsync.
             // Awaited: source grain blocks until the target completes, so the bytes
@@ -1388,8 +1388,16 @@ namespace SharedMeta.Generator.Generators
             StringBuilder sb,
             System.Collections.Immutable.ImmutableArray<IParameterSymbol> parameters,
             List<string> paramNames,
-            DetectedSerializer serializer)
+            DetectedSerializer serializer,
+            Compilation? compilation)
         {
+            // The target grain's dispatcher unboxes whatever the compilation says is transformed —
+            // it has no way to know a cross-entity hop wrote the argument instead of a client.
+            var transforms = TransformerAnalysis.Analyze(parameters, compilation);
+            foreach (var t in transforms.Where(t => t.Transformed))
+                sb.AppendLine($"            var {t.WireLocal} = {TransformerAnalysis.BoxExpr(t, t.Name, TransformerAnalysis.AmbientStateExpr(t))};");
+            paramNames = transforms.Select(t => t.Transformed ? t.WireLocal : t.Name).ToList();
+
             if (paramNames.Count == 0)
             {
                 sb.AppendLine("            var argsBytes = Array.Empty<byte>();");

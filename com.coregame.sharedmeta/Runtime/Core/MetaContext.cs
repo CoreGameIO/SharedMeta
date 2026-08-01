@@ -324,13 +324,17 @@ namespace SharedMeta.Core
 
         // ============================================
         // Transformer Support
+        //
+        // Reflective helpers kept for direct callers. Generated code does NOT use them: which
+        // argument is transformed has to be settled at generation time so the writer and the
+        // reader of a payload cannot disagree, and it emits typed Box/Unbox calls through
+        // MetaTransformer<T>. Nothing here participates in that decision.
         // ============================================
 
         private readonly Dictionary<Type, object> _transformerCache = new();
 
         /// <summary>
-        /// Registry for auto-discovery of transformers.
-        /// Set this to enable automatic transformation of registered types.
+        /// Registry for runtime transformer lookup. Never consulted by generated code.
         /// </summary>
         public TransformerRegistry? TransformerRegistry { get; set; }
 

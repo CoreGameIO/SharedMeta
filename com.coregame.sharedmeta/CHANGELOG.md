@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.37.0] - 2026-08-01
+
+### Fixed
+
+- Argument transformers (`[Transformer]` / `[Transform]` / `[SkipTransform]`) work. They were non-functional in every mode: the client never boxed (the only boxing implementation sat in a generator unregistered from the pipeline), `MetaContext.TransformerRegistry` was never assigned by anything, so auto-discovered transformers silently never ran, and any parameter attribute whose name contained "Transform" — `[SkipTransform]` included — flipped the MemoryPack dispatcher to a reader the client did not write for, failing the RPC outright.
+- Query methods with arguments were misframed under MemoryPack: the query client wrote a length-prefixed envelope while the dispatcher deserialized positionally. Pre-existing and unrelated to transformers; no Query method in the repo took arguments, which is why it never fired.
+
+### Changed
+
+- **Breaking, behaviour:** the client substitutes `Unbox(Box(arg))` before running a method locally, so both sides execute against the same value. A method body now sees the unboxed object, not the instance the caller passed.
+- **Breaking, wire:** a transformed argument travels as its boxed type in exactly one wire member instead of a length-prefixed `byte[]`. Framing is now identical to any other argument, so transformers stay on the MemoryPack fast path. Nothing working can regress — no configuration of this feature transmitted correctly before.
+- Which parameter is transformed is settled at compile time from the compilation — client, server dispatcher, broadcast replay, query proxies, `{Service}ServerApi` and cross-entity hops all derive the same answer, so the two ends of a wire cannot disagree. `TransformerRegistrations.RegisterAll` is no longer needed and does nothing; remove the call.
+- `[Transformer(UseResolver = true)]` is excluded from discovery — it could never work on the client, where `ClientMetaContext.ResolveService` throws by design.
+
+### Added
+
+- `MetaTransformer<T>.Instance` — per-type singleton the generated box/unbox call sites bind to. No reflection, no registry lookup on the RPC path.
+- End-to-end coverage for the generic codegen branch (`[assembly: MetaSerializer(SerializerType.Generic)]`): `SharedMeta.Test.Meta2.Generic` plus `SharedMeta.GenericSerializerTests`, on its own cluster since method ids are per-assembly and a session carries one server signature. Only the MemoryPack branch was exercised before, and every wire bug in this release was serializer-specific.
+- Desync messages print result values instead of type names — `DesyncException.Message` and the `[Desync]` log line used to show the same type name for both sides, because `object.ToString()` is all a plain DTO has. The generator emits a `MetaDescribe` formatter per result type (`DesyncFormatters.g.cs`); resolved at compile time, so IL2CPP stripping cannot break it. Types overriding `ToString()` (records included) keep their own rendering.
+- `[assembly: SharedMetaDiagnosticsOptions(DesyncValues = DesyncValueDetail.Short)]` — trims the dump project-wide: nested types render as `<TypeName>`, collections as `[N items]`. Default `Full` recurses 3 levels and lists 8 elements.
+
 ## [0.36.0] - 2026-07-29
 
 ### Changed

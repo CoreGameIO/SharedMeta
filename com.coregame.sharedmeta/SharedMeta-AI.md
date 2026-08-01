@@ -1222,12 +1222,26 @@ public class PlayerTransformer : IStateArgumentTransformer<Player, int, GameStat
 
 Usage in methods:
 ```csharp
+// Auto — Vector3Transformer is discovered from the compilation
+[MetaMethod]
+void Step(Vector3 delta);
+
 [MetaMethod]
 void Move([Transform(typeof(Vector3Transformer))] Vector3 position);
 
 [MetaMethod]
 void RawMove([SkipTransform] Vector3 position); // No transformation
 ```
+
+No registration call — the generator discovers `[Transformer]` classes at compile time and both
+ends of the wire derive the same decision from the same compilation. A transformer must be visible
+to the assembly declaring the `[MetaService]` interface, be a non-generic class with a public
+parameterless constructor, and not carry `NoAutoRegister` or `UseResolver`.
+
+A transformed argument travels as its boxed type in exactly one wire member. Before running the
+method locally the client substitutes `Unbox(Box(arg))`, so the body sees the same object the
+server will see — for a state-aware transformer, the one resolved out of local state. `LocalQuery`
+and sibling-bypass never serialize, so transformers do not run there.
 
 ---
 
@@ -1425,7 +1439,6 @@ The SharedMeta source generator (`CoreGame.SharedMeta.Generator`) produces:
 | `ISharedState` class | `*PatchWrapper.g.cs` — change tracking for ServerPatch mode (nested-object fields have get+set via implicit operator; collections have get+set for reassignment) |
 | `ISharedState` class | `*PatchApplier.g.cs` — client-side patch application |
 | All `[MetaService]` in assembly | `ServerMetaConfiguration.g.cs` — MetaProvider + service registration |
-| `[Transformer]` classes | `TransformerRegistrations.g.cs` — auto-registration |
 
 **Do not write** dispatcher, API client, or context injection code manually — it's all generated.
 
@@ -1465,7 +1478,7 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `[ServerMetaService]` | Interface | Server-only service (generates replayer) |
 | `[StatelessMetaService]` | Interface | No-entity service resolving only a linked `[MetaConfig]` |
 | `[StatelessMetaServiceImpl]` | Class | Impl for `[StatelessMetaService]` — injects only a typed `Config` property |
-| `[Transformer]` | Class | Register argument transformer |
+| `[Transformer]` | Class | Declare argument transformer (discovered at compile time) |
 | `[Transform]` | Parameter | Explicit transformer for parameter |
 | `[SkipTransform]` | Parameter | Disable auto-transformation |
 | `[OrderedExecution]` | Interface | Broadcast ordering mode |
@@ -1561,9 +1574,6 @@ var builder = WebApplication.CreateBuilder(args);
 var serializer = new MemoryPackMetaSerializer();
 builder.Services.AddSingleton<IMetaSerializer>(serializer);
 
-var transformerRegistry = new TransformerRegistry();
-TransformerRegistrations.RegisterAll(transformerRegistry);  // generated
-
 builder.Host.UseOrleans(siloBuilder =>
 {
     siloBuilder
@@ -1597,7 +1607,6 @@ var client = new MetaClient(connection, serializer, new MetaClientOptions
     Diagnostics = new ConsoleDesyncDiagnostics()
 });
 
-TransformerRegistrations.RegisterAll(client.TransformerRegistry);
 client.Resolver.RegisterAllServices();  // Generated
 
 await client.ConnectAsync();
@@ -1698,6 +1707,23 @@ public interface IDesyncDiagnostics
         string methodName, byte[]? resultBytes);
     Task<StateComparisonResult> CompareFullStateAsync(string entityId);
 }
+```
+
+### Desync Message Values
+
+`DesyncException.Message` and the `[Desync]` log line print member values, not type names —
+the generator emits a `MetaDescribe` formatter per result type into `DesyncFormatters.g.cs`
+(compile-time, so IL2CPP stripping cannot break it). Types overriding `ToString()` (records
+included) keep their own rendering; nesting stops at 3 levels, collections at 8 elements.
+
+```
+server=SellCargoResult { Gold = 10, Item = "ore", Line = CargoLine { Quantity = 5 }, Ids = [1, 2, 3] }
+```
+
+Shorten project-wide (nested types → `<TypeName>`, collections → `[N items]`):
+
+```csharp
+[assembly: SharedMetaDiagnosticsOptions(DesyncValues = DesyncValueDetail.Short)]
 ```
 
 ---

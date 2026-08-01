@@ -2274,18 +2274,23 @@ public class PlayerTransformer : IStateArgumentTransformer<Player, int, GameStat
 }
 ```
 
-### Registration
+### Discovery
 
-Auto-generated `TransformerRegistrations.RegisterAll(registry)` registers all `[Transformer]` classes. Manual registration:
+No registration call. The generator finds `[Transformer]` classes in the compilation and applies
+one to every meta-method parameter whose type it boxes — client, server dispatcher, query proxy,
+broadcast replay and server-originated calls all derive the decision from the same compilation, so
+both ends of every wire agree by construction.
 
-```csharp
-registry.Register<Player, int, GameState, PlayerTransformer>();
-registry.RegisterSimple<Vector3, int[], Vector3Transformer>();
-```
+For a transformer to be discovered it must be visible to the assembly declaring the `[MetaService]`
+interface, be a non-generic class with a public parameterless constructor, and not carry
+`[Transformer(NoAutoRegister = true)]` or `[Transformer(UseResolver = true)]`. If two discoverable
+transformers claim the same complex type, the first by ordinal type name wins — name the one you
+mean with `[Transform]` instead of relying on that.
 
 ### Usage in Methods
 
-Methods with transformer-supported parameter types are auto-boxed/unboxed by generated code. Override with:
+A parameter whose type has a discovered transformer is boxed and unboxed automatically. Override
+per parameter:
 
 ```csharp
 [MetaMethod]
@@ -2294,6 +2299,19 @@ void Move([Transform(typeof(Vector3Transformer))] Vector3 position);
 [MetaMethod]
 void RawMove([SkipTransform] Vector3 position); // No transformation
 ```
+
+### What crosses the wire
+
+A transformed argument travels as its boxed type and occupies exactly one wire member, same as any
+other argument — the framing is unchanged, so transformers cost nothing in the MemoryPack fast path.
+
+Before the client runs the method locally, it replaces each transformed argument with
+`Unbox(Box(arg))`. The server only ever receives the boxed form, so this is what makes both sides
+execute against the same value; a transformer that is not a perfect identity would otherwise desync
+on its first call. Consequence: your method body sees the *unboxed* object, not the instance the
+caller passed. For a state-aware transformer that means the object resolved out of local state.
+
+`LocalQuery` and sibling-bypass calls never serialize, so transformers do not run on them.
 
 ---
 
@@ -3386,9 +3404,6 @@ var builder = WebApplication.CreateBuilder(args);
 var serializer = new MemoryPackMetaSerializer();
 builder.Services.AddSingleton<IMetaSerializer>(serializer);
 
-// Transformers
-var transformerRegistry = new TransformerRegistry();
-TransformerRegistrations.RegisterAll(transformerRegistry);  // generated
 
 // Orleans
 builder.Host.UseOrleans(siloBuilder =>
@@ -3494,7 +3509,6 @@ var client = new MetaClient(connection, serializer, new MetaClientOptions
 });
 
 // Register services (generated method)
-TransformerRegistrations.RegisterAll(client.TransformerRegistry);
 client.Resolver.RegisterAllServices();
 
 // Connect
@@ -3679,6 +3693,42 @@ There are three independent desync detection layers, each fires its own callback
 | **Patch** (deep desync) | `OnPatchDesync` — patch CRC differs | State mutations differ even when return values match |
 
 Result-level catches the easy cases. Patch-level catches "the method returned `true` on both sides but wrote different values to the state" — for example, `state.Money = rng.Next(100)` with `System.Random`. See [Deep Desync Detection](#deep-desync-detection-070) below.
+
+### Desync Message Values
+
+The `[Desync]` log line and `DesyncException.Message` print both result values. For a DTO that
+does not override `ToString()`, `object.ToString()` yields the type name — so the message named
+the same type twice and said nothing about what diverged:
+
+```
+Desync in IShopService.SellCargo: server=Game.Meta.SellCargoResult, local=Game.Meta.SellCargoResult
+```
+
+The generator therefore emits a `MetaDescribe` formatter per result type (and, recursively, per
+nested type) into `DesyncFormatters.g.cs`, and the desync paths call it:
+
+```
+Desync in IShopService.SellCargo: server=SellCargoResult { Gold = 10, Item = "ore", Line = CargoLine { Quantity = 5, Sku = "SKU-7" }, Ids = [1, 2, 3] }, local=SellCargoResult { Gold = 8, ... }
+```
+
+Resolved at compile time rather than by reflection — IL2CPP strips member reflection, which is
+exactly where these logs matter most. Types that override `ToString()` (records included) keep
+their own rendering; nesting stops at 3 levels and collections at 8 elements.
+
+Trim the output project-wide:
+
+```csharp
+// Assembly.cs / AssemblyInfo.cs of the meta assembly
+[assembly: SharedMetaDiagnosticsOptions(DesyncValues = DesyncValueDetail.Short)]
+```
+
+| `DesyncValues` | Members | Nested types | Collections |
+|----------------|---------|--------------|-------------|
+| `Full` (default) | all public | recursed, 3 levels | first 8 elements |
+| `Short` | all public | `<TypeName>` | `[N items]` |
+
+The values are also available programmatically — `DesyncException.ServerResult` / `.LocalResult`
+hold the objects, and the full byte forms of both sides go to the server in the desync report.
 
 ### Deep Desync Detection (0.7.0+)
 
@@ -4011,7 +4061,6 @@ The source generator (`SharedMeta.Generator`) scans assemblies for attributes an
 | `[MetaService]` interface | `*ServiceExtensions.g.cs` | DI registration helpers |
 | `[MetaServiceImpl]` class | `*.Context.g.cs` | Context injection (State, CallerId, dependencies) |
 | Assembly with `[MetaService]` | `ServerMetaConfiguration.g.cs` | MetaProvider generation, service wiring |
-| `[Transformer]` class | `TransformerRegistrations.g.cs` | Auto-registration of all transformers |
 | `[Tracked]` field | `ChangeTracking.g.cs` | Push-based change tracking properties for UI binding (client-only) |
 
 ### Dispatcher Pattern (generated)

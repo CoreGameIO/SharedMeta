@@ -143,5 +143,96 @@ namespace SharedMeta.Core.Diagnostics
             ServerResult = serverResult;
             LocalResult = localResult;
         }
+
+        /// <summary>
+        /// Overload taking pre-rendered value descriptions. The generated client passes the
+        /// output of its per-type formatters here — interpolating the results directly would
+        /// print a bare type name for any DTO that does not override <c>ToString()</c>, making
+        /// the two sides of the desync look identical in the message.
+        /// </summary>
+        public DesyncException(
+            string serviceName,
+            string methodName,
+            object? serverResult,
+            object? localResult,
+            string serverDescription,
+            string localDescription)
+            : base($"Desync in {serviceName}.{methodName}: server={serverDescription}, local={localDescription}")
+        {
+            ServiceName = serviceName;
+            MethodName = methodName;
+            ServerResult = serverResult;
+            LocalResult = localResult;
+        }
+    }
+}
+
+namespace SharedMeta.Core.Diagnostics.Formatting
+{
+    using System.Collections.Generic;
+    using System.Text;
+
+    /// <summary>
+    /// Runtime half of the generated desync value formatters. The generator emits
+    /// <c>MetaDescribe</c> overloads for concrete result types into this same namespace;
+    /// overload resolution prefers those over the generic fallback below, so every call site
+    /// can be written uniformly as <c>value.MetaDescribe()</c> regardless of whether a
+    /// formatter was generated for that type.
+    /// <para>
+    /// Lives in its own namespace so the <c>this T</c> extension does not appear on every
+    /// type in projects that merely import <c>SharedMeta.Core.Diagnostics</c>.
+    /// </para>
+    /// </summary>
+    public static class MetaDescribeFallback
+    {
+        /// <summary>Max nesting level the generated formatters recurse to.</summary>
+        public const int MaxDepth = 3;
+
+        /// <summary>Max collection elements a generated formatter prints.</summary>
+        public const int MaxItems = 8;
+
+        /// <summary>
+        /// Fallback for types with no generated formatter — primitives, enums, and anything
+        /// that overrides <c>ToString()</c>. Types that do neither render as their type name;
+        /// that is the case the generated overloads exist to cover.
+        /// </summary>
+        public static string MetaDescribe<T>(this T value, int depth = 0)
+        {
+            if (value is null) return "<null>";
+            return value.ToString() ?? "<null>";
+        }
+
+        /// <summary>Quoted rendering so an empty or whitespace-only string is visible in the log.</summary>
+        public static string MetaDescribe(this string? value, int depth = 0)
+            => value is null ? "<null>" : "\"" + value + "\"";
+
+        /// <summary>Renders up to <see cref="MaxItems"/> elements using the caller-supplied element formatter.</summary>
+        public static string MetaDescribeSeq<T>(this IEnumerable<T>? sequence, System.Func<T, string> format, int max = MaxItems)
+        {
+            if (sequence is null) return "<null>";
+
+            var sb = new StringBuilder("[");
+            int count = 0;
+            foreach (var item in sequence)
+            {
+                if (count == max) { sb.Append(", ..."); break; }
+                if (count > 0) sb.Append(", ");
+                sb.Append(format(item));
+                count++;
+            }
+            sb.Append(']');
+            return sb.ToString();
+        }
+
+        /// <summary>Element count only — what <see cref="SharedMeta.Core.DesyncValueDetail.Short"/> prints for collections.</summary>
+        public static string MetaDescribeCount(System.Collections.IEnumerable? sequence)
+        {
+            if (sequence is null) return "<null>";
+            if (sequence is System.Collections.ICollection collection) return "[" + collection.Count + " items]";
+
+            int count = 0;
+            foreach (var _ in sequence) count++;
+            return "[" + count + " items]";
+        }
     }
 }

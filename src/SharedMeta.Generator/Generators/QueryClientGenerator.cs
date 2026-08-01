@@ -131,7 +131,7 @@ namespace SharedMeta.Generator.Generators
             foreach (var method in queryMethods)
             {
                 sb.AppendLine();
-                GenerateQueryMethod(sb, method, namespaceName, interfaceName, serializer);
+                GenerateQueryMethod(sb, method, namespaceName, interfaceName, serializer, compilation);
             }
 
             sb.AppendLine("    }");
@@ -141,7 +141,7 @@ namespace SharedMeta.Generator.Generators
         }
 
         private static void GenerateQueryMethod(StringBuilder sb, QueryMethodInfo method,
-            string namespaceName, string interfaceName, DetectedSerializer serializer)
+            string namespaceName, string interfaceName, DetectedSerializer serializer, Compilation compilation)
         {
             // Extract inner type from Task<T>
             var returnTypeStr = method.ReturnType.ToDisplayString();
@@ -164,17 +164,32 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        public async {asyncReturnType} {method.Name}Async({paramList})");
             sb.AppendLine("        {");
 
-            // Serialize arguments via IPayloadWriter (length-prefixed format). Matches the
-            // server query dispatcher's expected framing: serializer.CreateReader(payload) +
-            // context.ReadWithAutoUnbox<T>(reader, serializer) reads length+bytes per arg.
-            // 0.22.0 fix: previously the MemoryPack branch used raw MemoryPackSerializer.Serialize
-            // for 1 primitive arg, which produced 4 raw bytes that the server's reader
-            // mis-interpreted as a length prefix → "Requires size is N but buffer length is 0".
-            // Aligning with SimplifiedApiClientGenerator's _serializer.CreateWriter() pattern
-            // (see [SimplifiedApiClientGenerator.cs:953-963]).
+            // Query arguments go through the same dispatcher as any other RPC, so they must be
+            // framed the way that dispatcher reads them — which is serializer-dependent. Under
+            // MemoryPack it deserializes positionally from raw bytes; the length-prefixed writer
+            // would leave it reading a length header out of member data.
+            var transforms = TransformerAnalysis.Analyze(method.Parameters, compilation);
+            foreach (var t in transforms.Where(t => t.Transformed))
+                sb.AppendLine($"            var {t.WireLocal} = {TransformerAnalysis.BoxExpr(t, t.Name, TransformerAnalysis.AmbientStateExpr(t))};");
+            string Arg(ParameterTransform t) => t.Transformed ? t.WireLocal : t.Name;
+
             if (method.Parameters.Length == 0)
             {
                 sb.AppendLine("            System.ReadOnlyMemory<byte> argsBytes = System.ReadOnlyMemory<byte>.Empty;");
+            }
+            else if (serializer == DetectedSerializer.MemoryPack)
+            {
+                if (transforms.Count == 1)
+                {
+                    sb.AppendLine($"            System.ReadOnlyMemory<byte> argsBytes = MemoryPackSerializer.Serialize({Arg(transforms[0])});");
+                }
+                else
+                {
+                    sb.AppendLine("            var argsBuffer = new System.Buffers.ArrayBufferWriter<byte>();");
+                    foreach (var t in transforms)
+                        sb.AppendLine($"            MemoryPackSerializer.Serialize(argsBuffer, {Arg(t)});");
+                    sb.AppendLine("            System.ReadOnlyMemory<byte> argsBytes = argsBuffer.WrittenMemory;");
+                }
             }
             else
             {
@@ -184,8 +199,8 @@ namespace SharedMeta.Generator.Generators
                 // to send the bytes on the wire.
                 sb.AppendLine("            var payloadWriter = _serializer.CreateWriter();");
                 sb.AppendLine("            payloadWriter.Reset();");
-                foreach (var p in method.Parameters)
-                    sb.AppendLine($"            payloadWriter.Write({p.Name});");
+                foreach (var t in transforms)
+                    sb.AppendLine($"            payloadWriter.Write({Arg(t)});");
                 sb.AppendLine("            System.ReadOnlyMemory<byte> argsBytes = payloadWriter.Complete();");
             }
 

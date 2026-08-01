@@ -44,6 +44,8 @@
     <Project Path="tests/SharedMeta.PatchFuzzTests/SharedMeta.PatchFuzzTests.csproj" />
     <Project Path="tests/SharedMeta.Test.Meta1/SharedMeta.Test.Meta1.csproj" />
     <Project Path="tests/SharedMeta.Test.Server/SharedMeta.Test.Server.csproj" />
+    <Project Path="tests/SharedMeta.GenericSerializerTests/SharedMeta.GenericSerializerTests.csproj" />
+    <Project Path="tests/SharedMeta.Test.Meta2.Generic/SharedMeta.Test.Meta2.Generic.csproj" />
     <Project Path="tests/SharedMeta.Test.SplitConfig.Models/SharedMeta.Test.SplitConfig.Models.csproj" />
     <Project Path="tests/SharedMeta.Test.SplitConfig.Services/SharedMeta.Test.SplitConfig.Services.csproj" />
   </Folder>

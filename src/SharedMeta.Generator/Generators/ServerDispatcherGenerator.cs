@@ -65,9 +65,7 @@ namespace SharedMeta.Generator.Generators
                 foreach (var m in methods)
                 {
                     var pCount = m.ParameterList.Parameters.Count;
-                    var hasTransformers = m.ParameterList.Parameters.Any(p =>
-                        p.AttributeLists.SelectMany(a => a.Attributes).Any(a => a.Name.ToString().Contains("Transform")));
-                    if (pCount >= 2 && !hasTransformers)
+                    if (pCount >= 2)
                         multiParamArities.Add(pCount);
                 }
             }
@@ -146,7 +144,7 @@ namespace SharedMeta.Generator.Generators
                 var idConst = "global::" + namespaceName + ".Generated.GameMethodIds." + SignatureHashGenerator.MakeMethodIdConstName(symbol, alias, version);
                 sbServer.AppendLine($"                case {idConst}:");
                 sbServer.AppendLine("                {");
-                EmitMethodBody(sbServer, asyncTails, entry.Method, entry.Info, symbol, namespaceName, triggersByMethod, serializer, stateTypeFullName);
+                EmitMethodBody(sbServer, asyncTails, entry.Method, entry.Info, symbol, namespaceName, triggersByMethod, serializer, stateTypeFullName, compilation);
                 sbServer.AppendLine("                }");
             }
             sbServer.AppendLine($"                default: throw new MissingMethodException($\"Method id {{methodId}} not registered on {symbol}\");");
@@ -164,7 +162,7 @@ namespace SharedMeta.Generator.Generators
             // is present. Separate static class with its own switch so the main dispatcher stays
             // focused on regular RPC routing (void return, no DispatchResult, no trigger logic,
             // no forcePersist flags — signals bypass all of that by contract).
-            GenerateSignalDispatcherClass(sbServer, symbol, namespaceName, methods, serializer);
+            GenerateSignalDispatcherClass(sbServer, symbol, namespaceName, methods, serializer, compilation);
 
             sbServer.AppendLine("}");
             return sbServer.ToString();
@@ -178,7 +176,8 @@ namespace SharedMeta.Generator.Generators
         /// as typed parameters in the impl.
         /// </summary>
         private static void GenerateSignalDispatcherClass(StringBuilder sb, string symbol, string namespaceName,
-            System.Collections.Generic.List<MethodDeclarationSyntax> methods, DetectedSerializer serializer)
+            System.Collections.Generic.List<MethodDeclarationSyntax> methods, DetectedSerializer serializer,
+            Compilation? compilation)
         {
             var signalMethods = methods.Where(IsSignalMethod).ToList();
             if (signalMethods.Count == 0) return;
@@ -207,7 +206,7 @@ namespace SharedMeta.Generator.Generators
                     SignatureHashGenerator.MakeMethodIdConstName(symbol, info.Alias, info.Version);
                 sb.AppendLine($"                case {idConst}:");
                 sb.AppendLine("                {");
-                EmitSignalBody(sb, method, info, symbol, serializer);
+                EmitSignalBody(sb, method, info, symbol, serializer, compilation);
                 sb.AppendLine("                    break;");
                 sb.AppendLine("                }");
             }
@@ -223,7 +222,8 @@ namespace SharedMeta.Generator.Generators
         /// the synchronous void call. No return value, no DispatchResult — signals run read-only
         /// by contract. Mirrors <see cref="EmitMethodBody"/> for the regular dispatcher.
         /// </summary>
-        private static void EmitSignalBody(StringBuilder sb, MethodDeclarationSyntax method, MetaMethodInfo info, string symbol, DetectedSerializer serializer)
+        private static void EmitSignalBody(StringBuilder sb, MethodDeclarationSyntax method, MetaMethodInfo info, string symbol,
+            DetectedSerializer serializer, Compilation? compilation)
         {
             var methodName = method.Identifier.Text;
             var paramCount = method.ParameterList.Parameters.Count;
@@ -245,22 +245,28 @@ namespace SharedMeta.Generator.Generators
                 // MemoryPackWriter into an ArrayBufferWriter, which the multi-arity UnpackArgs
                 // helper reads back via MemoryPackReader. CreateReader/Read<T>() expects a
                 // length-prefixed envelope and would misread either form.
-                GenerateMemoryPackArgumentUnpacking(sb, method, out var argNames);
+                var transforms = TransformerAnalysis.Analyze(method.ParameterList.Parameters, compilation);
+                GenerateMemoryPackArgumentUnpacking(sb, method, transforms, "_ctx", out var argNames);
                 var callArgs = string.Join(", ", argNames);
                 sb.AppendLine($"                    service.{methodName}({callArgs});");
             }
             else
             {
                 sb.AppendLine("                    using var reader = serializer.CreateReader(payload);");
-                var argNames = new List<string>();
-                foreach (var param in method.ParameterList.Parameters)
+                var transforms = TransformerAnalysis.Analyze(method.ParameterList.Parameters, compilation);
+                foreach (var t in transforms)
                 {
-                    var paramType = param.Type!.ToString();
-                    var paramName = param.Identifier.Text;
-                    sb.AppendLine($"                    var {paramName} = reader.Read<{paramType}>();");
-                    argNames.Add(paramName);
+                    if (t.Transformed)
+                    {
+                        sb.AppendLine($"                    var {t.WireLocal} = reader.Read<{t.WireType}>();");
+                        sb.AppendLine($"                    var {t.Name} = {TransformerAnalysis.UnboxExpr(t, t.WireLocal, TransformerAnalysis.ContextStateExpr(t, "_ctx"))};");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"                    var {t.Name} = reader.Read<{t.DeclaredType}>();");
+                    }
                 }
-                var callArgs = string.Join(", ", argNames);
+                var callArgs = string.Join(", ", transforms.Select(t => t.Name));
                 sb.AppendLine($"                    service.{methodName}({callArgs});");
             }
         }
@@ -313,28 +319,29 @@ namespace SharedMeta.Generator.Generators
         /// <summary>
         /// Generates MemoryPack-specific argument unpacking code.
         /// </summary>
-        private static void GenerateMemoryPackArgumentUnpacking(StringBuilder sb, MethodDeclarationSyntax method, out List<string> argNames)
+        private static void GenerateMemoryPackArgumentUnpacking(StringBuilder sb, MethodDeclarationSyntax method,
+            List<ParameterTransform> transforms, string contextExpr, out List<string> argNames)
         {
-            argNames = new List<string>();
-            var parameters = method.ParameterList.Parameters;
+            argNames = transforms.Select(t => t.Name).ToList();
 
-            if (parameters.Count == 1)
+            // Transformed parameters travel as their boxed type — one wire member, same framing as
+            // any other argument, so the fast positional path stays usable.
+            if (transforms.Count == 1)
             {
-                // Single parameter - direct deserialization
-                var param = parameters[0];
-                var paramType = param.Type!.ToString();
-                var paramName = param.Identifier.Text;
-                sb.AppendLine($"                    var {paramName} = MemoryPackSerializer.Deserialize<{paramType}>(payload.Span)!;");
-                argNames.Add(paramName);
+                var t = transforms[0];
+                var target = t.Transformed ? t.WireLocal : t.Name;
+                sb.AppendLine($"                    var {target} = MemoryPackSerializer.Deserialize<{t.WireType}>(payload.Span)!;");
             }
             else
             {
-                // Multiple parameters - use static UnpackArgs helper (non-async, so ref struct MemoryPackReader is safe)
-                var typeArgs = string.Join(", ", parameters.Select(p => p.Type!.ToString()));
-                var names = parameters.Select(p => p.Identifier.Text).ToList();
-                var namesList = string.Join(", ", names);
-                sb.AppendLine($"                    var ({namesList}) = UnpackArgs<{typeArgs}>(payload);");
-                argNames.AddRange(names);
+                var typeArgs = string.Join(", ", transforms.Select(t => t.WireType));
+                var targets = string.Join(", ", transforms.Select(t => t.Transformed ? t.WireLocal : t.Name));
+                sb.AppendLine($"                    var ({targets}) = UnpackArgs<{typeArgs}>(payload);");
+            }
+
+            foreach (var t in transforms.Where(t => t.Transformed))
+            {
+                sb.AppendLine($"                    var {t.Name} = {TransformerAnalysis.UnboxExpr(t, t.WireLocal, TransformerAnalysis.ContextStateExpr(t, contextExpr))};");
             }
         }
 
@@ -831,7 +838,8 @@ namespace SharedMeta.Generator.Generators
         /// remains the same — C# tolerates extra leading whitespace.
         /// </summary>
         private static void EmitMethodBody(StringBuilder sb, StringBuilder asyncTails, MethodDeclarationSyntax method, MetaMethodInfo info,
-            string symbol, string namespaceName, Dictionary<string, List<TriggerInfo>> triggersByMethod, DetectedSerializer serializer, string? stateTypeFullName)
+            string symbol, string namespaceName, Dictionary<string, List<TriggerInfo>> triggersByMethod, DetectedSerializer serializer,
+            string? stateTypeFullName, Compilation? compilation)
         {
             var methodName = method.Identifier.Text;
             var returnType = method.ReturnType.ToString();
@@ -846,59 +854,30 @@ namespace SharedMeta.Generator.Generators
 
             if (paramCount > 0)
             {
-                var hasTransformers = method.ParameterList.Parameters.Any(p =>
-                {
-                    var attrs = p.AttributeLists.SelectMany(a => a.Attributes).ToList();
-                    return attrs.Any(a => a.Name.ToString().Contains("Transform"));
-                });
+                var transforms = TransformerAnalysis.Analyze(method.ParameterList.Parameters, compilation);
 
-                if (serializer == DetectedSerializer.MemoryPack && !hasTransformers)
+                if (serializer == DetectedSerializer.MemoryPack)
                 {
-                    GenerateMemoryPackArgumentUnpacking(sb, method, out var argNames);
+                    GenerateMemoryPackArgumentUnpacking(sb, method, transforms, "context", out var argNames);
                     var callArgs = string.Join(", ", argNames);
                     GenerateMethodCallWithTriggers(sb, asyncTails, symbol, info, methodName, callArgs, returnType, triggersByMethod, symbol, namespaceName, serializer, info.ForcePersist, info.DeepStateCheck, stateTypeFullName);
                 }
                 else
                 {
                     sb.AppendLine("                    using var reader = serializer.CreateReader(payload);");
-                    var argNames = new List<string>();
-                    foreach (var param in method.ParameterList.Parameters)
+                    foreach (var t in transforms)
                     {
-                        var paramType = param.Type!.ToString();
-                        var paramName = param.Identifier.Text;
-                        var paramAttrs = param.AttributeLists.SelectMany(a => a.Attributes).ToList();
-                        var hasSkipTransform = paramAttrs.Any(a => a.Name.ToString().Contains("SkipTransform"));
-                        var transformAttr = paramAttrs.FirstOrDefault(a =>
-                            a.Name.ToString().Contains("Transform") && !a.Name.ToString().Contains("SkipTransform"));
-
-                        if (hasSkipTransform)
+                        if (t.Transformed)
                         {
-                            sb.AppendLine($"                    var {paramName} = reader.Read<{paramType}>();");
-                        }
-                        else if (transformAttr != null && transformAttr.ArgumentList?.Arguments.Count > 0)
-                        {
-                            var transformerTypeArg = transformAttr.ArgumentList.Arguments.First();
-                            if (transformerTypeArg.Expression is TypeOfExpressionSyntax typeOf)
-                            {
-                                var transformerTypeName = typeOf.Type.ToString();
-                                sb.AppendLine($"                    // Unbox {paramName} using explicit {transformerTypeName}");
-                                sb.AppendLine($"                    var boxedBytes_{paramName} = reader.Read<byte[]>();");
-                                sb.AppendLine($"                    var simpleType_{paramName} = MetaContext.GetSimpleType(typeof({transformerTypeName}));");
-                                sb.AppendLine($"                    var boxed_{paramName} = serializer.Unpack(simpleType_{paramName}, boxedBytes_{paramName});");
-                                sb.AppendLine($"                    var {paramName} = ({paramType})context.UnboxValue(typeof({transformerTypeName}), boxed_{paramName}!);");
-                            }
-                            else
-                            {
-                                sb.AppendLine($"                    var {paramName} = reader.Read<{paramType}>();");
-                            }
+                            sb.AppendLine($"                    var {t.WireLocal} = reader.Read<{t.WireType}>();");
+                            sb.AppendLine($"                    var {t.Name} = {TransformerAnalysis.UnboxExpr(t, t.WireLocal, TransformerAnalysis.ContextStateExpr(t, "context"))};");
                         }
                         else
                         {
-                            sb.AppendLine($"                    var {paramName} = context.ReadWithAutoUnbox<{paramType}>(reader, serializer);");
+                            sb.AppendLine($"                    var {t.Name} = reader.Read<{t.DeclaredType}>();");
                         }
-                        argNames.Add(paramName);
                     }
-                    var callArgs = string.Join(", ", argNames);
+                    var callArgs = string.Join(", ", transforms.Select(t => t.Name));
                     GenerateMethodCallWithTriggers(sb, asyncTails, symbol, info, methodName, callArgs, returnType, triggersByMethod, symbol, namespaceName, serializer, info.ForcePersist, info.DeepStateCheck, stateTypeFullName);
                 }
             }

@@ -387,6 +387,18 @@ namespace SharedMeta.Generator
                 }
             });
 
+            // Desync value formatters
+            // Per-type MetaDescribe overloads for meta method result types, so a desync message
+            // prints the diverging values instead of two identical type names.
+            context.RegisterSourceOutput(context.CompilationProvider, (spc, compilation) =>
+            {
+                var source = DesyncFormatterGenerator.Generate(compilation);
+                if (!string.IsNullOrEmpty(source))
+                {
+                    spc.AddSource("DesyncFormatters.g.cs", source!);
+                }
+            });
+
             // MessagePack Configuration Generation
             // Generates GeneratedMetaMessagePackConfiguration.Configure() with CompositeResolver
             // from all referenced assemblies that have source-generated MessagePack resolvers.

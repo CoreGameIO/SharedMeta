@@ -79,7 +79,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"namespace {namespaceName}.Server");
             sb.AppendLine("{");
 
-            EmitApiClass(sb, symbol, stateType, methods, baseName, interfaceName, namespaceName, serializer);
+            EmitApiClass(sb, symbol, stateType, methods, baseName, interfaceName, namespaceName, serializer, compilation);
             EmitExtension(sb, baseName, interfaceName, namespaceName, serializer);
 
             sb.AppendLine("}");
@@ -108,7 +108,7 @@ namespace SharedMeta.Generator.Generators
 
         private static void EmitApiClass(
             StringBuilder sb, INamedTypeSymbol symbol, INamedTypeSymbol stateType, List<IMethodSymbol> methods,
-            string baseName, string interfaceName, string namespaceName, DetectedSerializer serializer)
+            string baseName, string interfaceName, string namespaceName, DetectedSerializer serializer, Compilation compilation)
         {
             var stateFqn = stateType.ToDisplayString();
 
@@ -141,7 +141,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        }");
 
             foreach (var method in methods)
-                EmitMethod(sb, method, symbol, interfaceName, namespaceName, serializer);
+                EmitMethod(sb, method, symbol, interfaceName, namespaceName, serializer, compilation);
 
             sb.AppendLine("    }");
             sb.AppendLine();
@@ -149,7 +149,7 @@ namespace SharedMeta.Generator.Generators
 
         private static void EmitMethod(
             StringBuilder sb, IMethodSymbol method, INamedTypeSymbol symbol,
-            string interfaceName, string namespaceName, DetectedSerializer serializer)
+            string interfaceName, string namespaceName, DetectedSerializer serializer, Compilation compilation)
         {
             var (alias, version) = ReadAliasAndVersion(method);
             var methodIdConst = "global::" + namespaceName + ".Generated.GameMethodIds."
@@ -159,7 +159,8 @@ namespace SharedMeta.Generator.Generators
             // `params` in source would emit a keyword here. Escaping unconditionally is valid for
             // ordinary identifiers too, which keeps this free of a keyword table.
             var parameters = string.Join(", ", method.Parameters.Select(p => $"{p.Type.ToDisplayString()} @{p.Name}"));
-            var paramNames = method.Parameters.Select(p => "@" + p.Name).ToList();
+            var transforms = TransformerAnalysis.Analyze(method.Parameters, compilation);
+            var paramNames = transforms.Select(t => t.Transformed ? t.WireLocal : "@" + t.Name).ToList();
             var (_, innerType) = ParseReturnType(method.ReturnType.ToDisplayString());
 
             var methodName = method.Name.EndsWith("Async") ? method.Name : method.Name + "Async";
@@ -173,7 +174,7 @@ namespace SharedMeta.Generator.Generators
             {
                 sb.AppendLine($"        public Task {methodName}({parameters})");
                 sb.AppendLine("        {");
-                EmitArgumentPacking(sb, paramNames, serializer);
+                EmitArgumentPacking(sb, paramNames, transforms, serializer);
                 sb.AppendLine($"            return _grain.HandleCallFromEntityOneWayAsync(new RpcCall");
                 sb.AppendLine("            {");
                 sb.AppendLine($"                MethodId = {methodIdConst},");
@@ -188,7 +189,7 @@ namespace SharedMeta.Generator.Generators
             var returnType = innerType != null ? $"Task<{innerType}>" : "Task";
             sb.AppendLine($"        public async {returnType} {methodName}({parameters})");
             sb.AppendLine("        {");
-            EmitArgumentPacking(sb, paramNames, serializer);
+            EmitArgumentPacking(sb, paramNames, transforms, serializer);
             // Locals are __-prefixed: user parameter names share this scope, and a service method
             // taking a parameter called "result" or "buffer" must not collide with generated code.
             sb.AppendLine("            var __call = await _grain.HandleCallFromEntityAsync(new RpcCall");
@@ -220,8 +221,14 @@ namespace SharedMeta.Generator.Generators
         /// than pooled: a server-originated call is a cold path (admin action, match notification),
         /// not the per-RPC hot path the recorder's cached writers exist for.
         /// </summary>
-        private static void EmitArgumentPacking(StringBuilder sb, List<string> paramNames, DetectedSerializer serializer)
+        private static void EmitArgumentPacking(StringBuilder sb, List<string> paramNames,
+            List<ParameterTransform> transforms, DetectedSerializer serializer)
         {
+            // Box first: the dispatcher on the other side reads the boxed shape, and it cannot
+            // tell a server-originated call from a client one.
+            foreach (var t in transforms.Where(t => t.Transformed))
+                sb.AppendLine($"            var {t.WireLocal} = {TransformerAnalysis.BoxExpr(t, "@" + t.Name, TransformerAnalysis.AmbientStateExpr(t))};");
+
             if (paramNames.Count == 0)
             {
                 sb.AppendLine("            System.ReadOnlyMemory<byte> __argsBytes = Array.Empty<byte>();");

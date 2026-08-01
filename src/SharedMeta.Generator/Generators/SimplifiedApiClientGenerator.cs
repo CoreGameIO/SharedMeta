@@ -174,6 +174,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("using SharedMeta.Core.Packets;");
             sb.AppendLine("using SharedMeta.Core.Network;");
             sb.AppendLine("using SharedMeta.Core.Diagnostics;");
+            sb.AppendLine("using SharedMeta.Core.Diagnostics.Formatting;");
             sb.AppendLine("using SharedMeta.Core.Random;");
             sb.AppendLine("using SharedMeta.Core.Patch;");
             sb.AppendLine("using SharedMeta.Client;");
@@ -187,7 +188,8 @@ namespace SharedMeta.Generator.Generators
             {
                 "System", "System.Collections.Generic", "System.Threading.Tasks",
                 "SharedMeta.Core", "SharedMeta.Core.Packets", "SharedMeta.Core.Network",
-                "SharedMeta.Core.Diagnostics", "SharedMeta.Core.Random", "SharedMeta.Core.Patch",
+                "SharedMeta.Core.Diagnostics", "SharedMeta.Core.Diagnostics.Formatting",
+                "SharedMeta.Core.Random", "SharedMeta.Core.Patch",
                 "SharedMeta.Client", "SharedMeta.Core.Logging", namespaceName,
             });
             sb.AppendLine($"namespace {namespaceName}.Client");
@@ -447,14 +449,14 @@ namespace SharedMeta.Generator.Generators
             {
                 if (IsGenerateClientApiFalse(method)) continue;
                 methodComparers.TryGetValue(method, out var comparer);
-                GenerateMethod(sb, method, interfaceName, namespaceName, implClassName, stateTypeName, serializer, hasDeepDesync, comparer, capabilitiesEnabled);
+                GenerateMethod(sb, method, interfaceName, namespaceName, implClassName, stateTypeName, serializer, hasDeepDesync, comparer, capabilitiesEnabled, compilation);
             }
 
             // Context management
             GenerateContextMethods(sb, stateTypeName, hasDeepDesync);
 
             // Broadcast handling
-            GenerateHandleBroadcast(sb, methods, interfaceName, namespaceName, implClassName, stateTypeName, serializer);
+            GenerateHandleBroadcast(sb, methods, interfaceName, namespaceName, implClassName, stateTypeName, serializer, compilation);
 
             // Trigger replay
             GenerateTriggerReplayMethods(sb, methods, stateTypeName, interfaceName, namespaceName);
@@ -490,8 +492,12 @@ namespace SharedMeta.Generator.Generators
         private static void GenerateMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string interfaceName, string namespaceName, string implClassName, string? stateTypeName,
             DetectedSerializer serializer, bool hasDeepDesync = false, ResultComparerInfo? resultComparer = null,
-            bool capabilitiesEnabled = true)
+            bool capabilitiesEnabled = true, Compilation? compilation = null)
         {
+            // Which arguments get boxed is decided here, once, from the compilation — the server
+            // dispatcher derives the same answer from the same source, so both ends of the wire
+            // agree without any runtime handshake.
+            var transforms = TransformerAnalysis.Analyze(method.ParameterList.Parameters, compilation);
             var methodName = method.Identifier.Text;
             var returnType = method.ReturnType.ToString();
             var parameters = string.Join(", ", method.ParameterList.Parameters);
@@ -618,7 +624,7 @@ namespace SharedMeta.Generator.Generators
             // Validation: must return void, must not combine with Query/Sync/explicit Mode.
             if (isSignalMethod)
             {
-                GenerateSignalMethod(sb, method, methodAlias, isQueryMethod, modeExplicit, syncApi, interfaceName, namespaceName, serializer);
+                GenerateSignalMethod(sb, method, methodAlias, isQueryMethod, modeExplicit, syncApi, interfaceName, namespaceName, serializer, transforms);
                 return;
             }
 
@@ -696,6 +702,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"        public {asyncReturnType} {ContextInjectionGenerator.AsyncMethodName(methodName)}({parameters})");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
+                GenerateTransformNormalization(sb, transforms);
                 if (capabilitiesEnabled)
                 {
                     // 0.24.0 capabilities gate. Two layers checked:
@@ -745,6 +752,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"        public {syncRet} {methodName}Sync({parameters})");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
+                GenerateTransformNormalization(sb, transforms);
                 if (capabilitiesEnabled)
                 {
                     // 0.24.0 capabilities gate — same contract as the async overload (session + per-entity).
@@ -782,18 +790,18 @@ namespace SharedMeta.Generator.Generators
             // can actually reach them — skipped when Sync = OnlySync since no async public dispatcher exists.
             if (!onlySync)
             {
-                GenerateServerMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, resultComparer);
-                GenerateOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer, deepStateCheck);
-                GenerateCrossOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, resultComparer);
-                GenerateServerPatchMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName);
-                GenerateServerReplaceMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, serializer, stateTypeName, interfaceName, namespaceName);
+                GenerateServerMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, transforms, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, resultComparer);
+                GenerateOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, transforms, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer, deepStateCheck);
+                GenerateCrossOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, transforms, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, resultComparer);
+                GenerateServerPatchMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, transforms, serializer, interfaceName, namespaceName, stateTypeName);
+                GenerateServerReplaceMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, transforms, serializer, stateTypeName, interfaceName, namespaceName);
             }
 
             // Private sync-optimistic body — only emitted for the Optimistic sync overload above.
             // LocalQuery's sync overload calls the impl directly (no _Optimistic round-trip helper).
             if (wantsSync && !isAsync && defaultMode == "Optimistic")
             {
-                GenerateOptimisticMethodSync(sb, method, methodAlias, innerReturnType, isVoidReturn, paramCount, callArgs, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer, deepStateCheck);
+                GenerateOptimisticMethodSync(sb, method, methodAlias, innerReturnType, isVoidReturn, paramCount, callArgs, transforms, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer, deepStateCheck);
             }
         }
 
@@ -863,7 +871,7 @@ namespace SharedMeta.Generator.Generators
         }
 
         private static void GenerateServerMethod(StringBuilder sb, MethodDeclarationSyntax method,
-            string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
+            string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs, List<ParameterTransform> transforms,
             DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName = null, bool hasDeepDesync = false, ResultComparerInfo? resultComparer = null)
         {
             var methodName = method.Identifier.Text;
@@ -881,7 +889,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            var serverTimeTicks = _network.ServerTimeTicks;");
 
             // Serialize arguments before suppressing broadcasts (no network involved)
-            GenerateArgumentSerialization(sb, method, paramCount, serializer);
+            GenerateArgumentSerialization(sb, method, transforms, paramCount, serializer);
             sb.AppendLine();
 
             // Suppress broadcast processing for the entire RPC + local replay window.
@@ -957,13 +965,13 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"                if (!{fieldName}.AreEqual(serverResult, localResult))");
                     sb.AppendLine("                {");
                     sb.AppendLine($"                    _diagnostics?.OnResultMismatch(ServiceName, \"{methodAlias}\", serverResult, localResult);");
-                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult}} local={{localResult}} serverSeq={{response.Debug?.Info ?? \"<none>\"}} clientSeq={{_network.LastKnownEntitySequence}}\");");
+                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult.MetaDescribe()}} local={{localResult.MetaDescribe()}} serverSeq={{response.Debug?.Info ?? \"<none>\"}} clientSeq={{_network.LastKnownEntitySequence}}\");");
                     if (serializer == DetectedSerializer.MemoryPack)
                         sb.AppendLine($"                    var localResultBytes = MemoryPackSerializer.Serialize(localResult);");
                     else
                         sb.AppendLine($"                    var localResultBytes = _serializer.Pack(localResult).ToArray();");
                     GenerateResultMismatchReport(sb, methodAlias, "response.ResultBytes", "localResultBytes", "                    ");
-                    sb.AppendLine($"                    throw new DesyncException(ServiceName, \"{methodAlias}\", serverResult, localResult);");
+                    sb.AppendLine($"                    throw new DesyncException(ServiceName, \"{methodAlias}\", serverResult, localResult, serverResult.MetaDescribe(), localResult.MetaDescribe());");
                     sb.AppendLine("                }");
                 }
                 else
@@ -972,9 +980,9 @@ namespace SharedMeta.Generator.Generators
                     GenerateResultByteComparison(sb, returnType, serializer, "response.ResultBytes", "                ");
                     sb.AppendLine("                {");
                     sb.AppendLine($"                    _diagnostics?.OnResultMismatch(ServiceName, \"{methodAlias}\", serverResult, localResult);");
-                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult}} local={{localResult}} serverSeq={{response.Debug?.Info ?? \"<none>\"}} clientSeq={{_network.LastKnownEntitySequence}}\");");
+                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult.MetaDescribe()}} local={{localResult.MetaDescribe()}} serverSeq={{response.Debug?.Info ?? \"<none>\"}} clientSeq={{_network.LastKnownEntitySequence}}\");");
                     GenerateResultMismatchReport(sb, methodAlias, "response.ResultBytes", "localResultBytes", "                    ");
-                    sb.AppendLine($"                    throw new DesyncException(ServiceName, \"{methodAlias}\", serverResult, localResult);");
+                    sb.AppendLine($"                    throw new DesyncException(ServiceName, \"{methodAlias}\", serverResult, localResult, serverResult.MetaDescribe(), localResult.MetaDescribe());");
                     sb.AppendLine("                }");
                 }
             }
@@ -1006,8 +1014,23 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
         }
 
+        /// <summary>
+        /// Runs each transformed argument through Box then Unbox before the local body sees it.
+        /// The server only ever receives the boxed form, so skipping this leaves the two sides
+        /// executing the same method against different objects — every transformer that is not a
+        /// perfect identity would surface as a desync on the very first call.
+        /// </summary>
+        private static void GenerateTransformNormalization(StringBuilder sb, List<ParameterTransform> transforms)
+        {
+            foreach (var t in transforms.Where(t => t.Transformed))
+            {
+                var boxed = TransformerAnalysis.BoxExpr(t, t.Name, "_state");
+                sb.AppendLine($"            {t.Name} = {TransformerAnalysis.UnboxExpr(t, boxed, "_state")};");
+            }
+        }
+
         private static void GenerateArgumentSerialization(StringBuilder sb, MethodDeclarationSyntax method,
-            int paramCount, DetectedSerializer serializer)
+            List<ParameterTransform> transforms, int paramCount, DetectedSerializer serializer)
         {
             if (paramCount == 0)
             {
@@ -1015,19 +1038,26 @@ namespace SharedMeta.Generator.Generators
                 return;
             }
 
+            // A transformed argument goes on the wire as its boxed type and occupies exactly one
+            // member, same as any other — the framing is untouched, which is what lets the
+            // MemoryPack fast path stay usable for methods that use transformers.
+            foreach (var t in transforms.Where(t => t.Transformed))
+                sb.AppendLine($"            var {t.WireLocal} = {TransformerAnalysis.BoxExpr(t, t.Name, "_state")};");
+
+            string Arg(ParameterTransform t) => t.Transformed ? t.WireLocal : t.Name;
+
             if (serializer == DetectedSerializer.MemoryPack)
             {
                 if (paramCount == 1)
                 {
-                    var paramName = method.ParameterList.Parameters[0].Identifier.Text;
-                    sb.AppendLine($"            var argsBytes = MemoryPackSerializer.Serialize({paramName});");
+                    sb.AppendLine($"            var argsBytes = MemoryPackSerializer.Serialize({Arg(transforms[0])});");
                 }
                 else
                 {
                     sb.AppendLine("            var buffer = new System.Buffers.ArrayBufferWriter<byte>();");
-                    foreach (var param in method.ParameterList.Parameters)
+                    foreach (var t in transforms)
                     {
-                        sb.AppendLine($"            MemoryPackSerializer.Serialize(buffer, {param.Identifier.Text});");
+                        sb.AppendLine($"            MemoryPackSerializer.Serialize(buffer, {Arg(t)});");
                     }
                     sb.AppendLine("            var argsBytes = buffer.WrittenSpan.ToArray();");
                 }
@@ -1042,9 +1072,9 @@ namespace SharedMeta.Generator.Generators
                 // and INetwork.CallAsync takes ROM which accepts byte[] via implicit conversion.
                 sb.AppendLine("            var writer = _serializer.CreateWriter();");
                 sb.AppendLine("            writer.Reset();");
-                foreach (var param in method.ParameterList.Parameters)
+                foreach (var t in transforms)
                 {
-                    sb.AppendLine($"            writer.Write({param.Identifier.Text});");
+                    sb.AppendLine($"            writer.Write({Arg(t)});");
                 }
                 sb.AppendLine("            var argsBytes = writer.Complete().ToArray();");
             }
@@ -1112,7 +1142,7 @@ namespace SharedMeta.Generator.Generators
         }
 
         private static void GenerateOptimisticMethod(StringBuilder sb, MethodDeclarationSyntax method,
-            string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
+            string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs, List<ParameterTransform> transforms,
             DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null, int deepStateCheck = 0)
         {
             var methodName = method.Identifier.Text;
@@ -1226,7 +1256,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
 
             // Serialize arguments based on serializer
-            GenerateArgumentSerialization(sb, method, paramCount, serializer);
+            GenerateArgumentSerialization(sb, method, transforms, paramCount, serializer);
             sb.AppendLine();
 
             var dsDebugArg = deepStateCheck != 0 ? ", debug: _dsDebug" : "";
@@ -1306,7 +1336,7 @@ namespace SharedMeta.Generator.Generators
         // Body parity with the async version — identical mutations, context, tracker, fire-and-forget
         // continuation. Only differences: no `async`/`Task<>` wrapper, no `await` on impl call.
         private static void GenerateOptimisticMethodSync(StringBuilder sb, MethodDeclarationSyntax method,
-            string methodAlias, string returnType, bool isVoidReturn, int paramCount, string callArgs,
+            string methodAlias, string returnType, bool isVoidReturn, int paramCount, string callArgs, List<ParameterTransform> transforms,
             DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null, int deepStateCheck = 0)
         {
             var methodName = method.Identifier.Text;
@@ -1412,7 +1442,7 @@ namespace SharedMeta.Generator.Generators
             }
             sb.AppendLine();
 
-            GenerateArgumentSerialization(sb, method, paramCount, serializer);
+            GenerateArgumentSerialization(sb, method, transforms, paramCount, serializer);
             sb.AppendLine();
 
             var dsDebugArg = deepStateCheck != 0 ? ", debug: _dsDebug" : "";
@@ -1486,7 +1516,7 @@ namespace SharedMeta.Generator.Generators
         }
 
         private static void GenerateCrossOptimisticMethod(StringBuilder sb, MethodDeclarationSyntax method,
-            string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
+            string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs, List<ParameterTransform> transforms,
             DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, ResultComparerInfo? resultComparer = null)
         {
             var methodName = method.Identifier.Text;
@@ -1576,7 +1606,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
 
             // Serialize arguments
-            GenerateArgumentSerialization(sb, method, paramCount, serializer);
+            GenerateArgumentSerialization(sb, method, transforms, paramCount, serializer);
             sb.AppendLine();
 
             // Fire-and-forget to server with IsCrossOptimistic flag + validation
@@ -1650,7 +1680,7 @@ namespace SharedMeta.Generator.Generators
         }
 
         private static void GenerateServerPatchMethod(StringBuilder sb, MethodDeclarationSyntax method,
-            string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
+            string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs, List<ParameterTransform> transforms,
             DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName)
         {
             var methodName = method.Identifier.Text;
@@ -1669,7 +1699,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            var serverTimeTicks = _network.ServerTimeTicks;");
 
             // Serialize arguments
-            GenerateArgumentSerialization(sb, method, paramCount, serializer);
+            GenerateArgumentSerialization(sb, method, transforms, paramCount, serializer);
             sb.AppendLine();
 
             // Suppress broadcasts during RPC + patch application
@@ -1741,7 +1771,7 @@ namespace SharedMeta.Generator.Generators
         }
 
         private static void GenerateServerReplaceMethod(StringBuilder sb, MethodDeclarationSyntax method,
-            string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs,
+            string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs, List<ParameterTransform> transforms,
             DetectedSerializer serializer, string? stateTypeName, string interfaceName, string namespaceName)
         {
             var methodName = method.Identifier.Text;
@@ -1757,7 +1787,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            var serverTimeTicks = _network.ServerTimeTicks;");
 
             // Serialize arguments
-            GenerateArgumentSerialization(sb, method, paramCount, serializer);
+            GenerateArgumentSerialization(sb, method, transforms, paramCount, serializer);
             sb.AppendLine();
 
             // Suppress broadcasts during RPC + state replacement
@@ -1980,7 +2010,7 @@ namespace SharedMeta.Generator.Generators
         private static void GenerateHandleBroadcast(StringBuilder sb,
             List<MethodDeclarationSyntax> methods,
             string interfaceName, string namespaceName, string implClassName, string? stateTypeName,
-            DetectedSerializer serializer)
+            DetectedSerializer serializer, Compilation? compilation)
         {
             sb.AppendLine("        private void HandleBroadcast(NetworkBroadcast broadcast)");
             sb.AppendLine("        {");
@@ -2034,7 +2064,7 @@ namespace SharedMeta.Generator.Generators
                 var idConst = "global::" + namespaceName + ".Generated.GameMethodIds." + SignatureHashGenerator.MakeMethodIdConstName(interfaceName, alias, version);
                 sb.AppendLine($"                case {idConst}:");
                 sb.AppendLine("                {");
-                EmitBroadcastReplayBody(sb, method, alias, serializer, indent: "                    ");
+                EmitBroadcastReplayBody(sb, method, alias, serializer, compilation, indent: "                    ");
                 sb.AppendLine("                    break;");
                 sb.AppendLine("                }");
             }
@@ -2147,26 +2177,27 @@ namespace SharedMeta.Generator.Generators
         }
 
         private static void GenerateBroadcastArgumentDeserialization(StringBuilder sb, MethodDeclarationSyntax method,
-            int paramCount, DetectedSerializer serializer)
+            List<ParameterTransform> transforms, int paramCount, DetectedSerializer serializer)
         {
+            // A broadcast carries the originating client's argument payload verbatim, so this reads
+            // the boxed shape the caller wrote and unboxes it exactly as the server dispatcher did.
+            string Target(ParameterTransform t) => t.Transformed ? t.WireLocal : t.Name;
+
             if (serializer == DetectedSerializer.MemoryPack)
             {
                 if (paramCount == 1)
                 {
-                    var paramType = method.ParameterList.Parameters[0].Type!.ToString();
-                    var paramName = method.ParameterList.Parameters[0].Identifier.Text;
-                    sb.AppendLine($"                    var {paramName} = MemoryPackSerializer.Deserialize<{paramType}>(broadcast.ArgsBytes)!;");
+                    var t = transforms[0];
+                    sb.AppendLine($"                    var {Target(t)} = MemoryPackSerializer.Deserialize<{t.WireType}>(broadcast.ArgsBytes)!;");
                 }
                 else
                 {
                     // Multiple parameters - use MemoryPackReader
                     sb.AppendLine("                    var mpState = MemoryPackReaderOptionalStatePool.Rent(null);");
                     sb.AppendLine("                    var mpReader = new MemoryPackReader(broadcast.ArgsBytes, mpState);");
-                    foreach (var param in method.ParameterList.Parameters)
+                    foreach (var t in transforms)
                     {
-                        var paramType = param.Type!.ToString();
-                        var paramName = param.Identifier.Text;
-                        sb.AppendLine($"                    var {paramName} = mpReader.ReadValue<{paramType}>()!;");
+                        sb.AppendLine($"                    var {Target(t)} = mpReader.ReadValue<{t.WireType}>()!;");
                     }
                     sb.AppendLine("                    mpReader.Dispose();");
                 }
@@ -2176,13 +2207,16 @@ namespace SharedMeta.Generator.Generators
                 // Generic serializer — always use CreateReader for correct length-prefixed format
                 {
                     sb.AppendLine("                    using var reader = _serializer.CreateReader(broadcast.ArgsBytes);");
-                    foreach (var param in method.ParameterList.Parameters)
+                    foreach (var t in transforms)
                     {
-                        var paramType = param.Type!.ToString();
-                        var paramName = param.Identifier.Text;
-                        sb.AppendLine($"                    var {paramName} = reader.Read<{paramType}>()!;");
+                        sb.AppendLine($"                    var {Target(t)} = reader.Read<{t.WireType}>()!;");
                     }
                 }
+            }
+
+            foreach (var t in transforms.Where(t => t.Transformed))
+            {
+                sb.AppendLine($"                    var {t.Name} = {TransformerAnalysis.UnboxExpr(t, t.WireLocal, "_state")};");
             }
         }
 
@@ -2221,7 +2255,7 @@ namespace SharedMeta.Generator.Generators
         /// </para>
         /// </summary>
         private static void EmitBroadcastReplayBody(StringBuilder sb, MethodDeclarationSyntax method,
-            string methodAlias, DetectedSerializer serializer, string indent)
+            string methodAlias, DetectedSerializer serializer, Compilation? compilation, string indent)
         {
             var methodName = method.Identifier.Text;
             var eventName = GetEventName(methodName);
@@ -2234,7 +2268,8 @@ namespace SharedMeta.Generator.Generators
                 // Per-version arg deserialization: the underlying serializer reads from the
                 // broadcast's ArgsBytes (which the server tailored for this version's parameter
                 // shape). The output local variables are scoped to this body's case block.
-                GenerateBroadcastArgumentDeserialization(sb, method, paramCount, serializer);
+                var transforms = TransformerAnalysis.Analyze(method.ParameterList.Parameters, compilation);
+                GenerateBroadcastArgumentDeserialization(sb, method, transforms, paramCount, serializer);
             }
 
             var argNames = paramCount > 0
@@ -2440,7 +2475,7 @@ namespace SharedMeta.Generator.Generators
         /// </summary>
         private static void GenerateSignalMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, bool isQueryCombo, bool modeExplicit, string syncApi, string interfaceName,
-            string namespaceName, DetectedSerializer serializer)
+            string namespaceName, DetectedSerializer serializer, List<ParameterTransform> transforms)
         {
             var methodName = method.Identifier.Text;
             var returnType = method.ReturnType.ToString();
@@ -2477,7 +2512,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
 
             // Serialize arguments using the detected serializer (same pattern as Optimistic).
-            GenerateArgumentSerialization(sb, method, paramCount, serializer);
+            GenerateArgumentSerialization(sb, method, transforms, paramCount, serializer);
 
             // Fire-and-forget: discard the ValueTask returned by SendSignalAsync.
             // Note: _ = (ValueTask) is allowed in C# 7.3+. GetAwaiter().GetResult() not used

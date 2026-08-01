@@ -51,11 +51,6 @@ builder.Host.UseSerilog((ctx, config) => config
 var serializer = new MemoryPackMetaSerializer();
 builder.Services.AddSingleton<IMetaSerializer>(serializer);
 
-// Transformer registry for auto-boxing
-var transformerRegistry = new TransformerRegistry();
-TransformerRegistrations.RegisterAll(transformerRegistry);
-builder.Services.AddSingleton(transformerRegistry);
-
 // Orleans Silo Configuration
 builder.Host.UseOrleans(siloBuilder =>
 {

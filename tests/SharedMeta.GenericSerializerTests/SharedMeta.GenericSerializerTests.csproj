@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0;net11.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)Generated</CompilerGeneratedFilesOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Orleans.TestingHost" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Deliberately does NOT reference SharedMeta.Test.Meta1 / .Test.Server. Method ids are
+         sequential per assembly and a session carries one ServerSignature, so a second meta
+         assembly in this cluster would collide. This project IS the server project for
+         Meta2.Generic: it references SharedMeta.Server.Core, so the generator emits
+         ServerMetaConfiguration here and ConfigureMeta() registers the Generic providers. -->
+    <ProjectReference Include="..\SharedMeta.Test.Meta2.Generic\SharedMeta.Test.Meta2.Generic.csproj" />
+    <ProjectReference Include="..\..\src\SharedMeta.Client\SharedMeta.Client.csproj" />
+    <ProjectReference Include="..\..\src\SharedMeta.Debug\SharedMeta.Debug.csproj" />
+    <ProjectReference Include="..\..\src\SharedMeta.Server.Core\SharedMeta.Server.Core.csproj" />
+    <ProjectReference Include="..\..\src\SharedMeta.Serialization.MemoryPack\SharedMeta.Serialization.MemoryPack.csproj" />
+    <ProjectReference Include="..\..\src\SharedMeta.Generator\SharedMeta.Generator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>
