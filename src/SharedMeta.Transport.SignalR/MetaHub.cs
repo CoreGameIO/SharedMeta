@@ -75,18 +75,26 @@ namespace SharedMeta.Transport.SignalR
         /// </summary>
         public virtual async Task<SessionConnectResponse> SessionConnect(SessionConnectRequest request)
         {
-            // If authenticated via JWT, use PlayerId from token claims (trusted)
+            // If authenticated via JWT, use PlayerId from token claims (trusted).
+            //
+            // Auth rejection is answered, not thrown. A throw reaches the client as a transport
+            // exception carrying only a message, which forces string-matching to tell "your token
+            // expired" (re-acquire and retry) apart from "the server is broken" (give up) — and the
+            // background-reconnect path has no exception handler that could act on it either way.
             if (Context.User?.Identity?.IsAuthenticated == true)
             {
                 var claimPlayerId = Context.User.FindFirst("sub")?.Value
                                     ?? Context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(claimPlayerId))
-                    throw new HubException("Authenticated user has no 'sub' or NameIdentifier claim");
+                    return AuthenticationRequired(
+                        "Authentication rejected: the token has no 'sub' or NameIdentifier claim.");
                 request.PlayerId = claimPlayerId;
             }
             else if (_transportOptions?.RequireAuthentication == true)
             {
-                throw new HubException("Authentication is required");
+                return AuthenticationRequired(
+                    "Authentication is required: the connection presented no valid access token. " +
+                    "Re-acquire a token and re-run the handshake.");
             }
 
             _logger.SessionConnectStart(Context.ConnectionId, request.PlayerId);
@@ -103,6 +111,13 @@ namespace SharedMeta.Transport.SignalR
                 throw;
             }
         }
+
+        private static SessionConnectResponse AuthenticationRequired(string error) => new()
+        {
+            Success = false,
+            FailureReason = SessionConnectFailureReason.AuthenticationRequired,
+            Error = error,
+        };
 
         /// <summary>
         /// 0.22.0+ phase-2 compatibility handshake. Routes to the per-connection handler so

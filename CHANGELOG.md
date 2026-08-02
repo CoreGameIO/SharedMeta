@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.37.2] - 2026-08-02
+
+### Fixed
+
+- A background reconnect rejected for authentication now recovers instead of dead-ending. The 0.30.1 auto-reauth was wired only to `MetaClient.ConnectAsync`; the reconnect path lives in `ClientDispatcher` and is driven by a transport event that bypasses it, so an access token that expired while the app was suspended left the client permanently at `ConnectionStatus.Failed`. `ClientDispatcher` now re-acquires the token and retries the handshake once — including re-dialling the transport, since SignalR reads its token during the connection handshake, not per invocation.
+
+### Changed
+
+- **Breaking, minor:** auth rejection at `SessionConnect` is answered, not thrown. The SignalR hub returned `HubException("Authentication is required")`; it now returns `SessionConnectResponse { Success = false, FailureReason = AuthenticationRequired }`. HTTP polling keeps its 401 status but carries the same structured body. Code catching the exception by message must read `FailureReason` instead.
+- `IdentityUnknown` (0.37.1) is explicitly not retried on reconnect — re-acquiring would yield a different PlayerId, which a live session cannot adopt. Reported as `Failed` so the game restarts its login flow.
+
+### Added
+
+- `SessionConnectFailureReason.AuthenticationRequired` — recoverable credential failure, distinct from `IdentityUnknown` (account gone; re-login required).
+- `ClientDispatcher.AuthRecoveryHandler` — populated by `MetaClient` from `MetaClientOptions.AccessTokenSource` / `OnConnectAuthFailedAsync`, so one policy covers both cold connect and reconnect.
+- `AuthFailureHeuristic.LooksLikeAuthFailure` (`SharedMeta.Core.Auth`) — message-based fallback for pre-0.37.2 servers that throw, and transports that raise a 401 before any response exists.
+
 ## [0.37.1] - 2026-08-01
 
 ### Fixed

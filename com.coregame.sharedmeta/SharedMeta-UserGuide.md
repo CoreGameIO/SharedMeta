@@ -500,6 +500,26 @@ The rejection reads "Authentication rejected" and carries `SessionConnectFailure
 
 The gate needs `RequireAuthentication = true` — without it the PlayerId is client-supplied, not claim-derived. Turn it off with `ValidatePlayerIdentity = false` if authenticated connections may legitimately carry identities your auth store doesn't hold (service accounts, externally minted tokens). Custom identity sources implement `IPlayerIdentityValidator` and register before `AddMetaAuth`.
 
+### Token Expiry and Reconnect (0.37.2+)
+
+The case that bites on mobile: the app sits in the background, the access token expires (default lifetime 30 min), the transport reconnects with the dead token and the handshake is rejected. For this to heal automatically you need a **provider-based** connection — a fixed token string is captured once and re-sent verbatim forever:
+
+```csharp
+var tokens = new MetaTokenManager(authUrl, deviceId, tokenStorage);
+var connection = new SignalRConnection(url, tokens.GetTokenAsync);   // provider, not a string
+var client = new MetaClient(connection, serializer, new MetaClientOptions
+{
+    AccessTokenSource = tokens,
+});
+tokens.StartAutoRefresh();
+```
+
+With `AccessTokenSource` set, both the cold connect and the background reconnect re-acquire the token and retry the handshake once (the transport is re-dialled too — SignalR reads its token during the handshake). Refresh keeps the same PlayerId, so subscriptions survive.
+
+On resume from background call `await tokens.GetTokenAsync()` yourself — the process is frozen while backgrounded, so the auto-refresh loop doesn't tick.
+
+`AuthenticationRequired` (credential expired, account fine) recovers automatically. `IdentityUnknown` (account gone) does not — a full login yields a different PlayerId, which a live session can't adopt, so restart your boot/login flow.
+
 ### Client Login
 
 Use `MetaAuth` — works on both Unity and .NET:

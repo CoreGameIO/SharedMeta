@@ -67,12 +67,15 @@ namespace SharedMeta.Transport.HttpPolling
                 var claimPlayerId = ctx.User.FindFirst("sub")?.Value
                                     ?? ctx.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(claimPlayerId))
-                    return Results.Unauthorized();
+                    return AuthenticationRequired(
+                        "Authentication rejected: the token has no 'sub' or NameIdentifier claim.");
                 request.PlayerId = claimPlayerId;
             }
             else if (transportOptions?.RequireAuthentication == true)
             {
-                return Results.Unauthorized();
+                return AuthenticationRequired(
+                    "Authentication is required: the connection presented no valid access token. " +
+                    "Re-acquire a token and re-run the handshake.");
             }
 
             var state = mgr.GetOrCreateConnection(connectionId);
@@ -81,6 +84,20 @@ namespace SharedMeta.Transport.HttpPolling
             var response = await state.Handler.SessionConnectAsync(request);
             return Results.Json(response, MetaJsonContext.Default.SessionConnectResponse);
         }
+
+        // 401 is kept — it's the honest HTTP answer and proxies/monitoring read it — but the body
+        // now carries the same structured SessionConnectResponse the SignalR hub returns, so a
+        // client can tell "re-acquire the token and retry" from a generic transport error without
+        // parsing prose.
+        private static IResult AuthenticationRequired(string error) => Results.Json(
+            new SessionConnectResponse
+            {
+                Success = false,
+                FailureReason = SessionConnectFailureReason.AuthenticationRequired,
+                Error = error,
+            },
+            MetaJsonContext.Default.SessionConnectResponse,
+            statusCode: StatusCodes.Status401Unauthorized);
 
         private static async Task<IResult> HandleRegisterClientSignature(
             HttpContext ctx,

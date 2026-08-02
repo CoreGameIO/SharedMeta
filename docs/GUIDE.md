@@ -3105,6 +3105,39 @@ builder.Services.AddSingleton<IPlayerIdentityValidator, MyIdentityValidator>();
 
 `ExistsAsync` must already return true for a player created moments ago by a login — an implementation lagging behind account creation would reject the very client it just issued a token to. The bundled one is safe here because `AuthGrain.LoginAsync` writes the index entry before the endpoint mints the token.
 
+### Token Expiry and Reconnect Recovery (0.37.2+)
+
+Access tokens are short-lived (default 30 minutes). The case that bites is an app resumed from the background: the process was frozen, the token expired, the transport re-dials, and — because the hub endpoint accepts unauthenticated connections unless you add `.RequireAuthorization()` — the connection is established anonymously and the handshake is rejected with `SessionConnectFailureReason.AuthenticationRequired`.
+
+Two things must be in place for this to heal by itself.
+
+**1. A provider-based connection, not a fixed token.** A fixed `accessToken` is captured once and re-sent verbatim on every reconnect, dead forever after it expires. A provider is resolved on each (re)connect:
+
+```csharp
+var tokens = new MetaTokenManager(authUrl, deviceId, tokenStorage);   // refreshes via refresh token
+var connection = new SignalRConnection(url, tokens.GetTokenAsync);    // provider, not a string
+var client = new MetaClient(connection, serializer, new MetaClientOptions
+{
+    AccessTokenSource = tokens,   // enables the built-in invalidate + retry-once policy
+});
+tokens.StartAutoRefresh();        // proactive renewal while the app is in the foreground
+```
+
+`MetaTokenManager` is single-flight and refreshes through the refresh token, so the **PlayerId does not change** and the session — with every subscription keyed to it — survives.
+
+**2. `AccessTokenSource` on `MetaClientOptions`.** This installs the recovery policy on both the cold connect and the background reconnect. On rejection the client invalidates the token source, re-dials the transport (required: SignalR resolves the token during its handshake, so a new token cannot reach the server on the existing connection), and retries the handshake once. Override the policy with `OnConnectAuthFailedAsync`.
+
+Without a handler the reconnect reports `ConnectionStatus.Failed` and logs a warning naming the missing configuration — it never loops.
+
+On mobile, also refresh on resume: the process is frozen in the background, so the auto-refresh loop does not tick and the token is almost always stale at that moment. Call `await tokens.GetTokenAsync()` from `OnApplicationPause(false)` before the transport tries.
+
+The two auth rejections are deliberately different:
+
+| Reason | Meaning | Client action |
+|---|---|---|
+| `AuthenticationRequired` | Credential missing/expired/refused. Account is fine. | Re-acquire (refresh keeps the PlayerId), retry once. Automatic. |
+| `IdentityUnknown` | Account no longer exists. | Full re-login — the new PlayerId cannot be adopted by a live session, so the game restarts its boot/login flow. Never retried automatically. |
+
 ### Client-Side Authentication
 
 Use `MetaAuth` — a cross-platform helper that works on both Unity (`UnityWebRequest`) and .NET (`HttpClient`):

@@ -1136,6 +1136,14 @@ namespace SharedMeta.Client
             await ReconnectAsync();
         }
 
+        /// <summary>
+        /// Invoked when a background reconnect is rejected for authentication. Returns true if fresh
+        /// credentials were obtained and the handshake is worth one retry. Set by <c>MetaClient</c>
+        /// from <c>MetaClientOptions.AccessTokenSource</c> / <c>OnConnectAuthFailedAsync</c>; null
+        /// means no recovery is attempted and the reconnect simply reports failure.
+        /// </summary>
+        public Func<Exception, Task<bool>>? AuthRecoveryHandler { get; set; }
+
         private async Task ReconnectAsync()
         {
             try
@@ -1144,10 +1152,47 @@ namespace SharedMeta.Client
                 // Carry the ClientAppVersion captured on first connect — auto-reconnect must identify
                 // the same client version, otherwise per-call config resolution would drift between
                 // before / after the transport blip. Mode defaults to Resume when _sessionId is set.
-                var result = await ConnectSessionAsync(_sessionId, _lastAcknowledgedSequence, _clientAppVersion);
+                SessionConnectResult result;
+                try
+                {
+                    result = await ConnectSessionAsync(_sessionId, _lastAcknowledgedSequence, _clientAppVersion);
+                }
+                catch (Exception ex) when (SharedMeta.Core.Auth.AuthFailureHeuristic.LooksLikeAuthFailure(ex))
+                {
+                    // Pre-0.37.2 servers throw the auth rejection instead of answering with a reason,
+                    // and some transports raise a 401 client-side before any response exists. Normalize
+                    // into the structured shape so there is one recovery path below, not two.
+                    result = new SessionConnectResult
+                    {
+                        Success = false,
+                        Error = ex.Message,
+                        FailureReason = SessionConnectFailureReason.AuthenticationRequired,
+                    };
+                }
+
+                if (!result.Success
+                    && result.FailureReason == SessionConnectFailureReason.AuthenticationRequired)
+                {
+                    // The common cause is an app resumed from background whose access token expired
+                    // while the process was frozen. Re-acquiring keeps the same PlayerId (refresh),
+                    // so the session — and every subscription keyed to it — survives.
+                    if (await TryReacquireCredentialsAsync(result.Error))
+                        result = await ConnectSessionAsync(_sessionId, _lastAcknowledgedSequence, _clientAppVersion);
+                }
 
                 if (!result.Success)
                 {
+                    // Re-acquiring here would yield a *different* PlayerId, and the session can't
+                    // adopt one mid-flight — every subscription is keyed to the old one. Retrying
+                    // would also loop: the account is gone, not the credential. The game has to
+                    // restart its login/boot flow.
+                    if (result.FailureReason == SessionConnectFailureReason.IdentityUnknown)
+                    {
+                        MetaLog.Error($"[ClientDispatcher] Session reconnect rejected — player unknown to the server: {result.Error}");
+                        OnConnectionStatusChanged?.Invoke(ConnectionStatus.Failed, result.Error);
+                        return;
+                    }
+
                     // 0.24.0+ SessionUnknown: server doesn't recognize our sessionId (typical cause:
                     // server restart without persistent state). Fire IMetaSessionRecoveryHandler so
                     // game-level code picks Reconnect / Restart / Disconnect. Default handler picks
@@ -1178,6 +1223,52 @@ namespace SharedMeta.Client
             {
                 MetaLog.Error($"[ClientDispatcher] Reconnection failed: {ex.Message}");
                 OnConnectionStatusChanged?.Invoke(ConnectionStatus.Failed, ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Ask the host for fresh credentials after an authentication rejection, then re-dial the
+        /// transport. Both halves are required: SignalR resolves its access token during the
+        /// connection handshake, not per invocation, so a newly-issued token only reaches the server
+        /// on a new connection — invalidating the token source alone would re-run the handshake with
+        /// the same dead credential the server just refused.
+        /// </summary>
+        private async Task<bool> TryReacquireCredentialsAsync(string? detail)
+        {
+            var handler = AuthRecoveryHandler;
+            if (handler == null)
+            {
+                MetaLog.Warning("[ClientDispatcher] Session reconnect rejected for authentication and no " +
+                                "AccessTokenSource is configured — cannot re-acquire a token. Wire " +
+                                "MetaClientOptions.AccessTokenSource (and a provider-based connection).");
+                return false;
+            }
+
+            MetaLog.Info("[ClientDispatcher] Session reconnect rejected for authentication — re-acquiring token");
+            try
+            {
+                // The hook's contract is exception-shaped (shared with the cold-connect path). The
+                // message is preserved so a host policy that inspects it sees the server's wording.
+                if (!await handler(new InvalidOperationException(
+                        detail ?? "Authentication rejected by server")))
+                    return false;
+            }
+            catch (Exception ex)
+            {
+                MetaLog.Warning($"[ClientDispatcher] Auth recovery handler threw: {ex.Message}");
+                return false;
+            }
+
+            try
+            {
+                await _connection.DisconnectAsync();
+                await _connection.ConnectAsync();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MetaLog.Error($"[ClientDispatcher] Transport re-dial after re-auth failed: {ex.Message}");
+                return false;
             }
         }
 

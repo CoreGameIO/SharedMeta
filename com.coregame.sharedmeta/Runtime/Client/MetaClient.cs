@@ -235,6 +235,9 @@ namespace SharedMeta.Client
                 ClientSignature = options.ClientSignature,
                 DisableClientSignatureNegotiation = options.DisableClientSignatureNegotiation,
                 SessionRecoveryHandler = options.SessionRecoveryHandler ?? new DefaultSessionRecoveryHandler(),
+                // Same policy on the background-reconnect path as on the cold connect below. A token
+                // typically dies while the app is suspended, so the reconnect is where it surfaces.
+                AuthRecoveryHandler = _onConnectAuthFailedAsync,
             };
             if (options.ConnectionHealthOptions != null)
                 _dispatcher.ConnectionHealthOptions = options.ConnectionHealthOptions;
@@ -381,23 +384,12 @@ namespace SharedMeta.Client
             }
         }
 
-        // Heuristic: does this connect failure look like the server rejecting the token (vs. a network
-        // error)? Used to gate the built-in auto-reauth so a transient outage doesn't trigger a relogin.
-        // SignalR surfaces the hub's HubException("Authentication is required") message to the client;
-        // HTTP transports include the status code/word in their thrown message.
+        // Does this connect failure look like the server rejecting the token (vs. a network error)?
+        // Gates the built-in auto-reauth so a transient outage doesn't trigger a relogin. Reached on
+        // the cold-connect path, where the rejection arrives as a thrown exception rather than the
+        // structured SessionConnectFailureReason the reconnect path can read.
         private static bool IsAuthFailure(Exception ex)
-        {
-            for (var e = ex; e != null; e = e.InnerException)
-            {
-                var m = e.Message;
-                if (!string.IsNullOrEmpty(m) &&
-                    (m.IndexOf("Authentication", StringComparison.OrdinalIgnoreCase) >= 0
-                     || m.IndexOf("Unauthorized", StringComparison.OrdinalIgnoreCase) >= 0
-                     || m.IndexOf("401", StringComparison.Ordinal) >= 0))
-                    return true;
-            }
-            return false;
-        }
+            => SharedMeta.Core.Auth.AuthFailureHeuristic.LooksLikeAuthFailure(ex);
 
         /// <summary>
         /// Attempt to resume the current session after a connection issue.

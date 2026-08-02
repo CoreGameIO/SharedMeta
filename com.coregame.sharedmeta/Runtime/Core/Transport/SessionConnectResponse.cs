@@ -148,6 +148,20 @@ namespace SharedMeta.Core.Transport
         /// which yields a fresh PlayerId. Retrying with the same credential loops forever.
         /// </summary>
         IdentityUnknown = 3,
+
+        /// <summary>
+        /// The connection carried no usable credential where one is required — no token, an expired
+        /// one, or a token the authentication middleware refused (wrong signature, wrong issuer). The
+        /// classic trigger is an app resumed from the background after its access token expired:
+        /// the transport re-dials with the stale token, the endpoint accepts the connection as
+        /// anonymous, and the handshake lands here.
+        /// <para>
+        /// Recoverable, unlike <see cref="IdentityUnknown"/>: re-acquire a token (refresh keeps the
+        /// same PlayerId) and re-run the handshake. Transports that read their token during the
+        /// connection handshake — SignalR does — must be re-dialled for a new token to take effect.
+        /// </para>
+        /// </summary>
+        AuthenticationRequired = 4,
     }
 
     /// <summary>
