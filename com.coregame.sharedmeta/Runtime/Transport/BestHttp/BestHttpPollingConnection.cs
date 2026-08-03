@@ -151,7 +151,13 @@ namespace SharedMeta.Transport.BestHttp
                 ClaimedSubscriptions = claimedSubscriptions,
             };
 
-            var response = await PostAsync<SessionConnectResponse>("/session-connect", body);
+            SessionConnectResponse? response = await PostAsync<SessionConnectResponse>(
+                "/session-connect", body, allowUnauthorized: true);
+
+            // Null only when a 401 arrived without a body — an authorization-middleware rejection
+            // that never reached the endpoint. Same answer, so the caller handles one shape.
+            response ??= SessionConnectResponse.AuthenticationRequired(
+                "Authentication is required: the server rejected the handshake with 401.");
 
             if (response.Success)
             {
@@ -375,13 +381,15 @@ namespace SharedMeta.Transport.BestHttp
 
         #region HTTP Helpers
 
-        protected async Task<T> PostAsync<T>(string path, object? body, int timeoutSeconds = 0)
+        protected async Task<T> PostAsync<T>(string path, object? body, int timeoutSeconds = 0,
+            bool allowUnauthorized = false)
         {
-            var responseText = await PostRawAsync(path, body, timeoutSeconds);
+            var responseText = await PostRawAsync(path, body, timeoutSeconds, allowUnauthorized);
             return JsonConvert.DeserializeObject<T>(responseText, JsonSettings)!;
         }
 
-        protected async Task<string> PostRawAsync(string path, object? body, int timeoutSeconds = 0)
+        protected async Task<string> PostRawAsync(string path, object? body, int timeoutSeconds = 0,
+            bool allowUnauthorized = false)
         {
             var url = _options.ServerUrl.TrimEnd('/') + path;
 
@@ -403,6 +411,16 @@ namespace SharedMeta.Transport.BestHttp
                 if (resp.StatusCode == 410)
                 {
                     tcs.TrySetException(new HttpGoneException());
+                    return;
+                }
+
+                // 401 on the handshake is an answer, not a transport error: the body carries a
+                // SessionConnectResponse with FailureReason = AuthenticationRequired, so the client
+                // can re-acquire a token and retry instead of pattern-matching exception text. An
+                // authorization-middleware 401 has no body; the caller substitutes the same answer.
+                if (allowUnauthorized && resp.StatusCode == 401)
+                {
+                    tcs.TrySetResult(resp.DataAsText ?? "");
                     return;
                 }
 

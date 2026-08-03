@@ -90,12 +90,7 @@ namespace SharedMeta.Transport.HttpPolling
         // client can tell "re-acquire the token and retry" from a generic transport error without
         // parsing prose.
         private static IResult AuthenticationRequired(string error) => Results.Json(
-            new SessionConnectResponse
-            {
-                Success = false,
-                FailureReason = SessionConnectFailureReason.AuthenticationRequired,
-                Error = error,
-            },
+            SessionConnectResponse.AuthenticationRequired(error),
             MetaJsonContext.Default.SessionConnectResponse,
             statusCode: StatusCodes.Status401Unauthorized);
 

@@ -66,7 +66,11 @@ public class AdditionalConfigTests
     {
         var entityId = $"additional_config_{Guid.NewGuid():N}";
         var server = new InProcessServer(_fixture.CreateHandlerFactory());
-        await using var client = new TestClientSetup(server, "alice", clientAppVersion: "2.3.0");
+        // Own player id, like every other version-specific client in this file: IPlayerVersionGrain
+        // is cluster-wide and remembers the highest version an id ever connected with, so pinning a
+        // shared literal ("alice") to 2.x makes every later 1.0.0 connect under that id fail the
+        // downgrade gate — for the rest of the run, in whatever class happens to run next.
+        await using var client = new TestClientSetup(server, "alice_v23", clientAppVersion: "2.3.0");
         RegisterClientConfigProviders(client);
         await client.ConnectAsync();
         var resolver = client.CreateResolver();
@@ -169,7 +173,7 @@ public class AdditionalConfigTests
     {
         var entityId = $"symmetric_config_{Guid.NewGuid():N}";
         var server = new InProcessServer(_fixture.CreateHandlerFactory());
-        await using var client = new TestClientSetup(server, "bob", clientAppVersion: "2.0.0");
+        await using var client = new TestClientSetup(server, "bob_v20", clientAppVersion: "2.0.0");
         RegisterSymmetricClientConfigProviders(client);
         await client.ConnectAsync();
         var resolver = client.CreateResolver();

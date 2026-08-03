@@ -112,12 +112,8 @@ namespace SharedMeta.Transport.SignalR
             }
         }
 
-        private static SessionConnectResponse AuthenticationRequired(string error) => new()
-        {
-            Success = false,
-            FailureReason = SessionConnectFailureReason.AuthenticationRequired,
-            Error = error,
-        };
+        private static SessionConnectResponse AuthenticationRequired(string error)
+            => SessionConnectResponse.AuthenticationRequired(error);
 
         /// <summary>
         /// 0.22.0+ phase-2 compatibility handshake. Routes to the per-connection handler so

@@ -108,6 +108,19 @@ namespace SharedMeta.Core.Transport
         /// </para>
         /// </summary>
         [Id(16), Key(16)] public List<SubscriptionResult>? Subscriptions { get; set; }
+
+        /// <summary>
+        /// The canonical shape of an authentication rejection. Both server transports answer with
+        /// this, and clients synthesize it when a 401 arrives with no body (an ASP.NET
+        /// authorization-middleware rejection carries none) — so the dispatcher sees one shape
+        /// regardless of which layer refused the credential.
+        /// </summary>
+        public static SessionConnectResponse AuthenticationRequired(string error) => new()
+        {
+            Success = false,
+            FailureReason = SessionConnectFailureReason.AuthenticationRequired,
+            Error = error,
+        };
     }
 
     /// <summary>

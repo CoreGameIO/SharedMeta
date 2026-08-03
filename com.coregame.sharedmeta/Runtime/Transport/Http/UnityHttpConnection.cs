@@ -151,7 +151,13 @@ namespace SharedMeta.Client.Network
                 ClaimedSubscriptions = claimedSubscriptions,
             };
 
-            var response = await PostAsync<SessionConnectResponse>("/session-connect", body);
+            SessionConnectResponse? response = await PostAsync<SessionConnectResponse>(
+                "/session-connect", body, allowUnauthorized: true);
+
+            // Null only when a 401 arrived without a body — an authorization-middleware rejection
+            // that never reached the endpoint. Same answer, so the caller handles one shape.
+            response ??= SessionConnectResponse.AuthenticationRequired(
+                "Authentication is required: the server rejected the handshake with 401.");
 
             if (response.Success)
             {
@@ -386,13 +392,15 @@ namespace SharedMeta.Client.Network
 
         #region HTTP Helpers
 
-        private async Task<T> PostAsync<T>(string path, object? body, int timeoutSeconds = 0)
+        private async Task<T> PostAsync<T>(string path, object? body, int timeoutSeconds = 0,
+            bool allowUnauthorized = false)
         {
-            var responseText = await PostRawAsync(path, body, timeoutSeconds);
+            var responseText = await PostRawAsync(path, body, timeoutSeconds, allowUnauthorized);
             return JsonConvert.DeserializeObject<T>(responseText, JsonSettings)!;
         }
 
-        private Task<string> PostRawAsync(string path, object? body, int timeoutSeconds = 0)
+        private Task<string> PostRawAsync(string path, object? body, int timeoutSeconds = 0,
+            bool allowUnauthorized = false)
         {
             // Serialize body off the main thread (json work is CPU-bound), then
             // marshal UnityWebRequest construction onto the main thread.
@@ -407,7 +415,7 @@ namespace SharedMeta.Client.Network
 
             if (_mainThread == null || SynchronizationContext.Current == _mainThread)
             {
-                return BuildAndSend(url, bodyBytes, effectiveTimeout);
+                return BuildAndSend(url, bodyBytes, effectiveTimeout, allowUnauthorized);
             }
 
             var tcs = new TaskCompletionSource<string>();
@@ -415,7 +423,7 @@ namespace SharedMeta.Client.Network
             {
                 try
                 {
-                    var task = BuildAndSend(url, bodyBytes, effectiveTimeout);
+                    var task = BuildAndSend(url, bodyBytes, effectiveTimeout, allowUnauthorized);
                     task.ContinueWith(t =>
                     {
                         if (t.IsFaulted) tcs.TrySetException(t.Exception!.InnerExceptions);
@@ -428,7 +436,8 @@ namespace SharedMeta.Client.Network
             return tcs.Task;
         }
 
-        private async Task<string> BuildAndSend(string url, byte[]? bodyBytes, int timeout)
+        private async Task<string> BuildAndSend(string url, byte[]? bodyBytes, int timeout,
+            bool allowUnauthorized = false)
         {
             var request = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST);
             request.downloadHandler = new DownloadHandlerBuffer();
@@ -450,10 +459,10 @@ namespace SharedMeta.Client.Network
             if (!string.IsNullOrEmpty(token))
                 request.SetRequestHeader("Authorization", "Bearer " + token);
 
-            return await SendAsync(request);
+            return await SendAsync(request, allowUnauthorized);
         }
 
-        private static Task<string> SendAsync(UnityWebRequest request)
+        private static Task<string> SendAsync(UnityWebRequest request, bool allowUnauthorized = false)
         {
             var tcs = new TaskCompletionSource<string>();
             request.SendWebRequest().completed += _ =>
@@ -463,13 +472,21 @@ namespace SharedMeta.Client.Network
                 var error = request.error;
                 string? text = null;
 
-                if (result == UnityWebRequest.Result.Success)
+                // On a 401 UnityWebRequest reports ProtocolError, so the body has to be read here
+                // explicitly — the success-only read below would drop it. The handshake's 401 is an
+                // answer (SessionConnectResponse with FailureReason = AuthenticationRequired), which
+                // beats making the caller pattern-match exception text; an authorization-middleware
+                // 401 has no body and the caller substitutes the same answer.
+                bool unauthorizedAnswer = allowUnauthorized && responseCode == 401;
+                if (result == UnityWebRequest.Result.Success || unauthorizedAnswer)
                     text = request.downloadHandler?.text;
 
                 request.Dispose();
 
                 if (responseCode == 410)
                     tcs.TrySetException(new HttpGoneException());
+                else if (unauthorizedAnswer)
+                    tcs.TrySetResult(text ?? "");
                 else if (result != UnityWebRequest.Result.Success)
                     tcs.TrySetException(new Exception($"HTTP {responseCode}: {error}"));
                 else

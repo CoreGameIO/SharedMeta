@@ -118,8 +118,14 @@ namespace SharedMeta.Transport.HttpPolling
                 ClaimedSubscriptions = claimedSubscriptions,
             };
 
-            var response = await PostAsync<SessionConnectResponse>(
-                "/session-connect", body, MetaJsonContext.Default.SessionConnectRequest);
+            SessionConnectResponse? response = await PostAsync<SessionConnectResponse>(
+                "/session-connect", body, MetaJsonContext.Default.SessionConnectRequest,
+                allowUnauthorized: true);
+
+            // Null only when a 401 arrived without a body — an authorization-middleware rejection
+            // that never reached the endpoint. Same answer, so the caller handles one shape.
+            response ??= SessionConnectResponse.AuthenticationRequired(
+                "Authentication is required: the server rejected the handshake with 401.");
 
             if (response.Success)
             {
@@ -396,7 +402,8 @@ namespace SharedMeta.Transport.HttpPolling
         private async Task<TResponse> PostAsync<TResponse>(
             string path,
             object body,
-            System.Text.Json.Serialization.Metadata.JsonTypeInfo requestTypeInfo)
+            System.Text.Json.Serialization.Metadata.JsonTypeInfo requestTypeInfo,
+            bool allowUnauthorized = false)
         {
             using var request = await CreateRequestAsync(HttpMethod.Post, path);
             request.Content = new StringContent(
@@ -414,6 +421,19 @@ namespace SharedMeta.Transport.HttpPolling
                 StopPollLoop();
                 OnDisconnected?.Invoke(TransportDisconnectReason.ServerDisconnect);
                 throw new InvalidOperationException("Connection expired on server");
+            }
+
+            // 401 on the handshake is an answer, not a transport error: the body carries a
+            // SessionConnectResponse with FailureReason = AuthenticationRequired, which lets the
+            // caller re-acquire a token and retry instead of recognising auth failure from
+            // exception text. A 401 raised by ASP.NET authorization middleware has no body at all —
+            // the caller substitutes an equivalent answer for that case.
+            if (allowUnauthorized && httpResponse.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                var unauthorizedBody = await httpResponse.Content.ReadAsStringAsync();
+                return string.IsNullOrWhiteSpace(unauthorizedBody)
+                    ? default!
+                    : JsonSerializer.Deserialize<TResponse>(unauthorizedBody, _jsonOptions)!;
             }
 
             httpResponse.EnsureSuccessStatusCode();

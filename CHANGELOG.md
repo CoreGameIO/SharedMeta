@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.37.3] - 2026-08-02
+
+### Fixed
+
+- HTTP polling clients now read the structured auth rejection instead of discarding it. All three (`HttpPollingConnection`, `BestHttpPollingConnection`, `UnityHttpConnection`) threw on any non-2xx before touching the response body, so the `SessionConnectResponse` that 0.37.2 attached to the 401 never reached the dispatcher — reconnect recovery still worked, but only through the message-text fallback. A 401 on `/session-connect` is now parsed as an answer; every other status keeps throwing as before.
+- A 401 from ASP.NET authorization middleware (`.RequireAuthorization()` on the endpoint) carries no body at all. Clients synthesize the same `AuthenticationRequired` answer for it, so a rejection at the middleware layer and one from the endpoint reach the dispatcher identically.
+
+### Added
+
+- `SessionConnectResponse.AuthenticationRequired(error)` — one canonical construction of the rejection, now shared by both server transports and the three HTTP clients.
+
 ## [0.37.2] - 2026-08-02
 
 ### Fixed
