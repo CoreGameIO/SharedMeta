@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using SharedMeta.Core;
 
 namespace SharedMeta.Test.Meta1
@@ -75,5 +76,18 @@ namespace SharedMeta.Test.Meta1
         /// which is skipped entirely on the typed in-process call path.</summary>
         [MetaMethod(Alias = "AuxMutateOpInPlace", Mode = ExecutionMode.Server, GenerateClientApi = false)]
         void AuxMutateOpInPlace(CounterOperation op);
+
+        /// <summary>
+        /// Takes a collection written the way a game would write it — <c>List&lt;T&gt;</c>, not
+        /// <c>System.Collections.Generic.List&lt;T&gt;</c>.
+        ///
+        /// This exists to be compiled, not called. Generated code copies a parameter's type from the
+        /// interface verbatim, so an unqualified name only resolves if the generated file happens to
+        /// have the same usings the interface did. Every other collection in these tests is spelled
+        /// out in full, which is why a missing using in one emitter went unnoticed until a game hit
+        /// it. Server mode, so the replay dispatcher renders this signature too.
+        /// </summary>
+        [MetaMethod(Alias = "AuxSumUnqualified", Mode = ExecutionMode.Server)]
+        int AuxSumUnqualified(List<int> values);
     }
 }

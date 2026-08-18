@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.37.4] - 2026-08-18
+
+### Fixed
+
+- A `List<T>` parameter on a meta method broke the build. `{Service}ServiceExtensions.g.cs` writes parameter types exactly as the interface spelled them, but emitted only `using System;` — so an unqualified collection failed to resolve, while the ApiClient and server dispatcher rendering the same signature compiled fine. The file now carries `System.Collections.Generic` and `System.Threading.Tasks` like its two siblings.
+
 ## [0.37.3] - 2026-08-02
 
 ### Fixed

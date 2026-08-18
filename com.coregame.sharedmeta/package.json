@@ -1,6 +1,6 @@
 {
   "name": "com.coregame.sharedmeta",
-  "version": "0.37.3",
+  "version": "0.37.4",
   "displayName": "SharedMeta",
   "description": "Framework for shared game meta-logic between Client and Server with deterministic replay.",
   "unity": "6000.0",

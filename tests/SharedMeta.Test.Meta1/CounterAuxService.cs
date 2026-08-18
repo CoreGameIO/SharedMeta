@@ -94,6 +94,18 @@ namespace SharedMeta.Test.Meta1
             return Context.ServerRandom!.Next(max);
         }
 
+        public int AuxSumUnqualified(System.Collections.Generic.List<int> values)
+        {
+            int total = 0;
+            foreach (int value in values)
+            {
+                total += value;
+            }
+
+            Context.State.Sum += total;
+            return (int)Context.State.Sum;
+        }
+
         public void AuxMutateOpInPlace(CounterOperation op)
         {
             // Mutate caller's instance directly. Sibling-bypass passes by reference (typed
