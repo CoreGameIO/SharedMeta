@@ -41,6 +41,65 @@ Add to `Packages/manifest.json`:
 
 Use **Tools > SharedMeta > Project Wizard** in Unity to scaffold server/client projects.
 
+### Scripting Define Symbols
+
+The package ships **stub attributes** so it compiles in a Unity project that has none of the
+optional dependencies installed — no-op `[MemoryPackable]`, `[MessagePackObject]`,
+`[GenerateSerializer]`. Each family is guarded by a define, and the stubs are only switched off when
+that define is present. **A real dependency plus a missing define means two definitions of the same
+attribute and an unbuildable project.**
+
+| Define | Turns on | Set automatically when |
+|--------|----------|------------------------|
+| `HAS_MEMORYPACK` | real MemoryPack attributes, `SharedMeta.Serialization.MemoryPack` | UPM package `com.cysharp.memorypack` is present |
+| `HAS_MESSAGEPACK` | real MessagePack attributes, `SharedMeta.Serialization.MessagePack` | UPM package `com.github.messagepack-csharp` is present |
+| `HAS_NEWTONSOFT_JSON` | `SharedMeta.Transport.Http` | UPM package `com.unity.nuget.newtonsoft-json` is present |
+| `HAS_BESTHTTP` | `SharedMeta.Transport.BestHttp` | UPM package `com.tivadar.besthttp` is present |
+| `HAS_SIGNALR` | `SharedMeta.Transport.SignalR.Client` | **never — always set it by hand** |
+
+Those "automatically" rows are `versionDefines` on the package's asmdefs, and a `versionDefine`
+matches **only UPM package ids**. If a dependency arrives any other way — most commonly MemoryPack
+or MessagePack through **NuGetForUnity**, which drops a DLL into `Assets/Packages/` — Unity never
+registers a package id, the `versionDefine` never fires, and you must add the define yourself:
+
+**Project Settings → Player → Other Settings → Scripting Define Symbols**
+
+```
+HAS_MEMORYPACK
+```
+
+Neither MemoryPack nor MessagePack is published as a UPM package, so **NuGetForUnity is the normal
+way to install them and the manual define is the normal case, not an edge case.**
+
+#### What it looks like when the define is missing
+
+```
+error CS0433: The type 'MemoryPackableAttribute' exists in both
+  'MemoryPack.Core, Version=1.21.4.0' and 'SharedMeta.Runtime'
+```
+
+— once per attribute usage in the project, so a mid-sized state layer produces well over a thousand
+of them. Two warnings above the wall name the cause more usefully than the wall does:
+
+```
+warning CS8785: Generator 'MemoryPackGenerator' failed to generate source ...
+  'Type MemoryPack.MemoryPackableAttribute is not found in compilation.'
+warning CS8785: Generator 'SharedMetaGenerator' failed to generate source ...
+  IndexOutOfRangeException
+```
+
+The MemoryPack generator has not lost the attribute — it found two and cannot choose. The
+`SharedMetaGenerator` exception is collateral from the same ambiguity; do not chase it separately.
+All of it is one missing define.
+
+There is a quieter failure in the same family. `SharedMeta.Serialization.MemoryPack.asmdef` carries
+`"defineConstraints": ["HAS_MEMORYPACK"]`, so without the define that assembly is **skipped rather
+than failed** — `MemoryPackMetaSerializer` simply does not exist, and the only symptom is a
+`CS0246` on a type you are certain you installed.
+
+A working reference project is `examples/Unity/Expedition/Client`, whose `ProjectSettings.asset`
+reads `Standalone: HAS_MEMORYPACK;HAS_SIGNALR;HAS_NEWTONSOFT_JSON`.
+
 ---
 
 ## Step 1: Define Shared State
@@ -505,7 +564,8 @@ The gate needs `RequireAuthentication = true` — without it the PlayerId is cli
 The case that bites on mobile: the app sits in the background, the access token expires (default lifetime 30 min), the transport reconnects with the dead token and the handshake is rejected. For this to heal automatically you need a **provider-based** connection — a fixed token string is captured once and re-sent verbatim forever:
 
 ```csharp
-var tokens = new MetaTokenManager(authUrl, deviceId, tokenStorage);
+var auth   = new MetaAuthClient(authUrl, new UnityMetaAuthProvider());
+var tokens = new MetaTokenManager(auth, deviceId, tokenStorage);
 var connection = new SignalRConnection(url, tokens.GetTokenAsync);   // provider, not a string
 var client = new MetaClient(connection, serializer, new MetaClientOptions
 {
@@ -522,11 +582,14 @@ On resume from background call `await tokens.GetTokenAsync()` yourself — the p
 
 ### Client Login
 
-Use `MetaAuth` — works on both Unity and .NET:
+Use `MetaAuthClient` — works on both Unity and .NET. One client per backend; it holds the auth URL and the provider that carries the calls:
 
 ```csharp
+// Unity. On other .NET targets the provider argument may be omitted (HttpMetaAuthProvider).
+var auth = new MetaAuthClient($"{serverUrl}/meta/auth", new UnityMetaAuthProvider());
+
 // Simple login
-var login = await MetaAuth.LoginAsync($"{serverUrl}/meta/auth", deviceId);
+var login = await auth.LoginAsync(deviceId);
 var connection = new SignalRConnection($"{serverUrl}/meta", accessToken: login.Token);
 var client = new MetaClient(connection, serializer, new MetaClientOptions { PlayerId = login.PlayerId });
 ```
@@ -543,15 +606,15 @@ Reuse tokens across app sessions with `ITokenStorage`:
 ITokenStorage storage = new PlayerPrefsTokenStorage(deviceId);
 
 // Returns cached token if still valid, otherwise makes login request
-var login = await MetaAuth.EnsureAuthenticatedAsync($"{serverUrl}/meta/auth", deviceId, storage);
+var login = await auth.EnsureAuthenticatedAsync(deviceId, storage);
 
 // Logout — clears stored token
-MetaAuth.ClearToken(storage);
+MetaAuthClient.ClearToken(storage);
 
 // Reset device binding (0.10.1+) — force-unlinks deviceId from current player.
 // Useful for "Reset progress" / "Switch account" buttons. Next login creates a new player.
 // Works even when the device is the player's only auth key (unlike /unlink).
-await MetaAuth.ResetDeviceAsync($"{serverUrl}/meta/auth", deviceId, login.Token, storage);
+await auth.ResetDeviceAsync(deviceId, login.Token, storage);
 ```
 
 For other platforms, implement `ITokenStorage` (3 methods: `Load`, `Save`, `Clear`).
@@ -565,15 +628,17 @@ Server-side, refresh sessions are stored per-player (SHA-256-hashed) with **rota
 For **long sessions** that outlive the access token, drive the connection from a `MetaTokenManager` so a reconnect picks up a fresh token automatically:
 
 ```csharp
-var tokens = new MetaTokenManager($"{serverUrl}/meta/auth", deviceId, storage);
+var tokens = new MetaTokenManager(auth, deviceId, storage);
 tokens.StartAutoRefresh();                                            // optional: renew before expiry
 var connection = new SignalRConnection($"{serverUrl}/meta", tokens.GetTokenAsync); // provider, not a fixed string
 // HTTP transports: set AccessTokenProvider = tokens.GetTokenAsync on the connection options.
 ```
 
-> **Unity note**: `UnityMetaAuth` auto-registers via `[RuntimeInitializeOnLoadMethod]` — no manual setup needed. Unity-dependent auth code (`PlayerPrefsTokenStorage`, `UnityMetaAuth`) lives in the `SharedMeta.Auth.Client` assembly. If your asmdef has explicit references, add `SharedMeta.Auth.Client`.
+> **Unity note**: pass `new UnityMetaAuthProvider()` when you construct the `MetaAuthClient` — there is no auto-registration. Unity-dependent auth code (`PlayerPrefsTokenStorage`, `UnityMetaAuthProvider`) lives in the `SharedMeta.Auth.Client` assembly. If your asmdef has explicit references, add `SharedMeta.Auth.Client`.
 
-> **Custom auth provider (0.9.3+)**: To bypass the HTTP auth flow entirely (local backend, Firebase, PlayFab, etc.), implement `IMetaAuthProvider` and set `MetaAuth.Provider = yourProvider` at startup. All `MetaAuth` calls will route through it. See `SharedMeta.Backend.Local`'s `LocalMetaAuthProvider` for a reference implementation.
+> **Custom auth provider (0.9.3+)**: To bypass the HTTP auth flow entirely (local backend, Firebase, PlayFab, etc.), implement `IMetaAuthProvider` and hand it to the `MetaAuthClient` for that backend. See `SharedMeta.Backend.Local`'s `LocalMetaAuthProvider` for a reference implementation.
+
+> **Switching between a local and a remote backend (0.38.0+)**: give each backend its own `MetaAuthClient` **and** its own token-storage scope — `new PlayerPrefsTokenStorage("local:" + deviceId)` vs `new PlayerPrefsTokenStorage(deviceId)`. Sharing a storage slot lets a local placeholder token overwrite the real JWT, and every connect is then rejected with "Authentication is required". Two log lines catch a mix-up: `[MetaAuth] Logging in at: … (via …)` names the provider that actually served the call, and `MetaTokenManager` warns when the cached token is not a JWT (`header.payload.signature`).
 
 ---
 

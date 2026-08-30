@@ -2564,6 +2564,38 @@ Real Orleans storage providers (Azure Tables, Redis, ADO.NET, and the bundled `F
 
 If you opt `FileGrainStorage` into MemoryPack/MessagePack mode (`UseOrleansSerializer = false`), the Orleans attributes are not strictly required — but adding them costs nothing and lets you switch storage providers later without touching state classes.
 
+### Unity: `HAS_MEMORYPACK` / `HAS_MESSAGEPACK` are usually manual
+
+So the same state source compiles in a Unity project that has no serializer installed at all, the UPM package ships **stub attributes**: `[MemoryPackable]`, `[MemoryPackOrder]`, `GenerateType` under `#if !HAS_MEMORYPACK` (`Runtime/Shimz.cs`), and `[MessagePackObject]` / `[Key]` under `#if !HAS_MESSAGEPACK` (`Runtime/Orleans.Stubs/Attributes.cs`). The stubs step aside when the define is present.
+
+The asmdef `versionDefines` meant to set those defines key on the **UPM package ids** `com.cysharp.memorypack` and `com.github.messagepack-csharp`. Neither serializer is published as a UPM package, so in practice both arrive through **NuGetForUnity** — a DLL under `Assets/Packages/`, which registers no package id. The `versionDefine` never fires and the stubs stay live alongside the real attributes.
+
+**Set the define by hand:** Project Settings → Player → Other Settings → Scripting Define Symbols → `HAS_MEMORYPACK`. Reference setup: `examples/Unity/Expedition/Client/ProjectSettings/ProjectSettings.asset` (`Standalone: HAS_MEMORYPACK;HAS_SIGNALR;HAS_NEWTONSOFT_JSON`).
+
+Two failures follow from omitting it, one loud and one silent.
+
+**Loud** — one `CS0433` per attribute usage in the project, so a mid-sized state layer emits over a thousand at once:
+
+```
+error CS0433: The type 'MemoryPackableAttribute' exists in both
+  'MemoryPack.Core, Version=1.21.4.0' and 'SharedMeta.Runtime'
+```
+
+Two warnings above the wall name the cause more usefully than the wall does:
+
+```
+warning CS8785: Generator 'MemoryPackGenerator' failed to generate source ...
+  'Type MemoryPack.MemoryPackableAttribute is not found in compilation.'
+warning CS8785: Generator 'SharedMetaGenerator' failed to generate source ...
+  IndexOutOfRangeException
+```
+
+The MemoryPack generator has not lost its own attribute — it found two and cannot choose. The `SharedMetaGenerator` exception is collateral from the same ambiguity, not a second bug.
+
+**Silent** — `SharedMeta.Serialization.MemoryPack.asmdef` carries `"defineConstraints": ["HAS_MEMORYPACK"]`, so without the define that assembly is skipped rather than failed. `MemoryPackMetaSerializer` does not exist, and the only evidence is a `CS0246` on a type you know you installed.
+
+`HAS_SIGNALR` has no `versionDefine` at all and is always manual. `HAS_BESTHTTP` (`com.tivadar.besthttp`) and `HAS_NEWTONSOFT_JSON` (`com.unity.nuget.newtonsoft-json`) do resolve automatically, since those genuinely are UPM packages.
+
 ### Version Tolerance Rules
 
 - **MemoryPack**: Use `[MemoryPackable(GenerateType.VersionTolerant)]` on all persisted types (state classes, grain state wrappers). This stores field orders explicitly in the binary format, allowing safe addition/removal of fields. Without `VersionTolerant`, MemoryPack serializes as a fixed-length array — adding fields breaks deserialization of old data.
@@ -2901,16 +2933,17 @@ POST /meta/auth/logout    Body: { "refreshToken": "..." }   → revokes that ses
 **Client — at connect/reconnect.** `EnsureAuthenticatedAsync` does it for you: a still-valid access token is reused; an expired access token with a valid refresh token is silently refreshed (rotating); otherwise it falls back to a full login. The refresh token is persisted by `ITokenStorage` (`CachedToken.RefreshValid`).
 
 ```csharp
-// Same call as before — refresh is automatic.
-var login = await MetaAuth.EnsureAuthenticatedAsync(authUrl, deviceId, tokenStorage);
+var auth = new MetaAuthClient(authUrl, new UnityMetaAuthProvider());   // one per backend
+// Refresh is automatic.
+var login = await auth.EnsureAuthenticatedAsync(deviceId, tokenStorage);
 // Or refresh explicitly:
-var refreshed = await MetaAuth.RefreshAsync(authUrl, cached.RefreshToken);
+var refreshed = await auth.RefreshAsync(cached.RefreshToken);
 ```
 
 **Client — mid-session (`MetaTokenManager`).** For long sessions that outlive the access-token TTL, drive the connection from a token manager instead of a fixed string. It hands out a currently-valid token (refreshing on demand, **single-flight**), and every transport accepts it as an **access-token provider** so a reconnect picks up a fresh token automatically — no rebuilding the connection.
 
 ```csharp
-var tokens = new MetaTokenManager(authUrl, deviceId, tokenStorage);
+var tokens = new MetaTokenManager(auth, deviceId, tokenStorage);
 tokens.StartAutoRefresh();                                   // optional proactive renewal before expiry
 
 // SignalR: provider ctor (invoked on every (re)connect)
@@ -2927,13 +2960,13 @@ The fixed-string `accessToken` ctors/options remain for back-compat. `GetTokenAs
 **Recovering from a server-rejected token (0.30.1+).** A cached access token that hasn't locally expired can still be rejected by the server — most commonly when the JWT signing key changed, so the token now fails signature validation and `ConnectAsync` throws `Authentication is required`. The client can't tell from the token alone (it only checks expiry). Set `MetaClientOptions.AccessTokenSource` and recovery is **automatic** — on an auth-type connect failure the client invalidates the token and retries the connect once:
 
 ```csharp
-var tokens = new MetaTokenManager(authUrl, deviceId, storage);
+var tokens = new MetaTokenManager(auth, deviceId, storage);
 var connection = new SignalRConnection(url, tokens.GetTokenAsync);              // provider, not a fixed string
 var client = new MetaClient(connection, serializer,
     new MetaClientOptions { AccessTokenSource = tokens });                      // ← enables auto-recovery
 ```
 
-This works only with a **provider**-based connection (`tokens.GetTokenAsync`); a fixed-token connection still holds the old value on retry. To override the default policy use `MetaClientOptions.OnConnectAuthFailedAsync` (return `true` to retry once). Without a token manager, recover manually: `MetaAuth.ClearToken(storage)` then re-login + rebuild the connection.
+This works only with a **provider**-based connection (`tokens.GetTokenAsync`); a fixed-token connection still holds the old value on retry. To override the default policy use `MetaClientOptions.OnConnectAuthFailedAsync` (return `true` to retry once). Without a token manager, recover manually: `MetaAuthClient.ClearToken(storage)` then re-login + rebuild the connection.
 
 ### Platform Authentication (0.6.0+)
 
@@ -2978,12 +3011,13 @@ Task<string> GetGoogleServerAuthCodeAsync() {
     return tcs.Task;
 }
 
+var auth = new MetaAuthClient($"{serverUrl}/meta/auth", new UnityMetaAuthProvider());
 var tokens = new MetaTokenManager(
-    $"{serverUrl}/meta/auth", tokenStorage,
-    login: async (url, ct) =>
+    auth, tokenStorage,
+    login: async (client, ct) =>
     {
         var code = await GetGoogleServerAuthCodeAsync();           // fresh, single-use
-        return await MetaAuth.LoginWithPlatformAsync(url, "google", code, cancellation: ct);
+        return await client.LoginWithPlatformAsync("google", code, cancellation: ct);
     });
 
 await tokens.GetTokenAsync();                                       // first login (learns PlayerId)
@@ -3027,14 +3061,13 @@ Sometimes a player wants to start a fresh profile while keeping the same device 
 
 **Client (any platform):**
 ```csharp
-await MetaAuth.ResetDeviceAsync(
-    authUrl,
+await auth.ResetDeviceAsync(
     deviceId,                  // typically SystemInfo.deviceUniqueIdentifier
     accessToken,               // current JWT
     tokenStorage);             // optional — cached token is cleared on success
 
 // next login creates a brand-new player
-var login = await MetaAuth.EnsureAuthenticatedAsync(authUrl, deviceId, tokenStorage);
+var login = await auth.EnsureAuthenticatedAsync(deviceId, tokenStorage);
 ```
 
 The server-side primitive is `IAuthGrain.ForceUnlinkAsync()` — same as `UnlinkAsync` but skips the safety check. Use it directly from server code if you need to wipe a binding outside the HTTP flow.
@@ -3114,7 +3147,8 @@ Two things must be in place for this to heal by itself.
 **1. A provider-based connection, not a fixed token.** A fixed `accessToken` is captured once and re-sent verbatim on every reconnect, dead forever after it expires. A provider is resolved on each (re)connect:
 
 ```csharp
-var tokens = new MetaTokenManager(authUrl, deviceId, tokenStorage);   // refreshes via refresh token
+var auth = new MetaAuthClient(authUrl, new UnityMetaAuthProvider());
+var tokens = new MetaTokenManager(auth, deviceId, tokenStorage);      // refreshes via refresh token
 var connection = new SignalRConnection(url, tokens.GetTokenAsync);    // provider, not a string
 var client = new MetaClient(connection, serializer, new MetaClientOptions
 {
@@ -3140,11 +3174,13 @@ The two auth rejections are deliberately different:
 
 ### Client-Side Authentication
 
-Use `MetaAuth` — a cross-platform helper that works on both Unity (`UnityWebRequest`) and .NET (`HttpClient`):
+Use `MetaAuthClient` — one instance per backend, holding the auth URL and the `IMetaAuthProvider` that carries the calls (Unity: `UnityMetaAuthProvider` over `UnityWebRequest`; other .NET targets default to `HttpMetaAuthProvider` over `HttpClient`):
 
 ```csharp
+var auth = new MetaAuthClient($"{serverUrl}/meta/auth", new UnityMetaAuthProvider());
+
 // Simple login (always makes a network call)
-var login = await MetaAuth.LoginAsync($"{serverUrl}/meta/auth", deviceId);
+var login = await auth.LoginAsync(deviceId);
 var connection = new SignalRConnection($"{serverUrl}/meta", accessToken: login.Token);
 var client = new MetaClient(connection, serializer, new MetaClientOptions { PlayerId = login.PlayerId });
 ```
@@ -3158,17 +3194,17 @@ var client = new MetaClient(connection, serializer, new MetaClientOptions { Play
 ITokenStorage storage = new PlayerPrefsTokenStorage(deviceId);
 
 // Login or reuse cached token (skips network call if token is still valid)
-var login = await MetaAuth.EnsureAuthenticatedAsync($"{serverUrl}/meta/auth", deviceId, storage);
+var login = await auth.EnsureAuthenticatedAsync(deviceId, storage);
 
 // Logout
-MetaAuth.ClearToken(storage);
+MetaAuthClient.ClearToken(storage);
 ```
 
 `CachedToken.IsValid` checks expiry with a 5-minute safety margin.
 
 **Custom storage**: Implement `ITokenStorage` for platform-specific storage (e.g., `SecureStorage`, file-based, `PlayerPrefs`). The interface has three methods: `Load()`, `Save(CachedToken)`, `Clear()`.
 
-> **Migration from `MetaClient.LoginAsync`**: `MetaClient.LoginAsync` is still available on .NET but `MetaAuth.LoginAsync` is preferred — it works on all platforms and supports cancellation tokens.
+> **Migration from `MetaClient.LoginAsync`**: `MetaClient.LoginAsync` is still available on .NET but `MetaAuthClient.LoginAsync` is preferred — it works on all platforms and supports cancellation tokens.
 
 ### Client Version Enforcement
 
@@ -3245,12 +3281,24 @@ Precedence (highest → lowest): grain override → `MetaTransportOptions.MinCli
 
 | Assembly | `noEngineReferences` | Contents |
 |---|---|---|
-| `SharedMeta.Runtime` | `true` | `MetaAuth`, `ITokenStorage`, `CachedToken`, `MetaLoginResult` |
-| `SharedMeta.Auth.Client` | `false` | `UnityMetaAuth`, `PlayerPrefsTokenStorage` |
+| `SharedMeta.Runtime` | `true` | `MetaAuthClient`, `ITokenStorage`, `CachedToken`, `MetaLoginResult` |
+| `SharedMeta.Auth.Client` | `false` | `UnityMetaAuthProvider`, `PlayerPrefsTokenStorage` |
 
-`UnityMetaAuth.Register()` is called automatically via `[RuntimeInitializeOnLoadMethod]` — it sets `MetaAuth.LoginFunc` to the Unity `UnityWebRequest` implementation. No manual registration needed.
+A Unity client names its provider explicitly: `new MetaAuthClient(authUrl, new UnityMetaAuthProvider())`. There is no auto-registration — `SharedMeta.Runtime` cannot reference the engine-dependent assembly that holds the provider, and any "resolve the default for me" mechanism across that boundary needs a process-wide slot, which is exactly what 0.38.0 removed.
 
-**Custom auth providers (0.9.3+)**: `MetaAuth.Provider` accepts any `IMetaAuthProvider` implementation and takes precedence over the legacy Func hooks and the built-in HTTP fallback. Use this to plug in a local backend (`SharedMeta.Backend.Local`'s `LocalMetaAuthProvider`), Firebase, PlayFab, or any other auth service without game-code changes. Priority order: `Provider` → legacy Funcs → HTTP default.
+**Custom auth providers (0.9.3+)**: `MetaAuthClient` accepts any `IMetaAuthProvider` — a local backend (`SharedMeta.Backend.Local`'s `LocalMetaAuthProvider`), Firebase, PlayFab, or your own — chosen at construction and fixed for the life of the client.
+
+#### Switching backends in one process (0.38.0+)
+
+An app that can run against an in-process local backend *and* a remote server has to keep the two credential paths apart. Two rules:
+
+1. **One `MetaAuthClient` per backend.** The provider belongs to the client, so a local one can no longer answer a remote call — this used to be a process-wide setting, and whichever backend installed last served everything, including logins aimed elsewhere.
+2. **Scope the token storage per backend.** `new PlayerPrefsTokenStorage("local:" + deviceId)` for local, `new PlayerPrefsTokenStorage(deviceId)` for remote. Sharing one slot lets a local provider's placeholder token overwrite the real JWT; every subsequent handshake then presents a Bearer the server cannot parse and answers `AuthenticationRequired`.
+
+Two diagnostics surface a violation early:
+
+- `MetaAuthClient`'s login/refresh debug lines name the provider that served the call — `... (via LocalMetaAuthProvider)` vs `... (via UnityMetaAuthProvider)`.
+- `MetaTokenManager` logs a warning once per credential when the token it adopts is not in JWS compact form (`header.payload.signature`). Warning only: opaque tokens are legitimate for custom auth backends. The token value is never logged — only its length and segment count.
 
 ### Entity Access Policy
 

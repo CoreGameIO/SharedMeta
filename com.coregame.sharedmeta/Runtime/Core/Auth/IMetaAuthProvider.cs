@@ -10,7 +10,8 @@ namespace SharedMeta.Core.Auth
     /// Implement this to replace the default HTTP-based auth flow — for example
     /// with a Unity-specific transport (UnityWebRequest), a local in-process
     /// backend, or a third-party auth service (Firebase, PlayFab, etc.).
-    /// Set the active provider via <c>MetaAuth.Provider</c> at startup.
+    /// Pass an instance to the <c>MetaAuthClient</c> that talks to that backend — one client per backend,
+    /// so neither can answer the other's calls.
     /// </summary>
     public interface IMetaAuthProvider
     {

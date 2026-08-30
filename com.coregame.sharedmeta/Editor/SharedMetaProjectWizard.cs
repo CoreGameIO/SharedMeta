@@ -2006,10 +2006,9 @@ namespace SharedMeta.Editor
                 sb.AppendLine("        // Scope token storage by deviceId so multi-instance / random-deviceId dev builds");
                 sb.AppendLine("        // don't share a JWT cached for a different PlayerId.");
                 sb.AppendLine("        var tokenStorage = new PlayerPrefsTokenStorage(deviceId);");
-                sb.AppendLine("        var login = await MetaAuth.EnsureAuthenticatedAsync(");
-                sb.AppendLine("            baseUrl.TrimEnd('/') + \"/meta/auth\",");
-                sb.AppendLine("            deviceId,");
-                sb.AppendLine("            tokenStorage);");
+                sb.AppendLine("        // One auth client per backend, with its own provider and its own storage scope.");
+                sb.AppendLine("        var auth = new MetaAuthClient(baseUrl.TrimEnd('/') + \"/meta/auth\", new UnityMetaAuthProvider());");
+                sb.AppendLine("        var login = await auth.EnsureAuthenticatedAsync(deviceId, tokenStorage);");
                 sb.AppendLine("        var accessToken = login.Token;");
                 sb.AppendLine("        var playerId = login.PlayerId;");
                 sb.AppendLine();

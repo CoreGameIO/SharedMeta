@@ -46,7 +46,7 @@ namespace SharedMeta.Core.Auth
 
         /// <summary>
         /// Whether a usable refresh token is present (non-empty and not yet expired). When the access
-        /// token is no longer <see cref="IsValid"/> but this is true, call MetaAuth.RefreshAsync instead
+        /// token is no longer <see cref="IsValid"/> but this is true, call MetaAuthClient.RefreshAsync instead
         /// of a full re-login.
         /// </summary>
         public bool RefreshValid => !string.IsNullOrEmpty(RefreshToken) && RefreshExpiresAt > DateTime.UtcNow;

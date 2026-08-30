@@ -113,7 +113,7 @@ namespace SharedMeta.Client
         /// (no need to wire <see cref="OnConnectAuthFailedAsync"/> yourself). Recovery only works if the
         /// connection reads its token from the same source's provider, not a fixed string:
         /// <code>
-        /// var tokens = new MetaTokenManager(authUrl, deviceId, storage);
+        /// var tokens = new MetaTokenManager(auth, deviceId, storage);
         /// var connection = new SignalRConnection(url, tokens.GetTokenAsync);
         /// var client = new MetaClient(connection, serializer, new MetaClientOptions { AccessTokenSource = tokens });
         /// </code>

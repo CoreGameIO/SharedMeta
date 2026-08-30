@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.38.0] - 2026-08-30
+
+### Changed
+
+- **Breaking:** the auth provider is per-client, not per-process. Removed: `MetaAuth` (static class), `MetaAuth.Provider`, the six legacy `Func` hooks, `UnityMetaAuth.Register()`. Replacement: `MetaAuthClient` — one auth URL + one `IMetaAuthProvider`, both fixed at construction.
+- **Breaking:** `MetaTokenManager` takes a `MetaAuthClient` instead of an auth-URL string; its custom-login delegate receives that client.
+- **Breaking:** `UnityMetaAuth` → `UnityMetaAuthProvider`, constructed explicitly. On non-Unity .NET the provider argument stays optional (`HttpMetaAuthProvider`).
+
+```csharp
+// before
+UnityMetaAuth.Register();
+var tokens = new MetaTokenManager(authUrl, deviceId, storage);
+
+// after — one client and one storage scope per backend
+var auth   = new MetaAuthClient(authUrl, new UnityMetaAuthProvider());
+var tokens = new MetaTokenManager(auth, deviceId, storage);
+```
+
+### Fixed
+
+- Re-authentication no longer loops when the token source returns the rejected token. `Invalidate()` now remembers it: a refresh repeating it escalates to a full login, and a dead end is reported via `MetaLog.Error`.
+- `BestHttpTokenAuthProvider` raises `OnAuthenticationFailed` when the token provider throws and nothing was resolved, instead of reporting success and connecting with no `Authorization` header.
+
+### Added
+
+- `MetaTokenManager` warns once per credential when the access token is not JWS-compact — usually another backend's placeholder in a shared `ITokenStorage` scope. Warning only; the token value is never logged.
+- `MetaAuthClient`'s login/refresh debug logs name the provider that served the call.
+
 ## [0.37.4] - 2026-08-18
 
 ### Fixed

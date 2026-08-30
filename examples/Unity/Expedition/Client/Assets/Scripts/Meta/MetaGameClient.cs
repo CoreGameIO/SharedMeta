@@ -78,7 +78,8 @@ public class MetaGameClient : IDisposable
         // Scope token cache by deviceId so dev builds with random/per-instance deviceIds
         // each get their own JWT slot and can't pick up a token cached for a different PlayerId.
         var tokenStorage = new PlayerPrefsTokenStorage(deviceId);
-        var tokens = new MetaTokenManager($"{serverUrl}/meta/auth", deviceId, tokenStorage);
+        var auth = new MetaAuthClient($"{serverUrl}/meta/auth", new UnityMetaAuthProvider());
+        var tokens = new MetaTokenManager(auth, deviceId, tokenStorage);
         // Acquire the token up front (on the main thread) so we learn our PlayerId — UserOwned
         // entities are keyed by it, so MetaClientOptions.PlayerId MUST be the authenticated id, not
         // the random default. The token is cached; the connection's provider then just reuses it.
@@ -179,8 +180,11 @@ public class MetaGameClient : IDisposable
         LocalServer.RegisterConfig<ProfileState>(config);
         LocalServer.RegisterConfig<ExpeditionState>(config);
 
-        var tokenStorage = new PlayerPrefsTokenStorage(deviceId);
-        var login = await MetaAuth.EnsureAuthenticatedAsync("local://", deviceId, tokenStorage);
+        // Own storage scope: the local backend's placeholder credential must never land in the slot
+        // the remote path reads, or the next remote connect presents a token the server can't parse.
+        var tokenStorage = new PlayerPrefsTokenStorage("local:" + deviceId);
+        var auth = new MetaAuthClient("local://", new LocalMetaAuthProvider());
+        var login = await auth.EnsureAuthenticatedAsync(deviceId, tokenStorage);
         Connection = LocalServer.CreateConnection();
 
         Client = new MetaClient(Connection, Serializer, new MetaClientOptions

@@ -3,7 +3,6 @@ using System;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using SharedMeta.Client;
 using SharedMeta.Core.Auth;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -11,84 +10,77 @@ using UnityEngine.Networking;
 namespace SharedMeta.Client.Auth
 {
     /// <summary>
-    /// Unity implementation of MetaAuth login using UnityWebRequest.
-    /// Call <see cref="Register"/> once at startup to enable MetaAuth on Unity.
+    /// Unity <see cref="IMetaAuthProvider"/> over <see cref="UnityWebRequest"/>. Pass an instance to
+    /// the <c>MetaAuthClient</c> that talks to your remote server:
+    /// <code>
+    /// var auth = new MetaAuthClient(authUrl, new UnityMetaAuthProvider());
+    /// </code>
+    /// Stateless and thread-safe; one instance per client, or one shared, both work.
     /// </summary>
-    public static class UnityMetaAuth
+    public sealed class UnityMetaAuthProvider : IMetaAuthProvider
     {
-        // Unity's main-thread SynchronizationContext + thread id, captured in Register() (which runs
-        // on the main thread). UnityWebRequest can only be created/sent from the main thread, but the
-        // auth funcs may be invoked from a background thread — e.g. SignalR calls the access-token
-        // provider during its (off-thread) connect handshake. PostJsonAsync marshals onto this context
-        // when called off-thread so token login/refresh works regardless of the caller's thread.
+        // Unity's main-thread SynchronizationContext + thread id, captured on load (which runs on the
+        // main thread). UnityWebRequest can only be created/sent from the main thread, but auth calls
+        // may arrive on a background thread — e.g. SignalR resolves the access-token provider during
+        // its (off-thread) connect handshake. PostJsonAsync marshals onto this context when called
+        // off-thread so login/refresh works regardless of the caller's thread.
         private static SynchronizationContext _mainThreadContext;
         private static int _mainThreadId;
 
-        /// <summary>
-        /// Register Unity login implementation with MetaAuth.
-        /// Call this once before using MetaAuth.LoginAsync or MetaAuth.EnsureAuthenticatedAsync.
-        /// </summary>
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        public static void Register()
+        private static void CaptureMainThread()
         {
             _mainThreadContext = SynchronizationContext.Current;
             _mainThreadId = Thread.CurrentThread.ManagedThreadId;
-
-            MetaAuth.LoginFunc = LoginUnityAsync;
-            MetaAuth.PlatformLoginFunc = PlatformLoginUnityAsync;
-            MetaAuth.RefreshFunc = RefreshUnityAsync;
-            MetaAuth.AuthActionFunc = LinkUnityAsync;
-            MetaAuth.UnlinkFunc = UnlinkUnityAsync;
-            MetaAuth.ResetDeviceFunc = ResetDeviceUnityAsync;
         }
 
-        private static async Task<MetaLoginResult> RefreshUnityAsync(
-            string url, string refreshToken, CancellationToken cancellation)
+        public async Task<MetaLoginResult> RefreshAsync(
+            string authUrl, string refreshToken, CancellationToken cancellation)
         {
             var body = "{\"refreshToken\":\"" + EscapeJson(refreshToken) + "\"}";
-            var json = await PostJsonAsync(url, body, null, cancellation);
+            var json = await PostJsonAsync(authUrl, body, null, cancellation);
             return ParseLoginResponse(json);
         }
 
-        private static async Task<MetaLoginResult> LoginUnityAsync(
-            string url, string deviceId, CancellationToken cancellation)
+        public async Task<MetaLoginResult> LoginAsync(
+            string authUrl, string deviceId, CancellationToken cancellation)
         {
             var body = "{\"deviceId\":\"" + EscapeJson(deviceId) + "\"}";
-            var json = await PostJsonAsync(url, body, null, cancellation);
+            var json = await PostJsonAsync(authUrl, body, null, cancellation);
             return ParseLoginResponse(json);
         }
 
-        private static async Task<MetaLoginResult> PlatformLoginUnityAsync(
-            string url, string platform, string platformToken, CancellationToken cancellation)
+        public async Task<MetaLoginResult> LoginWithPlatformAsync(
+            string authUrl, string platform, string platformToken, CancellationToken cancellation)
         {
             var body = "{\"platform\":\"" + EscapeJson(platform) +
                        "\",\"platformToken\":\"" + EscapeJson(platformToken) + "\"}";
-            var json = await PostJsonAsync(url, body, null, cancellation);
+            var json = await PostJsonAsync(authUrl, body, null, cancellation);
             return ParseLoginResponse(json);
         }
 
-        private static async Task<bool> LinkUnityAsync(
-            string url, string platform, string platformToken, string accessToken, CancellationToken cancellation)
+        public async Task<bool> LinkAsync(
+            string authUrl, string platform, string platformToken, string accessToken, CancellationToken cancellation)
         {
             var body = "{\"platform\":\"" + EscapeJson(platform) +
                        "\",\"platformToken\":\"" + EscapeJson(platformToken) + "\"}";
-            var json = await PostJsonAsync(url, body, accessToken, cancellation);
+            var json = await PostJsonAsync(authUrl, body, accessToken, cancellation);
             return ExtractJsonBool(json, "success");
         }
 
-        private static async Task<bool> UnlinkUnityAsync(
-            string url, string authKey, string accessToken, CancellationToken cancellation)
+        public async Task<bool> UnlinkAsync(
+            string authUrl, string authKey, string accessToken, CancellationToken cancellation)
         {
             var body = "{\"authKey\":\"" + EscapeJson(authKey) + "\"}";
-            var json = await PostJsonAsync(url, body, accessToken, cancellation);
+            var json = await PostJsonAsync(authUrl, body, accessToken, cancellation);
             return ExtractJsonBool(json, "success");
         }
 
-        private static async Task<bool> ResetDeviceUnityAsync(
-            string url, string deviceId, string accessToken, CancellationToken cancellation)
+        public async Task<bool> ResetDeviceAsync(
+            string authUrl, string deviceId, string accessToken, CancellationToken cancellation)
         {
             var body = "{\"deviceId\":\"" + EscapeJson(deviceId) + "\"}";
-            var json = await PostJsonAsync(url, body, accessToken, cancellation);
+            var json = await PostJsonAsync(authUrl, body, accessToken, cancellation);
             return ExtractJsonBool(json, "success");
         }
 

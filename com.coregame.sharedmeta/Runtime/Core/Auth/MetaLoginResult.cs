@@ -19,7 +19,7 @@ namespace SharedMeta.Core.Auth
         /// <summary>Access token expiration time (UTC).</summary>
         public DateTime ExpiresAt { get; set; }
 
-        /// <summary>Long-lived refresh token. Exchange via MetaAuth.RefreshAsync for a new access token.</summary>
+        /// <summary>Long-lived refresh token. Exchange via MetaAuthClient.RefreshAsync for a new access token.</summary>
         public string RefreshToken { get; set; } = "";
 
         /// <summary>Refresh token expiration time (UTC).</summary>

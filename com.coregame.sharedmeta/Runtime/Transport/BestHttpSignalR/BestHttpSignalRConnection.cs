@@ -451,10 +451,8 @@ namespace SharedMeta.Transport.BestHttp
 
         public bool IsPreAuthRequired => true;
 
-#pragma warning disable CS0067 // event never used directly — required by IAuthenticationProvider
         public event OnAuthenticationSuccededDelegate? OnAuthenticationSucceded;
         public event OnAuthenticationFailedDelegate? OnAuthenticationFailed;
-#pragma warning restore CS0067
 
         public BestHttpTokenAuthProvider(string token)
         {
@@ -469,16 +467,38 @@ namespace SharedMeta.Transport.BestHttp
 
         // Pre-auth runs on connect/reconnect: resolve a fresh token here, then signal success so the
         // hub proceeds. PrepareRequest (synchronous) uses the token captured here.
+        //
+        // A throwing provider must not be reported as success when nothing was ever resolved: the
+        // handshake would then go out with no Authorization header at all, and the real cause is lost
+        // behind the server's generic "no valid access token". Failing here surfaces the provider's
+        // own message. A provider that *returns* null still means "connect anonymously" — only a
+        // throw is treated as failure.
         public async void StartAuthentication()
         {
+            string? resolved;
             try
             {
-                _token = await _provider();
+                resolved = await _provider();
             }
-            catch
+            catch (Exception ex)
             {
-                // Fall back to whatever we had; the hub will surface an auth failure if it's stale.
+                if (string.IsNullOrEmpty(_token))
+                {
+                    var reason = "Access-token provider failed: " + ex.Message;
+                    MetaLog.Error("[BestHttpSignalR] " + reason);
+                    OnAuthenticationFailed?.Invoke(this, reason);
+                    return;
+                }
+
+                // An earlier token is still on hand — try it rather than dropping the connect; the
+                // server answers with a real rejection reason if it is stale.
+                MetaLog.Warning("[BestHttpSignalR] Access-token provider failed (" + ex.Message +
+                                ") — connecting with the previously resolved token.");
+                OnAuthenticationSucceded?.Invoke(this);
+                return;
             }
+
+            _token = resolved;
             OnAuthenticationSucceded?.Invoke(this);
         }
 

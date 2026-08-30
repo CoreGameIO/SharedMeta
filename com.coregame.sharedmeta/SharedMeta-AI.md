@@ -84,6 +84,24 @@ public partial class MyState : ISharedState
 - Orleans attributes are only optional when the server uses `FileGrainStorage` with `UseOrleansSerializer = false` (persistence then runs through `IMetaSerializer`).
 - For non-persisted DTOs (transport-only), plain `[MemoryPackable]` without `VersionTolerant` is acceptable.
 
+**Unity: the serializer attributes need a scripting define.** The UPM package stubs
+`[MemoryPackable]` / `[MemoryPackOrder]` / `[GenerateType]` under `#if !HAS_MEMORYPACK`
+(`Runtime/Shimz.cs`) and `[MessagePackObject]` / `[Key]` under `#if !HAS_MESSAGEPACK`
+(`Runtime/Orleans.Stubs/Attributes.cs`), so a project with no serializer installed still compiles.
+The asmdef `versionDefines` that switch the stubs off key on the **UPM ids** `com.cysharp.memorypack`
+and `com.github.messagepack-csharp` — neither serializer is actually published as a UPM package, so
+they normally arrive via **NuGetForUnity** as a DLL in `Assets/Packages/`, which registers no package
+id and never fires the `versionDefine`. Set `HAS_MEMORYPACK` (or `HAS_MESSAGEPACK`) in Player
+Settings → Scripting Define Symbols by hand.
+
+Failure signature: `CS0433: The type 'MemoryPackableAttribute' exists in both 'MemoryPack.Core' and
+'SharedMeta.Runtime'` — one per attribute usage, so hundreds to thousands at once — preceded by
+`CS8785 MemoryPackGenerator ... 'Type MemoryPack.MemoryPackableAttribute is not found in
+compilation'` and a collateral `CS8785 SharedMetaGenerator ... IndexOutOfRangeException`. One root
+cause; do not diagnose the generator exceptions separately. The same missing define also silently
+drops `SharedMeta.Serialization.MemoryPack` (it has `"defineConstraints": ["HAS_MEMORYPACK"]`), so
+`MemoryPackMetaSerializer` disappears with only a `CS0246` to show for it.
+
 ### 2. Classes Must Be Partial
 
 All state classes, service implementations, and DTO types must be `partial` — the source generator extends them:
@@ -1335,8 +1353,10 @@ builder.Services.AddMetaAuth(options =>
 builder.Services.AddSingleton(new MetaTransportOptions { RequireAuthentication = true });
 app.MapMetaAuthEndpoints();
 
-// Client (cross-platform — works on Unity and .NET)
-var login = await MetaAuth.LoginAsync($"{serverUrl}/meta/auth", deviceId: "unique-device-id");
+// Client (cross-platform — works on Unity and .NET). One client per backend; the provider is
+// fixed at construction (.NET may omit it → HttpMetaAuthProvider).
+var auth = new MetaAuthClient($"{serverUrl}/meta/auth", new UnityMetaAuthProvider());
+var login = await auth.LoginAsync(deviceId: "unique-device-id");
 var connection = new SignalRConnection($"{serverUrl}/meta", accessToken: login.Token);
 var client = new MetaClient(connection, serializer, new MetaClientOptions { PlayerId = login.PlayerId });
 
@@ -1344,26 +1364,26 @@ var client = new MetaClient(connection, serializer, new MetaClientOptions { Play
 // Unity; pass deviceId so multi-instance / random-deviceId dev builds get isolated token slots.
 // Implement ITokenStorage for other platforms.
 ITokenStorage storage = new PlayerPrefsTokenStorage(deviceId);
-var login = await MetaAuth.EnsureAuthenticatedAsync($"{serverUrl}/meta/auth", deviceId, storage);
-MetaAuth.ClearToken(storage); // logout
+var login = await auth.EnsureAuthenticatedAsync(deviceId, storage);
+MetaAuthClient.ClearToken(storage); // logout
 
 // Reset device binding (0.10.1+) — force-unlinks deviceId from current player.
 // Next login creates a new player profile. Works even when device is the only auth key.
-await MetaAuth.ResetDeviceAsync($"{serverUrl}/meta/auth", deviceId, accessToken, storage);
+await auth.ResetDeviceAsync(deviceId, accessToken, storage);
 ```
 
-**Unity**: `UnityMetaAuth` auto-registers via `[RuntimeInitializeOnLoadMethod]` — sets `MetaAuth.LoginFunc` to `UnityWebRequest` implementation. Unity-dependent code (`PlayerPrefsTokenStorage`, `UnityMetaAuth`) is in `SharedMeta.Auth.Client` asmdef (`noEngineReferences: false`).
+**Unity**: pass `new UnityMetaAuthProvider()` (UnityWebRequest) to the `MetaAuthClient` — no auto-registration; `SharedMeta.Runtime` can't reference the engine-dependent asmdef holding it. Unity-dependent code (`PlayerPrefsTokenStorage`, `UnityMetaAuthProvider`) is in `SharedMeta.Auth.Client` asmdef (`noEngineReferences: false`).
 
 ### Refresh tokens (0.30.0+)
 
 Login returns a long-lived **refresh token** with the short access JWT. Server stores active sessions in a per-player `IRefreshTokenGrain` (SHA-256-hashed; key = PlayerId). Each `/refresh` **rotates** the token; replaying a used one trips **reuse detection** and revokes the whole session family. `MetaAuthOptions`: `AccessTokenLifetime` (30 min) + `RefreshTokenLifetime` (30 days); `TokenLifetime` is an `[Obsolete]` alias.
 
 - Endpoints: `POST /refresh { refreshToken }` → new access + rotated refresh (401 on invalid/expired/reuse); `POST /logout { refreshToken }`. `reset-device`/`unlink` revoke that credential's sessions.
-- `EnsureAuthenticatedAsync` auto-refreshes (rotating) when access expired + refresh valid, else full login. `MetaAuth.RefreshAsync(authUrl, refreshToken)` for explicit refresh. `CachedToken.RefreshValid`; storage persists the refresh token.
+- `EnsureAuthenticatedAsync` auto-refreshes (rotating) when access expired + refresh valid, else full login. `auth.RefreshAsync(refreshToken)` for explicit refresh. `CachedToken.RefreshValid`; storage persists the refresh token.
 - Mid-session: `MetaTokenManager` hands out a valid token via `GetTokenAsync()` (single-flight on-demand refresh) + `RefreshNowAsync()` (reactive) + `StartAutoRefresh()` (proactive). Pass `tokens.GetTokenAsync` to any transport as an access-token provider so reconnect picks up a fresh token automatically:
 
 ```csharp
-var tokens = new MetaTokenManager(authUrl, deviceId, storage);
+var tokens = new MetaTokenManager(auth, deviceId, storage);
 var connection = new SignalRConnection($"{serverUrl}/meta", tokens.GetTokenAsync);            // provider ctor
 // HTTP: new HttpPollingConnectionOptions { ServerUrl = ..., AccessTokenProvider = tokens.GetTokenAsync }
 ```
@@ -1374,7 +1394,11 @@ Custom `IMetaAuthProvider` must implement `RefreshAsync`; custom `ITokenStorage`
 
 **Rejected-token recovery (0.30.1+):** a cached, not-yet-expired token can still be rejected by the server (e.g. JWT signing key changed) → `ConnectAsync` throws `Authentication is required`. Set `MetaClientOptions.AccessTokenSource = tokens` (a `MetaTokenManager`, which implements `IAccessTokenSource`) and the client **auto-recovers** — invalidates the token and retries the connect once on auth-type failures. Requires a provider-based connection (`tokens.GetTokenAsync`), not a fixed token. Override the policy with `MetaClientOptions.OnConnectAuthFailedAsync`; the underlying primitive is `MetaTokenManager.Invalidate()`.
 
-**Custom auth providers (0.9.3+)**: implement `IMetaAuthProvider` and assign to `MetaAuth.Provider` to replace the HTTP auth flow entirely. Used by `SharedMeta.Backend.Local`'s `LocalMetaAuthProvider` to derive deterministic PlayerIds without any network call, so `MetaAuth.EnsureAuthenticatedAsync` works identically in local and remote modes. Priority: `Provider` → legacy Func hooks → built-in HTTP fallback.
+**Custom auth providers (0.9.3+)**: implement `IMetaAuthProvider` and pass it to a `MetaAuthClient` to replace the HTTP auth flow entirely. Used by `SharedMeta.Backend.Local`'s `LocalMetaAuthProvider` to derive deterministic PlayerIds without any network call, so `EnsureAuthenticatedAsync` works identically in local and remote modes.
+
+**Per-client auth provider (0.38.0, breaking):** the static `MetaAuth` class, `MetaAuth.Provider`, the six legacy `Func` hooks and `UnityMetaAuth.Register()` are **removed**. `MetaAuthClient(authUrl, provider)` holds both, fixed at construction; `MetaTokenManager` takes that client instead of a URL string, and its custom-login delegate receives the client (`login: (client, ct) => client.LoginWithPlatformAsync(...)`). `UnityMetaAuth` → `UnityMetaAuthProvider`, constructed explicitly. Rationale: the provider selects *which backend answers*, which is per-connection state; as a mutable static, whichever backend installed last served every later login/refresh — including ones aimed elsewhere, answered in-process with no network call while the log still showed the remote URL.
+
+**Backend switching (0.38.0+):** one `MetaAuthClient` per backend, and one `ITokenStorage` scope per backend (`new PlayerPrefsTokenStorage("local:" + deviceId)` vs. `new PlayerPrefsTokenStorage(deviceId)`). Sharing a storage slot lets a local provider's placeholder credential overwrite the remote JWT, after which every handshake presents an unparsable Bearer and the server can only answer `AuthenticationRequired`. Two diagnostics: `MetaAuthClient`'s login/refresh debug lines name the provider that served the call, and `MetaTokenManager` warns once per credential when the token it adopts is not JWS-compact (`header.payload.signature`). Warning only — opaque tokens are legal for custom backends; the token value is never logged.
 
 **Enforcing auth:** `MetaTransportOptions.RequireAuthentication = true` rejects anonymous connections at SessionConnect. Additionally, you can add `[Authorize]` on a hub subclass or `.RequireAuthorization()` on endpoint mapping for middleware-level protection.
 
