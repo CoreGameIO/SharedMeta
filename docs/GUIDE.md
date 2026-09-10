@@ -3873,6 +3873,8 @@ await client.SetDeepDesyncAsync(true);
 
 `[MetaServiceImpl(DeepDesync = true)]` only generates the supporting infrastructure (PatchTracked service copy + `PatchSchema`); it does not force the feature on at runtime. This way `SetDeepDesyncAsync(false)` actually disables CRC computation per-session, and `EntityGrainOptions.DeepDesyncEnabled = false` works as a kill switch.
 
+The reverse combination does not work and cannot be made to: `DeepDesyncEnabled = true` with no service in the build carrying the attribute turns on CRC computation on the server, while the comparison that raises `OnPatchDesync` is generated per service from that attribute — so nothing is ever reported, and that silence is indistinguishable from "no divergence happened". The silo logs an error at startup for exactly this case (`DeepDesyncConfigurationCheck`); logged rather than thrown, because a diagnostics setting should not take a live silo down.
+
 **`PatchableList<T>`, `PatchableDictionary<K,V>`, `PatchableHashSet<T>`** wrap base collections and auto-record mutations into the same patch tree — use them for collection fields if you want fine-grained tracking. They have full API parity with the base collections + implicit conversion from them.
 
 ### Server-Side Desync Reporting (0.7.0+)

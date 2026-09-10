@@ -2320,6 +2320,13 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            // before any grain activation can dispatch a method.");
             sb.AppendLine("            services.AddHostedService<global::SharedMeta.Server.Core.DispatchResultCacheInitializer>();");
             sb.AppendLine();
+            var servicesWithDeepDesync = byStateType.Values.SelectMany(impls => impls).Count(impl => impl.DeepDesync);
+            sb.AppendLine("            // Tell the startup check how many services opted into deep desync at compile time.");
+            sb.AppendLine("            // EntityGrainOptions.DeepDesyncEnabled switches on the server half only; with this");
+            sb.AppendLine("            // count at zero the switch can never report anything, and the check says so rather");
+            sb.AppendLine("            // than leaving the silo silently doing nothing.");
+            sb.AppendLine($"            services.AddHostedService(sp => new global::SharedMeta.Server.Core.DeepDesyncConfigurationCheck({servicesWithDeepDesync}, sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<global::SharedMeta.Server.Core.Grains.EntityGrainOptions>>(), sp.GetService<Microsoft.Extensions.Logging.ILogger<global::SharedMeta.Server.Core.DeepDesyncConfigurationCheck>>()));");
+            sb.AppendLine();
             sb.AppendLine("            // Service resolver (resolves from DI)");
             sb.AppendLine("            Func<Type, object> serviceResolver = type =>");
             sb.AppendLine("            {");

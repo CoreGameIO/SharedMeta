@@ -19,10 +19,18 @@ public class EntityGrainOptions
     public PersistencePolicy PersistencePolicy { get; set; } = PersistencePolicy.EveryCall();
 
     /// <summary>
-    /// Global override for deep desync detection.
+    /// Runtime switch for the server half of deep desync detection.
     /// When null (default): uses per-service setting from [MetaServiceImpl(DeepDesync = true)].
-    /// When true: forces deep desync on for all services.
+    /// When true: computes patch CRCs for every service on this silo.
     /// When false: disables deep desync even if attribute says true.
+    /// <para>
+    /// The switch cannot turn detection on by itself. Comparing those CRCs — and raising
+    /// <c>IDesyncDiagnostics.OnPatchDesync</c> — is generated per service from
+    /// <c>[MetaServiceImpl(..., DeepDesync = true)]</c>, so a service compiled without the
+    /// attribute has nothing on the client side to compare against and stays silent whatever this
+    /// is set to. <see cref="SharedMeta.Server.Core.DeepDesyncConfigurationCheck"/> logs an error
+    /// at startup when this is true while no service in the build carries the attribute.
+    /// </para>
     /// </summary>
     public bool? DeepDesyncEnabled { get; set; }
 
