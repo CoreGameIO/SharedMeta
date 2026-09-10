@@ -32,6 +32,13 @@ namespace SharedMeta.Core.Network
         /// <summary>Server time (UTC ticks) from the original call for deterministic replay.</summary>
         public long ServerTimeTicks { get; set; }
 
+        /// <summary>
+        /// Position this call took in the entity's server-side history. Reconciliation folds it
+        /// into the anchor in that order rather than in response order, so a call the server
+        /// applied after someone else's does not jump ahead of it on the client.
+        /// </summary>
+        public long EntitySequenceNumber { get; set; }
+
         /// <summary>Delta of optimistic random ScrollId during this call (for desync detection).</summary>
         public long RandomScrollDelta { get; set; }
 
@@ -89,6 +96,13 @@ namespace SharedMeta.Core.Network
 
         /// <summary>Server time (UTC ticks) from the original call for deterministic replay.</summary>
         public long ServerTimeTicks { get; set; }
+
+        /// <summary>
+        /// Position this call took in the entity's server-side history. Reconciliation folds it
+        /// into the anchor in that order rather than in response order, so a call the server
+        /// applied after someone else's does not jump ahead of it on the client.
+        /// </summary>
+        public long EntitySequenceNumber { get; set; }
 
         /// <summary>Delta of optimistic random ScrollId during this call (for desync detection).</summary>
         public long RandomScrollDelta { get; set; }
@@ -152,6 +166,13 @@ namespace SharedMeta.Core.Network
 
         /// <summary>Server time (UTC ticks) from the original call for deterministic replay.</summary>
         public long ServerTimeTicks { get; set; }
+
+        /// <summary>
+        /// Position this call took in the entity's server-side history. Reconciliation folds it
+        /// into the anchor in that order rather than in response order, so a call the server
+        /// applied after someone else's does not jump ahead of it on the client.
+        /// </summary>
+        public long EntitySequenceNumber { get; set; }
 
         /// <summary>Delta of optimistic random ScrollId during this call (for desync detection).</summary>
         public long RandomScrollDelta { get; set; }

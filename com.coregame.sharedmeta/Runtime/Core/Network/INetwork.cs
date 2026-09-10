@@ -166,6 +166,14 @@ namespace SharedMeta.Core.Network
         /// <summary>Server time (UTC ticks) for deterministic replay.</summary>
         public long ServerTimeTicks { get; set; }
 
+        /// <summary>
+        /// Position of this call in the entity's server-side history. Reconciliation folds
+        /// server calls into its anchor in this order rather than in arrival order, so a client
+        /// whose own call the server happened to apply second still ends up with the server's
+        /// sequence.
+        /// </summary>
+        public long EntitySequenceNumber { get; set; }
+
         /// <summary>Delta of optimistic random ScrollId during this call (for desync detection).</summary>
         public long RandomScrollDelta { get; set; }
 
