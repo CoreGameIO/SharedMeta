@@ -23,6 +23,17 @@ namespace SharedMeta.Core
         Task<TApiClient> GetServiceAsync<TApiClient>(string entityId) where TApiClient : class;
 
         /// <summary>
+        /// Type-keyed counterpart of <see cref="GetServiceAsync{TApiClient}"/>, for callers that
+        /// only have a <see cref="Type"/> at hand — a DI container, a startup loop subscribing to
+        /// every registered service, an editor tool. Same semantics, same connection cache; the
+        /// generic overload is a cast over this one.
+        /// </summary>
+        /// <param name="apiClientType">The API client type</param>
+        /// <param name="entityId">The entity ID to connect to</param>
+        /// <returns>A connected and configured API client</returns>
+        Task<object> GetServiceAsync(Type apiClientType, string entityId);
+
+        /// <summary>
         /// Disconnect from an entity.
         /// </summary>
         /// <param name="entityId">Entity to disconnect from</param>
@@ -55,6 +66,20 @@ namespace SharedMeta.Core
         /// <param name="entityId">The entity ID</param>
         /// <param name="api">The cached client when found; otherwise null</param>
         bool TryGetService<TApiClient>(string entityId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out TApiClient? api) where TApiClient : class;
+
+        /// <summary>
+        /// Type-keyed counterpart of <see cref="TryGetService{TApiClient}"/>, for callers that only
+        /// have a <see cref="Type"/> at hand — a DI container resolving a constructor parameter, an
+        /// editor inspector, a service locator. Same contract: returns the cached client when the
+        /// entity is subscribed and that client was already created by a prior
+        /// <see cref="GetServiceAsync{TApiClient}"/>, otherwise false; never subscribes, never
+        /// creates the client. Reflection-free — the resolver stores service configs and per-entity
+        /// clients keyed by type already, so the generic parameter only ever served the cast.
+        /// </summary>
+        /// <param name="apiClientType">The API client type</param>
+        /// <param name="entityId">The entity ID</param>
+        /// <param name="api">The cached client when found; otherwise null</param>
+        bool TryGetService(Type apiClientType, string entityId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out object? api);
 
         /// <summary>
         /// Register a service configuration.

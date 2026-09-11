@@ -79,4 +79,37 @@ public class TryGetServiceTests
 
         Assert.Equal(0, allocated);
     }
+
+    [Fact(Timeout = 60_000)]
+    public async Task GetServiceByType_ReturnsTheSameClientAsTheGenericOverload()
+    {
+        var server = new InProcessServer(_fixture.CreateHandlerFactory());
+        var playerId = $"bytype-hit-{Guid.NewGuid().ToString("N")[..8]}";
+        await using var client = new TestClientSetup(server, playerId);
+        await client.ConnectAsync();
+        var resolver = client.CreateResolver();
+
+        var byType = await resolver.GetServiceAsync(typeof(PartyServiceApiClient), playerId);
+        var byGeneric = await resolver.GetServiceAsync<PartyServiceApiClient>(playerId);
+
+        Assert.Same(byGeneric, byType);
+
+        Assert.True(resolver.TryGetService(typeof(PartyServiceApiClient), playerId, out var cached));
+        Assert.Same(byGeneric, cached);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task TryGetServiceByType_BeforeResolve_ReturnsFalse()
+    {
+        var server = new InProcessServer(_fixture.CreateHandlerFactory());
+        var playerId = $"bytype-miss-{Guid.NewGuid().ToString("N")[..8]}";
+        await using var client = new TestClientSetup(server, playerId);
+        await client.ConnectAsync();
+        var resolver = client.CreateResolver();
+
+        Assert.False(resolver.TryGetService(typeof(PartyServiceApiClient), playerId, out var api));
+        Assert.Null(api);
+
+        Assert.False(resolver.TryGetService<PartyServiceApiClient>(playerId, out _));
+    }
 }

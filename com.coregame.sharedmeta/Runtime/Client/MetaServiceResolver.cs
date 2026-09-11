@@ -249,7 +249,12 @@ namespace SharedMeta.Client
 
         public async Task<TApiClient> GetServiceAsync<TApiClient>(string entityId) where TApiClient : class
         {
-            var config = GetConfig<TApiClient>();
+            return (TApiClient)await GetServiceAsync(typeof(TApiClient), entityId);
+        }
+
+        public async Task<object> GetServiceAsync(Type apiClientType, string entityId)
+        {
+            var config = GetConfig(apiClientType);
             EntityConnection? existingConnection = null;
 
             lock (_lock)
@@ -259,9 +264,9 @@ namespace SharedMeta.Client
                 if (TryGetConnection(entityId, config.StateType, out existingConnection))
                 {
                     // Check if this specific API client already exists
-                    if (existingConnection.ApiClients.TryGetValue(typeof(TApiClient), out var existingClient))
+                    if (existingConnection.ApiClients.TryGetValue(apiClientType, out var existingClient))
                     {
-                        return (TApiClient)existingClient;
+                        return existingClient;
                     }
                 }
             }
@@ -364,7 +369,7 @@ namespace SharedMeta.Client
             Func<MetaConfigVersion, object?>? configResolver = activeConnectionForResolver != null
                 ? activeConnectionForResolver.ResolveConfigForBroadcast
                 : null;
-            var apiClient = (TApiClient)config.ApiClientFactory(
+            var apiClient = config.ApiClientFactory(
                 network,
                 _serializer,
                 stateContainer,
@@ -393,7 +398,7 @@ namespace SharedMeta.Client
                     newConnection.Dispose();
                 }
 
-                connection.ApiClients[typeof(TApiClient)] = apiClient;
+                connection.ApiClients[apiClientType] = apiClient;
                 if (!string.IsNullOrEmpty(config.ServiceName))
                     connection.LocalServiceNames.Add(config.ServiceName);
                 foreach (var methodId in config.MethodIds)
@@ -464,10 +469,22 @@ namespace SharedMeta.Client
         /// </summary>
         public bool TryGetService<TApiClient>(string entityId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out TApiClient? api) where TApiClient : class
         {
+            if (TryGetService(typeof(TApiClient), entityId, out var existing))
+            {
+                api = (TApiClient)existing;
+                return true;
+            }
+
+            api = null;
+            return false;
+        }
+
+        public bool TryGetService(Type apiClientType, string entityId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out object? api)
+        {
             // Unregistered TApiClient is a caller bug elsewhere, not a "not subscribed yet"
             // condition — but TryGetService's contract is "never throws", so degrade to false
             // rather than escalate via GetConfig<TApiClient>()'s throw.
-            if (!_serviceConfigs.TryGetValue(typeof(TApiClient), out var config))
+            if (!_serviceConfigs.TryGetValue(apiClientType, out var config))
             {
                 api = null;
                 return false;
@@ -476,9 +493,9 @@ namespace SharedMeta.Client
             lock (_lock)
             {
                 if (TryGetConnection(entityId, config.StateType, out var connection)
-                    && connection.ApiClients.TryGetValue(typeof(TApiClient), out var existing))
+                    && connection.ApiClients.TryGetValue(apiClientType, out var existing))
                 {
-                    api = (TApiClient)existing;
+                    api = existing;
                     return true;
                 }
             }
@@ -739,13 +756,13 @@ namespace SharedMeta.Client
             throw new InvalidOperationException($"Not connected to entity '{entityId}'. Call GetServiceAsync first.");
         }
 
-        private MetaServiceConfig GetConfig<TApiClient>()
+        private MetaServiceConfig GetConfig<TApiClient>() => GetConfig(typeof(TApiClient));
+
+        private MetaServiceConfig GetConfig(Type apiClientType)
         {
-            if (!_serviceConfigs.TryGetValue(typeof(TApiClient), out var config))
+            if (!_serviceConfigs.TryGetValue(apiClientType, out var config))
             {
-                throw new InvalidOperationException(
-                    $"Service '{typeof(TApiClient).Name}' not registered. " +
-                    $"Call RegisterService<{typeof(TApiClient).Name}>() first.");
+                throw new InvalidOperationException($"Service '{apiClientType.Name}' not registered. Call RegisterService<{apiClientType.Name}>() first.");
             }
             return config;
         }
