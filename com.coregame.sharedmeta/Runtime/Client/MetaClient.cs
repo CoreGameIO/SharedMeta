@@ -470,6 +470,22 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
+        /// Type-keyed overloads for callers holding a <see cref="Type"/> rather than a generic
+        /// argument — a DI container resolving a constructor parameter, a startup loop over every
+        /// registered service. Same semantics as the generic pair.
+        /// </summary>
+        public Task<object> GetServiceAsync(Type apiClientType, string entityId)
+        {
+            return _resolver.GetServiceAsync(apiClientType, entityId);
+        }
+
+        /// <inheritdoc cref="GetServiceAsync(Type, string)"/>
+        public bool TryGetService(Type apiClientType, string entityId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out object? api)
+        {
+            return _resolver.TryGetService(apiClientType, entityId, out api);
+        }
+
+        /// <summary>
         /// Get current state for a connected entity.
         /// </summary>
         public TState GetState<TState>(string entityId) where TState : class, ISharedState
