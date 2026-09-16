@@ -307,6 +307,7 @@ namespace SharedMeta.Transport.BestHttp
                 ServerSignatureHash = response.ServerSignatureHash,
                 Annotated = response.Annotated,
                 FailureReason = response.FailureReason,
+                DeepDesyncActive = response.DeepDesyncActive,
             };
         }
 

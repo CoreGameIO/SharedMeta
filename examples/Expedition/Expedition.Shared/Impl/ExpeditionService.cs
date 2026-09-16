@@ -7,7 +7,11 @@ namespace Expedition.Shared
     /// Uses Config for balance parameters, Context.Random for map generation,
     /// and IExpeditionProfileService for cross-entity energy/money calls.
     /// </summary>
-    [MetaServiceImpl(typeof(IExpeditionService), typeof(ExpeditionState), typeof(IExpeditionProfileService))]
+    // DeepDesync generates the patch-tracked copy and the client-side CRC comparison, which is what
+    // catches a divergence the return values agree on — both sides answer Ok, but the revealed cells
+    // or the position drift apart. Generating it does not switch it on: see DeepDesyncMode on the
+    // server. Result-level divergence ("client moved, server refused") needs none of this.
+    [MetaServiceImpl(typeof(IExpeditionService), typeof(ExpeditionState), typeof(IExpeditionProfileService), DeepDesync = true)]
     public partial class ExpeditionService : IExpeditionService
     {
         private ExpeditionState state => Context.State;
@@ -27,6 +31,19 @@ namespace Expedition.Shared
         public Task<int> GenerateMap(int version)
         {
             if (version < 1)
+            {
+                RegenerateMap();
+                return Task.FromResult(1);
+            }
+            return Task.FromResult(version);
+        }
+
+        /// <summary>
+        /// Deterministic map generation — Context.Random advances identically on both sides, so
+        /// client and server land on the same map.
+        /// </summary>
+        private void RegenerateMap()
+        {
             {
                 var width = Config.MapWidth;
                 var height = Config.MapHeight;
@@ -83,9 +100,7 @@ namespace Expedition.Shared
                 RevealArea(0, 0);
 
                 state.IsGenerated = true;
-                return Task.FromResult(1);
             }
-            return Task.FromResult(version);
         }
 
         public async Task<MoveResult> Move(int dx, int dy)
@@ -189,6 +204,41 @@ namespace Expedition.Shared
         public bool IsActive()
         {
             return state.IsGenerated && !state.IsComplete;
+        }
+
+        public void GenerateNewMapBroken()
+        {
+            // Deterministic first, so the two sides start from the same map and the divergence
+            // stays small enough to read in a patch diff — a wholly different map would diff as
+            // "everything changed" and show nothing.
+            RegenerateMap();
+
+            // Then corrupt a handful of cells with System.Random: a different sequence on each
+            // side, so Cells diverges in 5-15 positions. This is the mistake the feature exists to
+            // catch — shared logic reaching for randomness that isn't the framework's.
+            var rng = new System.Random(); // BAD: non-deterministic!
+            var totalCells = state.Cells.Count;
+            int corruptCount = 5 + rng.Next(11); // 5..15 inclusive
+
+            for (int n = 0; n < corruptCount; n++)
+            {
+                int idx = rng.Next(1, totalCells); // skip [0] — player spawn
+                state.Cells[idx] = (byte)rng.Next(4); // any CellType
+            }
+
+            // Each side must stay internally consistent on its own: the corruption may have removed
+            // or added treasure cells, and a stale TotalTreasures would leave the expedition
+            // impossible to finish. The two sides still disagree with each other — that is the
+            // point — but neither is left broken by itself.
+            int treasureCount = 0;
+            for (int i = 0; i < totalCells; i++)
+            {
+                if (state.Cells[i] == (byte)CellType.Treasure)
+                    treasureCount++;
+            }
+            state.TotalTreasures = treasureCount;
+            state.TreasuresCollected = 0;
+            state.IsComplete = false;
         }
 
         private void RevealArea(int cx, int cy)

@@ -29,7 +29,30 @@ var clientVersionArg = args.FirstOrDefault(a => a.StartsWith("--client-version="
 var clientAppVersion = clientVersionArg?.Split('=', 2)[1] ?? "2.0.0";
 var positionalArgs = args.Where(a => !a.StartsWith("--")).ToArray();
 var serverUrl = positionalArgs.Length > 0 ? positionalArgs[0] : "http://localhost:5100";
-var deviceId = positionalArgs.Length > 1 ? positionalArgs[1] : Guid.NewGuid().ToString("N")[..8];
+// Device id decides the PlayerId, and anything attached to a player — a migrated profile, an
+// expedition in progress, a deep desync investigation — is only reachable by coming back as the
+// same one. A fresh guid per launch would make every run a new player and quietly hide all of it,
+// so the generated id is remembered on disk. Pass one explicitly to run several players at once.
+var deviceId = positionalArgs.Length > 1 ? positionalArgs[1] : ResolveStoredDeviceId();
+
+static string ResolveStoredDeviceId()
+{
+    const string path = ".device-id";
+    try
+    {
+        if (File.Exists(path))
+        {
+            var stored = File.ReadAllText(path).Trim();
+            if (stored.Length > 0) return stored;
+        }
+    }
+    catch (IOException) { /* unreadable — fall through and mint a fresh one */ }
+
+    var generated = Guid.NewGuid().ToString("N")[..8];
+    try { File.WriteAllText(path, generated); }
+    catch (IOException) { /* not writable — this run is simply a new player */ }
+    return generated;
+}
 
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
@@ -260,7 +283,7 @@ async Task<bool> RunGameAsync()
                 : awaitingRemoveDirection ? "Direction? (arrow key):"
                 : statusMessage;
 
-            Render(expState, profileState, displayStatus);
+            Render(expState, profileState, displayStatus, client.Dispatcher.DeepDesyncActive);
 
             if (expState.IsComplete)
             {
@@ -341,6 +364,22 @@ async Task<bool> RunGameAsync()
                             await profileApi.UpdateEnergyAsync();
                             statusMessage = "Energy updated.";
                             break;
+                        case ConsoleKey.X:
+                            await expApi.GenerateNewMapBrokenAsync();
+                            statusMessage = client.Dispatcher.DeepDesyncActive
+                                ? "Regenerated map with System.Random — watch for [PATCH DESYNC]."
+                                : "Regenerated map with System.Random — but analysis is OFF, so nobody will notice. Press D.";
+                            break;
+                        case ConsoleKey.D:
+                            // Takes effect on this session immediately — calls started from here on
+                            // are tracked on both ends, and the ones already in flight are simply
+                            // not examined. The answer is also stored against the player, so it
+                            // survives a reconnect.
+                            var wantDeepDesync = !client.Dispatcher.DeepDesyncActive;
+                            statusMessage = await client.SetDeepDesyncAsync(wantDeepDesync)
+                                ? $"Deep desync analysis {(wantDeepDesync ? "ON" : "OFF")}."
+                                : "Deep desync request refused by the silo (see DeepDesyncMode).";
+                            break;
                         case ConsoleKey.Q:
                             Console.WriteLine("\nGoodbye!");
                             return false;
@@ -379,7 +418,7 @@ static async Task<string> DoMove(ExpeditionServiceApiClient api, int dx, int dy)
     };
 }
 
-static void Render(ExpeditionState exp, ProfileState profile, string statusMessage)
+static void Render(ExpeditionState exp, ProfileState profile, string statusMessage, bool deepDesyncActive)
 {
     Console.Clear();
 
@@ -458,6 +497,11 @@ static void Render(ExpeditionState exp, ProfileState profile, string statusMessa
     // Controls
     Console.WriteLine("|" + " Arrows=Move  R+arrow=Remove obstacle ".PadRight(boxWidth - 2) + "|");
     Console.WriteLine("|" + " B=Buy energy  U=Update energy  Q=Quit".PadRight(boxWidth - 2) + "|");
+    // Spelled out rather than left implicit: with the analysis off, no [PATCH DESYNC] line can
+    // appear, and without saying so the absence reads as "no divergence" instead of "not looking".
+    var ddState = deepDesyncActive ? "ON" : "OFF";
+    Console.WriteLine("|" + $" D=Deep desync analysis (now {ddState})".PadRight(boxWidth - 2) + "|");
+    Console.WriteLine("|" + $" X=Regen map (broken)   patch desyncs caught: {ConsoleDesyncDiagnostics.PatchDesyncCount}".PadRight(boxWidth - 2) + "|");
     Console.WriteLine("+" + new string('-', boxWidth - 2) + "+");
 
     // Status message
@@ -471,9 +515,29 @@ static void Render(ExpeditionState exp, ProfileState profile, string statusMessa
 
 class ConsoleDesyncDiagnostics : IDesyncDiagnostics
 {
+    /// <summary>
+    /// A method returned different values on the two sides — "the client made the move, the server
+    /// refused it" lands here. Always on: the comparison is generated for every method with a
+    /// return value, needs no attribute and no runtime switch.
+    /// </summary>
     public void OnResultMismatch<T>(string serviceName, string methodName, T serverResult, T localResult)
     {
-        Console.Error.WriteLine($"[DESYNC] {serviceName}.{methodName}: server={serverResult}, local={localResult}");
+        Console.Error.WriteLine($"[RESULT DESYNC] {serviceName}.{methodName}: server={serverResult}, local={localResult}");
+    }
+
+    /// <summary>
+    /// Both sides agreed on the return value but mutated state differently — the case results
+    /// cannot reveal. Needs [MetaServiceImpl(DeepDesync = true)] on the service AND the analysis
+    /// switched on for this player, so silence here is not proof of agreement.
+    /// </summary>
+    /// <summary>Surfaced in the controls box so an empty log reads as "nothing caught yet" rather
+    /// than "nothing to catch".</summary>
+    public static int PatchDesyncCount;
+
+    public void OnPatchDesync(string serviceName, string methodName, uint serverCrc, uint localCrc)
+    {
+        System.Threading.Interlocked.Increment(ref PatchDesyncCount);
+        Console.Error.WriteLine($"[PATCH DESYNC] {serviceName}.{methodName}: serverCrc={serverCrc}, localCrc={localCrc}");
     }
 
     public void OnCrossEntityResult(string entityId, ushort methodId, byte[]? resultBytes)

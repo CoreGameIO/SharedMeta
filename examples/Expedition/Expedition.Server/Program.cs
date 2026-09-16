@@ -64,6 +64,12 @@ builder.Services.AddSingleton(new MetaTransportOptions
     ServerVersion    = "2.0.0",
     MinClientVersion = "1.2.0",
     MaxClientVersion = "2.x.*",
+    // Example project: let the client ask to be analysed (press D) and let its desync follow-up
+    // reports through, so the server-side text diff shows up in the log. Both default to false —
+    // a production silo would leave them that way.
+    AllowDebugApi          = true,
+    DesyncReportingEnabled = true,
+    DesyncLogLevel         = DesyncLogLevel.Debug,
 });
 
 // Orleans Silo
@@ -80,7 +86,15 @@ builder.Host.UseOrleans(siloBuilder =>
         .ConfigureServices(services =>
         {
             services.AddSingleton<IMetaSerializer>(serializer);
-            services.Configure<EntityGrainOptions>(o => o.SubscriberTtl = TimeSpan.FromMinutes(10));
+            services.Configure<EntityGrainOptions>(o =>
+            {
+                o.SubscriberTtl = TimeSpan.FromMinutes(10);
+                // PerPlayer so the example demonstrates the interesting path: nobody is analysed
+                // until a player asks (D in the client), and that choice survives their reconnect.
+                // Forced would switch it on for everyone from connect — simpler, but then the
+                // per-player half is never exercised.
+                o.DeepDesyncMode = DeepDesyncMode.PerPlayer;
+            });
 
             // ServerPatch mode: override CrossOptimistic methods to use server-side patching
             if (useServerPatch)
@@ -155,6 +169,25 @@ app.MapGet("/meta/{configName}/{major:int}/{minor:int}", (string configName, int
     };
 
     return Results.Bytes(bytes, "application/octet-stream");
+});
+
+// Stored desync reports for one player — the triage half of the workflow. Clients send a follow-up
+// report on every mismatch they detect (gated by MetaTransportOptions.DesyncReportingEnabled), the
+// server diffs it against its own patch and keeps the last 50 per player. This is what you would
+// actually read after flagging a player: the per-field divergence, not just "a CRC differed".
+// Unauthenticated here because it is an example; a real deployment puts this behind admin auth.
+app.MapGet("/meta/desync/{playerId}", async (string playerId, IGrainFactory grains) =>
+{
+    var reports = await grains.GetGrain<IDesyncReportGrain>(playerId).GetRecentAsync(20);
+    return Results.Json(reports);
+});
+
+// Turn the analysis on or off for one player without touching the client — the admin half of
+// DeepDesyncMode.PerPlayer. Takes effect on that player's next session.
+app.MapPost("/meta/desync/{playerId}/{enabled:bool}", async (string playerId, bool enabled, IGrainFactory grains) =>
+{
+    await grains.GetGrain<IDesyncReportGrain>(playerId).SetAnalysisEnabledAsync(enabled);
+    return Results.Ok(new { playerId, analysisEnabled = enabled, appliesOn = "next session" });
 });
 
 #if USE_HTTP_POLLING

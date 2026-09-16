@@ -19,12 +19,15 @@ public class EntityGrainOptions
     public PersistencePolicy PersistencePolicy { get; set; } = PersistencePolicy.EveryCall();
 
     /// <summary>
-    /// Global override for deep desync detection.
-    /// When null (default): uses per-service setting from [MetaServiceImpl(DeepDesync = true)].
-    /// When true: forces deep desync on for all services.
-    /// When false: disables deep desync even if attribute says true.
+    /// Who gets deep desync detection on this silo. Default <see cref="Grains.DeepDesyncMode.PerPlayer"/>
+    /// — off for everyone until a player is flagged for it.
+    /// <para>
+    /// This does not substitute for <c>[MetaServiceImpl(..., DeepDesync = true)]</c>. The attribute
+    /// is what makes a service capable of reporting at all; this decides who the capability is
+    /// turned on for. Neither one alone produces a report.
+    /// </para>
     /// </summary>
-    public bool? DeepDesyncEnabled { get; set; }
+    public DeepDesyncMode DeepDesyncMode { get; set; } = DeepDesyncMode.PerPlayer;
 
     /// <summary>
     /// Seed factory for fresh random streams. Invoked once per stream when an entity activates

@@ -178,7 +178,10 @@ builder.Services.AddSingleton<IMetaConnectionHandlerFactory>(sp =>
         serializer: serializer,
         versionPolicy: versionPolicy,
         signatureRegistry: signatureRegistry,
-        serverSignature: serverSignature);
+        serverSignature: serverSignature,
+        // Hand-built factory: the deep desync mode has to be passed explicitly, or the handler
+        // resolves every session against the default mode instead of the configured one.
+        entityGrainOptions: sp.GetService<Microsoft.Extensions.Options.IOptions<EntityGrainOptions>>());
 });
 
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));

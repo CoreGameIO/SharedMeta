@@ -90,6 +90,7 @@ namespace SharedMeta.Debug.Mux
                 ServerSignatureHash = resp.ServerSignatureHash,
                 Annotated = resp.Annotated,
                 FailureReason = resp.FailureReason,
+                DeepDesyncActive = resp.DeepDesyncActive,
             };
         }
 

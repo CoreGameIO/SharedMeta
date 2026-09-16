@@ -231,6 +231,14 @@ namespace SharedMeta.Core.Transport
         /// surfacing the failure to game-level logic.
         /// </summary>
         public SessionConnectFailureReason FailureReason { get; set; }
+
+        /// <summary>
+        /// Whether the server switched deep desync analysis on for this session. Carried through
+        /// the transport untouched — every connection maps it from
+        /// <c>SessionConnectResponse.DeepDesyncActive</c>, and a transport that forgets to leaves
+        /// its clients paying for patch trees nobody asked for, or silently unverified.
+        /// </summary>
+        public bool DeepDesyncActive { get; set; }
     }
 
     /// <summary>

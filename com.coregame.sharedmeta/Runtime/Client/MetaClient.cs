@@ -441,6 +441,13 @@ namespace SharedMeta.Client
             {
                 DeepDesyncEnabled = enabled
             });
+
+            // Adopt it only once the server has answered: the two sides must start tracking on the
+            // same call, or the client builds patch trees for calls nobody hashed. Calls already in
+            // flight are unaffected — they captured the old verdict and will be skipped.
+            if (result)
+                _dispatcher.ApplyDeepDesyncVerdict(enabled);
+
             return result;
         }
 

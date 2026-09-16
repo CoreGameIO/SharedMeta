@@ -150,10 +150,23 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     public IExecutionModeProvider? ExecutionModeProvider { get; set; }
 
     /// <summary>
-    /// When true, computes FNV-1a hash of serialized state after each method execution.
-    /// Client compares its local hash with the server's to detect state-level desyncs.
+    /// Who gets deep desync detection. Set by EntityGrain from EntityGrainOptions.
+    /// When a call resolves to active, the patch tree built for it is hashed (FNV-1a) and the CRC
+    /// travels to the client, which compares it against the same hash of its own execution.
     /// </summary>
-    public bool DeepDesyncEnabled { get; set; }
+    public DeepDesyncMode DeepDesyncMode { get; set; } = DeepDesyncMode.PerPlayer;
+
+    /// <summary>
+    /// Whether deep desync is active for this particular call.
+    /// <c>Off</c> outranks the caller's request rather than being OR-ed with it — otherwise a
+    /// client could switch CRC computation back on against the operator's kill switch.
+    /// </summary>
+    private bool IsDeepDesyncActive(RpcCall call) => DeepDesyncMode switch
+    {
+        DeepDesyncMode.Off => false,
+        DeepDesyncMode.Forced => true,
+        _ => call.DeepDesyncActive
+    };
 
     public virtual void Initialize(IMetaProviderContext context, TState state,
         byte[]? serverRandomBytes = null, byte[]? optimisticRandomBytes = null)
@@ -860,7 +873,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // replay and patch; per-subscriber tailoring strips one on fan-out.
             PatchNode? patchRoot = null;
             bool isServerReplace = executionMode == ExecutionMode.ServerReplace;
-            bool deepDesyncActive = DeepDesyncEnabled || call.DeepDesyncRequested;
+            bool deepDesyncActive = IsDeepDesyncActive(call);
             if (executionMode == ExecutionMode.ServerPatch || deepDesyncActive || requirePatchForFanOut)
             {
                 patchRoot = new PatchNode(-1);
@@ -913,7 +926,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // Collect patch bytes if ServerPatch mode was active. Scratch-backed writer —
             // content is copied into the response/broadcast pool slot during
             // PackBroadcastVariant below, scratch is reset at the next call entry.
+            // Deep desync CRC rides along whenever a patch tree exists at all — not only when the
+            // caller is being analysed. A tree is built for ServerPatch and for fan-out too, and
+            // hashing bytes that are already serialized is the only way an observing client can
+            // check a broadcast produced by someone who isn't being analysed themselves.
             ReadOnlyMemory<byte> patchBytes = default;
+            uint? deepDesyncCrc = null;
             if (patchRoot != null)
             {
                 patchRoot.Prune();
@@ -922,6 +940,11 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                     _intermediateWriter.Reset();
                     Context.Serializer.Pack(patchRoot, _intermediateWriter);
                     patchBytes = _intermediateWriter.WrittenMemory;
+                    deepDesyncCrc = SharedMeta.Core.Patch.PatchCrc.Compute(patchBytes);
+                }
+                else
+                {
+                    deepDesyncCrc = 0; // executed, changed nothing — a real answer, not "unknown"
                 }
                 MetaContext.PatchWrapper = null;
             }
@@ -929,22 +952,6 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // Compute optimistic random scroll delta for desync detection
             var randomScrollDelta = _optimisticRandom.ScrollId - scrollIdBefore;
             var namedRandomScrollDeltas = ComputeNamedScrollDeltas(namedScrollsBefore);
-
-            // Deep desync: compute CRC from patch (field-level mutation tracking)
-            uint? deepDesyncCrc = null;
-            if (deepDesyncActive && patchRoot != null)
-            {
-                patchRoot.Prune();
-                if (patchRoot.HasChanges)
-                {
-                    var deepDesyncPatchBytes = Context.Serializer.Pack(patchRoot);
-                    deepDesyncCrc = SharedMeta.Core.Patch.PatchCrc.Compute(deepDesyncPatchBytes);
-                }
-                else
-                {
-                    deepDesyncCrc = 0; // no changes
-                }
-            }
 
             // Capture cross-entity calls made during this operation
             var crossEntityCalls = MetaContext.CrossEntityCalls;
@@ -997,6 +1004,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             _pooledBroadcastOp.PatchBytes = patchBytes;
             _pooledBroadcastOp.RandomScrollDelta = randomScrollDelta;
             _pooledBroadcastOp.NamedRandomScrollDeltas = namedRandomScrollDeltas;
+            _pooledBroadcastOp.DeepDesyncCrc = deepDesyncCrc;
             _pooledBroadcastOp.ServerTimeTicks = call.ServerTimeTicks;
             // Same as response above — Debug intentionally null to avoid per-RPC string allocation.
             _pooledBroadcastOp.Debug = null;

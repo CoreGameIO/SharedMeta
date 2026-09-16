@@ -1754,6 +1754,41 @@ Shorten project-wide (nested types → `<TypeName>`, collections → `[N items]`
 [assembly: SharedMetaDiagnosticsOptions(DesyncValues = DesyncValueDetail.Short)]
 ```
 
+### Deep Desync Activation
+
+**Experimental.** A diagnostic to switch on while investigating, not something to ship enabled. The
+`_PatchTracked` copy is a rewrite of the service class against a wrapper-typed `State`: some bodies
+don't compile against it, and some compile but record a patch the server didn't, which reports a
+desync in the diagnostics rather than in the game. Opt in per service, verify that service, iterate.
+
+Two independent halves, both required — neither alone produces a report:
+
+```csharp
+// Build: which services CAN report (emits the _PatchTracked copy + the client-side comparison)
+[MetaServiceImpl(typeof(IPartyService), typeof(PartyState), DeepDesync = true)]
+
+// Runtime: who it is switched ON for
+services.Configure<EntityGrainOptions>(o => o.DeepDesyncMode = DeepDesyncMode.Forced);
+```
+
+`DeepDesyncMode`: `Off` (nobody; a client request is refused, not merged — the kill switch),
+`PerPlayer` (default — only players flagged on `DesyncReportGrain`, written by `SetDeepDesyncAsync`
+or admin tooling, read once at SessionConnect), `Forced` (everyone on the silo).
+
+A flag change applies **immediately**, mid-session included, and is stored so it survives reconnects.
+Safe under in-flight calls: a CRC is compared only when both ends produced one for the same call, so
+a call that already started built no tree and is not examined. `SetDeepDesyncAsync` returns false
+when the silo can't honour the request (`Off`, or `Forced` asked to switch off) rather than
+accepting and ignoring it. With the analysis off the client runs the plain service and builds no
+patch tree, so
+a build carrying the attribute costs nothing while nobody is looking. Both sides log at startup: the
+silo lists services able to report, the client logs the session verdict plus its own coverage.
+
+Broadcasts carry a CRC whenever the server already built a patch tree (also true for `ServerPatch`
+and fan-out), and an analysed client verifies its **replay** against it — that's how a divergence
+from another player's call becomes visible. `StateBytes` / `PatchBytes` broadcasts are not checked:
+the client computes nothing there, it applies what the server sent.
+
 ---
 
 ## Granular Collection Patches (0.9.0+)

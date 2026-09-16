@@ -17,6 +17,13 @@ namespace SharedMeta.Server.Core.Grains
     public partial class DesyncReportGrainState
     {
         [Id(0), Key(0), MemoryPackOrder(0)] public List<DeepDesyncReport> Reports { get; set; } = new();
+
+        /// <summary>
+        /// Deep desync analysis switched on for this player under DeepDesyncMode.PerPlayer.
+        /// Persisted rather than held on the connection so it survives reconnects and so admin
+        /// tooling and the player's own client write to the same place.
+        /// </summary>
+        [Id(1), Key(1), MemoryPackOrder(1)] public bool AnalysisEnabled { get; set; }
     }
 
     /// <summary>
@@ -54,7 +61,19 @@ namespace SharedMeta.Server.Core.Grains
 
         public async Task ClearAsync()
         {
+            // Clears history only — AnalysisEnabled survives, so wiping a player's reports
+            // does not silently switch their analysis off mid-investigation.
             _state.State.Reports.Clear();
+            await _state.WriteStateAsync();
+        }
+
+        public Task<bool> IsAnalysisEnabledAsync() => Task.FromResult(_state.State.AnalysisEnabled);
+
+        public async Task SetAnalysisEnabledAsync(bool enabled)
+        {
+            if (_state.State.AnalysisEnabled == enabled) return;
+
+            _state.State.AnalysisEnabled = enabled;
             await _state.WriteStateAsync();
         }
     }

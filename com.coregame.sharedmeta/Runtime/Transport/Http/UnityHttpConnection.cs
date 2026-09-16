@@ -181,6 +181,7 @@ namespace SharedMeta.Client.Network
                 ServerSignatureHash = response.ServerSignatureHash,
                 Annotated = response.Annotated,
                 FailureReason = response.FailureReason,
+                DeepDesyncActive = response.DeepDesyncActive,
             };
         }
 

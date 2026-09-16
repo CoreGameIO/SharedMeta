@@ -19,5 +19,19 @@ namespace SharedMeta.Server.Core.Grains
 
         /// <summary>Clear all reports for this player.</summary>
         Task ClearAsync();
+
+        /// <summary>
+        /// Whether deep desync analysis is switched on for this player. Consulted once per session,
+        /// and only under <see cref="DeepDesyncMode.PerPlayer"/> — the other modes answer without
+        /// touching this grain.
+        /// </summary>
+        Task<bool> IsAnalysisEnabledAsync();
+
+        /// <summary>
+        /// Turn deep desync analysis on or off for this player. Written both by the player's own
+        /// client (through the debug API, when the silo permits it) and by admin tooling, so the
+        /// two paths cannot disagree about the current value.
+        /// </summary>
+        Task SetAnalysisEnabledAsync(bool enabled);
     }
 }

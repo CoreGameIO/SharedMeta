@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.39.0] - 2026-09-16
+
+### Changed
+
+- **Breaking:** `EntityGrainOptions.DeepDesyncEnabled` (`bool?`) → `DeepDesyncMode { Off, PerPlayer, Forced }`. Migration: `null` → `PerPlayer`, `true` → `Forced`, `false` → `Off`.
+- `Off` now outranks a client request. It used to be OR-ed with the per-session toggle, so a client could switch CRC computation back on against the documented kill switch.
+- Under `PerPlayer` the flag lives on `DesyncReportGrain` — set by `SetDeepDesyncAsync` or admin tooling, applied to the running session immediately, and kept across reconnects.
+- The client builds a patch tree only while the analysis is on. A build carrying `[MetaServiceImpl(DeepDesync = true)]` used to allocate and hash one on every call whether or not anyone was looking.
+- `RpcCall.DeepDesyncRequested` → `DeepDesyncActive`. Wire ids unchanged.
+
+### Added
+
+- Broadcasts carry a patch CRC whenever the server already built a patch tree, and an analysed client verifies its replay against it — a divergence caused by another player's call is now visible. `ServerPatch` / `ServerReplace` broadcasts stay unchecked: the client computes nothing there.
+- `SessionConnectResponse.DeepDesyncActive` / `INetwork.DeepDesyncActive` — the client is told the verdict at connect.
+- Startup logging: the silo lists the services able to report, the client logs the session verdict plus which of its own services are covered.
+- `SetDeepDesyncAsync` returns false when the silo cannot honour the request (`Off`, or `Forced` asked to switch off) instead of accepting and ignoring it.
+
+### Fixed
+
+- `[MetaServiceImpl(DeepDesync = true)]` on a service declaring `[ServiceConfig]` failed to compile — the `_PatchTracked` copy emitted only the legacy `Config` accessor. Affected any force-patch-able service on the 0.33.0 config API, not just deep desync.
+- `DeepDesyncEnabled`'s docs claimed `null` fell back to the per-service attribute and `false` was a kill switch. Neither held: `null` meant off, and `false` was overridable by the client.
+
 ## [0.38.0] - 2026-08-30
 
 ### Changed

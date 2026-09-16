@@ -135,10 +135,34 @@ public class ExpeditionGameManager : MonoBehaviour
     }
 
 #if SHAREDMETA_BACKEND_LOCAL
-    async void OnDestroy()
-#else
-    void OnDestroy()
+    // OnDestroy is not a reliable save point on its own: a force quit, a mobile task-switch
+    // kill, or an editor crash never reaches it. Pause/focus fire while the process is still
+    // alive, so they are the last moment a save is guaranteed to land.
+    void OnApplicationPause(bool paused)
+    {
+        if (paused) SaveLocalProgress();
+    }
+
+    void OnApplicationFocus(bool focused)
+    {
+        if (!focused) SaveLocalProgress();
+    }
+
+    private void SaveLocalProgress()
+    {
+        if (_metaClient?.LocalServer == null) return;
+        try
+        {
+            // Blocking rather than awaiting: during teardown Unity has stopped pumping the
+            // synchronization context, so an await continuation would never run. Every
+            // built-in ILocalBackend completes synchronously, so this does not actually block.
+            _metaClient.LocalServer.SaveAllAsync().GetAwaiter().GetResult();
+        }
+        catch (Exception ex) { Debug.LogException(ex); }
+    }
 #endif
+
+    void OnDestroy()
     {
         if (_trackedRegistered)
         {
@@ -146,11 +170,7 @@ public class ExpeditionGameManager : MonoBehaviour
             TrackedExpeditionState.Unregister();
         }
 #if SHAREDMETA_BACKEND_LOCAL
-        if (_metaClient?.LocalServer != null)
-        {
-            try { await _metaClient.LocalServer.SaveAllAsync(); }
-            catch (Exception ex) { Debug.LogException(ex); }
-        }
+        SaveLocalProgress();
 #endif
         _metaClient?.Dispose();
     }

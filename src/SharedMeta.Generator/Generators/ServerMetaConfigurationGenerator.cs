@@ -626,7 +626,7 @@ namespace SharedMeta.Generator.Generators
             {
                 GenerateMetaProvider(sb, kvp.Key, kvp.Value, allServerDeps);
                 sb.AppendLine();
-                GenerateMetaProviderFactory(sb, kvp.Key, kvp.Value.First().StateTypeName, kvp.Value.Any(s => s.DeepDesync));
+                GenerateMetaProviderFactory(sb, kvp.Key, kvp.Value.First().StateTypeName);
                 sb.AppendLine();
             }
 
@@ -729,7 +729,7 @@ namespace SharedMeta.Generator.Generators
             {
                 GenerateMetaProvider(sb, kvp.Key, kvp.Value, allServerDeps);
                 sb.AppendLine();
-                GenerateMetaProviderFactory(sb, kvp.Key, kvp.Value.First().StateTypeName, kvp.Value.Any(s => s.DeepDesync));
+                GenerateMetaProviderFactory(sb, kvp.Key, kvp.Value.First().StateTypeName);
                 sb.AppendLine();
             }
 
@@ -2194,7 +2194,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("    }");
         }
 
-        private static void GenerateMetaProviderFactory(StringBuilder sb, string stateTypeFullName, string stateTypeName, bool deepDesync = false)
+        private static void GenerateMetaProviderFactory(StringBuilder sb, string stateTypeFullName, string stateTypeName)
         {
             var providerName = $"Generated{stateTypeName}MetaProvider";
             var factoryName = $"Generated{stateTypeName}MetaProviderFactory";
@@ -2217,10 +2217,9 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine();
             sb.AppendLine($"        public IMetaProvider<{stateTypeFullName}> Create()");
             sb.AppendLine("        {");
-            // Note: [MetaServiceImpl(DeepDesync = true)] only generates the supporting
-            // infrastructure (PatchTracked service copy, PatchSchema, etc). Runtime
-            // activation is opt-in via EntityGrainOptions.DeepDesyncEnabled (global)
-            // or the client-side SetDebugOptions toggle (per session).
+            // The factory deliberately activates nothing: [MetaServiceImpl(DeepDesync = true)] only
+            // generates the supporting infrastructure, and who the analysis is on for is decided by
+            // EntityGrainOptions.DeepDesyncMode, applied by EntityGrain on activation.
             sb.AppendLine($"            return new {providerName}(_serviceResolver, _entityCallHandler);");
             sb.AppendLine("        }");
             sb.AppendLine("    }");
@@ -2319,6 +2318,18 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            // hosted service ctor resolves IMetaSerializer and calls InitializeCache");
             sb.AppendLine("            // before any grain activation can dispatch a method.");
             sb.AppendLine("            services.AddHostedService<global::SharedMeta.Server.Core.DispatchResultCacheInitializer>();");
+            sb.AppendLine();
+            // Which services can report is a compile-time fact — pass the names, not a count, so the
+            // startup line can say what is covered rather than only complaining when nothing is.
+            var deepDesyncServices = byStateType.Values
+                .SelectMany(impls => impls)
+                .Where(impl => impl.DeepDesync)
+                .Select(impl => impl.InterfaceName)
+                .Distinct()
+                .OrderBy(n => n, System.StringComparer.Ordinal)
+                .ToList();
+            var deepDesyncNames = string.Join(", ", deepDesyncServices.Select(n => $"\"{n}\""));
+            sb.AppendLine($"            services.AddHostedService(sp => new global::SharedMeta.Server.Core.DeepDesyncStartupReport(new string[] {{ {deepDesyncNames} }}, sp.GetService<Microsoft.Extensions.Options.IOptions<global::SharedMeta.Server.Core.Grains.EntityGrainOptions>>(), sp.GetService<Microsoft.Extensions.Logging.ILogger<global::SharedMeta.Server.Core.DeepDesyncStartupReport>>()));");
             sb.AppendLine();
             sb.AppendLine("            // Service resolver (resolves from DI)");
             sb.AppendLine("            Func<Type, object> serviceResolver = type =>");
@@ -2478,7 +2489,12 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                    sp.GetService<SharedMeta.Server.Core.Transport.ClientVersionPolicy>(),");
             sb.AppendLine("                    sp.GetService<SharedMeta.Server.Core.Session.IClientSignatureRegistry>(),");
             sb.AppendLine("                    sp.GetService<SharedMeta.Core.Transport.MetaServerSignature>(),");
-            sb.AppendLine("                    sp.GetService<SharedMeta.Server.Core.Transport.IPlayerIdentityValidator>()));");
+            sb.AppendLine("                    sp.GetService<SharedMeta.Server.Core.Transport.IPlayerIdentityValidator>(),");
+            // Deep desync activation is decided at session connect, so the handler needs the same
+            // options the entity grains read. Constructed by hand here, so it must be passed
+            // explicitly — an omitted optional argument would silently leave every silo on the
+            // default mode no matter what the host configured.
+            sb.AppendLine("                    sp.GetService<Microsoft.Extensions.Options.IOptions<SharedMeta.Server.Core.Grains.EntityGrainOptions>>()));");
             sb.AppendLine();
 
             sb.AppendLine("            return services;");

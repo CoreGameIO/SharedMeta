@@ -77,7 +77,9 @@ builder.Host.UseOrleans(siloBuilder =>
             services.Configure<EntityGrainOptions>(o =>
             {
                 o.SubscriberTtl = TimeSpan.FromMinutes(10);
-                // DeepDesyncEnabled left null — controlled per-session via client SetDebugOptions
+                // DeepDesyncMode left at PerPlayer — analysis is off until a player is flagged
+                // for it, by their own client via SetDeepDesyncAsync or by admin tooling.
+                o.DeepDesyncMode = DeepDesyncMode.PerPlayer;
 
                 // Mix in non-deterministic entropy when seeding fresh entity randoms.
                 // Without this, recreating an entity with the same id (profile reset →

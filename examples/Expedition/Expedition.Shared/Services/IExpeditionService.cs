@@ -40,5 +40,18 @@ namespace Expedition.Shared
         /// </summary>
         [MetaMethod(Alias = "IsActive", Mode = ExecutionMode.Server, GenerateClientApi = false)]
         bool IsActive();
+
+        /// <summary>
+        /// Regenerate the map, then corrupt a few cells with <c>System.Random</c> — intentionally
+        /// broken, and never how a meta method should be written.
+        /// <para>
+        /// Client and server produce maps that differ in 5-15 cells while the method returns
+        /// nothing at all, so the always-on result comparison has nothing to compare and stays
+        /// quiet. Only the patch CRC notices the two sides now hold different state. That gap is
+        /// the entire reason deep desync exists.
+        /// </para>
+        /// </summary>
+        [MetaMethod(Alias = "GenerateNewMapBroken", Mode = ExecutionMode.Optimistic)]
+        void GenerateNewMapBroken();
     }
 }

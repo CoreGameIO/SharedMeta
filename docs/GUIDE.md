@@ -3850,6 +3850,15 @@ hold the objects, and the full byte forms of both sides go to the server in the 
 
 ### Deep Desync Detection (0.7.0+)
 
+> **Experimental.** Treat it as a diagnostic you switch on while investigating, not as a feature you
+> ship on. The `_PatchTracked` copy is a rewritten version of your service class, and not every
+> service body survives that rewrite: some fail to compile against the wrapper-typed `State`, and
+> some compile but record a patch that doesn't match what the server recorded, which surfaces as a
+> desync report about your diagnostics rather than about your game. Enable it per service, verify
+> that service's build and its reports, and expect to iterate. This is precisely why the attribute is
+> per service rather than a global switch — a service that doesn't take the rewrite cleanly can be
+> left out without disturbing the rest of the build.
+
 Field-level state mutation tracking via PatchNode CRC comparison. Opt-in per service:
 
 ```csharp
@@ -3861,17 +3870,49 @@ The generator produces a `_PatchTracked` copy of the service class where every `
 
 > **0.24.2+:** the `_PatchTracked` copy is no longer DeepDesync-exclusive. It is also auto-generated (per state, including siblings) for **force-patch-able** services so force-patch produces a real diff — see *ServerPatch Mode → Auto-generated patch-tracking copy*. `DeepDesync = true` still forces the copy (for CRC detection) even when the service isn't force-patch-able. The compile-time tracking guard below applies to both.
 
-**Runtime activation** is independent of the compile-time flag:
+**Runtime activation** is a separate, server-owned decision:
 
 ```csharp
-// Server: global override (default null = per-session opt-in)
-services.Configure<EntityGrainOptions>(o => o.DeepDesyncEnabled = true);
+// Server: who gets the analysis (default PerPlayer)
+services.Configure<EntityGrainOptions>(o => o.DeepDesyncMode = DeepDesyncMode.Forced);
 
-// Client: per-session toggle (server must opt in via MetaTransportOptions.AllowDebugApi)
+// Client: ask to be analysed — only meaningful under PerPlayer, and the server must permit the
+// debug API via MetaTransportOptions.AllowDebugApi
 await client.SetDeepDesyncAsync(true);
 ```
 
-`[MetaServiceImpl(DeepDesync = true)]` only generates the supporting infrastructure (PatchTracked service copy + `PatchSchema`); it does not force the feature on at runtime. This way `SetDeepDesyncAsync(false)` actually disables CRC computation per-session, and `EntityGrainOptions.DeepDesyncEnabled = false` works as a kill switch.
+| Mode | Who is analysed |
+|---|---|
+| `Off` | Nobody. A client request is refused, not merged — this is the kill switch. |
+| `PerPlayer` (default) | Only players flagged on the server. The flag lives on `DesyncReportGrain`, is written by `SetDeepDesyncAsync` or by admin tooling, and is read once when the session connects. |
+| `Forced` | Every client on the silo. |
+
+**Both halves are required.** The attribute decides which services *can* report — it emits the
+PatchTracked copy, the `PatchSchema`, and the client-side CRC comparison. The mode decides who the
+analysis is switched *on* for. A service without the attribute stays silent in every mode, because
+its generated client has no comparison to run; and a build full of attributes reports nothing under
+`Off`. Both sides say which is which at startup: the silo logs the services able to report, the
+client logs the session verdict plus the coverage of its own build.
+
+Switching a player's flag takes effect **immediately**, including mid-session, and is also stored so
+it survives their reconnects. It is safe under in-flight calls because a CRC is only ever compared
+when both ends produced one for the same call: a call that already started built no patch tree on
+the client and is simply not examined, whatever arrives for it. Calls starting after the switch are
+tracked on both ends.
+
+`SetDeepDesyncAsync` returns false when the silo cannot honour the request — `Off`, or `Forced`
+asked to switch off — rather than accepting and ignoring it.
+
+With the analysis off the client runs the plain service and builds no patch tree at all, so shipping
+a build with `DeepDesync = true` costs nothing while nobody is looking.
+
+**Broadcasts.** A broadcast carries a CRC whenever the server happened to build a patch tree for the
+call that produced it — which also happens for `ServerPatch` and for fan-out, so hashing it is
+nearly free. An analysed client verifies its **replay** of that broadcast against it, which is how a
+divergence introduced by another player's call becomes visible. Broadcasts that arrive as
+`StateBytes` (ServerReplace) or `PatchBytes` (ServerPatch) are not checked: the client computes
+nothing there, it applies what the server sent. A broadcast can also arrive with no CRC at all — the
+originating call simply never built a tree — and is then replayed unverified.
 
 **`PatchableList<T>`, `PatchableDictionary<K,V>`, `PatchableHashSet<T>`** wrap base collections and auto-record mutations into the same patch tree — use them for collection fields if you want fine-grained tracking. They have full API parity with the base collections + implicit conversion from them.
 

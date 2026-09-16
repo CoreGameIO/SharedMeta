@@ -50,10 +50,11 @@ namespace SharedMeta.Core
         [Id(6), Key(6)] public long ServerTimeTicks { get; set; }
 
         /// <summary>
-        /// When true, server should compute deep desync CRC for this call.
-        /// Set per-session by SetDebugOptions.
+        /// Deep desync analysis is on for the calling player. Resolved once when the session
+        /// connects — under PerPlayer mode from the player's server-side flag, otherwise from the
+        /// silo mode itself. Not a client request: a client cannot set this against an Off silo.
         /// </summary>
-        [Id(7), Key(7)] public bool DeepDesyncRequested { get; set; }
+        [Id(7), Key(7)] public bool DeepDesyncActive { get; set; }
 
         /// <summary>
         /// Caller's client app version (e.g. "1.4.3"). Populated by the transport handler on

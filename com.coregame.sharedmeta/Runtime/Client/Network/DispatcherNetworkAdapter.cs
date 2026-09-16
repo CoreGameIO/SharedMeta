@@ -25,6 +25,7 @@ namespace SharedMeta.Client.Network
         public string? EntityId => _entityId;
         public long LastKnownEntitySequence => _dispatcher.GetLastKnownEntitySequence(_entityId);
         public long ServerTimeTicks => _serverTimeClock();
+        public bool DeepDesyncActive => _dispatcher.DeepDesyncActive;
 
         /// <summary>
         /// 0.22.0+ session-scoped capabilities, sourced from the parent <see cref="IClientDispatcher"/>.
@@ -122,6 +123,7 @@ namespace SharedMeta.Client.Network
                 NamedRandomScrollDeltas = op.NamedRandomScrollDeltas,
                 PatchBytes = op.PatchBytes.IsEmpty ? null : op.PatchBytes.ToArray(),
                 StateBytes = op.StateBytes.IsEmpty ? null : op.StateBytes.ToArray(),
+                DeepDesyncCrc = op.DeepDesyncCrc,
                 ExecutedConfigVersions = op.ExecutedConfigVersions
             });
         }

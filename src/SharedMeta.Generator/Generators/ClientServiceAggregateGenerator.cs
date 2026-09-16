@@ -132,6 +132,15 @@ namespace SharedMeta.Generator.Generators
             // initializer doesn't exist there); always runs before ConnectAsync in the normal flow.
             sb.AppendLine($"            global::SharedMeta.Core.Transport.ClientSignatureDefault.Value = global::{rootNamespace}.GameServiceDiscoveryBase.ClientSignature;");
 
+            // Declare which services can report a deep desync. Registered here rather than from the
+            // ApiClients themselves because this runs before the first connect, and the coverage
+            // line is logged at connect — a registration that waited for first use of each ApiClient
+            // would report an empty build.
+            foreach (var service in serviceList)
+            {
+                sb.AppendLine($"            global::SharedMeta.Core.Diagnostics.DeepDesyncCapabilities.Register(\"{service.InterfaceName}\", global::{service.Namespace}.Client.{service.BaseName}ApiClient.DeepDesyncCapable);");
+            }
+
             foreach (var service in serviceList)
             {
                 sb.AppendLine($"            resolver.Add{service.BaseName}Services();");

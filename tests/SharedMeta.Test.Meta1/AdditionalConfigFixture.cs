@@ -72,7 +72,13 @@ namespace SharedMeta.Test.Meta1
         int ReadAllServer();
     }
 
-    [MetaServiceImpl(typeof(IAdditionalConfigService), typeof(AdditionalConfigState))]
+    // DeepDesync here is a compile-time regression guard, not a diagnostics choice: it forces the
+    // {Impl}_PatchTracked copy to be generated for a service that reads a legacy Config AND two
+    // [ServiceConfig] entries. The copy is a separate class that inherits nothing, so every one of
+    // those accessors has to be emitted into it — when they weren't, any service on the 0.33.0
+    // config API simply failed to build the moment it asked for patch tracking. If that regresses,
+    // this assembly stops compiling.
+    [MetaServiceImpl(typeof(IAdditionalConfigService), typeof(AdditionalConfigState), DeepDesync = true)]
     public partial class AdditionalConfigService : IAdditionalConfigService
     {
         public int ReadAll()

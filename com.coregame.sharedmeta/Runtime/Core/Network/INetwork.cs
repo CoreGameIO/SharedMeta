@@ -69,6 +69,19 @@ namespace SharedMeta.Core.Network
         long ServerTimeTicks { get; }
 
         /// <summary>
+        /// Whether the server switched deep desync analysis on for this session. Fixed for the
+        /// session's lifetime — resolved at SessionConnect and never renegotiated, so a call
+        /// cannot start without patch tracking and then finish believing it has a tree to compare.
+        /// <para>
+        /// Generated <c>*ApiClient</c> branches on this: false means the plain service runs and no
+        /// patch tree is built at all, which is the whole point — a build carrying
+        /// <c>[MetaServiceImpl(..., DeepDesync = true)]</c> should cost nothing while nobody is
+        /// looking.
+        /// </para>
+        /// </summary>
+        bool DeepDesyncActive { get; }
+
+        /// <summary>
         /// Call a method that returns a value.
         /// <para><c>methodVersion</c> = <c>[MetaMethod(Version=N)]</c>, stamped on
         /// <c>RpcCall.MethodVersion</c>. <c>methodId</c> (0.24.0+) = client's global method
@@ -177,6 +190,14 @@ namespace SharedMeta.Core.Network
 
         /// <summary>Per-index scroll deltas for [NamedRandom] streams (positional). Null when none advanced.</summary>
         public long[]? NamedRandomScrollDeltas { get; set; }
+
+        /// <summary>
+        /// FNV-1a hash of the server's patch for the call that produced this broadcast. Present
+        /// whenever the server happened to build a patch tree, which is not the same as "this
+        /// observer is being analysed" — null simply means there is nothing to check against, and
+        /// the replay proceeds unverified.
+        /// </summary>
+        public uint? DeepDesyncCrc { get; set; }
 
         /// <summary>
         /// The <see cref="MetaConfigVersion"/>s the server actually executed under — index 0 is

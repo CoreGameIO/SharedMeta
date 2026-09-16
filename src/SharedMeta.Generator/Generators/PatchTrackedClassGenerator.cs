@@ -143,6 +143,27 @@ namespace SharedMeta.Generator.Generators
                         sb.AppendLine();
                     }
                 }
+
+                // 0.33.0+ [ServiceConfig] accessors. The copy is a separate class and inherits
+                // nothing, so every name a method body can mention has to exist here too —
+                // without these, a service declaring [ServiceConfig] simply fails to compile the
+                // moment it asks for patch tracking.
+                //
+                // Read-only, unlike the original's settable pair: only the raw impl is pinned by
+                // Get{Iface}SiblingAsync, and the copy reads the shared Context — the same
+                // contract the legacy Config accessor above already follows.
+                foreach (var scAttr in serviceInterfaceSymbol.GetAttributes())
+                {
+                    if (scAttr.AttributeClass?.ToDisplayString() != "SharedMeta.Core.ServiceConfigAttribute")
+                        continue;
+                    if (scAttr.ConstructorArguments.Length < 2) continue;
+                    if (scAttr.ConstructorArguments[0].Value is not INamedTypeSymbol scType) continue;
+                    if (scAttr.ConstructorArguments[1].Value is not string scName || scName.Length == 0) continue;
+
+                    var scTypeName = scType.ToDisplayString();
+                    sb.AppendLine($"        protected {scTypeName} {scName} => Context.GetServiceConfig<{scTypeName}>()!;");
+                    sb.AppendLine();
+                }
             }
 
             // Named random accessors — must mirror ContextInjectionGenerator so method bodies copy cleanly

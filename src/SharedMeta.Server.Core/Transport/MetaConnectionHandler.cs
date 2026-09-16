@@ -70,7 +70,17 @@ namespace SharedMeta.Server.Core.Transport
         public string PlayerId { get; private set; } = string.Empty;
         public Guid SessionId { get; private set; }
         public bool IsSessionConnected => PlayerId.Length > 0;
-        public bool DeepDesyncRequested { get; private set; }
+        /// <summary>
+        /// Deep desync analysis for this connection's player. Resolved at SessionConnect and
+        /// stamped on every RpcCall; can also be flipped mid-session through the debug API.
+        /// <para>
+        /// Flipping it under in-flight calls is safe because a CRC is only compared when both ends
+        /// produced one for the same call — a call that already started built no patch tree on the
+        /// client, so whatever this becomes, that call is not examined.
+        /// </para>
+        /// </summary>
+        public bool DeepDesyncActive { get; private set; }
+        private readonly Grains.DeepDesyncMode _deepDesyncMode;
         /// <summary>Client app version from SessionConnect. Passed to entity grain during subscribe
         /// so it can resolve the correct [MetaConfigVersion] branch for this client.</summary>
         private string? _clientVersion;
@@ -113,7 +123,8 @@ namespace SharedMeta.Server.Core.Transport
             ClientVersionPolicy? versionPolicy = null,
             Session.IClientSignatureRegistry? signatureRegistry = null,
             SharedMeta.Core.Transport.MetaServerSignature? serverSignature = null,
-            IPlayerIdentityValidator? identityValidator = null)
+            IPlayerIdentityValidator? identityValidator = null,
+            Microsoft.Extensions.Options.IOptions<Grains.EntityGrainOptions>? entityGrainOptions = null)
         {
             _connectionId = connectionId ?? throw new ArgumentNullException(nameof(connectionId));
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
@@ -127,6 +138,26 @@ namespace SharedMeta.Server.Core.Transport
             _signatureRegistry = signatureRegistry;
             _serverSignature = serverSignature;
             _identityValidator = identityValidator;
+            _deepDesyncMode = entityGrainOptions?.Value.DeepDesyncMode ?? Grains.DeepDesyncMode.PerPlayer;
+        }
+
+        /// <summary>
+        /// Deep desync verdict for the freshly connected player. Only PerPlayer consults the
+        /// player's grain — Off and Forced answer from the silo mode alone, so the common
+        /// production configurations cost no extra grain call on login.
+        /// </summary>
+        private async Task<bool> ResolveDeepDesyncActiveAsync()
+        {
+            switch (_deepDesyncMode)
+            {
+                case Grains.DeepDesyncMode.Off:
+                    return false;
+                case Grains.DeepDesyncMode.Forced:
+                    return true;
+                default:
+                    return await _grainFactory.GetGrain<Grains.IDesyncReportGrain>(PlayerId)
+                        .IsAnalysisEnabledAsync();
+            }
         }
 
         /// <summary>
@@ -300,10 +331,13 @@ namespace SharedMeta.Server.Core.Transport
                         null,
                         ObserverRenewalInterval,
                         ObserverRenewalInterval);
+
+                    DeepDesyncActive = await ResolveDeepDesyncActiveAsync();
                 }
                 else
                 {
                     PlayerId = string.Empty; // Clear on failure
+                    DeepDesyncActive = false;
                 }
 
                 _logger.HandlerSessionConnect(request.PlayerId, result.Success, result.IsNewSession);
@@ -352,6 +386,7 @@ namespace SharedMeta.Server.Core.Transport
                     ServerSignatureHash = serverSignatureHash,
                     Annotated = annotated,
                     FailureReason = result.FailureReason,
+                    DeepDesyncActive = DeepDesyncActive,
                     // 0.24.0+ Server-driven ResubscribedEntities replaced by client-driven
                     // Subscriptions[] — grain produces these directly from the per-claim
                     // ReclaimSubscriptionAsync verdicts; no further DTO mapping needed.
@@ -579,7 +614,7 @@ namespace SharedMeta.Server.Core.Transport
                     Payload = request.Payload,
                     IsCrossOptimistic = request.IsCrossOptimistic,
                     ServerTimeTicks = request.ServerTimeTicks,
-                    DeepDesyncRequested = DeepDesyncRequested,
+                    DeepDesyncActive = DeepDesyncActive,
                     Debug = request.Debug  // 0.26.6+ piggybacked PayloadDebug (deep-state CRCs)
                 };
 
@@ -755,12 +790,53 @@ namespace SharedMeta.Server.Core.Transport
             }
         }
 
-        public Task<DebugOptionsResponse> SetDebugOptionsAsync(DebugOptionsRequest request)
+        public async Task<DebugOptionsResponse> SetDebugOptionsAsync(DebugOptionsRequest request)
         {
-            DeepDesyncRequested = request.DeepDesyncEnabled;
-            _logger.LogDebug("[Handler] Deep desync {Status} for {PlayerId}",
-                request.DeepDesyncEnabled ? "enabled" : "disabled", PlayerId);
-            return Task.FromResult(new DebugOptionsResponse { Success = true });
+            if (_deepDesyncMode == Grains.DeepDesyncMode.Off)
+            {
+                return new DebugOptionsResponse
+                {
+                    Success = false,
+                    Error = "Deep desync analysis is Off on this silo and cannot be enabled per player."
+                };
+            }
+
+            if (PlayerId.Length == 0)
+            {
+                return new DebugOptionsResponse
+                {
+                    Success = false,
+                    Error = "SessionConnect must succeed before debug options can be set."
+                };
+            }
+
+            // Forced ignores the per-player flag, so "off for me" is not something this silo can
+            // honour. Refused rather than accepted-and-ignored: the caller's next question is
+            // whether analysis is running, and a success here would answer it wrongly.
+            if (_deepDesyncMode == Grains.DeepDesyncMode.Forced && !request.DeepDesyncEnabled)
+            {
+                return new DebugOptionsResponse
+                {
+                    Success = false,
+                    Error = "Deep desync analysis is Forced on this silo and cannot be disabled per player."
+                };
+            }
+
+            // Stored against the player, not the connection: admin tooling writes the same field,
+            // and the value has to outlive this connection to be useful for an investigation.
+            await _grainFactory.GetGrain<Grains.IDesyncReportGrain>(PlayerId)
+                .SetAnalysisEnabledAsync(request.DeepDesyncEnabled);
+
+            // Applied to the live session, not merely stored. Safe mid-flight because a CRC is only
+            // ever compared when BOTH sides produced one for the same call: a call already running
+            // built no patch tree on the client, so it skips whatever arrives, and a call starting
+            // after this point gets a tree on both ends. Nothing in between is examined.
+            DeepDesyncActive = request.DeepDesyncEnabled;
+
+            _logger.LogDebug("[Handler] Deep desync analysis {Status} for {PlayerId} (mode {Mode})",
+                request.DeepDesyncEnabled ? "enabled" : "disabled", PlayerId, _deepDesyncMode);
+
+            return new DebugOptionsResponse { Success = true };
         }
 
         public async Task<DesyncReportResponse> SendDesyncReportAsync(DesyncReportRequest request)
@@ -1110,6 +1186,7 @@ namespace SharedMeta.Server.Core.Transport
         private readonly ClientVersionPolicy? _versionPolicy;
         private readonly Session.IClientSignatureRegistry? _signatureRegistry;
         private readonly IPlayerIdentityValidator? _identityValidator;
+        private readonly Microsoft.Extensions.Options.IOptions<Grains.EntityGrainOptions>? _entityGrainOptions;
 
         public MetaConnectionHandlerFactory(
             IGrainFactory grainFactory,
@@ -1121,11 +1198,13 @@ namespace SharedMeta.Server.Core.Transport
             ClientVersionPolicy? versionPolicy = null,
             Session.IClientSignatureRegistry? signatureRegistry = null,
             SharedMeta.Core.Transport.MetaServerSignature? serverSignature = null,
-            IPlayerIdentityValidator? identityValidator = null)
+            IPlayerIdentityValidator? identityValidator = null,
+            Microsoft.Extensions.Options.IOptions<Grains.EntityGrainOptions>? entityGrainOptions = null)
         {
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
             _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+            _entityGrainOptions = entityGrainOptions;
             _transportOptions = transportOptions;
             _serializer = serializer;
             _schemaRegistry = schemaRegistry;
@@ -1140,7 +1219,7 @@ namespace SharedMeta.Server.Core.Transport
             var logger = _loggerFactory.CreateLogger<MetaConnectionHandler>();
             return new MetaConnectionHandler(connectionId, _grainFactory, _entityGrainResolver, broadcastSender, logger,
                 _transportOptions, _serializer, _schemaRegistry, _versionPolicy, _signatureRegistry, _serverSignature,
-                _identityValidator);
+                _identityValidator, _entityGrainOptions);
         }
     }
 }

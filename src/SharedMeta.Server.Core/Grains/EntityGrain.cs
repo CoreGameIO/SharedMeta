@@ -236,9 +236,10 @@ namespace SharedMeta.Server.Core.Grains
             var context = new MetaProviderContext(entityId, _scopedSerializer, GrainFactory, _logger, state.NamedRandomsBytes);
             _provider.Initialize(context, state.UserState, state.ServerRandomBytes, state.OptimisticRandomBytes);
 
-            // Apply global deep desync override from EntityGrainOptions
-            if (_options.DeepDesyncEnabled.HasValue && _provider is MetaProviderBase<TState> ddProvider)
-                ddProvider.DeepDesyncEnabled = _options.DeepDesyncEnabled.Value;
+            // Silo-wide deep desync activation. Always applied — the mode has a real default
+            // (PerPlayer), so there is no "unset" case for the provider to fall back on.
+            if (_provider is MetaProviderBase<TState> ddProvider)
+                ddProvider.DeepDesyncMode = _options.DeepDesyncMode;
 
             // Seed the provider's schema version from persisted state.Version so the
             // fresh-entity-floor rule doesn't re-run [MetaInit] on every activation.

@@ -108,6 +108,7 @@ namespace SharedMeta.Debug.InProcess
                 ServerSignatureHash = response.ServerSignatureHash,
                 Annotated = response.Annotated,
                 FailureReason = response.FailureReason,
+                DeepDesyncActive = response.DeepDesyncActive,
             };
         }
 

@@ -385,6 +385,23 @@ namespace SharedMeta.Client
         public ClientSignatureAnnotated? Annotated { get; private set; }
 
         /// <summary>
+        /// Deep desync verdict for the live session. Generated clients read it once at the top of
+        /// each call, so a change here only affects calls that start afterwards — and those are
+        /// exactly the calls the server will also have hashed.
+        /// </summary>
+        public bool DeepDesyncActive { get; private set; }
+
+        public void ApplyDeepDesyncVerdict(bool active)
+        {
+            if (DeepDesyncActive == active) return;
+
+            DeepDesyncActive = active;
+            MetaLog.Info(active
+                ? $"[ClientDispatcher] Deep desync analysis switched ON — {SharedMeta.Core.Diagnostics.DeepDesyncCapabilities.DescribeCoverage()}"
+                : "[ClientDispatcher] Deep desync analysis switched OFF — no patch tracking on this client");
+        }
+
+        /// <summary>
         /// 0.24.0+ Game-level recovery decision callback (see <see cref="IMetaSessionRecoveryHandler"/>).
         /// Set by <c>MetaClient</c> from <c>MetaClientOptions.SessionRecoveryHandler</c>;
         /// defaults to <see cref="DefaultSessionRecoveryHandler"/> (returns
@@ -481,6 +498,15 @@ namespace SharedMeta.Client
             // server didn't recognize our signature hash. Phase-2 is only performed when the
             // consumer wired a ClientSignature — opted-out clients stay annotation-less.
             Annotated = result.Annotated;
+            DeepDesyncActive = result.DeepDesyncActive;
+
+            // Said once per session, because both halves of the answer are only knowable here: the
+            // server owns the verdict, the build owns the coverage, and either one alone looks like
+            // working diagnostics while reporting nothing.
+            if (DeepDesyncActive)
+                MetaLog.Info($"[ClientDispatcher] Deep desync analysis ON for this session — {SharedMeta.Core.Diagnostics.DeepDesyncCapabilities.DescribeCoverage()}");
+            else
+                MetaLog.Info("[ClientDispatcher] Deep desync analysis OFF (server decision) — no patch tracking on this client");
 
             // 0.24.0+ Mirror the server-side handshake trace so a developer running
             // client + server can verify they understood each other from each side's logs.
@@ -621,6 +647,7 @@ namespace SharedMeta.Client
                 ServerTimeTicks = result.ServerTimeTicks,
                 Subscriptions = result.Subscriptions,
                 FailureReason = result.FailureReason,
+                DeepDesyncActive = result.DeepDesyncActive,
             };
         }
 
@@ -1293,6 +1320,9 @@ namespace SharedMeta.Client
                 IsSessionConnected = false;
             }
             Annotated = null;
+            // Session-scoped like the annotation: the next connect re-resolves it, and until then
+            // there is no session whose verdict this could be.
+            DeepDesyncActive = false;
 
             // Drop pending RPCs — they were bound to the old session and cannot be retried
             // there. Game logic catches SessionLostException on the call sites that care.

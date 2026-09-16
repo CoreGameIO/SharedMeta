@@ -45,6 +45,13 @@ namespace SharedMeta.Core.Transport
         /// <c>IMetaSessionRecoveryHandler.OnSessionLostAsync</c>.
         /// </summary>
         [Id(7), Key(7)] public SessionConnectFailureReason FailureReason { get; set; }
+
+        /// <summary>
+        /// Whether the server switched deep desync analysis on for this session. Decided entirely
+        /// server-side (silo mode, plus this player's flag under PerPlayer) — the client does not
+        /// get a vote, it only learns the verdict.
+        /// </summary>
+        [Id(8), Key(8)] public bool DeepDesyncActive { get; set; }
     }
 
     /// <summary>
@@ -162,6 +169,20 @@ namespace SharedMeta.Core.Transport
         /// Null until handshake resolves or when negotiation is disabled.
         /// </summary>
         ClientSignatureAnnotated? Annotated { get; }
+
+        /// <summary>
+        /// Deep desync analysis verdict for the current session. Resolved at SessionConnect, and
+        /// updated by <see cref="ApplyDeepDesyncVerdict"/> when the server accepts a mid-session
+        /// change. False until a session is connected, and false again after it drops.
+        /// </summary>
+        bool DeepDesyncActive { get; }
+
+        /// <summary>
+        /// Adopt a verdict the server has already applied to this session. Only ever called with
+        /// the server's answer, never optimistically: a client that started tracking before the
+        /// server did would build patch trees for calls the server never hashed.
+        /// </summary>
+        void ApplyDeepDesyncVerdict(bool active);
 
         /// <summary>
         /// True if session has been established with server.

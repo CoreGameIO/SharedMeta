@@ -392,13 +392,19 @@ For `List<T>` where `T` has serialization-keyed properties, the generator produc
 
 ### 5.3 Deep Desync Detection (v0.7.0)
 
+**Experimental** — the `_PatchTracked` copy is a rewrite of the service class against a wrapper-typed
+`State`, and not every service body takes it cleanly. Opt in per service so one that doesn't can be
+left out.
+
 Optional field-level mutation tracking:
 1. Generator produces `_PatchTracked` service copy where `State` routes through `PatchWrapper`
 2. Server computes FNV-1a CRC of PatchNode tree after each call
 3. Client compares local CRC
 4. On mismatch: `PatchTextRenderer.DiffToJson` produces side-by-side JSON diagnostics
 
-Enabled via `[MetaServiceImpl(DeepDesync = true)]` + runtime `EntityGrainOptions.DeepDesyncEnabled`.
+Needs both halves: `[MetaServiceImpl(DeepDesync = true)]` decides which services *can* report (it
+emits the comparison into the generated client), `EntityGrainOptions.DeepDesyncMode` decides who the
+analysis is switched *on* for — `Off` / `PerPlayer` / `Forced`. Neither one alone produces a report.
 
 ---
 

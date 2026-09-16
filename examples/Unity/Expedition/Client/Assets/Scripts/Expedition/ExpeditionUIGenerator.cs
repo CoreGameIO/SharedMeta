@@ -57,6 +57,12 @@ public class ExpeditionUIGenerator : MonoBehaviour
     // Request tracking (bottom status area)
     private Text _requestTrackingText;
 
+    // Deep desync toggle. The label has to be driven by the session's actual verdict, not by a
+    // local bool: the flag lives on the player server-side and survives a restart, so a button
+    // that starts at OFF every launch reports the opposite of the truth for a flagged player.
+    private Button _desyncToggleBtn;
+    private Text _desyncToggleText;
+
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
     // Debug network controls
     private GameObject _debugNetPanel;
@@ -160,16 +166,20 @@ public class ExpeditionUIGenerator : MonoBehaviour
         var desyncToggleBtnRt = desyncToggleBtn.GetComponent<RectTransform>();
         desyncToggleBtnRt.offsetMin = new Vector2(-10, -35);
         desyncToggleBtnRt.offsetMax = new Vector2(-10, -5);
-        var desyncToggleText = desyncToggleBtn.GetComponentInChildren<Text>();
-        bool desyncOn = false;
+        _desyncToggleBtn = desyncToggleBtn;
+        _desyncToggleText = desyncToggleBtn.GetComponentInChildren<Text>();
         desyncToggleBtn.onClick.AddListener(() =>
         {
-            desyncOn = !desyncOn;
-            desyncToggleText.text = desyncOn ? "Desync: ON" : "Desync: OFF";
-            desyncToggleBtn.GetComponent<Image>().color = desyncOn
-                ? new Color(0.7f, 0.2f, 0.2f) : new Color(0.3f, 0.3f, 0.3f);
-            _ = ToggleDeepDesync(desyncOn);
+            // Label follows the server's answer, not the click: the silo can refuse, and a button
+            // reading ON while nothing is being analysed is worse than no button at all.
+            _ = ToggleDeepDesyncAndRepaint();
         });
+
+        async System.Threading.Tasks.Task ToggleDeepDesyncAndRepaint()
+        {
+            if (await ToggleDeepDesync(!IsDeepDesyncOn()))
+                RefreshDeepDesyncButton();
+        }
 
         // Controls hint (bottom-left)
         var hintPanel = CreatePanel(canvasGo.transform, "HintPanel",
@@ -372,12 +382,17 @@ public class ExpeditionUIGenerator : MonoBehaviour
 #endif
     }
 
-    private async System.Threading.Tasks.Task ToggleDeepDesync(bool enabled)
+    private async System.Threading.Tasks.Task<bool> ToggleDeepDesync(bool enabled)
     {
+        // Takes hold on this session straight away — calls made from here on are tracked on both
+        // ends, the ones already in flight are not examined. A false answer means the silo refused
+        // it outright (AllowDebugApi off, DeepDesyncMode.Off, or Forced asked to switch off), so
+        // report that rather than claiming a state the server never entered.
         var result = await gameManager.Client.SetDeepDesyncAsync(enabled);
         SetStatus(result
             ? $"Deep desync {(enabled ? "ENABLED" : "DISABLED")}"
-            : "Deep desync toggle failed (server may have AllowDebugApi=false)");
+            : "Deep desync request refused by the server (AllowDebugApi / DeepDesyncMode)");
+        return result;
     }
 
     /// <summary>Update request tracking display.</summary>
@@ -505,8 +520,28 @@ public class ExpeditionUIGenerator : MonoBehaviour
         }
     }
 
+    /// <summary>Whether the live session is being analysed, as the server decided it.</summary>
+    private bool IsDeepDesyncOn() => gameManager.Client?.Dispatcher?.DeepDesyncActive ?? false;
+
+    /// <summary>
+    /// Repaint the toggle from the session's verdict. Called on every UI refresh, so a player who
+    /// was flagged in an earlier run sees ON the moment their session connects — the flag is stored
+    /// against the player on the server, not against this process.
+    /// </summary>
+    private void RefreshDeepDesyncButton()
+    {
+        if (_desyncToggleBtn == null || _desyncToggleText == null) return;
+
+        bool on = IsDeepDesyncOn();
+        _desyncToggleText.text = on ? "Desync: ON" : "Desync: OFF";
+        _desyncToggleBtn.GetComponent<Image>().color = on
+            ? new Color(0.7f, 0.2f, 0.2f) : new Color(0.3f, 0.3f, 0.3f);
+    }
+
     private void RefreshUI()
     {
+        RefreshDeepDesyncButton();
+
         var profile = gameManager.ProfileState;
         var expedition = gameManager.ExpeditionState;
         var config = gameManager.Config;

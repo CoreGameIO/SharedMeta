@@ -110,6 +110,14 @@ namespace SharedMeta.Core.Transport
         [Id(16), Key(16)] public List<SubscriptionResult>? Subscriptions { get; set; }
 
         /// <summary>
+        /// Whether deep desync analysis is on for this player for the life of this session.
+        /// The client cannot work this out for itself: it knows which of its services were built
+        /// with the comparison, but not what the silo decided. With this false the client skips
+        /// patch tracking entirely rather than building trees nobody will compare.
+        /// </summary>
+        [Id(17), Key(17)] public bool DeepDesyncActive { get; set; }
+
+        /// <summary>
         /// The canonical shape of an authentication rejection. Both server transports answer with
         /// this, and clients synthesize it when a 401 arrives with no body (an ASP.NET
         /// authorization-middleware rejection carries none) — so the dispatcher sees one shape

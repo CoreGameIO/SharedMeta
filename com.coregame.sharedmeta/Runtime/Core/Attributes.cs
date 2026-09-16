@@ -703,6 +703,18 @@ namespace SharedMeta.Core
         /// When true, the generator produces an additional PatchTracked copy of this service class.
         /// The copy routes all State access through PatchWrapper, enabling field-level desync detection
         /// by comparing patch CRCs between server and client.
+        /// <para>
+        /// <b>Experimental.</b> The copy is a rewrite of this class against a wrapper-typed
+        /// <c>State</c>, and not every service body takes it cleanly — some fail to compile, some
+        /// compile but record a patch the server did not, reporting a desync in the diagnostics
+        /// rather than in the game. That is why this is per service: one that misbehaves can be left
+        /// out without disturbing the rest of the build.
+        /// </para>
+        /// <para>
+        /// Generating the copy does not switch detection on. Who the analysis runs for is decided
+        /// separately by <c>EntityGrainOptions.DeepDesyncMode</c>; a service without this attribute
+        /// stays silent whatever that says, because its generated client has no comparison to run.
+        /// </para>
         /// </summary>
         public bool DeepDesync { get; set; }
 

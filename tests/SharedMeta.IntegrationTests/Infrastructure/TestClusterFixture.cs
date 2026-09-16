@@ -83,9 +83,15 @@ public class TestClusterFixture : IAsyncLifetime
     /// Server-side RPC reordering is configured globally on the silo via
     /// <see cref="SiloConfigurator.Configure"/> (<c>SessionManagerOptions.EnforceRpcOrder = true</c>).
     /// </summary>
+    /// <param name="deepDesyncMode">
+    /// Silo-side deep desync activation the handler resolves at SessionConnect. Defaults to the
+    /// cluster's own <c>Forced</c> so existing tests keep the coverage they had; per-mode tests
+    /// pass their own.
+    /// </param>
     public IMetaConnectionHandlerFactory CreateHandlerFactory(
         MetaTransportOptions? transportOptions = null,
-        IPlayerIdentityValidator? identityValidator = null)
+        IPlayerIdentityValidator? identityValidator = null,
+        DeepDesyncMode deepDesyncMode = DeepDesyncMode.Forced)
     {
         // 0.24.0+ Construct IClientSignatureRegistry + MetaServerSignature outside the silo
         // DI graph so MetaConnectionHandler can translate client→server MethodId on every RPC.
@@ -105,7 +111,9 @@ public class TestClusterFixture : IAsyncLifetime
             versionPolicy: null,
             signatureRegistry: sigRegistry,
             serverSignature: serverSignature,
-            identityValidator: identityValidator);
+            identityValidator: identityValidator,
+            entityGrainOptions: Microsoft.Extensions.Options.Options.Create(
+                new EntityGrainOptions { DeepDesyncMode = deepDesyncMode }));
     }
 
     /// <summary>
@@ -143,7 +151,7 @@ public class TestClusterFixture : IAsyncLifetime
                     services.Configure<EntityGrainOptions>(o =>
                     {
                         o.SubscriberTtl = TimeSpan.FromMinutes(5);
-                        o.DeepDesyncEnabled = true;
+                        o.DeepDesyncMode = DeepDesyncMode.Forced;
                     });
 
                     // Force-enable RPC reordering at the session manager so the in-process
