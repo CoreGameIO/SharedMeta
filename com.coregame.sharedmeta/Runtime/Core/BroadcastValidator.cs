@@ -19,11 +19,29 @@ namespace SharedMeta.Core
         {
             if (!task.IsCompleted)
             {
-                MetaLog.Error(
-                    $"[Broadcast] {serviceName}.{methodName} returned incomplete Task. " +
-                    "Broadcast replay methods must complete synchronously. " +
-                    "Check for async subscribe or network calls in the replay path.");
+                ReportIncomplete(serviceName, methodName);
             }
+        }
+
+        /// <summary>
+        /// <see cref="ValueTask"/> overload — a service method may be declared with either
+        /// awaitable, and the replay path must not have to allocate a <see cref="Task"/> just to
+        /// check completion.
+        /// </summary>
+        public static void EnsureSyncCompletion(ValueTask task, string serviceName, string methodName)
+        {
+            if (!task.IsCompleted)
+            {
+                ReportIncomplete(serviceName, methodName);
+            }
+        }
+
+        private static void ReportIncomplete(string serviceName, string methodName)
+        {
+            MetaLog.Error(
+                $"[Broadcast] {serviceName}.{methodName} returned an incomplete awaitable. " +
+                "Broadcast replay methods must complete synchronously. " +
+                "Check for async subscribe or network calls in the replay path.");
         }
     }
 }

@@ -257,6 +257,11 @@ namespace SharedMeta.Generator.Generators
 
             sb.AppendLine($"        private const string ServiceName = \"{interfaceName}\";");
             sb.AppendLine($"        private Exception? _errorException;");
+            // Set when the owning entity connection is torn down. Checked before a method runs,
+            // not on the way to the wire: an Optimistic call mutates local state first and only
+            // then sends, so a check further down would leave the client holding a mutation it
+            // could never deliver. Volatile — teardown and the caller can be on different threads.
+            sb.AppendLine($"        private volatile bool _connectionGone;");
 
             // Result-comparer fields — emitted only for return types that have a registered
             // IMetaResultComparer<T> implementation. The generated Optimistic / CrossOptimistic /
@@ -486,7 +491,20 @@ namespace SharedMeta.Generator.Generators
             // Dispose
             sb.AppendLine("        public void Dispose()");
             sb.AppendLine("        {");
+            sb.AppendLine("            _connectionGone = true;");
             sb.AppendLine("            _network.OnBroadcast -= HandleBroadcast;");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            // Properties stay readable on purpose — HasError/ClearError/state accessors are what
+            // recovery tooling and teardown paths use, and failing those would break the code
+            // trying to clean up after the disconnect.
+            sb.AppendLine("        private void ThrowIfConnectionGone(string methodName)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            if (!_connectionGone) return;");
+            sb.AppendLine("            throw new ObjectDisposedException(ServiceName,");
+            sb.AppendLine("                $\"{ServiceName}.{methodName} on entity '{_network.EntityId}': this client belongs to a connection that was disconnected, \" +");
+            sb.AppendLine("                \"so the call would be applied locally and never reach the server. Re-resolve the client through GetServiceAsync or hold a MetaRef<T>.\");");
             sb.AppendLine("        }");
 
             sb.AppendLine("    }");
@@ -634,11 +652,11 @@ namespace SharedMeta.Generator.Generators
                 return;
             }
 
-            // Check if the method is async (returns Task or Task<T>)
-            bool isAsync = returnType.StartsWith("Task") || returnType.StartsWith("System.Threading.Tasks.Task");
+            // Check if the method is async (Task / ValueTask, with or without a payload)
+            bool isAsync = IsAwaitable(returnType);
 
             // Extract inner type from Task<T> for async methods
-            bool isVoidReturn = returnType == "void" || returnType == "Task";
+            bool isVoidReturn = returnType == "void" || IsAwaitableWithoutResult(returnType);
             string innerReturnType = ExtractInnerType(returnType);
             string asyncReturnType = isVoidReturn ? "Task" : $"Task<{innerReturnType}>";
             var argNames = method.ParameterList.Parameters.Select(p => p.Identifier.Text).ToList();
@@ -708,6 +726,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"        public {asyncReturnType} {ContextInjectionGenerator.AsyncMethodName(methodName)}({parameters})");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
+                sb.AppendLine($"            ThrowIfConnectionGone(\"{methodName}\");");
                 GenerateTransformNormalization(sb, transforms);
                 if (capabilitiesEnabled)
                 {
@@ -758,6 +777,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"        public {syncRet} {methodName}Sync({parameters})");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
+                sb.AppendLine($"            ThrowIfConnectionGone(\"{methodName}\");");
                 GenerateTransformNormalization(sb, transforms);
                 if (capabilitiesEnabled)
                 {
@@ -818,24 +838,39 @@ namespace SharedMeta.Generator.Generators
         /// bool -> bool
         /// void -> void
         /// </summary>
+        // A service method may be declared sync, Task or ValueTask — the rest of the framework
+        // (ServerApiGenerator, the contract API, desync formatting) already treats the two
+        // awaitables alike, and this generator has to agree. Getting it wrong is not cosmetic:
+        // an unrecognised awaitable is taken for a *result*, so `ValueTask GainPoints()` used to
+        // generate `Task<ValueTask> GainPointsAsync()` and replay invoked the method without
+        // awaiting it.
+        private const string TaskPrefix = "System.Threading.Tasks.";
+
+        private static bool IsAwaitableWithoutResult(string returnType) =>
+            returnType is "Task" or "ValueTask" or TaskPrefix + "Task" or TaskPrefix + "ValueTask";
+
+        private static bool IsAwaitable(string returnType) =>
+            IsAwaitableWithoutResult(returnType) || ExtractAwaitableResult(returnType) != null;
+
+        // "Task<T>" / "ValueTask<T>" (optionally namespace-qualified) → "T"; otherwise null.
+        private static string? ExtractAwaitableResult(string returnType)
+        {
+            var open = returnType.IndexOf('<');
+            if (open < 0 || !returnType.EndsWith(">")) return null;
+
+            var shell = returnType.Substring(0, open);
+            if (shell.StartsWith(TaskPrefix)) shell = shell.Substring(TaskPrefix.Length);
+            if (shell != "Task" && shell != "ValueTask") return null;
+
+            return returnType.Substring(open + 1, returnType.Length - open - 2);
+        }
+
         private static string ExtractInnerType(string returnType)
         {
-            if (returnType == "void" || returnType == "Task")
+            if (returnType == "void" || IsAwaitableWithoutResult(returnType))
                 return "void";
 
-            // Handle Task<T>
-            if (returnType.StartsWith("Task<") && returnType.EndsWith(">"))
-            {
-                return returnType.Substring(5, returnType.Length - 6);
-            }
-
-            // Handle System.Threading.Tasks.Task<T>
-            if (returnType.StartsWith("System.Threading.Tasks.Task<") && returnType.EndsWith(">"))
-            {
-                return returnType.Substring(28, returnType.Length - 29);
-            }
-
-            return returnType;
+            return ExtractAwaitableResult(returnType) ?? returnType;
         }
 
         /// <summary>
@@ -1261,6 +1296,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
                 sb.AppendLine("                    {");
+                sb.AppendLine($"                    global::SharedMeta.Client.Network.OptimisticSend.ReportIfFailed(t, ServiceName, \"{methodAlias}\");");
                 sb.AppendLine("                    if (t.IsCompletedSuccessfully)");
                 sb.AppendLine("                    {");
                 sb.AppendLine("                        if (t.Result.RandomScrollDelta != localScrollDelta)");
@@ -1294,6 +1330,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
                 sb.AppendLine("                    {");
+                sb.AppendLine($"                    global::SharedMeta.Client.Network.OptimisticSend.ReportIfFailed(t, ServiceName, \"{methodAlias}\");");
                 sb.AppendLine("                    if (t.IsCompletedSuccessfully)");
                 sb.AppendLine("                    {");
                 GenerateOptimisticResultDeserialization(sb, returnType, methodAlias, serializer, resultComparer);
@@ -1439,6 +1476,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
                 sb.AppendLine("                    {");
+                sb.AppendLine($"                    global::SharedMeta.Client.Network.OptimisticSend.ReportIfFailed(t, ServiceName, \"{methodAlias}\");");
                 sb.AppendLine("                    if (t.IsCompletedSuccessfully)");
                 sb.AppendLine("                    {");
                 sb.AppendLine("                        if (t.Result.RandomScrollDelta != localScrollDelta)");
@@ -1469,6 +1507,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
                 sb.AppendLine("                    {");
+                sb.AppendLine($"                    global::SharedMeta.Client.Network.OptimisticSend.ReportIfFailed(t, ServiceName, \"{methodAlias}\");");
                 sb.AppendLine("                    if (t.IsCompletedSuccessfully)");
                 sb.AppendLine("                    {");
                 GenerateOptimisticResultDeserialization(sb, returnType, methodAlias, serializer, resultComparer);
@@ -1589,6 +1628,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
                 sb.AppendLine("                    {");
+                sb.AppendLine($"                    global::SharedMeta.Client.Network.OptimisticSend.ReportIfFailed(t, ServiceName, \"{methodAlias}\");");
                 sb.AppendLine("                    if (t.IsCompletedSuccessfully)");
                 sb.AppendLine("                    {");
                 sb.AppendLine("                        if (t.Result.RandomScrollDelta != localScrollDelta)");
@@ -1617,6 +1657,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                {");
                 sb.AppendLine("                    try");
                 sb.AppendLine("                    {");
+                sb.AppendLine($"                    global::SharedMeta.Client.Network.OptimisticSend.ReportIfFailed(t, ServiceName, \"{methodAlias}\");");
                 sb.AppendLine("                    if (t.IsCompletedSuccessfully)");
                 sb.AppendLine("                    {");
                 // Compare main result
@@ -2124,7 +2165,7 @@ namespace SharedMeta.Generator.Generators
                 var methodVersion = GetMethodVersion(method);
                 var paramCount = method.ParameterList.Parameters.Count;
                 var returnTypeStr = method.ReturnType.ToString();
-                bool isAsyncMethod = returnTypeStr.StartsWith("Task") || returnTypeStr.StartsWith("System.Threading.Tasks.Task");
+                bool isAsyncMethod = IsAwaitable(returnTypeStr);
 
                 // Triggers are always parameterless (void or Task)
                 if (paramCount == 0)
@@ -2235,7 +2276,7 @@ namespace SharedMeta.Generator.Generators
             var eventName = GetEventName(methodName);
             var paramCount = method.ParameterList.Parameters.Count;
             var returnTypeStr = method.ReturnType.ToString();
-            bool isAsyncMethod = returnTypeStr.StartsWith("Task") || returnTypeStr.StartsWith("System.Threading.Tasks.Task");
+            bool isAsyncMethod = IsAwaitable(returnTypeStr);
 
             if (paramCount > 0)
             {
@@ -2440,7 +2481,7 @@ namespace SharedMeta.Generator.Generators
             var callArgs = string.Join(", ", argNames);
 
             // Unwrap Task<T> -> T if needed
-            bool isAsync = returnType.StartsWith("Task");
+            bool isAsync = IsAwaitable(returnType);
             string syncReturnType;
             if (returnType == "void" || returnType == "Task")
                 syncReturnType = "void";
@@ -2519,6 +2560,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        public void {methodName}Signal({parameters})");
             sb.AppendLine("        {");
             sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
+            sb.AppendLine($"            ThrowIfConnectionGone(\"{methodName}\");");
 
             // Serialize arguments using the detected serializer (same pattern as Optimistic).
             GenerateArgumentSerialization(sb, method, transforms, paramCount, serializer);

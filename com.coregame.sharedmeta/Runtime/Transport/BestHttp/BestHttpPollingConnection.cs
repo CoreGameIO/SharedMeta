@@ -92,7 +92,12 @@ namespace SharedMeta.Transport.BestHttp
 
         public event Action<SessionResponse>? OnBatch;
         public event Action<string>? OnSessionTerminated;
-        public event Action<string>? OnRequireSessionReconnect;       // HTTP polling: not raised yet
+        // Server-push reconnect is a SignalR-only capability today: only the hub transports
+        // wire RequireSessionReconnect. This transport never raises it, so a server restart
+        // is not recovered here — the event exists purely to satisfy IConnection.
+#pragma warning disable CS0067 // never raised, by the above
+        public event Action<string>? OnRequireSessionReconnect;
+#pragma warning restore CS0067
         public event Action<TransportDisconnectReason>? OnDisconnected;
         public event Action? OnReconnecting;
         public event Action? OnReconnected;

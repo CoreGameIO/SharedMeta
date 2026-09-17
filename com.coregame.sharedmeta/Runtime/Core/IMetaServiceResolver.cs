@@ -249,9 +249,11 @@ namespace SharedMeta.Core
         /// <summary>
         /// Factory to wrap a deserialized state into a typed
         /// <see cref="SharedMeta.Client.EntityStateContainer{TState}"/>.
-        /// Optional — the resolver falls back to reflection if not provided.
         /// Generator-emitted; allows the resolver to construct a typed container without
-        /// knowing TState at compile time.
+        /// knowing TState at compile time. Optional on an individual config — the resolver then
+        /// borrows the factory from any other service registered against the same state type, all
+        /// of which are functionally equivalent. There is no reflection fallback: if no service on
+        /// the state supplies one, subscribing fails.
         /// </summary>
         public Func<object, SharedMeta.Client.IEntityStateContainer>? StateContainerFactory { get; init; }
 

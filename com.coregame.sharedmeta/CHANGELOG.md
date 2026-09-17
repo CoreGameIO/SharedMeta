@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.40.0] - 2026-09-17
+
+### Breaking
+
+- Calling an API client whose entity was disconnected now throws `ObjectDisposedException` instead of silently sending into the void. Covers every mutating path, `Optimistic` and `Signal` included; the check runs before the method body, so an optimistic call refuses rather than applying a mutation it could never send. `LocalQuery` reads and properties stay available for teardown and recovery code.
+- A `ValueTask`-returning service method now generates `Task FooAsync()`. It used to generate `Task<ValueTask> FooAsync()` — see Fixed.
+
+### Added
+
+- `MetaRef<T>` — a handle to a service on an entity, safe to hold for the process lifetime. Stores the lookup key, not the client, and re-resolves per access. `Current` / `TryGet` are the allocation-free path; `GetAsync()` completes synchronously once subscribed.
+- `MetaClient.PlayerRef<T>()` (follows `PlayerId` across a relogin) and `MetaClient.Ref<T>(entityId)`.
+- `MetaRefFactory<T>` for services whose entity id is only known at runtime.
+- Generated per-assembly `MetaRefs` container — one property per service: `MetaRef<T>` for `UserOwned`, `MetaRefFactory<T>` for the rest.
+- `MetaRefs.Accept(IMetaRefVisitor)` — DI registration with the API client type as a real generic argument. No `Type`, no `object`, no service named in the composition root.
+- `MetaRefs.TryGet(Type, out object)` / `.All` for containers that can only resolve lazily by type. Handles are pre-built and type-indexed, so no `MakeGenericType` (AOT-safe).
+- `MetaRefs(Func<MetaClient?>)` and `MetaRef` / `MetaRefFactory` constructors taking `Func<IMetaServiceResolver?>` — for hosts that build the client inside an async connect or replace it on re-bootstrap.
+- `MetaServiceResolver.TryGetState<TState>` / `MetaClient.TryGetState<TState>` — non-throwing `GetState`, for state polled on a loop. An empty entity id reads as a miss.
+- `MetaClient.ConnectionInvalidated` / `MetaServiceResolver.ConnectionInvalidated` — raised after a connection is dropped and its clients disposed. Nothing re-subscribes automatically; this is the signal to do it. Not raised on `Dispose()`.
+
+### Changed
+
+- Inbound broadcasts route through a flat array indexed by `MethodId` instead of a dictionary.
+- The three registries keyed by state-type name (config, state-container factory, patch applier) collapsed into one entry per state type — they were filled independently, so one key had three places to drift.
+
+### Fixed
+
+- **`ValueTask` service methods were mishandled by the client generator.** Only `Task` counted as awaitable, so the awaitable was taken for the *result* (`Task<ValueTask>`) and every replay path invoked the method without awaiting it, with no `EnsureSyncCompletion` on the broadcast path. `Task` and `ValueTask` are now treated alike, matching the server API, contract API and desync formatting. `BroadcastValidator.EnsureSyncCompletion` gained a `ValueTask` overload.
+- `DispatcherNetworkAdapter` never implemented `IDisposable` while the teardown gates on `Network is IDisposable`, so its cleanup had never run — every disconnected entity leaked a dispatcher broadcast subscription and an `OnDisconnected` handler onto the long-lived connection.
+- `ServerDispatcherGenerator` dereferenced its optional `interfaceSymbol` / `compilation` arguments without the guard its neighbour uses — the generator, and so the consumer's build, crashed on any path that had neither.
+- Generated cross-optimistic entity callers returned `Task.FromResult(default(T)!)`, whose inference picks the non-nullable `T` — a method declared `Task<string?>` handed back `Task<string>` and put a CS8619 in every consumer's build.
+- A failed fire-and-forget send from `Optimistic` / `CrossOptimistic` is now logged with its service and method. The continuation only handled the success case, so *any* failed optimistic send was dropped and its exception surfaced later, if ever, as an unattributed `UnobservedTaskException`.
+- `MetaServiceConfig.StateContainerFactory` docs claimed a reflection fallback. There is none: the resolver borrows another service's factory for the same state type, or subscribe fails.
+
 ## [0.39.0] - 2026-09-16
 
 ### Changed

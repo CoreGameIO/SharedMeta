@@ -228,10 +228,146 @@ namespace SharedMeta.Generator.Generators
             }
 
             sb.AppendLine("    }");
+
+            AppendMetaRefs(sb, userOwnedServices, entityIdServices);
+
             sb.AppendLine("}");
 
             return sb.ToString();
         }
+
+        /// <summary>
+        /// Emit the typed handle container. Each service gets a property whose type encodes how its
+        /// entity is addressed: UserOwned services resolve against the client's PlayerId and so can
+        /// be handed out as a ready handle, everything else needs an id the caller supplies at
+        /// runtime and so gets a factory. Registering this one object in a DI container makes every
+        /// service reachable without the container knowing any service type.
+        /// </summary>
+        private static void AppendMetaRefs(
+            StringBuilder sb,
+            List<ClientServiceInfo> userOwnedServices,
+            List<ClientServiceInfo> entityIdServices)
+        {
+            sb.AppendLine();
+            sb.AppendLine("    /// <summary>");
+            sb.AppendLine("    /// Typed, connection-safe handles for every meta service discovered in this assembly.");
+            sb.AppendLine("    /// A handle resolves through the resolver on each access rather than caching the API");
+            sb.AppendLine("    /// client, so one built at startup keeps working across disconnects and the session");
+            sb.AppendLine("    /// restart that follows a supersede. Build once per <c>MetaClient</c> and register it —");
+            sb.AppendLine("    /// or its individual properties — as singletons.");
+            sb.AppendLine("    /// </summary>");
+            sb.AppendLine("    public sealed class MetaRefs");
+            sb.AppendLine("    {");
+            sb.AppendLine("        private readonly global::System.Collections.Generic.Dictionary<global::System.Type, object> _byType;");
+            sb.AppendLine();
+            sb.AppendLine("        /// <summary>For a client that already exists and lives as long as this container.</summary>");
+            sb.AppendLine("        public MetaRefs(MetaClient client)");
+            sb.AppendLine("            : this(() => client ?? throw new global::System.ArgumentNullException(nameof(client)))");
+            sb.AppendLine("        {");
+            sb.AppendLine("            if (client == null) throw new global::System.ArgumentNullException(nameof(client));");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+            sb.AppendLine("        /// <summary>");
+            sb.AppendLine("        /// For a host that creates its <c>MetaClient</c> later, or replaces it — a composition");
+            sb.AppendLine("        /// root usually runs before the connect, and a re-bootstrap hands out a different client.");
+            sb.AppendLine("        /// The accessor is re-read on every use, so this container can be built and registered");
+            sb.AppendLine("        /// up front and still be pointing at the current client afterwards. Returning null from");
+            sb.AppendLine("        /// it simply means \"not connected yet\": handles report a miss instead of throwing.");
+            sb.AppendLine("        /// </summary>");
+            sb.AppendLine("        public MetaRefs(global::System.Func<MetaClient?> client)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            if (client == null) throw new global::System.ArgumentNullException(nameof(client));");
+            foreach (var service in userOwnedServices)
+            {
+                sb.AppendLine($"            {service.BaseName} = new global::SharedMeta.Client.MetaRef<{ApiClientTypeOf(service)}>(");
+                sb.AppendLine("                () => client()?.Resolver, () => client()?.PlayerId);");
+            }
+            foreach (var service in entityIdServices)
+            {
+                sb.AppendLine($"            {service.BaseName} = new global::SharedMeta.Client.MetaRefFactory<{ApiClientTypeOf(service)}>(");
+                sb.AppendLine("                () => client()?.Resolver);");
+            }
+            sb.AppendLine("            _byType = new global::System.Collections.Generic.Dictionary<global::System.Type, object>");
+            sb.AppendLine("            {");
+            foreach (var service in userOwnedServices)
+            {
+                sb.AppendLine($"                [typeof(global::SharedMeta.Client.MetaRef<{ApiClientTypeOf(service)}>)] = {service.BaseName},");
+            }
+            foreach (var service in entityIdServices)
+            {
+                sb.AppendLine($"                [typeof(global::SharedMeta.Client.MetaRefFactory<{ApiClientTypeOf(service)}>)] = {service.BaseName},");
+            }
+            sb.AppendLine("            };");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+            sb.AppendLine("        /// <summary>");
+            sb.AppendLine("        /// Hand every service to <paramref name=\"visitor\"/> with its API client type as a real");
+            sb.AppendLine("        /// generic argument. Prefer this over <see cref=\"TryGet\"/> when the container can bind");
+            sb.AppendLine("        /// instances up front: nothing goes through <c>Type</c> or <c>object</c>, and a service");
+            sb.AppendLine("        /// added later is visited without touching the composition root.");
+            sb.AppendLine("        /// </summary>");
+            sb.AppendLine("        public void Accept(global::SharedMeta.Client.IMetaRefVisitor visitor)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            if (visitor == null) throw new global::System.ArgumentNullException(nameof(visitor));");
+            foreach (var service in userOwnedServices)
+            {
+                sb.AppendLine($"            visitor.Visit({service.BaseName});");
+            }
+            foreach (var service in entityIdServices)
+            {
+                sb.AppendLine($"            visitor.Visit({service.BaseName});");
+            }
+            sb.AppendLine("        }");
+            sb.AppendLine();
+            sb.AppendLine("        /// <summary>");
+            sb.AppendLine("        /// Every handle, keyed by the type a DI container would be asked to construct. Lets a");
+            sb.AppendLine("        /// container hook answer a constructor parameter it only knows as a <c>Type</c> without");
+            sb.AppendLine("        /// <c>MakeGenericType</c> or a hand-written list of services — the handles are already");
+            sb.AppendLine("        /// built, so the lookup is a dictionary hit and stays AOT-safe on IL2CPP.");
+            sb.AppendLine("        /// <code>");
+            sb.AppendLine("        /// public override object GetInstance(Type service, string key = null)");
+            sb.AppendLine("        ///     =&gt; _refs.TryGet(service, out var handle) ? handle : base.GetInstance(service, key);");
+            sb.AppendLine("        /// </code>");
+            sb.AppendLine("        /// </summary>");
+            sb.AppendLine("        public bool TryGet(global::System.Type handleType, out object handle)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            // Containers ask about every type they are wired for, so an unknown or null one is");
+            sb.AppendLine("            // the ordinary case, not a caller bug.");
+            sb.AppendLine("            if (handleType == null) { handle = null!; return false; }");
+            sb.AppendLine("            return _byType.TryGetValue(handleType, out handle!);");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+            sb.AppendLine("        /// <summary>");
+            sb.AppendLine("        /// The same handles as a registerable list, for containers that bind up front rather");
+            sb.AppendLine("        /// than resolving through a hook. A service added later shows up here on its own.");
+            sb.AppendLine("        /// </summary>");
+            sb.AppendLine("        public global::System.Collections.Generic.IReadOnlyDictionary<global::System.Type, object> All => _byType;");
+
+            foreach (var service in userOwnedServices)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"        /// <summary>");
+                sb.AppendLine($"        /// Handle to {service.BaseName}ApiClient on the current player's entity (UserOwned).");
+                sb.AppendLine($"        /// Follows <c>client.PlayerId</c>, so it survives a relogin.");
+                sb.AppendLine($"        /// </summary>");
+                sb.AppendLine($"        public global::SharedMeta.Client.MetaRef<{ApiClientTypeOf(service)}> {service.BaseName} {{ get; }}");
+            }
+
+            foreach (var service in entityIdServices)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"        /// <summary>");
+                sb.AppendLine($"        /// Handles to {service.BaseName}ApiClient. The entity id isn't known at startup for");
+                sb.AppendLine($"        /// this access policy, so call <c>For(entityId)</c> once the id arrives and hold the result.");
+                sb.AppendLine($"        /// </summary>");
+                sb.AppendLine($"        public global::SharedMeta.Client.MetaRefFactory<{ApiClientTypeOf(service)}> {service.BaseName} {{ get; }}");
+            }
+
+            sb.AppendLine("    }");
+        }
+
+        private static string ApiClientTypeOf(ClientServiceInfo service)
+            => $"global::{service.Namespace}.Client.{service.BaseName}ApiClient";
 
         private static string GetSimpleTypeName(string fullTypeName)
         {

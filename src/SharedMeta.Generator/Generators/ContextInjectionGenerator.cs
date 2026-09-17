@@ -1320,7 +1320,10 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            if (!_resolver.IsSubscribed(_entityId, typeof({targetStateType}).FullName!))");
             if (innerType != null)
             {
-                sb.AppendLine($"                return Task.FromResult(default({innerType})!);");
+                // Explicit type argument, not inference from `default(T)!`: the `!` makes inference
+                // pick the non-nullable T, so a method declared Task<string?> got a Task<string>
+                // back and every consumer's build carried a CS8619.
+                sb.AppendLine($"                return Task.FromResult<{innerType}>(default!);");
             }
             else
             {

@@ -55,7 +55,7 @@ namespace ClanWars.Shared
             // Seed initial clan power with the player's current score (OneWay — see GainPoints
             // commentary; same reasoning applies here).
             if (S.Score > 0)
-                clan.AddPowerAsync(S.Score);
+                _ = clan.AddPowerAsync(S.Score);
 
             return clanId;
         }

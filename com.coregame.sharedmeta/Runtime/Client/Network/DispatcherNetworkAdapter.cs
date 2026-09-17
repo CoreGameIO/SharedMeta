@@ -11,7 +11,13 @@ namespace SharedMeta.Client.Network
     /// Adapts IClientDispatcher to INetwork for a specific entity.
     /// Allows API clients to work with the dispatcher architecture.
     /// </summary>
-    public class DispatcherNetworkAdapter : INetwork
+    /// <remarks>
+    /// <see cref="IDisposable"/> is declared explicitly because <see cref="INetwork"/> does not
+    /// require it and the teardown path gates on <c>Network is IDisposable</c>. Without it the
+    /// adapter's cleanup never ran at all: every disconnected entity left its dispatcher broadcast
+    /// subscription and its <c>OnDisconnected</c> handler attached to the long-lived connection.
+    /// </remarks>
+    public class DispatcherNetworkAdapter : INetwork, IDisposable
     {
         private readonly IClientDispatcher _dispatcher;
         private readonly IMetaSerializer _serializer;
@@ -19,6 +25,8 @@ namespace SharedMeta.Client.Network
         private readonly string? _stateTypeName;
         private readonly Func<long> _serverTimeClock;
         private IDisposable? _broadcastSubscription;
+        // Written on teardown, read from whichever thread is sending.
+        private volatile bool _disposed;
 
         public string ClientId => _dispatcher.Connection.ConnectionId;
         public string? PlayerId { get; set; }
@@ -133,8 +141,31 @@ namespace SharedMeta.Client.Network
             OnDisconnected?.Invoke(reason.ToString());
         }
 
+        /// <summary>
+        /// Refuse to send once the connection this adapter belongs to has been torn down.
+        /// <para>
+        /// Disposing only detaches the broadcast subscription; the dispatcher underneath stays
+        /// alive and shared. Without this guard an API client captured in a field before the
+        /// teardown keeps sending successfully and silently never receives again — its state
+        /// mirror freezes at the moment of the disconnect while every call still reports success.
+        /// That failure is nearly untraceable, so sending is made loud instead. Reads
+        /// (ServerTimeTicks, capabilities) stay available: teardown paths and logging use them.
+        /// </para>
+        /// </summary>
+        private void ThrowIfDisposed(ushort methodId)
+        {
+            if (!_disposed) return;
+            throw new ObjectDisposedException(
+                nameof(DispatcherNetworkAdapter),
+                $"Entity '{_entityId}' was disconnected, so this API client is dead (methodId {methodId}). " +
+                "Re-resolve it through GetServiceAsync or hold a MetaRef<T> instead — a client " +
+                "captured before the disconnect never reconnects.");
+        }
+
         public async Task<CallResponse<T>> CallAsync<T>(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0, PayloadDebug? debug = null)
         {
+            ThrowIfDisposed(methodId);
+
             // 0.24.0+ RpcCall no longer carries ServiceName/MethodName/MethodVersion — only
             // MethodId addresses the dispatch. ServiceName/methodName/methodVersion are still
             // accepted here for signature symmetry with older generated callers and used by
@@ -184,6 +215,8 @@ namespace SharedMeta.Client.Network
 
         public async Task<VoidCallResponse> CallVoidAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0, PayloadDebug? debug = null)
         {
+            ThrowIfDisposed(methodId);
+
             var call = new RpcCall
             {
                 MethodId = methodId,
@@ -220,6 +253,8 @@ namespace SharedMeta.Client.Network
 
         public async Task<ByteCallResponse> CallBytesAsync(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0, PayloadDebug? debug = null)
         {
+            ThrowIfDisposed(methodId);
+
             var call = new RpcCall
             {
                 MethodId = methodId,
@@ -262,6 +297,8 @@ namespace SharedMeta.Client.Network
         /// </summary>
         public ValueTask SendSignalAsync(ushort methodId, ReadOnlyMemory<byte> args)
         {
+            ThrowIfDisposed(methodId);
+
             var request = new SignalCallRequest
             {
                 EntityId = _entityId,
@@ -305,9 +342,38 @@ namespace SharedMeta.Client.Network
 
         public void Dispose()
         {
+            _disposed = true;
             _broadcastSubscription?.Dispose();
             _broadcastSubscription = null;
             _dispatcher.Connection.OnDisconnected -= HandleDisconnected;
+        }
+    }
+
+    /// <summary>
+    /// Observes the send an Optimistic / CrossOptimistic call leaves running behind it.
+    /// <para>
+    /// Those modes apply the mutation locally and return before the wire call finishes, so a
+    /// failed send cannot be thrown back at anyone. It must not vanish either: the client is then
+    /// holding a mutation the server never saw, and stays wrong until it re-subscribes. Nothing
+    /// observed the task's fault before, which also meant the exception surfaced later — if at all
+    /// — as an UnobservedTaskException with no service or method attached.
+    /// </para>
+    /// </summary>
+    public static class OptimisticSend
+    {
+        /// <summary>No-op unless <paramref name="sendTask"/> actually faulted.</summary>
+        public static void ReportIfFailed(Task sendTask, string serviceName, string methodAlias)
+        {
+            if (sendTask == null || !sendTask.IsFaulted) return;
+
+            // Reading Exception is also what marks the fault observed.
+            var ex = sendTask.Exception?.GetBaseException();
+            if (ex == null) return;
+
+            SharedMeta.Core.Logging.MetaLog.Error(
+                $"[Optimistic] {serviceName}.{methodAlias} applied locally but the send failed — " +
+                $"this client now diverges from the server until the entity is re-subscribed: {ex.Message}",
+                ex);
         }
     }
 }

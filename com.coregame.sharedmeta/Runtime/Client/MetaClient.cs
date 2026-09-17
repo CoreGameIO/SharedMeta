@@ -470,11 +470,51 @@ namespace SharedMeta.Client
         }
 
         /// <summary>
+        /// Raised after an entity's connection was dropped and its API clients disposed — an
+        /// explicit disconnect, or the session restart that follows a supersede. Nothing
+        /// re-subscribes automatically, so this is where game code restores its entities.
+        /// Arguments are the entity id and the connection's state type.
+        /// </summary>
+        public event Action<string, Type>? ConnectionInvalidated
+        {
+            add => _resolver.ConnectionInvalidated += value;
+            remove => _resolver.ConnectionInvalidated -= value;
+        }
+
+        /// <summary>
+        /// A handle to <typeparamref name="TApiClient"/> on <paramref name="entityId"/> that stays
+        /// valid across disconnects and session restarts — it resolves through the resolver on each
+        /// access instead of caching a client that a teardown would dispose. Safe to register in a
+        /// DI container for the process lifetime.
+        /// </summary>
+        public MetaRef<TApiClient> Ref<TApiClient>(string entityId) where TApiClient : class
+            => new MetaRef<TApiClient>(_resolver, entityId);
+
+        /// <summary>
+        /// A handle bound to this client's <see cref="PlayerId"/> rather than a fixed id, so it
+        /// follows the player across a relogin. The UserOwned counterpart of
+        /// <see cref="Ref{TApiClient}(string)"/>; resolvable before login, usable after it.
+        /// </summary>
+        public MetaRef<TApiClient> PlayerRef<TApiClient>() where TApiClient : class
+            => new MetaRef<TApiClient>(_resolver, () => PlayerId);
+
+        /// <summary>
         /// Get current state for a connected entity.
         /// </summary>
         public TState GetState<TState>(string entityId) where TState : class, ISharedState
         {
             return _resolver.GetState<TState>(entityId);
+        }
+
+        /// <summary>
+        /// Non-throwing <see cref="GetState{TState}"/> — false when the entity isn't subscribed.
+        /// Use it anywhere state is polled on a loop: the connection can be torn down between two
+        /// reads, and a guard done separately either duplicates the lookup or races it.
+        /// </summary>
+        public bool TryGetState<TState>(string entityId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out TState? state)
+            where TState : class, ISharedState
+        {
+            return _resolver.TryGetState(entityId, out state);
         }
 
         /// <summary>

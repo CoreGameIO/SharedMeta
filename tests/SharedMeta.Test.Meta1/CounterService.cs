@@ -273,7 +273,7 @@ namespace SharedMeta.Test.Meta1
             //     allocation churn);
             //   - the outer's PatchWrapper / ChangeTracker captures every mutation;
             //   - the final state reflects valuePerCall * times.
-            var aux = GetICounterAuxService(Context.EntityId);
+            var aux = GetICounterAuxService(Context.EntityId!);
             for (int i = 0; i < times; i++)
                 await aux.AuxAddAsync(valuePerCall);
             return (int)Context.State.Sum;
@@ -288,7 +288,7 @@ namespace SharedMeta.Test.Meta1
             // bypass shares the outer's mutation pipeline by design (no implicit rollback).
             // Documented behaviour. The test asserts that fact too — outer code can use the
             // partial state if it wants, or compensate.
-            var aux = GetICounterAuxService(Context.EntityId);
+            var aux = GetICounterAuxService(Context.EntityId!);
             try
             {
                 await aux.AuxThrowAfterMutateAsync(value);
@@ -307,7 +307,7 @@ namespace SharedMeta.Test.Meta1
             // intact — verifies typed return through the sibling-bypass.
             var state = GetState();
             state.Operations.Add(new CounterOperation { CallerId = "seed", Value = seed, ClientSequence = 0, ServerTimeTicks = 0 });
-            var aux = GetICounterAuxService(Context.EntityId);
+            var aux = GetICounterAuxService(Context.EntityId!);
             // Implicit getter routes to SiblingCaller (server) / transient impl (client). The
             // EntityCaller interface wraps the sync method as async — await unwraps.
             // Using the typed sibling-async getter keeps the original interface (sync return).

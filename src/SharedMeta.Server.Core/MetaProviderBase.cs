@@ -370,7 +370,6 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     private ReadOnlyMemory<byte> _outgoingResult;
     private ReadOnlyMemory<byte> _outgoingBroadcastReplay;
     private ReadOnlyMemory<byte> _outgoingBroadcastPatch;
-    private ReadOnlyMemory<byte> _outgoingEventBroadcast;
 
     public ReadOnlyMemory<byte> TakeOutgoingResponse()
     {
@@ -793,7 +792,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // 0.33.0+ [ServiceConfig] entries linked to a [MetaStateVersion] condition get the
             // same schema-floor pinning the legacy primary gets above — entries with no such
             // condition fall back to (1,0,0), same default the primary uses.
-            MetaContext.Configs = GetSchemaFloorServiceConfigsForClient(CurrentStateSchemaVersion);
+            // `!`: the floor accessor returns object?[] because a [ServiceConfig] slot with no
+            // registered provider stays null, while MetaContext.Configs is IReadOnlyList<object>.
+            // The disagreement is benign — ServiceConfigLookup.Find skips non-matching entries,
+            // null included — and closing it properly would widen ICrossEntityResolver and
+            // IMetaServiceResolver, a source break for a nullability annotation.
+            MetaContext.Configs = GetSchemaFloorServiceConfigsForClient(CurrentStateSchemaVersion)!;
             MetaContext.ConfigVersions = GetSchemaFloorServiceConfigVersionsForClient(CurrentStateSchemaVersion);
         }
         else
@@ -1264,7 +1268,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                 MetaContext.Config = floorConfig;
                 MetaContext.ConfigVersion = GetSchemaFloorConfigVersion(CurrentStateSchemaVersion);
             }
-            MetaContext.Configs = GetSchemaFloorServiceConfigsForClient(CurrentStateSchemaVersion);
+            // `!`: the floor accessor returns object?[] because a [ServiceConfig] slot with no
+            // registered provider stays null, while MetaContext.Configs is IReadOnlyList<object>.
+            // The disagreement is benign — ServiceConfigLookup.Find skips non-matching entries,
+            // null included — and closing it properly would widen ICrossEntityResolver and
+            // IMetaServiceResolver, a source break for a nullability annotation.
+            MetaContext.Configs = GetSchemaFloorServiceConfigsForClient(CurrentStateSchemaVersion)!;
             MetaContext.ConfigVersions = GetSchemaFloorServiceConfigVersionsForClient(CurrentStateSchemaVersion);
         }
         else

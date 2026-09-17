@@ -20,20 +20,20 @@ namespace SharedMeta.Client
         private readonly IExecutionModeProvider _modeProvider;
         private readonly IDesyncDiagnostics? _diagnostics;
         private readonly Dictionary<Type, MetaServiceConfig> _serviceConfigs = new();
-        private readonly Dictionary<string, MetaServiceConfig> _configsByStateTypeName = new();
+        // Everything keyed by state-type name lives in one entry. Three parallel dictionaries used
+        // to be filled independently at registration — three places for the same key to drift, and
+        // a lookup that had to hit two of them to assemble one answer.
+        private readonly Dictionary<string, StateTypeEntry> _byStateTypeName = new();
         // Indexed by ServiceName ("ICounterService" etc.) so the entity-level broadcast handler
         // can look up a foreign service's EntityReplayDispatcher when no state-data was sent.
         private readonly Dictionary<string, MetaServiceConfig> _configsByServiceName = new();
         // 0.24.0+ Indexed by client-local MethodId — populated from each registered
         // MetaServiceConfig's MethodIds set. The entity-level broadcast handler routes
-        // a foreign-service broadcast by looking up the owning service via this map.
-        // Replaces the legacy ServiceName-string lookup on the wire.
-        private readonly Dictionary<ushort, MetaServiceConfig> _configsByMethodId = new();
-        // Per-state-type callbacks. Multiple services on the same state generate functionally
-        // equivalent factories; we keep the first non-null one we see, so a hand-rolled config
-        // that drops these fields doesn't clobber the generator-emitted ones registered earlier.
-        private readonly Dictionary<string, Func<object, IEntityStateContainer>> _stateContainerFactoriesByStateType = new();
-        private readonly Dictionary<string, Action<object, byte[], IMetaSerializer>> _patchAppliersByStateType = new();
+        // a foreign-service broadcast by looking up the owning service via this table.
+        // Flat array rather than a map: ids are handed out dense from 0 in canonical sort order,
+        // so the table stays the size of the method count and the inbound-broadcast path pays an
+        // index instead of a hash. Swapped wholesale on grow — readers must snapshot the field.
+        private MetaServiceConfig?[] _configsByMethodId = Array.Empty<MetaServiceConfig?>();
         // Keyed by (entityId, StateType) — NOT entityId alone. The server addresses entities by
         // (state type, entityId) (an Orleans grain identity), so the same entityId string is a
         // valid, independent identity across different state types (e.g. Inventory:playerId,
@@ -63,6 +63,34 @@ namespace SharedMeta.Client
         private List<CrossEntityLocalResult>? _recordedResults;
 
         /// <summary>
+        /// Raised after a connection's API clients have been disposed and the connection dropped —
+        /// by <see cref="DisconnectAsync(string)"/>, its per-state overload, or the
+        /// <see cref="ClearAllConnections"/> that a supersede restart performs. Arguments are the
+        /// entity id and the connection's state type.
+        /// <para>
+        /// Nothing re-subscribes on its own after a supersede restart, so this is the signal game
+        /// code needs to restore its entities (and to show that the entity is unavailable while it
+        /// does). Handlers run outside the resolver's lock and may call back into it.
+        /// </para>
+        /// </summary>
+        public event Action<string, Type>? ConnectionInvalidated;
+
+        // Disposes the connections and announces each one. Always called with _lock released:
+        // a handler is game code and commonly re-enters the resolver to re-subscribe.
+        private void DisposeAndAnnounce(List<EntityConnection> connections)
+        {
+            foreach (var connection in connections)
+            {
+                connection.Dispose();
+                try { ConnectionInvalidated?.Invoke(connection.EntityId, connection.StateType); }
+                catch (Exception ex)
+                {
+                    Core.Logging.MetaLog.Warning($"[MetaServiceResolver] ConnectionInvalidated handler threw: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
         /// Creates a MetaServiceResolver.
         /// </summary>
         /// <param name="networkFactory">Factory that creates networks and returns initial state. Parameters: (entityId, stateTypeName). Returns: NetworkSubscribeResult</param>
@@ -88,8 +116,18 @@ namespace SharedMeta.Client
         public void RegisterService<TApiClient>(MetaServiceConfig config)
         {
             _serviceConfigs[typeof(TApiClient)] = config;
-            var stateTypeName = config.StateType.FullName ?? config.StateType.Name;
-            _configsByStateTypeName[stateTypeName] = config;
+            var stateTypeName = StateKey(config.StateType);
+            if (!_byStateTypeName.TryGetValue(stateTypeName, out var entry))
+                _byStateTypeName[stateTypeName] = entry = new StateTypeEntry();
+
+            // Config is last-registered-wins; the two callbacks are first-non-null-wins. Multiple
+            // services on one state emit functionally equivalent callbacks, so keeping the first
+            // stops a later hand-rolled config that dropped those fields from clobbering a
+            // generator-emitted one registered earlier.
+            entry.Config = config;
+            entry.StateContainerFactory ??= config.StateContainerFactory;
+            entry.PatchApplier ??= config.PatchApplier;
+
             if (!string.IsNullOrEmpty(config.ServiceName))
                 _configsByServiceName[config.ServiceName] = config;
             // 0.24.0+ Populate the per-MethodId reverse index used by foreign-service
@@ -97,14 +135,22 @@ namespace SharedMeta.Client
             // (canonical sort of [MetaMethod] declarations); collisions across services
             // inside one assembly are a generator invariant violation.
             foreach (var methodId in config.MethodIds)
-                _configsByMethodId[methodId] = config;
+                SetConfigForMethodId(methodId, config);
+        }
 
-            // Cache per-state-type callbacks. First non-null wins so a later hand-rolled
-            // config with these fields dropped doesn't override an earlier generator-emitted one.
-            if (config.StateContainerFactory != null && !_stateContainerFactoriesByStateType.ContainsKey(stateTypeName))
-                _stateContainerFactoriesByStateType[stateTypeName] = config.StateContainerFactory;
-            if (config.PatchApplier != null && !_patchAppliersByStateType.ContainsKey(stateTypeName))
-                _patchAppliersByStateType[stateTypeName] = config.PatchApplier;
+        private static string StateKey(Type stateType) => stateType.FullName ?? stateType.Name;
+
+        // Grows the flat id table on demand. Registration is startup-only and ids are dense, so
+        // the copy runs a handful of times and the table ends up the size of the method count.
+        private void SetConfigForMethodId(ushort methodId, MetaServiceConfig config)
+        {
+            if (methodId >= _configsByMethodId.Length)
+            {
+                var grown = new MetaServiceConfig?[methodId + 1];
+                Array.Copy(_configsByMethodId, grown, _configsByMethodId.Length);
+                _configsByMethodId = grown;
+            }
+            _configsByMethodId[methodId] = config;
         }
 
         public void RegisterConfigProvider<TConfig>(IClientMetaConfigProvider<TConfig> provider) where TConfig : class
@@ -177,7 +223,21 @@ namespace SharedMeta.Client
 
         private MetaServiceConfig? LookupConfigByMethodId(ushort methodId)
         {
-            return _configsByMethodId.TryGetValue(methodId, out var c) ? c : null;
+            // Snapshot the field: a concurrent RegisterService swaps the array wholesale, and this
+            // runs on the network thread off the inbound-broadcast path.
+            var table = _configsByMethodId;
+            return methodId < table.Length ? table[methodId] : null;
+        }
+
+        /// <summary>
+        /// One registry row per state type — the config plus the two per-state callbacks that
+        /// several services on the same state all emit.
+        /// </summary>
+        private sealed class StateTypeEntry
+        {
+            public MetaServiceConfig Config = null!;
+            public Func<object, IEntityStateContainer>? StateContainerFactory;
+            public Action<object, byte[], IMetaSerializer>? PatchApplier;
         }
 
         /// <summary>
@@ -204,8 +264,7 @@ namespace SharedMeta.Client
         private Action<object, byte[], IMetaSerializer>? ResolvePatchApplier(MetaServiceConfig config)
         {
             if (config.PatchApplier != null) return config.PatchApplier;
-            var stateTypeName = config.StateType.FullName ?? config.StateType.Name;
-            return _patchAppliersByStateType.TryGetValue(stateTypeName, out var applier) ? applier : null;
+            return _byStateTypeName.TryGetValue(StateKey(config.StateType), out var entry) ? entry.PatchApplier : null;
         }
 
         // --- Composite-key (entityId, StateType) connection store helpers -----------------
@@ -418,8 +477,7 @@ namespace SharedMeta.Client
             }
 
             if (connections != null)
-                foreach (var connection in connections)
-                    connection.Dispose();
+                DisposeAndAnnounce(connections);
             return Task.CompletedTask;
         }
 
@@ -436,7 +494,8 @@ namespace SharedMeta.Client
                 RemoveConnection(entityId, typeof(TState), out connection);
             }
 
-            connection?.Dispose();
+            if (connection != null)
+                DisposeAndAnnounce(new List<EntityConnection> { connection });
             return Task.CompletedTask;
         }
 
@@ -451,6 +510,35 @@ namespace SharedMeta.Client
             }
 
             throw new InvalidOperationException($"Not connected to entity '{entityId}' with state type '{typeof(TState).Name}'");
+        }
+
+        /// <summary>
+        /// Non-throwing counterpart of <see cref="GetState{TState}"/>: false when the entity isn't
+        /// subscribed, instead of an exception.
+        /// <para>
+        /// Anything polling state on a loop needs this. The connection can disappear between two
+        /// reads — a disconnect, or the session restart after a supersede — and a per-tick caller
+        /// forced to guard with a separate liveness check either duplicates the lookup or races it.
+        /// An empty id reads as a miss too, so a poller running before login is safe.
+        /// </para>
+        /// </summary>
+        public bool TryGetState<TState>(string entityId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out TState? state)
+            where TState : class, ISharedState
+        {
+            if (!string.IsNullOrEmpty(entityId))
+            {
+                lock (_lock)
+                {
+                    if (TryGetConnection(entityId, typeof(TState), out var connection))
+                    {
+                        state = (TState)connection.StateContainer.State;
+                        return true;
+                    }
+                }
+            }
+
+            state = null;
+            return false;
         }
 
         /// <summary>
@@ -682,8 +770,8 @@ namespace SharedMeta.Client
         {
             lock (_lock)
             {
-                if (_configsByStateTypeName.TryGetValue(stateTypeName, out var config)
-                    && TryGetConnection(entityId, config.StateType, out var connection))
+                if (_byStateTypeName.TryGetValue(stateTypeName, out var entry)
+                    && TryGetConnection(entityId, entry.Config.StateType, out var connection))
                     return connection.Config;
             }
             return null;
@@ -697,8 +785,8 @@ namespace SharedMeta.Client
         {
             lock (_lock)
             {
-                if (_configsByStateTypeName.TryGetValue(stateTypeName, out var config)
-                    && TryGetConnection(entityId, config.StateType, out var connection))
+                if (_byStateTypeName.TryGetValue(stateTypeName, out var entry)
+                    && TryGetConnection(entityId, entry.Config.StateType, out var connection))
                     return connection.Configs;
             }
             return null;
@@ -757,11 +845,8 @@ namespace SharedMeta.Client
             // wrap the state in the same EntityStateContainer<TState>), so picking any non-null
             // one works. No reflection fallback — strictly typed lambdas, AOT-safe.
             var factory = config.StateContainerFactory;
-            if (factory == null)
-            {
-                var stateTypeName = config.StateType.FullName ?? config.StateType.Name;
-                _stateContainerFactoriesByStateType.TryGetValue(stateTypeName, out factory);
-            }
+            if (factory == null && _byStateTypeName.TryGetValue(StateKey(config.StateType), out var entry))
+                factory = entry.StateContainerFactory;
             return factory!(initialState);
         }
 
@@ -771,16 +856,17 @@ namespace SharedMeta.Client
         {
             lock (_lock)
             {
-                return _configsByStateTypeName.TryGetValue(stateTypeName, out var config)
-                    && TryGetConnection(entityId, config.StateType, out _);
+                return _byStateTypeName.TryGetValue(stateTypeName, out var entry)
+                    && TryGetConnection(entityId, entry.Config.StateType, out _);
             }
         }
 
         async Task ICrossEntityResolver.EnsureSubscribedAsync(string entityId, string stateTypeName)
         {
             // Find the config for this state type
-            if (!_configsByStateTypeName.TryGetValue(stateTypeName, out var config))
+            if (!_byStateTypeName.TryGetValue(stateTypeName, out var stateEntry))
                 throw new InvalidOperationException($"No service config registered for state type '{stateTypeName}'");
+            var config = stateEntry.Config;
 
             bool alreadyConnected;
             lock (_lock)
@@ -856,8 +942,8 @@ namespace SharedMeta.Client
         {
             lock (_lock)
             {
-                if (_configsByStateTypeName.TryGetValue(stateTypeName, out var config)
-                    && TryGetConnection(entityId, config.StateType, out var connection))
+                if (_byStateTypeName.TryGetValue(stateTypeName, out var entry)
+                    && TryGetConnection(entityId, entry.Config.StateType, out var connection))
                     return connection.StateContainer.State;
             }
             throw new InvalidOperationException($"Not connected to entity '{entityId}' with state type '{stateTypeName}'. Call EnsureSubscribedAsync first.");
@@ -867,8 +953,8 @@ namespace SharedMeta.Client
         {
             lock (_lock)
             {
-                if (_configsByStateTypeName.TryGetValue(stateTypeName, out var config)
-                    && TryGetConnection(entityId, config.StateType, out var connection))
+                if (_byStateTypeName.TryGetValue(stateTypeName, out var entry)
+                    && TryGetConnection(entityId, entry.Config.StateType, out var connection))
                     connection.StateContainer.ReplaceObject(newState);
             }
         }
@@ -935,8 +1021,8 @@ namespace SharedMeta.Client
                     // entityId (e.g. Inventory/Profile/Wallet keyed by playerId) — without it a
                     // verdict couldn't be correlated back to the right connection on Resume.
                     if (string.IsNullOrEmpty(v.StateTypeName)
-                        || !_configsByStateTypeName.TryGetValue(v.StateTypeName, out var stateConfig)
-                        || !TryGetConnection(v.EntityId, stateConfig.StateType, out var connection))
+                        || !_byStateTypeName.TryGetValue(v.StateTypeName, out var stateEntry)
+                        || !TryGetConnection(v.EntityId, stateEntry.Config.StateType, out var connection))
                         continue;
 
                     if (v.StateBytes is not { Length: > 0 })
@@ -973,16 +1059,32 @@ namespace SharedMeta.Client
         /// Clear all cached entity connections. Used for session restart after supersede.
         /// Disposes both API clients and network adapters to clean up broadcast subscriptions.
         /// </summary>
-        public void ClearAllConnections()
+        public void ClearAllConnections() => ClearAllConnections(announce: true);
+
+        // announce:false on teardown only — a ConnectionInvalidated handler typically re-subscribes,
+        // and resurrecting connections on a resolver that is going away would leak them.
+        private void ClearAllConnections(bool announce)
         {
+            List<EntityConnection> dropped;
             lock (_lock)
             {
+                dropped = new List<EntityConnection>();
                 foreach (var byType in _connections.Values)
                 {
                     foreach (var connection in byType.Values)
-                        connection.Dispose();
+                        dropped.Add(connection);
                 }
                 _connections.Clear();
+            }
+
+            if (announce)
+            {
+                DisposeAndAnnounce(dropped);
+            }
+            else
+            {
+                foreach (var connection in dropped)
+                    connection.Dispose();
             }
         }
 
@@ -1096,7 +1198,7 @@ namespace SharedMeta.Client
 
         public void Dispose()
         {
-            ClearAllConnections();
+            ClearAllConnections(announce: false);
         }
 
         private class EntityConnection : IDisposable

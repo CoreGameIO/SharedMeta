@@ -932,6 +932,105 @@ if (client.TryGetPlayerProfileService(out var profile))
 
 `TryGetService` returns `false` (no throw, no subscribe) when the entity isn't subscribed yet or that client type hasn't been created — fall back to `GetServiceAsync` for the first call. The hot path is a lock plus two dictionary lookups and allocates nothing; combined with a synchronous `LocalQuery` read the whole access is zero-alloc (an `async UniTask`/`async` method that never suspends isn't boxed either).
 
+#### `MetaRef<T>` — a handle you can keep (0.40.0+)
+
+An API client is **not** safe to store for the lifetime of the process. A `DisconnectAsync`, or the session restart that follows a supersede (another device logged in), disposes every API client under the connection and drops it from the resolver. A field — or a DI singleton — holding that instance is then pointing at a disposed object whose broadcast subscription is already torn off. Nothing re-subscribes on its own.
+
+`MetaRef<T>` is the handle to hold instead. It stores the lookup key, never the client, and re-resolves on every access:
+
+```csharp
+// UserOwned: follows client.PlayerId, so it survives a relogin too
+MetaRef<PlayerProfileServiceApiClient> profile = client.PlayerRef<PlayerProfileServiceApiClient>();
+
+// explicit entity
+MetaRef<ClanServiceApiClient> clan = client.Ref<ClanServiceApiClient>(clanId);
+
+await profile.GetAsync();          // subscribes on first use; sync + alloc-free afterwards
+profile.Current?.DoThingSync();    // null when not subscribed / connection was dropped
+if (profile.TryGet(out var api))   // allocation-free, same cost as TryGetService
+    api.DoThingSync();
+```
+
+`GetAsync()` returns a `ValueTask<T>` that completes synchronously without allocating once the entity is subscribed, so it is fine to call per frame rather than caching the result.
+
+**Generated container.** Each assembly gets a `MetaRefs` class with one property per service — a ready handle for `UserOwned` services, a `MetaRefFactory<T>` for the rest (their entity id isn't known at startup):
+
+```csharp
+var refs = new MyGame.Shared.Client.MetaRefs(client);
+
+refs.PlayerProfileService.Current?.DoThingSync();   // MetaRef<T>, bound to PlayerId
+var clan = refs.ClanService.For(clanId);            // MetaRefFactory<T> → hold the result
+```
+
+`For(entityId)` allocates a small handle per call by design — resolve it once when the id arrives and hold it; don't call it inside a per-frame loop.
+
+**Wiring it into a DI container.** Prefer `Accept` — it hands every service to a visitor with its API client type as a real generic argument, so nothing goes through `Type` or `object`:
+
+```csharp
+sealed class MetaRefBinder : IMetaRefVisitor
+{
+    private readonly SimpleContainer _container;
+    public MetaRefBinder(SimpleContainer container) => _container = container;
+
+    public void Visit<TApiClient>(MetaRef<TApiClient> handle) where TApiClient : class
+        => _container.BindInstance(handle);
+
+    public void Visit<TApiClient>(MetaRefFactory<TApiClient> factory) where TApiClient : class
+        => _container.BindInstance(factory);
+}
+
+new MetaRefs(client).Accept(new MetaRefBinder(container));
+```
+
+If the host creates its `MetaClient` inside an async connect — so the composition root runs before it exists — or replaces it on a re-bootstrap, pass an accessor instead of the instance. A container built from it can be registered up front, reports a miss while there is no client, and follows whichever one is current afterwards:
+
+```csharp
+new MetaRefs(() => _metaClientService.Client).Accept(new MetaRefBinder(container));
+```
+
+Two methods, no service named, and a service added later is bound without touching the composition root. Consumers then take `MetaRef<TApiClient>` / `MetaRefFactory<TApiClient>` as constructor parameters:
+
+```csharp
+public ShopViewModel(MetaRef<ShopServiceApiClient> shop, MetaRefFactory<ClanServiceApiClient> clans)
+
+public int PriceOf(int itemId) => _shop.Current?.GetPriceSync(itemId) ?? 0;
+```
+
+If the container can't bind instances up front and must resolve lazily through a hook, `TryGet` answers a constructor-parameter type instead. That path returns `object` because `GetInstance` is declared to — the handles are pre-built and indexed by type, so there is still no `MakeGenericType` and nothing for IL2CPP to fail on:
+
+```csharp
+public override object GetInstance(Type service, string key = null)
+    => _refs.TryGet(service, out var handle) ? handle : base.GetInstance(service, key);
+```
+
+`TryGet` declines types it doesn't know (and null) rather than throwing — a container asks about everything it is wired for. `All` exposes the same handles as a type-keyed dictionary. Whichever path you use, nothing a container hands out can go stale.
+
+**Reading state on a loop.** `GetState<TState>` throws when the entity isn't subscribed, which is the wrong shape for anything that polls — an ECS barrier comparing a version each tick, a UI binding refreshing per frame. The connection can disappear between two reads, so use the non-throwing form and treat a miss as "nothing to do":
+
+```csharp
+// an ECS barrier, per tick
+if (!client.TryGetState<MapState>(mapId, out var map))
+    return;                       // not subscribed right now — skip, don't throw
+```
+
+Guarding with a separate liveness check instead either duplicates the lookup or races it, and a handle carries the *client*, not the state: `MetaRef<TApiClient>` doesn't know the entity's `TState`.
+
+**Knowing when a connection died.** Handles repair themselves, but the game still has to re-subscribe and usually wants to show that an entity is unavailable meanwhile:
+
+```csharp
+client.ConnectionInvalidated += (entityId, stateType) => { /* re-subscribe, show spinner */ };
+```
+
+Raised after the connection was dropped and its clients disposed — by either `DisconnectAsync` overload or the supersede restart. Handlers run outside the resolver's lock and may call back into it. Disposing the client itself does not raise it.
+
+**What a stale client does now.** Using an API client captured before the teardown is no longer silent:
+
+- **Every mutating call throws** `ObjectDisposedException` naming the service, method and entity — `Server`, `ServerPatch`, `ServerReplace`, `Optimistic`, `CrossOptimistic`, `Signal` alike. The check runs *before* the method body, which matters for `Optimistic`: it applies locally and sends afterwards, so a guard placed at the send would leave the client holding a mutation it could never deliver. It refuses instead, and local state is untouched.
+- **`LocalQuery` reads and properties keep working** — `HasError`, `ClearError`, `MutationCount`, `{Method}Sync()` over local state. Teardown and recovery code needs them, and failing a read would take down UI that is only displaying data. The consequence is that a client used *only* for local reads still returns data frozen at the moment of the disconnect, with no error. Hold a `MetaRef<T>` if that matters.
+- **A send that fails for any other reason** — transport dropped, server gone mid-call — is logged with its service and method. Optimistic returns before the send completes, so there is no caller left to throw at; the log line means this client is holding a mutation the server never received.
+
+This replaces the old behaviour, where a captured client kept sending successfully and silently stopped receiving, freezing its state mirror while every call reported success.
+
 ### CrossOptimistic Mode
 
 Optimistic execution across **multiple states owned by the same player** — the split-profile pattern. When one player's data has grown large enough to be split across several `ISharedState` entities (e.g. `ProfileState` + `InventoryState` + `QuestState`, all keyed by the player's id), `CrossOptimistic` lets the client execute methods that touch more than one of those states locally without waiting for a round-trip.

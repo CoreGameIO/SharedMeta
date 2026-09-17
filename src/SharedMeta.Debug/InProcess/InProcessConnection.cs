@@ -25,7 +25,12 @@ namespace SharedMeta.Debug.InProcess
 
         public event Action<SessionResponse>? OnBatch;
         public event Action<string>? OnSessionTerminated;
-        public event Action<string>? OnRequireSessionReconnect;       // InProcess: server pushes via SendRequireSessionReconnect → wired through InProcessBroadcastSender
+        // Server-push reconnect is a SignalR-only capability today: only the hub transports
+        // wire RequireSessionReconnect. This transport never raises it, so a server restart
+        // is not recovered here — the event exists purely to satisfy IConnection.
+#pragma warning disable CS0067 // never raised, by the above
+        public event Action<string>? OnRequireSessionReconnect;
+#pragma warning restore CS0067
         public event Action<TransportDisconnectReason>? OnDisconnected;
         #pragma warning disable 67 // Event is never used
         public event Action? OnReconnecting;
@@ -101,7 +106,9 @@ namespace SharedMeta.Debug.InProcess
                 Error = response.Error,
                 SessionId = response.SessionId,
                 IsNewSession = response.IsNewSession,
-                MissedPackets = missedCopies,
+                // Empty rather than null when the server had nothing to replay — that is the
+                // property's own default, and callers enumerate it without a null check.
+                MissedPackets = missedCopies ?? new List<SessionResponse>(),
                 ServerTimeTicks = response.ServerTimeTicks,
                 Subscriptions = response.Subscriptions,
                 NeedsSignatureRegistration = response.NeedsSignatureRegistration,

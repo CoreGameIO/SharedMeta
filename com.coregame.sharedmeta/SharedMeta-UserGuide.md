@@ -701,6 +701,56 @@ var config = client.GetEntityConfig<GameConfig>(entityId);
 
 ---
 
+## Holding a Service Reference (`MetaRef<T>`, 0.40.0+)
+
+Do **not** cache an API client in a field or a DI singleton. Disconnecting an entity — and the
+session restart that follows a supersede, when the player logs in from another device — disposes
+every API client on that connection, and nothing re-subscribes on its own. The cached instance is
+then dead.
+
+Hold a `MetaRef<T>` instead. It stores the lookup key, not the client, and re-resolves on each
+access, so it keeps working across disconnects:
+
+```csharp
+// UserOwned service — follows client.PlayerId, so it survives a relogin
+MetaRef<ProfileServiceApiClient> profile = client.PlayerRef<ProfileServiceApiClient>();
+
+await profile.GetAsync();           // subscribes on first use; sync + alloc-free afterwards
+profile.Current?.DoThingSync();     // null when not subscribed or the connection was dropped
+
+// Explicit entity
+MetaRef<ClanServiceApiClient> clan = client.Ref<ClanServiceApiClient>(clanId);
+```
+
+Each assembly also gets a generated `MetaRefs` container with one property per service — a ready
+handle for `UserOwned` services, a `MetaRefFactory<T>` for the rest, whose entity id isn't known
+at startup. Register it once with your DI container:
+
+```csharp
+var refs = new MyGame.Shared.Client.MetaRefs(client);
+
+refs.ProfileService.Current?.DoThingSync();   // MetaRef<T>
+var clan = refs.ClanService.For(clanId);      // MetaRefFactory<T> — hold the result
+```
+
+`For(entityId)` allocates a handle per call, so resolve it once when the id arrives rather than
+inside `Update()`.
+
+To re-subscribe after a connection dies (and to grey out the UI while you do):
+
+```csharp
+client.ConnectionInvalidated += (entityId, stateType) => { /* re-subscribe */ };
+```
+
+Если всё же использовать клиента, захваченного до разрыва, **любой изменяющий вызов** бросит
+`ObjectDisposedException` с сервисом, методом и сущностью — включая `Optimistic`, причём до
+локального применения, так что состояние не испортится. Раньше такой вызов проходил молча:
+изменение применялось локально, отправлялось в никуда, а клиент навсегда расходился с сервером.
+
+Чтения (`LocalQuery`, `{Method}Sync()`) и свойства продолжают работать — они нужны коду очистки
+и восстановления. Значит клиент, который используют только для чтений, так и будет отдавать
+данные, замороженные на момент разрыва. Для этого случая и нужен `MetaRef`.
+
 ## Execution Modes
 
 | Mode | Behavior | Use For |
