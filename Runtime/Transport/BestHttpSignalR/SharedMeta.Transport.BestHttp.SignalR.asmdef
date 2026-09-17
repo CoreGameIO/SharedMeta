@@ -1,0 +1,25 @@
+{
+    "name": "SharedMeta.Transport.BestHttp.SignalR",
+    "rootNamespace": "SharedMeta.Transport.BestHttp",
+    "references": [
+        "SharedMeta.Runtime",
+        "BestHTTP"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "HAS_BESTHTTP"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.tivadar.besthttp",
+            "expression": "0.0.0",
+            "define": "HAS_BESTHTTP"
+        }
+    ],
+    "noEngineReferences": false
+}
