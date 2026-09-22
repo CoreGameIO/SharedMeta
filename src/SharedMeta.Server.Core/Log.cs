@@ -186,6 +186,9 @@ internal static partial class Log
     [LoggerMessage(Level = LogLevel.Debug, Message = "Session not connected on connection {ConnectionId} ({Operation}) — pushed RequireSessionReconnect, expecting client to re-handshake")]
     public static partial void HandshakeSessionRecoveryPrompted(this ILogger logger, string connectionId, string operation);
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Client time for {PlayerId} on methodId={MethodId} was off by {DeltaSeconds:F1}s (window {WindowSeconds:F0}s) — overridden with the silo clock")]
+    public static partial void ClientTimeClamped(this ILogger logger, string playerId, ushort methodId, double deltaSeconds, double windowSeconds);
+
     [LoggerMessage(Level = LogLevel.Error, Message = "SessionConnect error")]
     public static partial void HandlerSessionConnectError(this ILogger logger, Exception ex);
 

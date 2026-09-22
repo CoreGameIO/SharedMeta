@@ -88,6 +88,32 @@ namespace SharedMeta.Server.Core.Transport
         /// on when every supported client ships a generated <c>ClientSignature</c>.
         /// </summary>
         public bool RequireClientSignature { get; set; }
+
+        /// <summary>
+        /// Applied when no <see cref="MetaTransportOptions"/> is registered at all — the bound has
+        /// to hold for a host that never configured transport options, not only for one that did.
+        /// </summary>
+        public static readonly TimeSpan DefaultMaxClientTimeSkew = TimeSpan.FromSeconds(30);
+
+        /// <summary>
+        /// How far an RPC's client-supplied <c>ServerTimeTicks</c> may sit from the silo clock
+        /// before the server overrides it with its own. Default 30 seconds; <see cref="TimeSpan.Zero"/>
+        /// disables the check and restores pre-0.41.0 "trust the client" behaviour.
+        /// <para>
+        /// The value has to travel on the wire because the client runs the same body optimistically
+        /// and both sides must see one instant. That makes it attacker-controlled: without a bound,
+        /// a modified client sets the clock forward and harvests every cooldown, timer and
+        /// regeneration tick the body computes from it.
+        /// </para>
+        /// <para>
+        /// An honest client derives this value from the last server sync plus local elapsed time,
+        /// never from its own wall clock, so it tracks the silo within round-trip latency — the
+        /// default window is orders of magnitude wider than any legitimate drift. A clamped call
+        /// still executes (rejecting it would turn a clock hiccup into a failed purchase); the
+        /// divergence surfaces through the normal desync channel.
+        /// </para>
+        /// </summary>
+        public TimeSpan MaxClientTimeSkew { get; set; } = DefaultMaxClientTimeSkew;
     }
 
     /// <summary>

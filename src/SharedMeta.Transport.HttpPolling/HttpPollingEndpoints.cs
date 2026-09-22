@@ -62,14 +62,13 @@ namespace SharedMeta.Transport.HttpPolling
                 return Results.BadRequest("Invalid request body");
 
             // If authenticated via JWT, use PlayerId from token claims (trusted)
+            var subject = GetSubject(ctx);
             if (ctx.User?.Identity?.IsAuthenticated == true)
             {
-                var claimPlayerId = ctx.User.FindFirst("sub")?.Value
-                                    ?? ctx.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (string.IsNullOrEmpty(claimPlayerId))
+                if (string.IsNullOrEmpty(subject))
                     return AuthenticationRequired(
                         "Authentication rejected: the token has no 'sub' or NameIdentifier claim.");
-                request.PlayerId = claimPlayerId;
+                request.PlayerId = subject;
             }
             else if (transportOptions?.RequireAuthentication == true)
             {
@@ -78,7 +77,11 @@ namespace SharedMeta.Transport.HttpPolling
                     "Re-acquire a token and re-run the handshake.");
             }
 
-            var state = mgr.GetOrCreateConnection(connectionId);
+            // Binds the id to this subject on first use. A handshake replayed onto an id that
+            // already belongs to someone else would otherwise rebind their live handler and put
+            // both callers on one poll queue.
+            var state = mgr.GetOrCreateConnection(connectionId, subject);
+            if (state == null) return ConnectionOwnedByAnotherSubject();
             mgr.Touch(connectionId);
 
             var response = await state.Handler.SessionConnectAsync(request);
@@ -378,8 +381,30 @@ namespace SharedMeta.Transport.HttpPolling
             if (state == null)
                 return (null, Results.StatusCode(410)); // 410 Gone — connection expired
 
+            // The header alone must not be enough to act on someone's session. Re-checking the
+            // principal on every request is what makes a leaked connection id useless to anyone
+            // who cannot also present the token it was bound to.
+            if (!state.MatchesOwner(GetSubject(ctx)))
+                return (null, ConnectionOwnedByAnotherSubject());
+
             mgr.Touch(connectionId);
             return (state, null);
         }
+
+        /// <summary>The authenticated subject on this request, or null when anonymous.</summary>
+        private static string? GetSubject(HttpContext ctx)
+        {
+            if (ctx.User?.Identity?.IsAuthenticated != true) return null;
+            var sub = ctx.User.FindFirst("sub")?.Value
+                      ?? ctx.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            return string.IsNullOrEmpty(sub) ? null : sub;
+        }
+
+        private static IResult ConnectionOwnedByAnotherSubject() => Results.Json(
+            SessionConnectResponse.AuthenticationRequired(
+                "This connection id belongs to a different authenticated player. " +
+                "Start a new connection with a fresh X-Connection-Id."),
+            MetaJsonContext.Default.SessionConnectResponse,
+            statusCode: StatusCodes.Status403Forbidden);
     }
 }

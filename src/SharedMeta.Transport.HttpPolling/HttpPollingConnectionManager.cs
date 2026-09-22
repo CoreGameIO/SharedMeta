@@ -33,19 +33,32 @@ namespace SharedMeta.Transport.HttpPolling
         }
 
         /// <summary>
-        /// Get or create connection state. Creates handler on first call.
+        /// Get or create connection state, binding it to the authenticated subject that created it.
+        /// Returns null when <paramref name="subject"/> does not match the owner an existing
+        /// connection was bound to — see <see cref="ConnectionState.OwnerSubject"/>.
         /// </summary>
-        public ConnectionState GetOrCreateConnection(string connectionId)
+        public ConnectionState? GetOrCreateConnection(string connectionId, string? subject)
         {
-            return _connections.GetOrAdd(connectionId, id =>
+            var state = _connections.GetOrAdd(connectionId, id =>
             {
                 var broadcastSender = new HttpPollingBroadcastSender();
                 var handler = _handlerFactory.Create(id, broadcastSender);
 
-                _logger.LogInformation("HTTP polling connection created: {ConnectionId}", id);
+                _logger.LogInformation("HTTP polling connection created: {ConnectionId} (subject={Subject})",
+                    id, subject ?? "<anonymous>");
 
-                return new ConnectionState(id, handler, broadcastSender);
+                return new ConnectionState(id, handler, broadcastSender, subject);
             });
+
+            if (!state.MatchesOwner(subject))
+            {
+                _logger.LogWarning(
+                    "HTTP polling connection {ConnectionId} is bound to a different subject — rejecting handshake from {Subject}",
+                    connectionId, subject ?? "<anonymous>");
+                return null;
+            }
+
+            return state;
         }
 
         /// <summary>
@@ -120,11 +133,34 @@ namespace SharedMeta.Transport.HttpPolling
         internal HttpPollingBroadcastSender BroadcastSender { get; }
         public DateTime LastActivity { get; set; } = DateTime.UtcNow;
 
-        internal ConnectionState(string connectionId, IMetaConnectionHandler handler, HttpPollingBroadcastSender broadcastSender)
+        /// <summary>
+        /// The authenticated subject ("sub" claim) that created this connection, or null when it
+        /// was created anonymously. Every later request on this connection id must present the
+        /// same subject.
+        /// </summary>
+        /// <remarks>
+        /// Unlike SignalR — where the connection id is server-assigned and bound to the socket —
+        /// the polling connection id is client-chosen and travels in a plain header. Without this
+        /// binding it is the only per-request credential: anything that leaks one (logs, a proxy,
+        /// a shared device) hands over the session, since no endpoint past the handshake looks at
+        /// the token again.
+        /// </remarks>
+        public string? OwnerSubject { get; }
+
+        /// <summary>
+        /// True when <paramref name="subject"/> may act on this connection. An anonymously created
+        /// connection accepts anyone — that deployment has no authenticated identity to protect
+        /// (see <c>MetaTransportOptions.RequireAuthentication</c>).
+        /// </summary>
+        public bool MatchesOwner(string? subject)
+            => OwnerSubject == null || string.Equals(OwnerSubject, subject, StringComparison.Ordinal);
+
+        internal ConnectionState(string connectionId, IMetaConnectionHandler handler, HttpPollingBroadcastSender broadcastSender, string? ownerSubject = null)
         {
             ConnectionId = connectionId;
             Handler = handler;
             BroadcastSender = broadcastSender;
+            OwnerSubject = ownerSubject;
         }
     }
 }

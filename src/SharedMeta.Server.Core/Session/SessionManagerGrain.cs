@@ -1280,8 +1280,8 @@ namespace SharedMeta.Server.Core.Session
 
             var sessionSeq = ++_sequenceNumber;
             // Sort the in-flight batch in place, then snapshot into a new list for the response
-            // (caller `_outgoingBatch` is cleared at the end of this method; the response keeps
-            // its own list since it lives on in _pendingPackets).
+            // (`_outgoingBatch` is cleared below; the response keeps its own list since it lives
+            // on in _pendingPackets).
             if (_outgoingBatch.Count > 1)
                 _outgoingBatch.Sort(SessionOpByEntityIdOrdinal);
             var response = new SessionResponse
@@ -1292,6 +1292,12 @@ namespace SharedMeta.Server.Core.Session
             };
 
             _logger.FlushBatch(_playerId, sessionSeq, response.Operations.Count);
+
+            // Must clear BEFORE the await below. ReceiveBroadcastAsync is [AlwaysInterleave], so a
+            // second broadcast can run while this one is suspended on Notify; it would append to a
+            // list still holding this batch's ops and re-ship them under a new session sequence.
+            // The client has no per-entity dedup, so those ops replay twice.
+            _outgoingBatch.Clear();
 
             // Store for reconnection replay
             _pendingPackets.Add(response);
@@ -1309,7 +1315,6 @@ namespace SharedMeta.Server.Core.Session
             {
                 _pendingNotifyResponse = null;
             }
-            _outgoingBatch.Clear();
         }
 
         private void DrainHeldBroadcasts(EntityOrderingState state, string entityId)

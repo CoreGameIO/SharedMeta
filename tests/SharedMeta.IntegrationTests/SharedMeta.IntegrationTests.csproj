@@ -32,6 +32,10 @@
     <ProjectReference Include="..\..\src\SharedMeta.Auth\SharedMeta.Auth.csproj" />
     <!-- 0.21.0 versioned config subsystem — grain-backed registry + observer provider -->
     <ProjectReference Include="..\..\src\SharedMeta.Orleans\SharedMeta.Orleans.csproj" />
+    <!-- HTTP polling transport. Its connection id is client-chosen and travels in a plain
+         header, so the id↔subject binding is a security boundary that needs coverage here —
+         every other transport finding lives in code no test executes. -->
+    <ProjectReference Include="..\..\src\SharedMeta.Transport.HttpPolling\SharedMeta.Transport.HttpPolling.csproj" />
     <!-- Cross-assembly DefaultConfig regression fixture (0.20.2). The consumer project
          references SplitConfig.Models for the [MetaConfig(Default = true)] type — without
          the cross-assembly walk in FindDefaultConfigType the generator would silently emit

@@ -271,4 +271,45 @@ public class AuthTests
         Assert.Single(keys);
         Assert.Contains(googleKey, keys);
     }
+
+    // ========================
+    // PlayerId entropy
+    // ========================
+
+    /// <summary>
+    /// A PlayerId collision is not a cosmetic clash: the second login persists the same id, both
+    /// devices resolve the same UserOwned entities, and every grain keyed by that id serves one
+    /// merged account with nothing anywhere to raise. The only defence is enough entropy that it
+    /// never happens, so the width is pinned here.
+    ///
+    /// The earlier form was 8 hex chars of a GUID plus the date — 32 bits per calendar day, which
+    /// is ~1% chance of a merge at 10K new players/day and ~25% at 50K.
+    /// </summary>
+    [Fact(Timeout = 30_000)]
+    public async Task NewPlayerId_Is128BitsOfHex()
+    {
+        var grain = _grainFactory.GetGrain<IAuthGrain>("device-entropy-" + Guid.NewGuid());
+        var playerId = (await grain.LoginAsync()).PlayerId;
+
+        Assert.Equal(32, playerId.Length);
+        Assert.Matches("^[0-9a-f]{32}$", playerId);
+        // The date suffix narrowed the birthday window but bought no entropy — it must be gone,
+        // otherwise the id is still only as wide as its random half.
+        Assert.DoesNotContain("_", playerId);
+    }
+
+    /// <summary>
+    /// Weak smoke check on top of the width assertion: minting is not seeded from something that
+    /// repeats within a batch (a clock tick, a per-activation counter).
+    /// </summary>
+    [Fact(Timeout = 60_000)]
+    public async Task NewPlayerIds_AreDistinctAcrossABatch()
+    {
+        var ids = new HashSet<string>();
+        for (int i = 0; i < 200; i++)
+        {
+            var grain = _grainFactory.GetGrain<IAuthGrain>($"device-batch-{Guid.NewGuid()}");
+            Assert.True(ids.Add((await grain.LoginAsync()).PlayerId));
+        }
+    }
 }

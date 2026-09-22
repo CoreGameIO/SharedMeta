@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.41.0] - 2026-09-22
+
+### Breaking
+
+- `MetaTransportOptions.MaxClientTimeSkew` (default 30s) bounds an RPC's client-supplied `ServerTimeTicks` to the silo clock. A host running a simulated or accelerated clock must set it to `TimeSpan.Zero`.
+- `HttpPollingConnectionManager.GetOrCreateConnection` now takes the authenticated subject and returns `null` when the id belongs to someone else.
+
+### Changed
+
+- A new `PlayerId` is 128 random bits rendered as 32 hex chars, was 8 hex chars plus the date. Existing ids are untouched; nothing in the framework parses them.
+
+### Fixed
+
+- **Client-supplied time was authoritative on the server.** `RpcCall.ServerTimeTicks` reached `MetaContext.ServerTimeTicks` with no clamp, so every cooldown, timer and regeneration tick ran server-side under a timestamp the client chose. An honest client derives it from the last server sync, so the window is unreachable in normal traffic; a clamped call is logged with player, method and delta.
+- **`PlayerId` had 32 bits of entropy per calendar day.** ~1.2% chance of a collision at 10K new players/day, ~25% at 50K — and a collision silently merges two accounts.
+- **HTTP polling authenticated by connection id alone.** The token was checked once at `/session-connect` and never again, and a handshake replayed onto a live id rebound that handler to the new caller. The id is now bound to the `sub` that created it and re-checked on every request; anonymous connections are unaffected by design.
+- **Interleaved broadcasts could ship the same operations twice.** `FlushOutgoingBatch` cleared its buffer after the notify await, so a broadcast interleaving at that point re-shipped the previous batch under a new session sequence — and the client has no per-entity dedup.
+
 ## [0.40.0] - 2026-09-17
 
 ### Breaking

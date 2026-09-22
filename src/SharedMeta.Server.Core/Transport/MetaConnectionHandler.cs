@@ -613,7 +613,7 @@ namespace SharedMeta.Server.Core.Transport
                     CallerClientVersion = _clientVersion,
                     Payload = request.Payload,
                     IsCrossOptimistic = request.IsCrossOptimistic,
-                    ServerTimeTicks = request.ServerTimeTicks,
+                    ServerTimeTicks = ClampClientTime(request.ServerTimeTicks, serverMethodId),
                     DeepDesyncActive = DeepDesyncActive,
                     Debug = request.Debug  // 0.26.6+ piggybacked PayloadDebug (deep-state CRCs)
                 };
@@ -1132,6 +1132,35 @@ namespace SharedMeta.Server.Core.Transport
         // produced operator-noise spam during server restarts (every in-flight RPC/Signal
         // landed on the unbound handler and logged ERR; now they all early-return one INFO
         // line each, and the client recovers off the single push notification).
+        /// <summary>
+        /// Bound an RPC's client-supplied instant to the silo clock.
+        /// </summary>
+        /// <remarks>
+        /// The value is attacker-controlled: it has to ride the wire so the optimistic client and
+        /// the authoritative server compute the same cooldown/timer/regeneration from one instant,
+        /// and a modified client can therefore set it to any future it likes. An honest client
+        /// derives it from the last server sync plus elapsed local time — never from its own wall
+        /// clock — so it stays within round-trip latency of the silo and never reaches the window.
+        ///
+        /// Clamped rather than rejected: a clock hiccup should not turn into a failed purchase, and
+        /// the client's optimistic result diverging from the server's is exactly what the desync
+        /// channel already reports.
+        /// </remarks>
+        private long ClampClientTime(long clientTicks, ushort serverMethodId)
+        {
+            var skew = _transportOptions?.MaxClientTimeSkew ?? MetaTransportOptions.DefaultMaxClientTimeSkew;
+            if (skew <= TimeSpan.Zero) return clientTicks;
+
+            var now = DateTime.UtcNow.Ticks;
+            var delta = clientTicks - now;
+            if (Math.Abs(delta) <= skew.Ticks) return clientTicks;
+
+            _logger.ClientTimeClamped(
+                PlayerId ?? _connectionId, serverMethodId,
+                TimeSpan.FromTicks(delta).TotalSeconds, skew.TotalSeconds);
+            return now;
+        }
+
         private bool TryEnsureSessionConnected(string operation)
         {
             if (IsSessionConnected) return true;

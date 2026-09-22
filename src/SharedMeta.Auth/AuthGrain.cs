@@ -132,9 +132,24 @@ namespace SharedMeta.Auth
             return playerId;
         }
 
+        /// <summary>
+        /// Mint a PlayerId for a first-time login.
+        /// </summary>
+        /// <remarks>
+        /// 128 bits, cryptographically sourced. A collision here is not a cosmetic id clash: the
+        /// second login persists the same PlayerId, both devices resolve the same UserOwned
+        /// entities and every downstream grain keyed by that id serves one merged account, with no
+        /// error anywhere to notice it by.
+        ///
+        /// The previous form took 8 hex chars of a GUID and appended the date, which is 32 bits per
+        /// calendar day — ~1% chance of a merge at 10K new players/day, ~25% at 50K. The date
+        /// suffix narrowed the birthday window but bought no entropy.
+        /// </remarks>
         private static string GeneratePlayerId()
         {
-            return $"{Guid.NewGuid().ToString("N")[..8]}_{DateTime.UtcNow:yyyyMMdd}";
+            Span<byte> bytes = stackalloc byte[16];
+            System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
+            return Convert.ToHexString(bytes).ToLowerInvariant();
         }
     }
 
