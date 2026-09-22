@@ -7,6 +7,11 @@
 - `MetaTransportOptions.MaxClientTimeSkew` (default 30s) bounds an RPC's client-supplied `ServerTimeTicks` to the silo clock. A host running a simulated or accelerated clock must set it to `TimeSpan.Zero`.
 - `HttpPollingConnectionManager.GetOrCreateConnection` now takes the authenticated subject and returns `null` when the id belongs to someone else.
 
+### Added
+
+- `IMetaConfigProvider<TConfig>.PublishGeneration` — a counter bumped on publish/unpublish that entity grains compare to drop their cached config. Default interface member returning 0, so existing providers compile unchanged; a provider that can republish at runtime must override it. `BroadcastingConfigProvider` already does.
+- `BroadcastValidator.EnsureSyncCompletion` gained a `ValueTask<T>` overload. `Task<T>` binds to the `Task` one by inheritance, `ValueTask<T>` does not, so a `ValueTask<T>` service method failed to compile on the generated replay path.
+
 ### Changed
 
 - A new `PlayerId` is 128 random bits rendered as 32 hex chars, was 8 hex chars plus the date. Existing ids are untouched; nothing in the framework parses them.
@@ -17,6 +22,10 @@
 - **`PlayerId` had 32 bits of entropy per calendar day.** ~1.2% chance of a collision at 10K new players/day, ~25% at 50K — and a collision silently merges two accounts.
 - **HTTP polling authenticated by connection id alone.** The token was checked once at `/session-connect` and never again, and a handshake replayed onto a live id rebound that handler to the new caller. The id is now bound to the `sub` that created it and re-checked on every request; anonymous connections are unaffected by design.
 - **Interleaved broadcasts could ship the same operations twice.** `FlushOutgoingBatch` cleared its buffer after the notify await, so a broadcast interleaving at that point re-shipped the previous batch under a new session sequence — and the client has no per-entity dedup.
+- **Two namespaces in one assembly did not compile.** `GameMethodIds` was emitted once, into the namespace of whichever service the pipeline collected first, while every per-service emitter references its own interface's namespace — they agree only at one namespace. The table is now emitted into every namespace that declares a service, from the same canonical sort.
+- **The server dispatcher did not know `ValueTask`.** It classified return types by string and matched only `Task` / `Task<`, so a `ValueTask` method took the synchronous branch: never awaited, and the struct itself handed to the serializer. 0.40.0 taught every other emitter about `ValueTask` and missed this one; no test declared such a method.
+- **`MetaClient.RestartSessionAsync` could not succeed.** It passed a fresh `Guid` with no mode, so the dispatcher defaulted to `Resume` and the server answered `SessionUnknown` for an id it never issued. It now starts new explicitly, and ignores the supersede notification its own restart triggers — that notification comes back to the same still-connected client and used to kill the session just created.
+- **A published config never reached an already-active entity.** The provider dropped its own cached instance, but the grain's per-client materialized-config cache was cleared only at deactivation, so `GetConfig` was never reached. Affects `EntityScope.Global`; `Private` / `Shared` stay frozen behind their config pin by design.
 
 ## [0.40.0] - 2026-09-17
 

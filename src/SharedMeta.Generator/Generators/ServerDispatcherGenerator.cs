@@ -526,9 +526,22 @@ namespace SharedMeta.Generator.Generators
             const string indent = "                    ";
 
             string forcePersistPart = forcePersist ? ", ForcePersist = true" : "";
-            bool isTask = returnType == "System.Threading.Tasks.Task" || returnType == "Task";
-            bool isTaskOfT = returnType.StartsWith("System.Threading.Tasks.Task<") || returnType.StartsWith("Task<");
+            // ValueTask is classified alongside Task. Missing it here did not produce a compile
+            // error — the method fell through to the "synchronous T" branch, so the body was
+            // never awaited and the ValueTask struct itself was handed to PackForExternalUsage.
+            bool isValueTaskShape = returnType == "System.Threading.Tasks.ValueTask" || returnType == "ValueTask"
+                || returnType.StartsWith("System.Threading.Tasks.ValueTask<") || returnType.StartsWith("ValueTask<");
+            bool isTask = returnType == "System.Threading.Tasks.Task" || returnType == "Task"
+                || returnType == "System.Threading.Tasks.ValueTask" || returnType == "ValueTask";
+            bool isTaskOfT = returnType.StartsWith("System.Threading.Tasks.Task<") || returnType.StartsWith("Task<")
+                || returnType.StartsWith("System.Threading.Tasks.ValueTask<") || returnType.StartsWith("ValueTask<");
             bool isVoid = returnType == "void";
+            // The async tail takes a Task. Converting is only reached when the call actually
+            // suspended — the sync-completion fast path returns before this — so the allocation
+            // lands on the rare branch. A ValueTask must not be consumed twice; reading
+            // IsCompletedSuccessfully (and .Result on the completed path) is not a consumption,
+            // and AsTask() below is the single one.
+            string tailArg = isValueTaskShape ? "__t.AsTask()" : "__t";
 
             // 0.26.6+ Deep-state-check emit gating. When the method is annotated
             // [MetaMethod(DeepStateCheck = SnapshotTiming.X)] and we know the state type,
@@ -573,7 +586,7 @@ namespace SharedMeta.Generator.Generators
                 // server emits a compile-time warning so the user can decide.
                 if (emitDsc)
                     sb.AppendLine($"{indent}    #warning SharedMeta: [MetaMethod(DeepStateCheck)] on async '{interfaceName}.{methodName}' — snapshot fires only when the impl completes synchronously. Convert to a sync return type for full coverage.");
-                sb.AppendLine($"{indent}    return {tailName}(service, __t, serializer);");
+                sb.AppendLine($"{indent}    return {tailName}(service, {tailArg}, serializer);");
                 sb.AppendLine($"{indent}}}");
                 EmitAsyncTail(asyncTails, symbol, info, methodName, triggersByMethod, interfaceName, namespaceName, taskGenericType: null, resultVar: null, forcePersistPart);
             }
@@ -596,7 +609,7 @@ namespace SharedMeta.Generator.Generators
                 var tailName = AsyncTailName(info);
                 if (emitDsc)
                     sb.AppendLine($"{indent}    #warning SharedMeta: [MetaMethod(DeepStateCheck)] on async '{interfaceName}.{methodName}' — snapshot fires only when the impl completes synchronously. Convert to a sync return type for full coverage.");
-                sb.AppendLine($"{indent}    return {tailName}(service, __t, serializer);");
+                sb.AppendLine($"{indent}    return {tailName}(service, {tailArg}, serializer);");
                 sb.AppendLine($"{indent}}}");
                 EmitAsyncTail(asyncTails, symbol, info, methodName, triggersByMethod, interfaceName, namespaceName, taskGenericType, resultVar: "__result", forcePersistPart);
             }

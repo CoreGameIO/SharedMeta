@@ -487,25 +487,54 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("    }   // close GameServiceDiscoveryBase");
             sb.AppendLine("}   // close rootNamespace");
             sb.AppendLine();
-            sb.AppendLine($"namespace {rootNamespace}.Generated");
-            sb.AppendLine("{");
-            sb.AppendLine("    /// <summary>");
-            sb.AppendLine("    /// Compile-time table of client-side method ids. Each constant equals the");
-            sb.AppendLine("    /// method's <c>GlobalIndex</c> in the client signature's KnownMethods.");
-            sb.AppendLine("    /// Generated client code passes these into <c>RpcCall.MethodId</c> on the wire.");
-            sb.AppendLine("    /// </summary>");
-            sb.AppendLine("    public static class GameMethodIds");
-            sb.AppendLine("    {");
-            ushort kIdx = 0;
-            foreach (var s in sorted)
+
+            // Emit the table into EVERY namespace that declares a service, not just the root.
+            //
+            // Consumers reference it as {own interface's namespace}.Generated.GameMethodIds —
+            // that is what the dispatcher, api-client, query, server-api and recorder emitters all
+            // compute, because a per-service emitter sees only its own interface and has no way to
+            // learn which namespace the collected set happened to pick as root. Emitting one copy
+            // under the first-collected namespace therefore only compiled while the whole assembly
+            // lived in a single namespace; a second one produced CS0234 for whichever namespace
+            // lost the race, and which one that was depended on collection order.
+            //
+            // The copies cannot drift: every one is written from the same canonical sort below, so
+            // the constants agree by construction. They are `const`, so the duplication costs
+            // nothing at runtime — the values are inlined at every use site.
+            //
+            // The per-assembly namespace itself is still required: each assembly running this
+            // generator produces its own table (ids assigned over THAT assembly's [MetaMethod]
+            // declarations), so a shared SharedMeta.Generated namespace would clash whenever a
+            // project references two of them. Cross-assembly consumers keep qualifying by the
+            // owning assembly's root namespace, which is one of the namespaces emitted here.
+            var idNamespaces = new SortedSet<string>(System.StringComparer.Ordinal) { rootNamespace };
+            foreach (var s in services)
             {
-                var safeName = SignatureHashGenerator.MakeMethodIdConstName(s.ServiceName, s.MethodAlias, s.Version);
-                sb.AppendLine($"        public const ushort {safeName} = {kIdx};");
-                kIdx++;
+                if (!string.IsNullOrEmpty(s.Namespace)) idNamespaces.Add(s.Namespace);
             }
-            sb.AppendLine("    }");
-            sb.AppendLine("}");
-            sb.AppendLine();
+
+            foreach (var ns in idNamespaces)
+            {
+                sb.AppendLine($"namespace {ns}.Generated");
+                sb.AppendLine("{");
+                sb.AppendLine("    /// <summary>");
+                sb.AppendLine("    /// Compile-time table of client-side method ids. Each constant equals the");
+                sb.AppendLine("    /// method's <c>GlobalIndex</c> in the client signature's KnownMethods.");
+                sb.AppendLine("    /// Generated client code passes these into <c>RpcCall.MethodId</c> on the wire.");
+                sb.AppendLine("    /// </summary>");
+                sb.AppendLine("    public static class GameMethodIds");
+                sb.AppendLine("    {");
+                ushort kIdx = 0;
+                foreach (var s in sorted)
+                {
+                    var safeName = SignatureHashGenerator.MakeMethodIdConstName(s.ServiceName, s.MethodAlias, s.Version);
+                    sb.AppendLine($"        public const ushort {safeName} = {kIdx};");
+                    kIdx++;
+                }
+                sb.AppendLine("    }");
+                sb.AppendLine("}");
+                sb.AppendLine();
+            }
 
             // 0.24.0+ Auto-publish ClientSignature into MetaClientSignature.Default so consumers
             // don't have to wire MetaClientOptions.ClientSignature by hand (0.24 dispatch requires

@@ -423,7 +423,12 @@ namespace SharedMeta.Client
             }
 
             _dispatcher.PlayerId = PlayerId;
-            var sessionResult = await _dispatcher.ConnectSessionAsync(Guid.NewGuid(), 0, ClientAppVersion);
+            // Empty id + explicit StartNew. Passing a fresh Guid instead made the dispatcher's
+            // mode default pick Resume (any non-empty id resumes), and the server answers
+            // SessionUnknown for an id it has never issued — so this method could not succeed
+            // against a healthy server at all.
+            var sessionResult = await _dispatcher.ConnectSessionAsync(
+                Guid.Empty, 0, ClientAppVersion, SessionConnectMode.StartNew);
 
             if (!sessionResult.Success)
             {

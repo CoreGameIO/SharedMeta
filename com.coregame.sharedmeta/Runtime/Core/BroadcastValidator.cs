@@ -36,6 +36,22 @@ namespace SharedMeta.Core
             }
         }
 
+        /// <summary>
+        /// <see cref="ValueTask{TResult}"/> overload. Needed explicitly: <c>Task&lt;T&gt;</c>
+        /// inherits <see cref="Task"/> and binds to the overload above, but
+        /// <c>ValueTask&lt;T&gt;</c> is an unrelated struct — without this, a service method
+        /// declared <c>ValueTask&lt;T&gt;</c> fails to compile in the generated replay path.
+        /// The result is discarded; replay re-runs the body for its state effect, and the
+        /// return value is compared against the server's separately.
+        /// </summary>
+        public static void EnsureSyncCompletion<T>(ValueTask<T> task, string serviceName, string methodName)
+        {
+            if (!task.IsCompleted)
+            {
+                ReportIncomplete(serviceName, methodName);
+            }
+        }
+
         private static void ReportIncomplete(string serviceName, string methodName)
         {
             MetaLog.Error(

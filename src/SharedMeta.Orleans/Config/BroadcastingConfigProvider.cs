@@ -83,6 +83,15 @@ namespace SharedMeta.Orleans.Config
 
         private IConfigUpdateObserver? _observerReference;
 
+        // Bumped on every publish / unpublish. Entity grains hold their own materialized-config
+        // caches for the lifetime of an activation and cannot be reached from here, so they poll
+        // this instead: dropping the entry below is necessary but was never sufficient, because a
+        // grain that already cached the instance never called back in to notice.
+        private int _publishGeneration;
+
+        /// <inheritdoc />
+        public int PublishGeneration => Volatile.Read(ref _publishGeneration);
+
         public BroadcastingConfigProvider(
             IConfigRegistry registry,
             IMetaSerializer serializer,
@@ -148,6 +157,7 @@ namespace SharedMeta.Orleans.Config
             // so ResolveLatestMatching reflects the new version immediately.
             _cache.TryRemove(version, out _);
             Mutate(known => known.Add(version));
+            Interlocked.Increment(ref _publishGeneration);
             return Task.CompletedTask;
         }
 
@@ -155,6 +165,7 @@ namespace SharedMeta.Orleans.Config
         {
             _cache.TryRemove(version, out _);
             Mutate(known => known.Remove(version));
+            Interlocked.Increment(ref _publishGeneration);
             return Task.CompletedTask;
         }
 

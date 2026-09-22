@@ -87,6 +87,10 @@ namespace SharedMeta.Client
         // (transport event + RPC error can both detect supersede)
         private bool _terminated;
 
+        // One-shot: set by ResetForRestart, consumed by the first "superseded" notification that
+        // follows. Guarded by _lock like the rest of the session state.
+        private bool _expectSelfSupersede;
+
         // 0.26.3+: Tracks Reconnecting → ? transition so HandleDisconnected can tell whether
         // the transport gave up retrying (Reconnecting → Disconnected with reason != ClientRequested)
         // versus a clean close (Disconnected with no prior Reconnecting). The former gets an
@@ -1415,6 +1419,19 @@ namespace SharedMeta.Client
             lock (_lock)
             {
                 if (_terminated) return; // Already handled (transport event + RPC error can both fire)
+
+                // A restart supersedes our OWN previous session, and the server notifies the
+                // observers of the session it is replacing — which still includes this connection,
+                // since the transport never dropped. Treating that as a termination would kill the
+                // session the restart just created: the notification is about the session we
+                // deliberately abandoned, not about us.
+                if (_expectSelfSupersede && reason.Contains("superseded", StringComparison.OrdinalIgnoreCase))
+                {
+                    _expectSelfSupersede = false;
+                    MetaLog.Info("[ClientDispatcher] Ignoring self-supersede notification from our own session restart.");
+                    return;
+                }
+
                 _terminated = true;
 
                 MetaLog.Warning($"[ClientDispatcher] Session terminated: {reason}");
@@ -1521,6 +1538,14 @@ namespace SharedMeta.Client
                 pendingToFail = _pendingRequests.Values.ToList();
                 _pendingRequests.Clear();
                 _lastAcknowledgedSequence = 0;
+                // The StartNew that follows supersedes our own previous session, and the server
+                // notifies that session's observers — us, because the transport never dropped.
+                // Arm the one-shot guard so the resulting notification doesn't terminate the
+                // session we're about to establish. Only when we actually held a session: with
+                // nothing to supersede the server sends nothing, and an armed guard would sit
+                // there waiting to swallow someone else's genuine supersede. Read before the
+                // reset below clears it.
+                _expectSelfSupersede = _sessionId != Guid.Empty;
                 _sessionId = Guid.Empty;
                 _nextRequestId = 0;
                 _terminated = false;

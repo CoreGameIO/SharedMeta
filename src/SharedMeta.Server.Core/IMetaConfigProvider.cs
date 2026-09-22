@@ -112,5 +112,24 @@ namespace SharedMeta.Server.Core
         /// </summary>
         /// <param name="version">The config version requested by the client.</param>
         string? GetDownloadUrl(MetaConfigVersion version) => null;
+
+        /// <summary>
+        /// Monotonic counter bumped whenever the set of available config versions changes
+        /// (publish / unpublish). Entity grains cache materialized <typeparamref name="TConfig"/>
+        /// instances per client version for the lifetime of an activation; they compare this value
+        /// on each read and drop those caches when it moves.
+        /// <para>
+        /// Pull-based on purpose: the provider is a silo singleton with no handle on the grains
+        /// that hold caches, and fanning an invalidation out to every active entity would turn an
+        /// admin publish into a cluster-wide storm. One <c>int</c> comparison per call is cheaper
+        /// than either.
+        /// </para>
+        /// <para>
+        /// The default returns 0 — a provider whose content never changes at runtime (a static
+        /// bundled config) needs no invalidation, and its grains keep their caches forever.
+        /// Implementations that can republish must increment this.
+        /// </para>
+        /// </summary>
+        int PublishGeneration => 0;
     }
 }

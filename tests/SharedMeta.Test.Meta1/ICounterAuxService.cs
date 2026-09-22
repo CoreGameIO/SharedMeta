@@ -89,5 +89,32 @@ namespace SharedMeta.Test.Meta1
         /// </summary>
         [MetaMethod(Alias = "AuxSumUnqualified", Mode = ExecutionMode.Server)]
         int AuxSumUnqualified(List<int> values);
+
+        // ============================================
+        // ValueTask coverage
+        // ============================================
+        //
+        // These exist to be compiled and called. The client, server-API, contract and desync
+        // emitters all learned ValueTask; the server dispatcher classified return types by
+        // string and knew only "Task" / "Task<". A ValueTask method therefore took the
+        // "synchronous T" branch: the body was never awaited and the ValueTask struct itself
+        // was handed to PackForExternalUsage. No test declared one, so nothing caught it.
+        //
+        // Both shapes are needed — the void-ish and generic branches emit separately — and both
+        // must survive a genuine suspension, which is the path that reaches the async tail.
+
+        /// <summary>ValueTask-returning mutation. Must be awaited by the server dispatcher.</summary>
+        [MetaMethod(Alias = "AuxValueTaskAdd", Mode = ExecutionMode.Server)]
+        ValueTask AuxValueTaskAdd(int value);
+
+        /// <summary>ValueTask&lt;T&gt;-returning mutation; the result must be the awaited value,
+        /// not a serialized ValueTask.</summary>
+        [MetaMethod(Alias = "AuxValueTaskAddReturning", Mode = ExecutionMode.Server)]
+        ValueTask<int> AuxValueTaskAddReturning(int value);
+
+        /// <summary>Suspends before mutating, so dispatch cannot take the sync-completion fast
+        /// path and has to go through the async tail — where the ValueTask is converted.</summary>
+        [MetaMethod(Alias = "AuxValueTaskSuspend", Mode = ExecutionMode.Server)]
+        ValueTask<int> AuxValueTaskSuspend(int value);
     }
 }

@@ -114,5 +114,27 @@ namespace SharedMeta.Test.Meta1
             op.ServerTimeTicks = 999;
             op.CallerId = "modified-by-sibling";
         }
+
+        public ValueTask AuxValueTaskAdd(int value)
+        {
+            Context.State.Sum += value;
+            return default;
+        }
+
+        public ValueTask<int> AuxValueTaskAddReturning(int value)
+        {
+            Context.State.Sum += value;
+            return new ValueTask<int>((int)Context.State.Sum);
+        }
+
+        public async ValueTask<int> AuxValueTaskSuspend(int value)
+        {
+            // Yield BEFORE mutating so the dispatcher's IsCompletedSuccessfully check fails and
+            // the call has to travel through the async tail. Mutating first would let the
+            // sync-completion path cover the assertion and hide a broken tail.
+            await Task.Yield();
+            Context.State.Sum += value;
+            return (int)Context.State.Sum;
+        }
     }
 }

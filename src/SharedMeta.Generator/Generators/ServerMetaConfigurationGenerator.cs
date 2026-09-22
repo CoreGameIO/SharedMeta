@@ -1140,6 +1140,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("        protected override object? GetCachedConfigForClient(string? clientVersion)");
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_configProvider == null) return null;");
+                sb.AppendLine("            DropConfigCachesIfRepublished();");
                 if (stateScope == 2) // EntityScope.Global
                 {
                     sb.AppendLine("            // 0.21.0 Phase 7 — EntityScope.Global: ignore the caller's clientVersion and");
@@ -1193,6 +1194,33 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine("            _configCacheByClient.Clear();");
                 foreach (var sc in serviceConfigTypes)
                     sb.AppendLine($"            _serviceConfigCacheByClient_{sc.Ident}.Clear();");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+
+                // Live-rollout invalidation. The caches below key a materialized config by client
+                // version and used to be dropped only at OnDeactivating, so an admin publish
+                // reached the provider (which drops its own entry) and stopped there: the next
+                // call hit this dictionary and returned the pre-publish instance, and GetConfig
+                // was never reached. An entity that stayed active never saw a rollout.
+                //
+                // Comparing the provider's publish generation is enough because the providers are
+                // silo singletons shared by every grain, so one bump is visible to all of them on
+                // their next call. Scope-dependent: a Private/Shared entity holding a config-version
+                // pin still resolves to its pinned version afterwards — that freeze is the
+                // documented contract for a live session and is intentionally unaffected. Global
+                // entities never pin, which is where the rollout was actually being lost.
+                sb.AppendLine("        private int _seenConfigPublishGeneration;");
+                sb.AppendLine();
+                sb.AppendLine("        private void DropConfigCachesIfRepublished()");
+                sb.AppendLine("        {");
+                sb.AppendLine("            int gen = 0;");
+                if (configType != null)
+                    sb.AppendLine("            if (_configProvider != null) gen += _configProvider.PublishGeneration;");
+                foreach (var sc in serviceConfigTypes)
+                    sb.AppendLine($"            if (_serviceConfigProvider_{sc.Ident} != null) gen += _serviceConfigProvider_{sc.Ident}.PublishGeneration;");
+                sb.AppendLine("            if (gen == _seenConfigPublishGeneration) return;");
+                sb.AppendLine("            _seenConfigPublishGeneration = gen;");
+                sb.AppendLine("            ClearConfigCache();");
                 sb.AppendLine("        }");
                 sb.AppendLine();
             }
@@ -1259,6 +1287,7 @@ namespace SharedMeta.Generator.Generators
                 // sees the same branch, regardless of who's calling), else per-client resolve+cache.
                 sb.AppendLine("        protected override object[] GetCachedServiceConfigsForClient(string? clientVersion)");
                 sb.AppendLine("        {");
+                sb.AppendLine("            DropConfigCachesIfRepublished();");
                 sb.AppendLine($"            var _result = new object[{serviceConfigTypes.Count}];");
                 for (int i = 0; i < serviceConfigTypes.Count; i++)
                 {

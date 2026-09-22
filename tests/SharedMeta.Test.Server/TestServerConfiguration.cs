@@ -29,6 +29,12 @@ public static class TestServerConfiguration
     public static readonly TestConfigVersionResolver ConfigVersionResolver = new();
 
     /// <summary>
+    /// Shared instance so a test can republish and the entity grains see it — mirrors a real
+    /// BroadcastingConfigProvider, which is likewise a silo singleton.
+    /// </summary>
+    public static readonly TestRolloutConfigProvider RolloutConfigProvider = new();
+
+    /// <summary>
     /// Register all test meta services using generated ConfigureMeta.
     /// </summary>
     public static IServiceCollection ConfigureTestMeta(
@@ -63,6 +69,9 @@ public static class TestServerConfiguration
         services.AddSingleton<IMetaConfigProvider<ServiceConfigGlobalScopeConfig>>(new TestServiceConfigGlobalScopeConfigProvider());
         // 0.33.0 Phase B: [ServiceConfig] schema-floor migration parity fixture.
         services.AddSingleton<IMetaConfigProvider<ServiceConfigMigrationConfig>>(new TestServiceConfigMigrationConfigProvider());
+        // Live-rollout fixture: a provider whose content an admin can republish at runtime.
+        // Singleton, and the test mutates the same instance the grains read.
+        services.AddSingleton<IMetaConfigProvider<RolloutConfig>>(RolloutConfigProvider);
         services.AddSingleton<IConfigVersionResolver>(ConfigVersionResolver);
         return services.ConfigureMeta(configureServices);
     }
@@ -251,4 +260,38 @@ public class TestServiceConfigMigrationConfigProvider : IMetaConfigProvider<Serv
         Major = version.Major,
         Minor = version.Minor,
     };
+}
+
+/// <summary>
+/// Provider for <see cref="RolloutConfig"/> whose payload can be republished mid-test.
+///
+/// Stands in for <c>BroadcastingConfigProvider</c>: a silo singleton that learns about an admin
+/// publish and bumps <see cref="PublishGeneration"/>. Entity grains cache the materialized config
+/// per client version for the whole activation, so that counter is the only thing that tells them
+/// to let go of it — dropping the provider's own entry is invisible to a grain that already has
+/// the instance.
+/// </summary>
+public class TestRolloutConfigProvider : IMetaConfigProvider<RolloutConfig>
+{
+    private int _payout = 10;
+    private int _generation;
+
+    public int PublishGeneration => Volatile.Read(ref _generation);
+
+    /// <summary>Simulate an admin publishing new config content.</summary>
+    public void Publish(int payout)
+    {
+        Volatile.Write(ref _payout, payout);
+        Interlocked.Increment(ref _generation);
+    }
+
+    /// <summary>Reset between tests — the provider is a singleton shared by the whole fixture.</summary>
+    public void Reset(int payout = 10)
+    {
+        Volatile.Write(ref _payout, payout);
+        Interlocked.Increment(ref _generation);
+    }
+
+    public RolloutConfig GetConfig(MetaConfigVersion version)
+        => new RolloutConfig { Payout = Volatile.Read(ref _payout) };
 }
