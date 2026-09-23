@@ -494,6 +494,46 @@ namespace SharedMeta.Core
         Both = 3,
     }
 
+    /// <summary>
+    /// Which client-side replay events the generator emits for a method. These are UI
+    /// observation points on the generated API client — they watch broadcasts arriving from
+    /// other players and never participate in shared logic, so a handler cannot cause a desync.
+    /// </summary>
+    /// <remarks>
+    /// Opt-in per method because the events cost a delegate field each: a fifty-method service
+    /// that emitted both unconditionally would carry a hundred, nearly all of them never
+    /// subscribed. Declare only what the UI actually listens to.
+    /// <para>
+    /// For an untyped alternative that needs no annotation, see
+    /// <c>IMetaServiceResolver.OnMethodReplayed(entityId, methodId, handler)</c> — it hands back
+    /// raw argument bytes instead of typed arguments.
+    /// </para>
+    /// </remarks>
+    [Flags]
+    public enum ReplayEvents
+    {
+        /// <summary>No events generated. Default.</summary>
+        None = 0,
+
+        /// <summary>
+        /// <c>On{Method}_Replaying</c> — fires before the broadcast is applied to local state,
+        /// so a handler still reads the pre-change values (the "from" end of a tween). Raised
+        /// ahead of every state-application path, so this holds in <c>ServerPatch</c> and
+        /// <c>ServerReplace</c> just as it does for a replayed body.
+        /// </summary>
+        Before = 1,
+
+        /// <summary>
+        /// <c>On{Method}_Replayed</c> — fires after the broadcast has been applied. Raised for
+        /// every broadcast of the method, including the <c>ServerPatch</c> / <c>ServerReplace</c>
+        /// paths where no local body ran.
+        /// </summary>
+        After = 2,
+
+        /// <summary>Both events. Subscribe to the pair to read a before/after delta.</summary>
+        Both = Before | After,
+    }
+
     [AttributeUsage(AttributeTargets.Method)]
     public class MetaMethodAttribute : Attribute
     {
@@ -621,6 +661,19 @@ namespace SharedMeta.Core
         /// </para>
         /// </summary>
         public SnapshotTiming DeepStateCheck { get; set; } = SnapshotTiming.None;
+
+        /// <summary>
+        /// Which client-side replay events the generated API client exposes for this method.
+        /// Default <see cref="ReplayEvents.None"/> — declare what the UI subscribes to.
+        /// <code>
+        /// [MetaMethod(ReplayEvents = ReplayEvents.Both)]
+        /// void Buy(int itemId);
+        ///
+        /// shop.OnBuy_Replaying += a => _before = state.Coins;   // pre-change value
+        /// shop.OnBuy_Replayed  += a => Tween(_before, state.Coins);
+        /// </code>
+        /// </summary>
+        public ReplayEvents ReplayEvents { get; set; } = ReplayEvents.None;
     }
 
     /// <summary>
@@ -823,29 +876,6 @@ namespace SharedMeta.Core
         /// Boolean method name to check. If true, the marked method is executed.
         /// </summary>
         public string Condition { get; set; } = "";
-    }
-
-    /// <summary>
-    /// Subscribe to receive callbacks before or after a method executes.
-    /// Used for UI integration.
-    /// </summary>
-    [AttributeUsage(AttributeTargets.Method, AllowMultiple = true)]
-    public class SubscribeAttribute : Attribute
-    {
-        /// <summary>
-        /// If true, callback is invoked before method execution.
-        /// </summary>
-        public bool Before { get; set; }
-        
-        /// <summary>
-        /// If true, callback is invoked after method execution.
-        /// </summary>
-        public bool After { get; set; }
-        
-        /// <summary>
-        /// Method name to subscribe to.
-        /// </summary>
-        public string Method { get; set; } = "";
     }
 
     /// <summary>

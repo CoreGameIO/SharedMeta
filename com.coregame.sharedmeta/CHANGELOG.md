@@ -1,16 +1,22 @@
 # Changelog
 
-## [0.41.0] - 2026-09-22
+## [0.41.0] - 2026-09-23
 
 ### Breaking
 
 - `MetaTransportOptions.MaxClientTimeSkew` (default 30s) bounds an RPC's client-supplied `ServerTimeTicks` to the silo clock. A host running a simulated or accelerated clock must set it to `TimeSpan.Zero`.
 - `HttpPollingConnectionManager.GetOrCreateConnection` now takes the authenticated subject and returns `null` when the id belongs to someone else.
+- **`[Subscribe]` is deleted.** It never had a consumer in any commit since 0.1.0 — applying it compiled and did nothing. Its client-side intent is now served by `[MetaMethod(ReplayEvents = ...)]`.
+- `On{Method}_Replayed` is now opt-in: a method must declare `[MetaMethod(ReplayEvents = ReplayEvents.After)]` (or `Both`) to get it. Existing subscriptions stop compiling until the method is annotated; the error names the method.
+- `INetwork` gained `OnBroadcastPre`. One implementation exists in the framework; games implement `IConnection`, not this.
 
 ### Added
 
 - `IMetaConfigProvider<TConfig>.PublishGeneration` — a counter bumped on publish/unpublish that entity grains compare to drop their cached config. Default interface member returning 0, so existing providers compile unchanged; a provider that can republish at runtime must override it. `BroadcastingConfigProvider` already does.
 - `BroadcastValidator.EnsureSyncCompletion` gained a `ValueTask<T>` overload. `Task<T>` binds to the `Task` one by inheritance, `ValueTask<T>` does not, so a `ValueTask<T>` service method failed to compile on the generated replay path.
+- `[MetaMethod(ReplayEvents = ...)]` with `ReplayEvents { None, Before, After, Both }` — client-side UI events around an incoming broadcast. `On{Method}_Replaying` fires before the broadcast reaches local state, `On{Method}_Replayed` after, so a view can read a before/after delta. Default `None`.
+- "Before" is raised from `INetwork.OnBroadcastPre`, ahead of every state-application path, so it reads pre-change state under `ServerPatch` / `ServerReplace` as well as for a replayed body. Raising it from the API client's own dispatch would have read post-change state in those modes.
+- Query, LocalQuery and Signal methods never generate replay events — they cannot reach the replay path. A throwing `_Replaying` handler is logged, not propagated.
 
 ### Changed
 

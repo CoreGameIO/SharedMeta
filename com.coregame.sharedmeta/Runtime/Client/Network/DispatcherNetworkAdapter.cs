@@ -66,6 +66,7 @@ namespace SharedMeta.Client.Network
         /// </summary>
         public EntityAugmentedCapabilities? EntityCapabilities { get; set; }
 
+        public event Action<NetworkBroadcast>? OnBroadcastPre;
         public event Action<NetworkBroadcast>? OnBroadcast;
         public event Action<string>? OnDisconnected;
 
@@ -119,7 +120,19 @@ namespace SharedMeta.Client.Network
             // ushort.MaxValue propagates and generated dispatch ignores it.
             ushort clientMethodId = TranslateIncomingMethodId(op.MethodId);
 
-            OnBroadcast?.Invoke(new NetworkBroadcast
+            // Snapshot both handler lists first. `?.Invoke(new NetworkBroadcast { ... })`
+            // short-circuits, so the old single-event form never built the payload when
+            // nobody was listening — keep that, or every broadcast would pay four array
+            // copies for an adapter with no subscribers. Locals also close the torn-read
+            // window between testing a delegate and invoking it.
+            var pre = OnBroadcastPre;
+            var post = OnBroadcast;
+            if (pre == null && post == null) return;
+
+            // One instance, raised twice: OnBroadcastPre reaches "before" observers ahead of
+            // every state-application path, OnBroadcast drives the appliers and "after"
+            // observers. Building it once keeps the two views of the same event identical.
+            var nb = new NetworkBroadcast
             {
                 MethodId = clientMethodId,
                 CallerId = op.CallerId,
@@ -133,7 +146,10 @@ namespace SharedMeta.Client.Network
                 StateBytes = op.StateBytes.IsEmpty ? null : op.StateBytes.ToArray(),
                 DeepDesyncCrc = op.DeepDesyncCrc,
                 ExecutedConfigVersions = op.ExecutedConfigVersions
-            });
+            };
+
+            pre?.Invoke(nb);
+            post?.Invoke(nb);
         }
 
         private void HandleDisconnected(TransportDisconnectReason reason)

@@ -108,7 +108,7 @@ namespace CardGame.Shared
         // Notification dispatches [OneWay] and has nothing to wait on.
         // ============================================
 
-        [MetaMethod(Alias = "OnMatchFound", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+        [MetaMethod(Alias = "OnMatchFound", Mode = ExecutionMode.Server, GenerateClientApi = false, ReplayEvents = ReplayEvents.After)]
         public void OnMatchFound(MatchFoundEvent @event)
         {
             state.IsSearching = false;

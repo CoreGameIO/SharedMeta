@@ -1172,6 +1172,31 @@ var sub = resolver.OnMethodReplayed<MatchFoundEvent>(
 sub.Dispose();
 ```
 
+**Typed replay events** — `[MetaMethod(ReplayEvents = ...)]` puts the same hook on the generated
+API client with the method's own argument types. Opt-in per method (default `None`): each declared
+event costs a delegate field, and on a large service almost none are subscribed.
+
+```csharp
+[MetaMethod(ReplayEvents = ReplayEvents.Both)]      // None | Before | After | Both
+void Buy(int itemId);
+
+shop.OnBuy_Replaying += id => _before = state.Coins;   // pre-change state
+shop.OnBuy_Replayed  += id => Tween(_before, state.Coins);
+```
+
+- `Before` → `On{Method}_Replaying`, `After` → `On{Method}_Replayed`. A method already starting
+  with `On` keeps its name (`OnMatchFound_Replayed`). Signature: `Action` / `Action<T>` /
+  `Action<(T1, T2)>` by parameter count.
+- Both fire on **every** broadcast of the method, `ServerPatch` / `ServerReplace` included, where
+  no local body ran. `Before` is raised from `INetwork.OnBroadcastPre`, ahead of every
+  state-application path, so pre-change state holds in all modes.
+- `GenerateClientApi = false` methods still get events. `Query` / `LocalQuery` / `Signal` never
+  do — they cannot reach the replay path.
+- Observation only, never shared logic — a handler cannot desync. A throwing `_Replaying` handler
+  is logged, not propagated.
+- **Breaking in 0.41.0:** `_Replayed` used to be generated for every method, and `[Subscribe]`
+  (never wired to anything) is deleted. Annotate the method to restore a subscription.
+
 ---
 
 ## Push-Based Change Tracking
@@ -1513,6 +1538,7 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `[Transformer]` | Class | Declare argument transformer (discovered at compile time) |
 | `[Transform]` | Parameter | Explicit transformer for parameter |
 | `[SkipTransform]` | Parameter | Disable auto-transformation |
+| `[MetaMethod(ReplayEvents = ...)]` | Method | Client-side UI events around an incoming broadcast: `On{Method}_Replaying` / `On{Method}_Replayed`. Opt-in; default `None`. |
 | `[OrderedExecution]` | Interface | Broadcast ordering mode |
 | `[MetaSerializer]` | Assembly | Serializer type configuration |
 | `[MemoryPackable]` | Class | MemoryPack transport serialization |

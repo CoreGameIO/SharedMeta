@@ -491,7 +491,7 @@ Three patterns for entity-to-entity interaction:
 
 Methods declared with `GenerateClientApi = false` are reserved for sibling/cross-entity invocation only. Two complementary enforcement points:
 
-- **Client-side codegen suppression:** `SimplifiedApiClientGenerator` omits the public callable from `*ApiClient.g.cs`. User code on the client cannot accidentally call the method. Replay events (`On{Method}_Replayed`) and broadcast handlers stay so subscribed clients still receive state changes when other entities invoke the method cross-entity
+- **Client-side codegen suppression:** `SimplifiedApiClientGenerator` omits the public callable from `*ApiClient.g.cs`. User code on the client cannot accidentally call the method. Broadcast handlers stay so subscribed clients still receive state changes when other entities invoke the method cross-entity, and a method opting into `[MetaMethod(ReplayEvents = ...)]` still gets its `On{Method}_Replaying` / `On{Method}_Replayed` events — the callable is suppressed, the broadcast is not
 - **Server-side dispatcher gate:** the generated service `Dispatcher` (and `SignalDispatcher`) emits `if (context.IsClientCall) throw new InvalidOperationException("…")` inside the affected method's case. A modified client crafting a raw `RpcCallRequest` directly via the transport is rejected before any user code runs
 
 `MetaContext.IsClientCall` (default `true`) is set by `MetaProviderBase`:

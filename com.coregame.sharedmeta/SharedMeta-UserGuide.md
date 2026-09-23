@@ -701,6 +701,41 @@ var config = client.GetEntityConfig<GameConfig>(entityId);
 
 ---
 
+## Replay Events — Reacting to Other Players (0.41.0+)
+
+`[Tracked]` tells you *what* changed. A replay event tells you *which method* caused it, with the
+method's own arguments — the hook for a hit animation, a toast, a coin tween. Opt in per method:
+
+```csharp
+// Interface
+[MetaMethod(ReplayEvents = ReplayEvents.Both)]   // None (default) | Before | After | Both
+void Buy(int itemId);
+
+// Unity view
+shop.OnBuy_Replaying += id => _coinsBefore = shop.State.Coins;  // state before the change
+shop.OnBuy_Replayed  += id => TweenCoins(_coinsBefore, shop.State.Coins);
+```
+
+- `Before` → `On{Method}_Replaying`, `After` → `On{Method}_Replayed`. A method already named
+  `OnSomething` keeps its name (`OnMatchFound_Replayed`). Signature follows the parameters:
+  `Action`, `Action<T>`, or `Action<(T1, T2)>`.
+- Both fire on every broadcast of the method, `ServerPatch` / `ServerReplace` included. `Before`
+  always sees pre-change state, whichever mode delivered it.
+- Handlers are UI observers only — they never take part in shared logic and cannot desync. A
+  `_Replaying` handler that throws is logged; broadcast delivery continues.
+- `Query` / `LocalQuery` / `Signal` methods generate no events (they never reach the replay path).
+- Unsubscribe on view teardown as with any C# event.
+
+Opt-in because every declared event costs a delegate field on the API client — declare only what
+the UI listens to. For a hook without touching the interface, use
+`client.Resolver.OnMethodReplayed(...)`, which hands back raw argument bytes.
+
+> **Upgrading from 0.40.x:** `On{Method}_Replayed` used to exist for every method, and
+> `[Subscribe]` (which never did anything) is deleted. An existing subscription stops compiling
+> until the method declares `ReplayEvents = ReplayEvents.After` or `Both`; the error names it.
+
+---
+
 ## Holding a Service Reference (`MetaRef<T>`, 0.40.0+)
 
 Do **not** cache an API client in a field or a DI singleton. Disconnecting an entity — and the

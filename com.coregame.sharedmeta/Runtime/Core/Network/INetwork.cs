@@ -140,6 +140,20 @@ namespace SharedMeta.Core.Network
         void ResumeBroadcasts();
 
         /// <summary>
+        /// Raised for the same broadcast as <see cref="OnBroadcast"/>, but strictly before it —
+        /// and therefore before any handler has applied the broadcast to local state.
+        /// </summary>
+        /// <remarks>
+        /// Exists so a "before" observer means the same thing in every execution mode. Ordering
+        /// within <see cref="OnBroadcast"/> cannot give that: its subscribers run in subscription
+        /// order, and the entity-level handler — which applies <c>StateBytes</c> and
+        /// <c>PatchBytes</c> — is wired when the connection is created, ahead of any API client.
+        /// A pre-hook raised from an API client would therefore see pre-change state for a
+        /// replayed body but post-change state under <c>ServerPatch</c> / <c>ServerReplace</c>.
+        /// </remarks>
+        event Action<NetworkBroadcast>? OnBroadcastPre;
+
+        /// <summary>
         /// Broadcasts from server (other players' actions).
         /// </summary>
         event Action<NetworkBroadcast>? OnBroadcast;

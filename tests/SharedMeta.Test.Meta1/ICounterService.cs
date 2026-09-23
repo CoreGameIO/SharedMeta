@@ -17,14 +17,14 @@ namespace SharedMeta.Test.Meta1
         /// </summary>
         /// <param name="value">Random value to add</param>
         /// <param name="clientSequence">Client-side sequence number for ordering verification</param>
-        [MetaMethod(Alias = "Add", Mode = ExecutionMode.Server)]
+        [MetaMethod(Alias = "Add", Mode = ExecutionMode.Server, ReplayEvents = ReplayEvents.Both)]
         void AddValue(int value, int clientSequence);
 
         /// <summary>
         /// Add a value to the tracked counter field.
         /// Tests push-based change tracking.
         /// </summary>
-        [MetaMethod(Alias = "AddReactive", Mode = ExecutionMode.Server)]
+        [MetaMethod(Alias = "AddReactive", Mode = ExecutionMode.Server, ReplayEvents = ReplayEvents.Both)]
         void AddReactive(int value);
 
         /// <summary>
@@ -46,7 +46,7 @@ namespace SharedMeta.Test.Meta1
         /// Accesses the generated Config property (backed by Context.Configs[0], via
         /// [ServiceConfig]) — will NRE if Configs is not propagated.
         /// </summary>
-        [MetaMethod(Alias = "AddClamped", Mode = ExecutionMode.Server, GenerateClientApi = false)]
+        [MetaMethod(Alias = "AddClamped", Mode = ExecutionMode.Server, GenerateClientApi = false, ReplayEvents = ReplayEvents.After)]
         int AddClamped(int value);
 
         /// <summary>

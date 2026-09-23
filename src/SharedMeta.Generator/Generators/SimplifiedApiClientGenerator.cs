@@ -128,6 +128,14 @@ namespace SharedMeta.Generator.Generators
             if (compilation != null)
                 methods.AddRange(ImplDeclaredMethods.SyntaxForService(symbol, compilation));
 
+            // Any method asking for the "before" event pulls in the OnBroadcastPre subscription
+            // and the pre-dispatch switch. Nothing is wired when no method opted in. Must be read
+            // from the full list, impl-declared methods included: the handler that follows is
+            // emitted from that same list, and an opt-in reachable only there would otherwise
+            // produce a handler nothing ever subscribes — an event that silently never fires.
+            bool anyPreReplayEvent = methods.Any(m =>
+                (EffectiveReplayEvents(m) & 1) != 0);
+
             // Detect serializer type
             var serializer = compilation != null ? SerializerDetector.Detect(compilation) : DetectedSerializer.Generic;
 
@@ -278,33 +286,42 @@ namespace SharedMeta.Generator.Generators
             }
             sb.AppendLine();
 
-            // Events
+            // Events. Opt-in per method via [MetaMethod(ReplayEvents = ...)] — a delegate field
+            // per method per direction is real weight on a large service, and most of them are
+            // never subscribed.
             sb.AppendLine("        // Events fired when methods are replayed from broadcasts");
             foreach (var method in methods)
             {
                 // Skip query / local-query methods — they don't produce broadcasts or replays
                 if (IsQueryMethod(method) || IsLocalQueryMethod(method)) continue;
 
+                var replayEvents = EffectiveReplayEvents(method);
+                if (replayEvents == 0) continue;
+
                 var methodName = method.Identifier.Text;
-                var eventName = GetEventName(methodName);
                 var paramCount = method.ParameterList.Parameters.Count;
 
+                string signature;
                 if (paramCount == 0)
                 {
-                    sb.AppendLine($"        public event Action? {eventName};");
+                    signature = "Action?";
                 }
                 else
                 {
                     var argTypes = method.ParameterList.Parameters.Select(p => p.Type!.ToString());
                     var argTypesStr = string.Join(", ", argTypes);
-                    if (paramCount == 1)
-                    {
-                        sb.AppendLine($"        public event Action<{argTypesStr}>? {eventName};");
-                    }
-                    else
-                    {
-                        sb.AppendLine($"        public event Action<({argTypesStr})>? {eventName};");
-                    }
+                    signature = paramCount == 1 ? $"Action<{argTypesStr}>?" : $"Action<({argTypesStr})>?";
+                }
+
+                if ((replayEvents & 1) != 0)
+                {
+                    sb.AppendLine($"        /// <summary>Fired before the broadcast is applied to local state — reads pre-change values.</summary>");
+                    sb.AppendLine($"        public event {signature} {GetEventName(methodName, "Replaying")};");
+                }
+                if ((replayEvents & 2) != 0)
+                {
+                    sb.AppendLine($"        /// <summary>Fired after the broadcast has been applied to local state.</summary>");
+                    sb.AppendLine($"        public event {signature} {GetEventName(methodName, "Replayed")};");
                 }
             }
 
@@ -380,6 +397,8 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"            _patchTrackedService = new {namespaceName}.{patchTrackedClassName}();");
             sb.AppendLine();
             sb.AppendLine("            _network.OnBroadcast += HandleBroadcast;");
+            if (anyPreReplayEvent)
+                sb.AppendLine("            _network.OnBroadcastPre += HandleBroadcastPre;");
             sb.AppendLine("            // Container fires OnMutated whenever any source (entity-level handler, this");
             sb.AppendLine("            // ApiClient's own methods, or another ApiClient on the same entity) mutates state.");
             sb.AppendLine("            _stateContainer.OnMutated += FireOnStateMutated;");
@@ -468,6 +487,7 @@ namespace SharedMeta.Generator.Generators
 
             // Broadcast handling
             GenerateHandleBroadcast(sb, methods, interfaceName, namespaceName, implClassName, stateTypeName, serializer, compilation, hasDeepDesync);
+            GenerateHandleBroadcastPre(sb, methods, interfaceName, namespaceName, serializer, compilation);
 
             // Trigger replay
             GenerateTriggerReplayMethods(sb, methods, stateTypeName, interfaceName, namespaceName);
@@ -493,6 +513,8 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        {");
             sb.AppendLine("            _connectionGone = true;");
             sb.AppendLine("            _network.OnBroadcast -= HandleBroadcast;");
+            if (anyPreReplayEvent)
+                sb.AppendLine("            _network.OnBroadcastPre -= HandleBroadcastPre;");
             sb.AppendLine("        }");
             sb.AppendLine();
 
@@ -2020,6 +2042,77 @@ namespace SharedMeta.Generator.Generators
             }
         }
 
+        /// <summary>
+        /// Emits <c>HandleBroadcastPre</c> — the "before" half of the replay events. Subscribed to
+        /// <c>INetwork.OnBroadcastPre</c>, which fires ahead of every state-application path, so a
+        /// handler reads pre-change state under ServerPatch / ServerReplace as well as for a
+        /// replayed body.
+        /// </summary>
+        /// <remarks>
+        /// Emitted only for methods carrying <c>ReplayEvents.Before</c>. Arguments are deserialized
+        /// again here rather than shared with the main dispatch — the two run on different events,
+        /// and the cost falls only on methods that opted in.
+        /// </remarks>
+        private static void GenerateHandleBroadcastPre(StringBuilder sb,
+            List<MethodDeclarationSyntax> methods,
+            string interfaceName, string namespaceName,
+            DetectedSerializer serializer, Compilation? compilation)
+        {
+            var preMethods = methods
+                .Where(m => (EffectiveReplayEvents(m) & 1) != 0)
+                .ToList();
+            if (preMethods.Count == 0) return;
+
+            sb.AppendLine("        private void HandleBroadcastPre(NetworkBroadcast broadcast)");
+            sb.AppendLine("        {");
+            // Purely observational, and it runs before anything has been applied. A throwing UI
+            // handler must not abort the broadcast pipeline underneath it, so it is logged and
+            // swallowed rather than propagated the way the main dispatch propagates.
+            sb.AppendLine("            try");
+            sb.AppendLine("            {");
+            sb.AppendLine("            switch (broadcast.MethodId)");
+            sb.AppendLine("            {");
+
+            foreach (var method in preMethods)
+            {
+                var methodName = method.Identifier.Text;
+                var alias = GetMethodAlias(method, methodName);
+                var version = GetMethodVersion(method);
+                var idConst = "global::" + namespaceName + ".Generated.GameMethodIds." + SignatureHashGenerator.MakeMethodIdConstName(interfaceName, alias, version);
+                var eventName = GetEventName(methodName, "Replaying");
+                var paramCount = method.ParameterList.Parameters.Count;
+
+                sb.AppendLine($"                case {idConst}:");
+                sb.AppendLine("                {");
+                if (paramCount > 0)
+                {
+                    // Deserialize only once something is listening. Declaring the event costs a
+                    // field; reading the wire for a handler nobody attached costs per broadcast.
+                    sb.AppendLine($"                    var _h = {eventName};");
+                    sb.AppendLine("                    if (_h == null) break;");
+                    var transforms = TransformerAnalysis.Analyze(method.ParameterList.Parameters, compilation);
+                    GenerateBroadcastArgumentDeserialization(sb, method, transforms, paramCount, serializer);
+                    var argNames = method.ParameterList.Parameters.Select(pp => pp.Identifier.Text).ToList();
+                    if (paramCount == 1)
+                        sb.AppendLine($"                    _h({argNames[0]});");
+                    else
+                        sb.AppendLine($"                    _h(({string.Join(", ", argNames)}));");
+                }
+                else
+                {
+                    sb.AppendLine($"                    {eventName}?.Invoke();");
+                }
+                sb.AppendLine("                    break;");
+                sb.AppendLine("                }");
+            }
+
+            sb.AppendLine("            }");
+            sb.AppendLine("            }");
+            sb.AppendLine("            catch (Exception ex) { SharedMeta.Core.Logging.MetaLog.Error($\"[{ServiceName}] a Replaying handler threw for MethodId=\" + broadcast.MethodId + \"; broadcast delivery continues.\", ex); }");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+        }
+
         private static void GenerateHandleBroadcast(StringBuilder sb,
             List<MethodDeclarationSyntax> methods,
             string interfaceName, string namespaceName, string implClassName, string? stateTypeName,
@@ -2360,12 +2453,18 @@ namespace SharedMeta.Generator.Generators
 
             sb.AppendLine($"{indent}ReplayTriggerOperations(broadcast.TriggerOperations, broadcast.CallerId, broadcast.ServerTimeTicks);");
 
-            if (paramCount == 0)
-                sb.AppendLine($"{indent}{eventName}?.Invoke();");
-            else if (paramCount == 1)
-                sb.AppendLine($"{indent}{eventName}?.Invoke({argNames[0]});");
-            else
-                sb.AppendLine($"{indent}{eventName}?.Invoke(({callArgsStr}));");
+            // The "after" event fires on every broadcast of the method, including the
+            // ServerPatch / ServerReplace branches above where no local body ran — from the UI's
+            // side the method happened on the entity either way.
+            if ((EffectiveReplayEvents(method) & 2) != 0)
+            {
+                if (paramCount == 0)
+                    sb.AppendLine($"{indent}{eventName}?.Invoke();");
+                else if (paramCount == 1)
+                    sb.AppendLine($"{indent}{eventName}?.Invoke({argNames[0]});");
+                else
+                    sb.AppendLine($"{indent}{eventName}?.Invoke(({callArgsStr}));");
+            }
         }
 
         /// <summary>
@@ -2840,13 +2939,83 @@ namespace SharedMeta.Generator.Generators
             return null;
         }
 
-        private static string GetEventName(string methodName)
+        private static string GetEventName(string methodName) => GetEventName(methodName, "Replayed");
+
+        private static string GetEventName(string methodName, string suffix)
         {
             if (methodName.StartsWith("On") && methodName.Length > 2 && char.IsUpper(methodName[2]))
             {
-                return $"{methodName}_Replayed";
+                return $"{methodName}_{suffix}";
             }
-            return $"On{methodName}_Replayed";
+            return $"On{methodName}_{suffix}";
+        }
+
+        /// <summary>
+        /// <see cref="GetReplayEvents"/> narrowed to methods that can actually broadcast. Query,
+        /// LocalQuery and Signal never reach the replay path, so an annotation on one of them
+        /// would otherwise emit an event that can never fire.
+        /// </summary>
+        /// <remarks>
+        /// Single source of truth on purpose: the declaration site and the invoke site read this,
+        /// so they cannot disagree and leave an undeclared event referenced in generated code.
+        /// </remarks>
+        private static int EffectiveReplayEvents(MethodDeclarationSyntax method)
+        {
+            if (IsQueryMethod(method) || IsLocalQueryMethod(method) || IsSignalMethod(method)) return 0;
+            return GetReplayEvents(method);
+        }
+
+        /// <summary>
+        /// Reads <c>[MetaMethod(ReplayEvents = ...)]</c>. Bit 1 = Before, bit 2 = After; 0 when
+        /// absent, which is the default — replay events are opt-in.
+        /// </summary>
+        /// <remarks>
+        /// Accepts the named member (<c>ReplayEvents.Both</c>), an or-ed pair
+        /// (<c>ReplayEvents.Before | ReplayEvents.After</c>) and a bare integer, because all three
+        /// are legal C# for a [Flags] enum and the author picks whichever reads better.
+        /// </remarks>
+        private static int GetReplayEvents(MethodDeclarationSyntax method)
+        {
+            var metaMethod = method.AttributeLists
+                .SelectMany(a => a.Attributes)
+                .FirstOrDefault(a => a.Name.ToString().Contains("MetaMethod"));
+            if (metaMethod == null) return 0;
+
+            foreach (var arg in metaMethod.ArgumentList?.Arguments ?? Enumerable.Empty<AttributeArgumentSyntax>())
+            {
+                if (arg.NameEquals?.Name.Identifier.Text != "ReplayEvents") continue;
+                return ParseReplayEventsExpression(arg.Expression);
+            }
+            return 0;
+        }
+
+        private static int ParseReplayEventsExpression(ExpressionSyntax expr)
+        {
+            switch (expr)
+            {
+                case BinaryExpressionSyntax bin when bin.OperatorToken.Text == "|":
+                    return ParseReplayEventsExpression(bin.Left) | ParseReplayEventsExpression(bin.Right);
+                case MemberAccessExpressionSyntax access:
+                    return access.Name.Identifier.Text switch
+                    {
+                        "Before" => 1,
+                        "After" => 2,
+                        "Both" => 3,
+                        _ => 0,
+                    };
+                case IdentifierNameSyntax ident:
+                    return ident.Identifier.Text switch
+                    {
+                        "Before" => 1,
+                        "After" => 2,
+                        "Both" => 3,
+                        _ => 0,
+                    };
+                case LiteralExpressionSyntax lit when int.TryParse(lit.Token.ValueText, out var i):
+                    return i & 3;
+                default:
+                    return 0;
+            }
         }
 
     }

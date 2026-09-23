@@ -81,8 +81,15 @@ public class SignalMethodTests
         var resolver = client.CreateResolver();
         var api = await resolver.GetServiceAsync<CounterServiceApiClient>(playerId);
 
+        // Signal methods never broadcast, so they get no generated replay events at all
+        // (ReplayEvents is only honoured on methods that can reach the replay path). Count via
+        // the untyped resolver subscription instead — it needs no annotation and still proves the
+        // runtime invariant rather than just the absence of an event.
         int replayedSignalBroadcasts = 0;
-        api.OnNotifyHeartbeat_Replayed += _ => System.Threading.Interlocked.Increment(ref replayedSignalBroadcasts);
+        using var signalReplays = resolver.OnMethodReplayed(
+            playerId,
+            global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_NotifyHeartbeat_v0,
+            _ => System.Threading.Interlocked.Increment(ref replayedSignalBroadcasts));
 
         // Fire a signal, then a real RPC. Only the RPC should produce a broadcast/replay.
         api.NotifyHeartbeatSignal(DateTime.UtcNow.Ticks);
@@ -91,8 +98,7 @@ public class SignalMethodTests
         await api.AddValueAsync(5, 1);
         await Task.Delay(150);
 
-        // Signal must not have triggered the OnNotifyHeartbeat_Replayed event — signal
-        // methods never broadcast so no replay fires on the client.
+        // Signal must not have produced a replay — signal methods never broadcast.
         Assert.Equal(0, replayedSignalBroadcasts);
 
         // But the server DID see the signal in the observer.

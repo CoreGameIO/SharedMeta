@@ -3805,6 +3805,60 @@ var sub = client.Resolver.OnMethodReplayed("game-entity-1",
     ctx => Console.WriteLine("Another player played a card"));
 ```
 
+### Replay Events — Typed UI Hooks (0.41.0+)
+
+The generated API client can expose typed events around an incoming broadcast, so a
+view reacts to what another player did with the method's own argument types. They are
+**opt-in per method** — a delegate field per method per direction is real weight on a
+large service, and most are never subscribed:
+
+```csharp
+// Interface
+[MetaMethod(ReplayEvents = ReplayEvents.Both)]
+void Buy(int itemId);
+
+// Client
+shop.OnBuy_Replaying += itemId => _coinsBefore = state.Coins;   // pre-change state
+shop.OnBuy_Replayed  += itemId => TweenCoins(_coinsBefore, state.Coins);
+```
+
+| Value | Event | Fires |
+|-------|-------|-------|
+| `ReplayEvents.None` (default) | — | no events generated |
+| `Before` | `On{Method}_Replaying` | before the broadcast reaches local state |
+| `After` | `On{Method}_Replayed` | after the broadcast has been applied |
+| `Both` | both | subscribe to the pair to read a before/after delta |
+
+Event naming: a method already starting with `On` keeps its name (`OnMatchFound` →
+`OnMatchFound_Replayed`), otherwise `On` is prefixed (`Buy` → `OnBuy_Replayed`).
+The signature follows the parameters — `Action` for none, `Action<T>` for one,
+`Action<(T1, T2)>` for several.
+
+**Semantics:**
+
+- Both events fire on **every** broadcast of the method, including `ServerPatch` /
+  `ServerReplace` where no local body ran — from the UI's side the method happened on
+  the entity either way.
+- "Before" is raised from `INetwork.OnBroadcastPre`, ahead of every state-application
+  path, so pre-change state holds in all modes. Raising it from the API client's own
+  dispatch would have read post-change state under patch/replace.
+- `GenerateClientApi = false` methods still get their events — the callable is
+  suppressed, the broadcast is not.
+- `Query`, `LocalQuery` and `Signal` methods never generate events; they cannot reach
+  the replay path. The annotation is ignored there.
+- These are observation points only, never part of shared logic — a handler cannot
+  cause a desync. A throwing `_Replaying` handler is logged, not propagated, so a
+  broken UI handler does not abort broadcast delivery.
+
+For an untyped alternative that needs no annotation, use
+`client.Resolver.OnMethodReplayed(...)` above — it hands back raw argument bytes
+instead of typed arguments.
+
+> **Migration from `[Subscribe]` / implicit `_Replayed`:** `[Subscribe]` is deleted (it
+> never had a consumer) and `On{Method}_Replayed` used to be generated for every method.
+> A subscription now stops compiling until the method declares
+> `ReplayEvents = ReplayEvents.After` (or `Both`); the error names the method.
+
 ### Frame-Based Processing (Required for Game Engines)
 
 By default, `ImmediateMode` is `false` — broadcasts are queued and must be
@@ -4441,7 +4495,7 @@ The runtime ignores the attribute. It is purely a marker for downstream tooling.
 | `[SharedState]` | Class | Marks shared state entity |
 | `[Tracked]` | Field | Push-based change tracking property for UI binding (client-only) |
 | `[Trigger]` | Method | Auto-execute after condition on another method |
-| `[Subscribe]` | Event | Declare method subscription |
+| `[MetaMethod(ReplayEvents = ...)]` | Method | Client-side UI events around an incoming broadcast: `On{Method}_Replaying` (before local state changes) / `On{Method}_Replayed` (after). Opt-in; default `None`. (0.41.0+) |
 | `[ServerMetaService]` | Interface | Server-only service (generates replayer) |
 | `[StatelessMetaService(typeof(TConfig))]` | Interface | No-entity service resolving only a linked `[MetaConfig]`. (0.33.0+) |
 | `[StatelessMetaServiceImpl(typeof(IThing))]` | Class | Impl for `[StatelessMetaService]` — injects only a typed `Config` property. (0.33.0+) |
