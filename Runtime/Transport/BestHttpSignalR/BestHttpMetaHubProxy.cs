@@ -1,0 +1,77 @@
+#nullable enable
+using System;
+using System.Threading.Tasks;
+using BestHTTP.SignalRCore;
+using SharedMeta.Core.Transport;
+
+namespace SharedMeta.Transport.BestHttp
+{
+    /// <summary>
+    /// Typed proxy that implements <see cref="IMetaHub"/> by forwarding calls
+    /// to a BestHTTP <see cref="HubConnection"/>.
+    /// Wraps BestHTTP's IFuture-based API into Task-based async.
+    /// </summary>
+    internal class BestHttpMetaHubProxy : IMetaHub
+    {
+        private readonly HubConnection _hub;
+
+        public BestHttpMetaHubProxy(HubConnection hub)
+        {
+            _hub = hub;
+        }
+
+        public Task<SessionConnectResponse> SessionConnect(SessionConnectRequest request)
+            => InvokeAsync<SessionConnectResponse>(nameof(SessionConnect), request);
+
+        public Task<RegisterClientSignatureResponse> RegisterClientSignature(RegisterClientSignatureRequest request)
+            => InvokeAsync<RegisterClientSignatureResponse>(nameof(RegisterClientSignature), request);
+
+        public Task<SubscribeResponse> Subscribe(SubscribeRequest request)
+            => InvokeAsync<SubscribeResponse>(nameof(Subscribe), request);
+
+        public Task<UnsubscribeResponse> Unsubscribe(UnsubscribeRequest request)
+            => InvokeAsync<UnsubscribeResponse>(nameof(Unsubscribe), request);
+
+        public Task<SessionResponse> RpcCall(RpcCallRequest request)
+            => InvokeAsync<SessionResponse>(nameof(RpcCall), request);
+
+        public Task<QueryCallResponse> QueryCall(QueryCallRequest request)
+            => InvokeAsync<QueryCallResponse>(nameof(QueryCall), request);
+
+        /// <summary>
+        /// Fire-and-forget signal. BestHTTP SignalRCore's <c>Send</c> returns as soon as the
+        /// frame is queued on the wire — no server ack is awaited, matching the .NET
+        /// SignalR client's <c>SendAsync</c> semantics.
+        /// </summary>
+        public Task SignalCall(SignalCallRequest request)
+        {
+            _hub.Send(nameof(SignalCall), request);
+            return Task.CompletedTask;
+        }
+
+        public Task<DebugOptionsResponse> SetDebugOptions(DebugOptionsRequest request)
+            => InvokeAsync<DebugOptionsResponse>(nameof(SetDebugOptions), request);
+
+        public Task<DesyncReportResponse> SendDesyncReport(DesyncReportRequest request)
+            => InvokeAsync<DesyncReportResponse>(nameof(SendDesyncReport), request);
+
+        public Task<AcknowledgeResponse> AcknowledgeSequence(AcknowledgeRequest request)
+            => InvokeAsync<AcknowledgeResponse>(nameof(AcknowledgeSequence), request);
+
+        public Task<ConfigDownloadUrlResponse> GetConfigDownloadUrl(ConfigDownloadUrlRequest request)
+            => InvokeAsync<ConfigDownloadUrlResponse>(nameof(GetConfigDownloadUrl), request);
+
+        public Task GracefulDisconnect()
+            => InvokeAsync<object>(nameof(GracefulDisconnect));
+
+        private Task<T> InvokeAsync<T>(string method, params object[] args)
+        {
+            var tcs = new TaskCompletionSource<T>();
+            _hub.Invoke<T>(method, args)
+                .OnSuccess(result => tcs.TrySetResult(result))
+                .OnError(error => tcs.TrySetException(
+                    new Exception($"Hub invoke '{method}' failed: {error.Message}", error)));
+            return tcs.Task;
+        }
+    }
+}
