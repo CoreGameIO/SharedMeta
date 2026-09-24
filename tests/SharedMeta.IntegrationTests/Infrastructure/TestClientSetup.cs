@@ -33,6 +33,15 @@ public class TestClientSetup : IAsyncDisposable
         IDesyncDiagnostics? diagnostics = null,
         IExecutionModeProvider? modeProvider = null,
         string? clientAppVersion = null)
+        : this(server.CreateConnection(), playerId, diagnostics, modeProvider, clientAppVersion)
+    {
+    }
+
+    /// <summary>Same client over any transport — for tests that must cross a real wire.</summary>
+    public TestClientSetup(IConnection connection, string? playerId = null,
+        IDesyncDiagnostics? diagnostics = null,
+        IExecutionModeProvider? modeProvider = null,
+        string? clientAppVersion = null)
     {
         diagnostics ??= new TestDesyncDiagnostics(_issues);
 
@@ -41,7 +50,7 @@ public class TestClientSetup : IAsyncDisposable
         // exercise per-client config branches) keeps working. Migration / per-scope tests
         // override this with explicit version strings.
         _client = new MetaClient(
-            server.CreateConnection(),
+            connection,
             new SharedMeta.Serialization.MemoryPack.MemoryPackMetaSerializer(),
             new MetaClientOptions
             {

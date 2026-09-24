@@ -96,6 +96,20 @@ namespace SharedMeta.Test.Meta1
             Console.WriteLine("[Counter] Reset");
         }
 
+        public void CheatSetSum(int value)
+        {
+            var state = GetState();
+            state.Sum = value;
+            Console.WriteLine($"[Counter] CheatSetSum: sum={state.Sum}");
+        }
+
+        public void AdminBump(int value)
+        {
+            var state = GetState();
+            state.Sum += value;
+            Console.WriteLine($"[Counter] AdminBump: sum={state.Sum}");
+        }
+
         public async Task<int> AddCrossEntity(string targetEntityId, int value)
         {
             var targetService = GetICounterService(targetEntityId);

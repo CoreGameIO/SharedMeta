@@ -156,5 +156,15 @@ namespace SharedMeta.Server.Core.Session
         /// Get the current session ID.
         /// </summary>
         Task<Guid> GetCurrentSessionIdAsync();
+
+        /// <summary>
+        /// Push a changed permission set to this player's connected client, if any. No-op when
+        /// nobody is observing — the next connect reads the set fresh, so nothing is lost.
+        /// </summary>
+        /// <remarks>
+        /// Refreshes the client's gate and UI only. Enforcement re-reads entitlements per gated
+        /// call, so a missed push costs a stale UI, never an admitted call.
+        /// </remarks>
+        Task PushPermissionsAsync(SharedMeta.Core.PlayerPermissions permissions);
     }
 }

@@ -37,6 +37,13 @@ namespace SharedMeta.Generator.Generators
         public int? MinStateVersion { get; set; }
 
         /// <summary>
+        /// Permissions from <c>[RequirePermission]</c> on the method or its declaring interface —
+        /// any one of them admits a client-originated call. Empty when the method is ungated, which
+        /// is the default and emits no gate at all.
+        /// </summary>
+        public string[] RequiredPermissions { get; set; } = System.Array.Empty<string>();
+
+        /// <summary>
         /// Mirror of <c>[MetaMethod(GenerateClientApi = ...)]</c>. Default true.
         /// When false: client API is not generated AND direct client-originated RPC is rejected
         /// at the EntityGrain entry points (HandleCallAsync / HandleQueryAsync / HandleSignalAsync)
@@ -243,6 +250,7 @@ namespace SharedMeta.Generator.Generators
                     ConfigTypeFullName = info.ConfigTypeFullName,
                     PatchTrackingAvailable = info.PatchTrackingAvailable,
                     DeepStateCheck = deepStateCheck,
+                    RequiredPermissions = MetaMethodFacts.ReadRequiredPermissions(member, symbol).Names,
                 });
             }
 
@@ -637,6 +645,11 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                        ConfigTypeFullName = \"{s.ConfigTypeFullName}\",");
                 sb.AppendLine($"                        PatchTrackingAvailable = {(s.PatchTrackingAvailable ? "true" : "false")},");
                 sb.AppendLine($"                        DeepStateCheck = (global::SharedMeta.Core.SnapshotTiming){s.DeepStateCheck},");
+                if (s.RequiredPermissions.Length > 0)
+                {
+                    var permNames = string.Join(", ", s.RequiredPermissions.Select(p => "\"" + p + "\""));
+                    sb.AppendLine($"                        RequiredPermissions = new string[] {{ {permNames} }},");
+                }
                 sb.AppendLine($"                        GlobalIndex = {gIdx},");
                 sb.AppendLine("                    },");
                 gIdx++;

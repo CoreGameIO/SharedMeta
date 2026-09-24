@@ -50,6 +50,7 @@ namespace SharedMeta.Debug.Mux
     public interface IMuxMetaHubClient
     {
         Task ReceiveBroadcast(int sessionTag, SessionResponse message);
+        Task ReceiveNotice(int sessionTag, SessionNotice notice);
         Task SessionTerminated(int sessionTag, string reason);
         Task EntityDeactivating(int sessionTag, string entityId);
     }

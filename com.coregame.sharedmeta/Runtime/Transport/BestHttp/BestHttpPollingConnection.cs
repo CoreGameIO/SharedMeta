@@ -91,6 +91,7 @@ namespace SharedMeta.Transport.BestHttp
         public bool IsConnected => _isConnected;
 
         public event Action<SessionResponse>? OnBatch;
+        public event Action<SessionNotice>? OnNotice;
         public event Action<string>? OnSessionTerminated;
         // Server-push reconnect is a SignalR-only capability today: only the hub transports
         // wire RequireSessionReconnect. This transport never raises it, so a server restart
@@ -187,6 +188,7 @@ namespace SharedMeta.Transport.BestHttp
                 Annotated = response.Annotated,
                 FailureReason = response.FailureReason,
                 DeepDesyncActive = response.DeepDesyncActive,
+                Permissions = response.Permissions,
             };
         }
 
@@ -335,6 +337,14 @@ namespace SharedMeta.Transport.BestHttp
                     retryDelay = _options.InitialRetryDelay;
 
                     if (pollResponse == null) continue;
+
+                    // Notices first: a permission change in the same poll is then in force before
+                    // any handler run by the broadcasts below issues a gated call.
+                    if (pollResponse.Notices != null)
+                    {
+                        foreach (var notice in pollResponse.Notices)
+                            OnNotice?.Invoke(notice);
+                    }
 
                     if (pollResponse.Broadcasts != null)
                     {
@@ -492,6 +502,7 @@ namespace SharedMeta.Transport.BestHttp
     internal class BestHttpPollResponse
     {
         public List<SessionResponse>? Broadcasts { get; set; }
+        public List<SessionNotice>? Notices { get; set; }
         public string? SessionTerminated { get; set; }
         public List<string>? DeactivatingEntities { get; set; }
     }

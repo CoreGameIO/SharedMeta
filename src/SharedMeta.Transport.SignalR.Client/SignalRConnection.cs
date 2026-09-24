@@ -25,6 +25,7 @@ namespace SharedMeta.Transport.SignalR
         public bool IsConnected => _hubConnection?.State == HubConnectionState.Connected;
 
         public event Action<SessionResponse>? OnBatch;
+        public event Action<SessionNotice>? OnNotice;
         public event Action<string>? OnSessionTerminated;
         public event Action<string>? OnRequireSessionReconnect;
         public event Action<TransportDisconnectReason>? OnDisconnected;
@@ -74,6 +75,7 @@ namespace SharedMeta.Transport.SignalR
 
             // Register for typed broadcast events from server
             _hubConnection.On<SessionResponse>(nameof(IMetaHubClient.ReceiveBroadcast), OnReceiveBroadcast);
+            _hubConnection.On<SessionNotice>(nameof(IMetaHubClient.ReceiveNotice), notice => OnNotice?.Invoke(notice));
             _hubConnection.On<string>(nameof(IMetaHubClient.SessionTerminated), msg => OnSessionTerminated?.Invoke(msg));
             _hubConnection.On<string>(nameof(IMetaHubClient.EntityDeactivating), OnEntityDeactivating);
             _hubConnection.On<string>(nameof(IMetaHubClient.RequireSessionReconnect), msg => OnRequireSessionReconnect?.Invoke(msg));
@@ -158,6 +160,7 @@ namespace SharedMeta.Transport.SignalR
                 Annotated = response.Annotated,
                 FailureReason = response.FailureReason,
                 DeepDesyncActive = response.DeepDesyncActive,
+                Permissions = response.Permissions,
             };
         }
 

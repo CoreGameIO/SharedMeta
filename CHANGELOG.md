@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.42.0] - 2026-09-24
+
+Account-level permissions: `[RequirePermission]` gates a method server-side, and the client learns what it holds.
+
+### Breaking
+
+- Messages about the session itself travel on their own channel: `SessionNotice`, raised by `IConnection.OnNotice`. `SessionResponse.StallNotification` is removed — a stall is `notice.Stall`. A custom `IConnection` must implement `OnNotice`, a custom `IBroadcastSender` `SendNotice`, an `ISessionObserver` `OnNotice`. Update client and server together: a 0.41 client gets no stall notifications from a 0.42 server.
+
+### Added
+
+- `[RequirePermission("Cheat")]` on a method or a service interface — account-level entitlements gating client-originated calls. Any one of the named permissions admits the call; a method's attribute replaces its interface's.
+- `IPlayerEntitlements` (server) — the store the gate reads, with a grain-backed default registered by `ConfigureMeta`. Writes come from admin tooling and server code; shared game logic has no way to grant.
+- `[assembly: DeclaredPermissions(...)]` — optional; declared, an undeclared name in a `[RequirePermission]` fails the build.
+- Clients get their set at connect (`Dispatcher.Permissions`) and a push when it changes mid-session (`Dispatcher.PermissionsChanged`) — the signal to refresh gated UI. Write through `IPlayerEntitlements`, not the storage grain: only the service pushes.
+- Generated clients refuse a gated call locally with `MetaPermissionDeniedException` when their set holds none of the names. Advisory — the server checks the set it stamped on the call itself.
+- `ServerMethodEntry.RequiredPermissions` — the same table for a backend that does not run `MetaProviderBase`; the local backend enforces the gate from it.
+- **Not for in-game roles** (clan leader, party host). Those live in entity state and belong in a check against that state — see `docs/GUIDE.md`.
+
+### Fixed
+
+- Stall notifications reach the client on every transport. The SignalR, BestHTTP SignalR and BestHTTP polling clients dropped them.
+- `DeepDesyncCapabilities.Register`, called from generated `RegisterAllServices()`, wrote a non-thread-safe static dictionary: two clients bootstrapped in parallel could corrupt it and throw `IndexOutOfRangeException` far from the cause.
+
+### Notes
+
+- A permission change reaches a live session through a push. If that push fails (logged as an error naming the player), the session keeps its previous rights until it reconnects.
+
 ## [0.41.0] - 2026-09-23
 
 ### Breaking

@@ -82,6 +82,14 @@ namespace SharedMeta.Core.Network
         bool DeepDesyncActive { get; }
 
         /// <summary>
+        /// Permissions the server reported for this player, or null while unknown. Generated gates
+        /// on <c>[RequirePermission]</c> methods read it to refuse a call before it is sent; an
+        /// unknown set passes through, because the server checks the same thing again and a client
+        /// that guessed "denied" would hide a feature the host may not gate at all.
+        /// </summary>
+        SharedMeta.Core.PlayerPermissions? Permissions { get; }
+
+        /// <summary>
         /// Call a method that returns a value.
         /// <para><c>methodVersion</c> = <c>[MetaMethod(Version=N)]</c>, stamped on
         /// <c>RpcCall.MethodVersion</c>. <c>methodId</c> (0.24.0+) = client's global method

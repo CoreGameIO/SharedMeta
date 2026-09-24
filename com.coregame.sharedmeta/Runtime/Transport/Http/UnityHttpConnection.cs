@@ -87,6 +87,7 @@ namespace SharedMeta.Client.Network
         public bool IsConnected => _isConnected;
 
         public event Action<SessionResponse>? OnBatch;
+        public event Action<SessionNotice>? OnNotice;
         public event Action<string>? OnSessionTerminated;
         // Server-push reconnect is a SignalR-only capability today: only the hub transports
         // wire RequireSessionReconnect. This transport never raises it, so a server restart
@@ -187,6 +188,7 @@ namespace SharedMeta.Client.Network
                 Annotated = response.Annotated,
                 FailureReason = response.FailureReason,
                 DeepDesyncActive = response.DeepDesyncActive,
+                Permissions = response.Permissions,
             };
         }
 
@@ -345,13 +347,19 @@ namespace SharedMeta.Client.Network
 
                     if (pollResponse == null) continue;
 
+                    // Notices first: a permission change in the same poll is then in force before
+                    // any handler run by the broadcasts below issues a gated call.
+                    if (pollResponse.Notices != null)
+                    {
+                        foreach (var notice in pollResponse.Notices)
+                            OnNotice?.Invoke(notice);
+                    }
+
                     if (pollResponse.Broadcasts != null)
                     {
                         foreach (var broadcast in pollResponse.Broadcasts)
                         {
-                            // Deliver broadcasts with operations AND out-of-band notifications
-                            // (StallNotification has Operations.Count == 0 but must still be delivered)
-                            if (broadcast.Operations is { Count: > 0 } || broadcast.StallNotification != null)
+                            if (broadcast.Operations is { Count: > 0 })
                                 OnBatch?.Invoke(broadcast);
                         }
                     }
@@ -536,6 +544,7 @@ namespace SharedMeta.Client.Network
     internal class UnityPollResponse
     {
         public List<SessionResponse>? Broadcasts { get; set; }
+        public List<SessionNotice>? Notices { get; set; }
         public string? SessionTerminated { get; set; }
         public List<string>? DeactivatingEntities { get; set; }
     }

@@ -35,6 +35,8 @@ namespace SharedMeta.Client.Network
         public long ServerTimeTicks => _serverTimeClock();
         public bool DeepDesyncActive => _dispatcher.DeepDesyncActive;
 
+        public SharedMeta.Core.PlayerPermissions? Permissions => _dispatcher.Permissions;
+
         /// <summary>
         /// 0.22.0+ session-scoped capabilities, sourced from the parent <see cref="IClientDispatcher"/>.
         /// The dispatcher populates these after <c>SessionConnectAsync</c> completes (phase-1) or

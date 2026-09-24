@@ -98,6 +98,9 @@ namespace SharedMeta.Core.Transport
         /// </summary>
         Task ReceiveBroadcast(SessionResponse message);
 
+        /// <summary>Receive a message about the session itself (stall, permission change).</summary>
+        Task ReceiveNotice(SessionNotice notice);
+
         Task SessionTerminated(string reason);
         Task EntityDeactivating(string entityId);
 

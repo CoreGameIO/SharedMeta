@@ -118,6 +118,17 @@ namespace SharedMeta.Core.Transport
         [Id(17), Key(17)] public bool DeepDesyncActive { get; set; }
 
         /// <summary>
+        /// Account-level permissions this player holds, for the client's own gate and for hiding UI
+        /// the player cannot use. Null when the host wired no entitlements store — the client then
+        /// treats its set as unknown and lets the server refuse, rather than hiding everything.
+        /// <para>
+        /// Advisory, never the enforcement point: the server re-checks every gated call against the
+        /// same store, so a client that ignores this field gains nothing.
+        /// </para>
+        /// </summary>
+        [Id(18), Key(18)] public SharedMeta.Core.PlayerPermissions? Permissions { get; set; }
+
+        /// <summary>
         /// The canonical shape of an authentication rejection. Both server transports answer with
         /// this, and clients synthesize it when a 401 arrives with no body (an ASP.NET
         /// authorization-middleware rejection carries none) — so the dispatcher sees one shape

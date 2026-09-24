@@ -48,6 +48,7 @@ public class PlayerIdentityValidationTests
     private sealed class NullBroadcastSender : IBroadcastSender
     {
         public void SendBroadcast(SessionResponse message) { }
+        public void SendNotice(SessionNotice notice) { }
         public void SendSessionTerminated(string reason) { }
         public void SendEntityDeactivating(string entityId) { }
         public void Reset() { }

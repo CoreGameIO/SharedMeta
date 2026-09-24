@@ -113,7 +113,10 @@ public class TestClusterFixture : IAsyncLifetime
             serverSignature: serverSignature,
             identityValidator: identityValidator,
             entityGrainOptions: Microsoft.Extensions.Options.Options.Create(
-                new EntityGrainOptions { DeepDesyncMode = deepDesyncMode }));
+                new EntityGrainOptions { DeepDesyncMode = deepDesyncMode }),
+            // Same store the silo's gate reads, so the connect-time set a client receives and the
+            // set the server enforces against cannot disagree.
+            entitlements: new SharedMeta.Server.Core.Permissions.GrainPlayerEntitlements(GrainFactory));
     }
 
     /// <summary>

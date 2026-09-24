@@ -31,6 +31,7 @@ namespace SharedMeta.Debug.Mux
         public bool IsConnected => _channel.IsConnected && !_disposed;
 
         public event Action<SessionResponse>? OnBatch;
+        public event Action<SessionNotice>? OnNotice;
         public event Action<string>? OnSessionTerminated;
         // Server-push reconnect is a SignalR-only capability today: only the hub transports
         // wire RequireSessionReconnect. This transport never raises it, so a server restart
@@ -96,6 +97,7 @@ namespace SharedMeta.Debug.Mux
                 Annotated = resp.Annotated,
                 FailureReason = resp.FailureReason,
                 DeepDesyncActive = resp.DeepDesyncActive,
+                Permissions = resp.Permissions,
             };
         }
 
@@ -172,6 +174,7 @@ namespace SharedMeta.Debug.Mux
         // ── Channel-callback hooks (invoked by MuxChannel on inbound dispatch) ───────
 
         internal void RaiseBatch(SessionResponse msg) => OnBatch?.Invoke(msg);
+        internal void RaiseNotice(SessionNotice notice) => OnNotice?.Invoke(notice);
         internal void RaiseSessionTerminated(string reason) => OnSessionTerminated?.Invoke(reason);
         internal void RaiseEntityDeactivating(string entityId) { /* no IConnection event for this — kept hook for parity if added later */ }
         internal void RaiseDisconnected(TransportDisconnectReason reason) => OnDisconnected?.Invoke(reason);

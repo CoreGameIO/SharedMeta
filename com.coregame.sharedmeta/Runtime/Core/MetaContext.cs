@@ -312,6 +312,7 @@ namespace SharedMeta.Core
         /// </summary>
         public abstract TService ResolveService<TService>() where TService : class;
 
+
         /// <summary>
         /// 0.20.0: Resolve a sibling-service impl instance hosted on the same entity (same
         /// <c>TState</c>, same grain). Wired by <c>EntityGrain.OnActivateAsync</c> to point

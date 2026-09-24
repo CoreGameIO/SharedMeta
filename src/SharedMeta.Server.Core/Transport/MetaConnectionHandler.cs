@@ -124,7 +124,8 @@ namespace SharedMeta.Server.Core.Transport
             Session.IClientSignatureRegistry? signatureRegistry = null,
             SharedMeta.Core.Transport.MetaServerSignature? serverSignature = null,
             IPlayerIdentityValidator? identityValidator = null,
-            Microsoft.Extensions.Options.IOptions<Grains.EntityGrainOptions>? entityGrainOptions = null)
+            Microsoft.Extensions.Options.IOptions<Grains.EntityGrainOptions>? entityGrainOptions = null,
+            SharedMeta.Server.Permissions.IPlayerEntitlements? entitlements = null)
         {
             _connectionId = connectionId ?? throw new ArgumentNullException(nameof(connectionId));
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
@@ -139,6 +140,31 @@ namespace SharedMeta.Server.Core.Transport
             _serverSignature = serverSignature;
             _identityValidator = identityValidator;
             _deepDesyncMode = entityGrainOptions?.Value.DeepDesyncMode ?? Grains.DeepDesyncMode.PerPlayer;
+            _entitlements = entitlements;
+        }
+
+        // Same store the server's own gate reads. Resolving the client's copy from the grain
+        // directly would be one line shorter and would quietly ignore a host that registered its
+        // own account-backed implementation — two answers to one question.
+        private readonly SharedMeta.Server.Permissions.IPlayerEntitlements? _entitlements;
+
+        /// <summary>
+        /// Permissions reported to the client for this connection, or null when the host wired no
+        /// entitlements store. Null reaches the client as "unknown", where its gate passes through
+        /// and the server's gate decides — never as "holds nothing", which would hide UI a host
+        /// without a store still means to show.
+        /// </summary>
+        public PlayerPermissions? Permissions { get; private set; }
+
+        // Stamped onto every outgoing RpcCall so a gated method needs no read of its own. Resolved
+        // once when the session connects and replaced by the push that also updates the client, so
+        // the two never disagree about what this session may do.
+        private string[]? _permissionNames;
+
+        private void AdoptPermissions(PlayerPermissions? permissions)
+        {
+            Permissions = permissions;
+            _permissionNames = permissions?.Names;
         }
 
         /// <summary>
@@ -333,11 +359,15 @@ namespace SharedMeta.Server.Core.Transport
                         ObserverRenewalInterval);
 
                     DeepDesyncActive = await ResolveDeepDesyncActiveAsync();
+                    AdoptPermissions(_entitlements == null
+                        ? null
+                        : await _entitlements.GetAsync(PlayerId));
                 }
                 else
                 {
                     PlayerId = string.Empty; // Clear on failure
                     DeepDesyncActive = false;
+                    AdoptPermissions(null);
                 }
 
                 _logger.HandlerSessionConnect(request.PlayerId, result.Success, result.IsNewSession);
@@ -387,6 +417,7 @@ namespace SharedMeta.Server.Core.Transport
                     Annotated = annotated,
                     FailureReason = result.FailureReason,
                     DeepDesyncActive = DeepDesyncActive,
+                    Permissions = Permissions,
                     // 0.24.0+ Server-driven ResubscribedEntities replaced by client-driven
                     // Subscriptions[] — grain produces these directly from the per-claim
                     // ReclaimSubscriptionAsync verdicts; no further DTO mapping needed.
@@ -615,6 +646,7 @@ namespace SharedMeta.Server.Core.Transport
                     IsCrossOptimistic = request.IsCrossOptimistic,
                     ServerTimeTicks = ClampClientTime(request.ServerTimeTicks, serverMethodId),
                     DeepDesyncActive = DeepDesyncActive,
+                    CallerPermissions = _permissionNames,
                     Debug = request.Debug  // 0.26.6+ piggybacked PayloadDebug (deep-state CRCs)
                 };
 
@@ -694,7 +726,8 @@ namespace SharedMeta.Server.Core.Transport
                     CallerId = PlayerId,
                     CallerClientVersion = _clientVersion,
                     Payload = request.Payload,
-                    ServerTimeTicks = DateTime.UtcNow.Ticks
+                    ServerTimeTicks = DateTime.UtcNow.Ticks,
+                    CallerPermissions = _permissionNames
                 };
 
                 var grain = SessionManagerGrainOrThrow;
@@ -758,7 +791,8 @@ namespace SharedMeta.Server.Core.Transport
                     CallerId = PlayerId,
                     CallerClientVersion = _clientVersion,
                     Payload = request.Payload,
-                    ServerTimeTicks = DateTime.UtcNow.Ticks
+                    ServerTimeTicks = DateTime.UtcNow.Ticks,
+                    CallerPermissions = _permissionNames
                 };
 
                 var grain = SessionManagerGrainOrThrow;
@@ -1107,8 +1141,19 @@ namespace SharedMeta.Server.Core.Transport
         public Task OnBatch(SessionResponse response)
         {
             _logger.ObserverOnBatch(PlayerId, response.SequenceNumber, response.Operations.Count);
-
             _broadcastSender.SendBroadcast(response);
+            return Task.CompletedTask;
+        }
+
+        public Task OnNotice(SessionNotice notice)
+        {
+            // The same message updates this connection's own copy and the client's. Adopting it here
+            // is what makes a mid-session grant or revocation take effect without a reconnect —
+            // every call stamped after this point carries the new set.
+            if (notice.Permissions != null)
+                AdoptPermissions(notice.Permissions);
+
+            _broadcastSender.SendNotice(notice);
             return Task.CompletedTask;
         }
 
@@ -1216,6 +1261,7 @@ namespace SharedMeta.Server.Core.Transport
         private readonly Session.IClientSignatureRegistry? _signatureRegistry;
         private readonly IPlayerIdentityValidator? _identityValidator;
         private readonly Microsoft.Extensions.Options.IOptions<Grains.EntityGrainOptions>? _entityGrainOptions;
+        private readonly SharedMeta.Server.Permissions.IPlayerEntitlements? _entitlements;
 
         public MetaConnectionHandlerFactory(
             IGrainFactory grainFactory,
@@ -1228,7 +1274,8 @@ namespace SharedMeta.Server.Core.Transport
             Session.IClientSignatureRegistry? signatureRegistry = null,
             SharedMeta.Core.Transport.MetaServerSignature? serverSignature = null,
             IPlayerIdentityValidator? identityValidator = null,
-            Microsoft.Extensions.Options.IOptions<Grains.EntityGrainOptions>? entityGrainOptions = null)
+            Microsoft.Extensions.Options.IOptions<Grains.EntityGrainOptions>? entityGrainOptions = null,
+            SharedMeta.Server.Permissions.IPlayerEntitlements? entitlements = null)
         {
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
@@ -1241,6 +1288,7 @@ namespace SharedMeta.Server.Core.Transport
             _signatureRegistry = signatureRegistry;
             _serverSignature = serverSignature;
             _identityValidator = identityValidator;
+            _entitlements = entitlements;
         }
 
         public IMetaConnectionHandler Create(string connectionId, IBroadcastSender broadcastSender)
@@ -1248,7 +1296,7 @@ namespace SharedMeta.Server.Core.Transport
             var logger = _loggerFactory.CreateLogger<MetaConnectionHandler>();
             return new MetaConnectionHandler(connectionId, _grainFactory, _entityGrainResolver, broadcastSender, logger,
                 _transportOptions, _serializer, _schemaRegistry, _versionPolicy, _signatureRegistry, _serverSignature,
-                _identityValidator, _entityGrainOptions);
+                _identityValidator, _entityGrainOptions, _entitlements);
         }
     }
 }

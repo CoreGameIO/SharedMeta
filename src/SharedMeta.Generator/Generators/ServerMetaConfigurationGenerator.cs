@@ -466,7 +466,8 @@ namespace SharedMeta.Generator.Generators
                     IsLocalQuery = isLocalQuery,
                     SkipMigration = skipMigration,
                     MinStateVersion = minStateVersion,
-                    GenerateClientApi = generateClientApi
+                    GenerateClientApi = generateClientApi,
+                    RequiredPermissions = MetaMethodFacts.ReadRequiredPermissions(member, serviceInterface).Names
                 });
             }
 
@@ -1475,6 +1476,64 @@ namespace SharedMeta.Generator.Generators
             // convention). The is-query / is-signal switches below qualify ids by this prefix.
             var idsNs = services.FirstOrDefault()?.Namespace ?? "";
 
+            // [RequirePermission] gates. The caller's set rides on the call (stamped by the
+            // transport handler from what it resolved at SessionConnect), so the check is a string
+            // comparison — no read of the entitlements store, no grain hop, nothing to await.
+            // It sits in this override rather than the per-case dispatcher because here it runs
+            // before any argument is deserialized, so a refused call touches nothing.
+            string PermissionFieldName(MethodSignatureInfo m) =>
+                "_perm_" + SignatureHashGenerator.MakeMethodIdConstName(m.ServiceName, m.MethodAlias, m.Version);
+            string MethodIdConst(MethodSignatureInfo m) =>
+                "global::" + idsNs + ".Generated.GameMethodIds." +
+                SignatureHashGenerator.MakeMethodIdConstName(m.ServiceName, m.MethodAlias, m.Version);
+
+            var gatedMethods = services
+                .SelectMany(s => s.MethodSignatures)
+                .Where(m => m.RequiredPermissions.Length > 0)
+                .GroupBy(PermissionFieldName)
+                .Select(g => g.First())
+                .OrderBy(PermissionFieldName, System.StringComparer.Ordinal)
+                .ToList();
+            var gatedCallMethods = gatedMethods.Where(m => !m.IsQuery && !m.IsSignal && !m.IsLocalQuery).ToList();
+            var gatedQueryMethods = gatedMethods.Where(m => m.IsQuery).ToList();
+            var gatedSignalMethods = gatedMethods.Where(m => m.IsSignal).ToList();
+
+            if (gatedMethods.Count > 0)
+            {
+                sb.AppendLine("        // One static name set per gated method — a gate that allocated its argument");
+                sb.AppendLine("        // array per call would cost more than the check it feeds.");
+                foreach (var m in gatedMethods)
+                {
+                    var names = string.Join(", ", m.RequiredPermissions.Select(p => "\"" + p + "\""));
+                    sb.AppendLine($"        private static readonly string[] {PermissionFieldName(m)} = new string[] {{ {names} }};");
+                }
+                sb.AppendLine();
+            }
+
+            if (gatedCallMethods.Count > 0)
+            {
+                sb.AppendLine("        public override async System.Threading.Tasks.ValueTask<HandleCallResult> HandleCallAsync(RpcCall call, bool isClientOriginated = true, bool requirePatchForFanOut = false, long entitySequenceNumber = 0)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            // Client-originated only: a cross-entity or server-side caller is already inside");
+                sb.AppendLine("            // the trust boundary and carries no player to attribute permissions to.");
+                sb.AppendLine("            if (isClientOriginated)");
+                sb.AppendLine("            {");
+                sb.AppendLine("                switch (call.MethodId)");
+                sb.AppendLine("                {");
+                foreach (var m in gatedCallMethods)
+                {
+                    sb.AppendLine($"                    case {MethodIdConst(m)}:");
+                    sb.AppendLine($"                        global::SharedMeta.Core.PermissionGate.EnsureHeld(call.CallerPermissions, {PermissionFieldName(m)}, \"{m.ServiceName}\", \"{m.MethodAlias}\");");
+                    sb.AppendLine("                        break;");
+                }
+                sb.AppendLine("                }");
+                sb.AppendLine("            }");
+                sb.AppendLine();
+                sb.AppendLine("            return await base.HandleCallAsync(call, isClientOriginated, requirePatchForFanOut, entitySequenceNumber);");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+            }
+
             // HandleQueryAsync override — emitted only when at least one query method exists.
             // Inline-validates: (1) is-a-query-method, (2) access-policy ladder (only when
             // AccessPolicy != Open). The GenerateClientApi=false gate per query method lives
@@ -1521,6 +1580,22 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine();
                 }
 
+                // After the access-policy ladder on purpose: that check is local, this one reads the
+                // player's entitlements, so a caller who fails the cheap gate never triggers the read.
+                if (gatedQueryMethods.Count > 0)
+                {
+                    sb.AppendLine("            switch (call.MethodId)");
+                    sb.AppendLine("            {");
+                    foreach (var m in gatedQueryMethods)
+                    {
+                        sb.AppendLine($"                case {MethodIdConst(m)}:");
+                        sb.AppendLine($"                    global::SharedMeta.Core.PermissionGate.EnsureHeld(call.CallerPermissions, {PermissionFieldName(m)}, \"{m.ServiceName}\", \"{m.MethodAlias}\");");
+                        sb.AppendLine("                    break;");
+                    }
+                    sb.AppendLine("            }");
+                    sb.AppendLine();
+                }
+
                 sb.AppendLine("            return await base.HandleQueryAsync(call);");
                 sb.AppendLine("        }");
                 sb.AppendLine();
@@ -1561,6 +1636,30 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine("                    LogProviderCallError(new System.UnauthorizedAccessException($\"Access denied for signal id {call.MethodId} from caller '{call.CallerId}' on entity '{MetaContext!.EntityId}'\"), call.MethodId);");
                     sb.AppendLine("                    return;");
                     sb.AppendLine("                }");
+                    sb.AppendLine("            }");
+                    sb.AppendLine();
+                }
+
+                // A signal has no response channel, so a denial is logged and dropped like every
+                // other signal-side failure rather than thrown at a caller that cannot hear it.
+                if (gatedSignalMethods.Count > 0)
+                {
+                    sb.AppendLine("            switch (call.MethodId)");
+                    sb.AppendLine("            {");
+                    foreach (var m in gatedSignalMethods)
+                    {
+                        sb.AppendLine($"                case {MethodIdConst(m)}:");
+                        sb.AppendLine("                    try");
+                        sb.AppendLine("                    {");
+                        sb.AppendLine($"                        global::SharedMeta.Core.PermissionGate.EnsureHeld(call.CallerPermissions, {PermissionFieldName(m)}, \"{m.ServiceName}\", \"{m.MethodAlias}\");");
+                        sb.AppendLine("                    }");
+                        sb.AppendLine("                    catch (global::SharedMeta.Core.MetaPermissionDeniedException __denied)");
+                        sb.AppendLine("                    {");
+                        sb.AppendLine("                        LogProviderCallError(__denied, call.MethodId);");
+                        sb.AppendLine("                        return;");
+                        sb.AppendLine("                    }");
+                        sb.AppendLine("                    break;");
+                    }
                     sb.AppendLine("            }");
                     sb.AppendLine();
                 }
@@ -2391,6 +2490,11 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions");
             sb.AppendLine("                .TryAddSingleton<SharedMeta.Server.Core.IMetaServerApiFactory, SharedMeta.Server.Core.MetaServerApiFactory>(services);");
             sb.AppendLine();
+            sb.AppendLine("            // Permission store for [RequirePermission]. TryAdd so a host that registered its own");
+            sb.AppendLine("            // account-backed implementation keeps it; otherwise permissions work unwired.");
+            sb.AppendLine("            Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions");
+            sb.AppendLine("                .TryAddSingleton<SharedMeta.Server.Permissions.IPlayerEntitlements, SharedMeta.Server.Core.Permissions.GrainPlayerEntitlements>(services);");
+            sb.AppendLine();
 
             var contractBindings = byStateType.Values.SelectMany(v => v)
                 .SelectMany(s => s.Contracts)
@@ -2523,7 +2627,13 @@ namespace SharedMeta.Generator.Generators
             // options the entity grains read. Constructed by hand here, so it must be passed
             // explicitly — an omitted optional argument would silently leave every silo on the
             // default mode no matter what the host configured.
-            sb.AppendLine("                    sp.GetService<Microsoft.Extensions.Options.IOptions<SharedMeta.Server.Core.Grains.EntityGrainOptions>>()));");
+            sb.AppendLine("                    sp.GetService<Microsoft.Extensions.Options.IOptions<SharedMeta.Server.Core.Grains.EntityGrainOptions>>(),");
+            // Same trap, and the one [RequirePermission] rides on: the handler resolves the caller's
+            // set once at SessionConnect and stamps it on every RpcCall. Omitted, the store above is
+            // registered and written by admin tooling but never read — the connect answer carries no
+            // permissions, so the client's set stays unknown and every gated call is refused with
+            // nothing to show for the grant.
+            sb.AppendLine("                    sp.GetService<SharedMeta.Server.Permissions.IPlayerEntitlements>()));");
             sb.AppendLine();
 
             sb.AppendLine("            return services;");

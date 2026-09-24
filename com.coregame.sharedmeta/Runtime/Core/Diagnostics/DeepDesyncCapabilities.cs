@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -15,7 +16,11 @@ namespace SharedMeta.Core.Diagnostics
     /// </summary>
     public static class DeepDesyncCapabilities
     {
-        private static readonly Dictionary<string, bool> _byService = new Dictionary<string, bool>();
+        // Concurrent because this is process-wide state written from whichever thread ran
+        // RegisterAllServices(). Two clients bootstrapped in parallel — two backends in one app, or
+        // a test suite running classes side by side — corrupted a plain Dictionary mid-insert and
+        // surfaced as IndexOutOfRangeException from inside TryInsert, nowhere near the cause.
+        private static readonly ConcurrentDictionary<string, bool> _byService = new ConcurrentDictionary<string, bool>();
 
         /// <summary>Declare one service's compile-time capability. Idempotent — re-registration
         /// from a second <c>RegisterAllServices()</c> call overwrites with the same value.</summary>

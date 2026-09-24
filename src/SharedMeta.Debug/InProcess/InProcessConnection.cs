@@ -24,6 +24,7 @@ namespace SharedMeta.Debug.InProcess
         public bool IsConnected => _isConnected;
 
         public event Action<SessionResponse>? OnBatch;
+        public event Action<SessionNotice>? OnNotice;
         public event Action<string>? OnSessionTerminated;
         // Server-push reconnect is a SignalR-only capability today: only the hub transports
         // wire RequireSessionReconnect. This transport never raises it, so a server restart
@@ -116,6 +117,7 @@ namespace SharedMeta.Debug.InProcess
                 Annotated = response.Annotated,
                 FailureReason = response.FailureReason,
                 DeepDesyncActive = response.DeepDesyncActive,
+                Permissions = response.Permissions,
             };
         }
 
@@ -226,6 +228,15 @@ namespace SharedMeta.Debug.InProcess
                 var copy = CopyPooledBytesForWire(message);
                 OnBatch?.Invoke(copy);
             }
+        }
+
+        /// <summary>
+        /// Internal: Called by InProcessBroadcastSender to deliver session notices.
+        /// </summary>
+        internal void DeliverNotice(SessionNotice notice)
+        {
+            if (!_isConnected) return;
+            OnNotice?.Invoke(notice);
         }
 
         // InProcess transport emulates a wire boundary: the client must receive an INDEPENDENT

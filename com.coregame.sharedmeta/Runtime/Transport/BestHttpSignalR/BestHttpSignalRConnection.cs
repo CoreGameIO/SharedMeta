@@ -130,6 +130,7 @@ namespace SharedMeta.Transport.BestHttp
         public bool IsConnected => _hub != null && _hub.State == ConnectionStates.Connected;
 
         public event Action<SessionResponse>? OnBatch;
+        public event Action<SessionNotice>? OnNotice;
         public event Action<string>? OnSessionTerminated;
         public event Action<string>? OnRequireSessionReconnect;
         public event Action<TransportDisconnectReason>? OnDisconnected;
@@ -177,6 +178,7 @@ namespace SharedMeta.Transport.BestHttp
 
             // Subscribe to hub events from server
             _hub.On<SessionResponse>(nameof(IMetaHubClient.ReceiveBroadcast), OnReceiveBroadcast);
+            _hub.On<SessionNotice>(nameof(IMetaHubClient.ReceiveNotice), notice => OnNotice?.Invoke(notice));
             _hub.On<string>(nameof(IMetaHubClient.SessionTerminated), msg => OnSessionTerminated?.Invoke(msg));
             _hub.On<string>(nameof(IMetaHubClient.EntityDeactivating), OnEntityDeactivating);
             _hub.On<string>(nameof(IMetaHubClient.RequireSessionReconnect), msg => OnRequireSessionReconnect?.Invoke(msg));
@@ -308,6 +310,7 @@ namespace SharedMeta.Transport.BestHttp
                 Annotated = response.Annotated,
                 FailureReason = response.FailureReason,
                 DeepDesyncActive = response.DeepDesyncActive,
+                Permissions = response.Permissions,
             };
         }
 

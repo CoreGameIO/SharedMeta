@@ -19,6 +19,12 @@ namespace SharedMeta.Server.Core.Transport
         void SendBroadcast(SessionResponse message);
 
         /// <summary>
+        /// Send a message about the session itself (stall, permission change) on the transport's
+        /// notice channel, apart from broadcasts.
+        /// </summary>
+        void SendNotice(SessionNotice notice);
+
+        /// <summary>
         /// Notify client that session was terminated.
         /// </summary>
         void SendSessionTerminated(string reason);

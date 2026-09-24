@@ -185,6 +185,19 @@ namespace SharedMeta.Core.Transport
         void ApplyDeepDesyncVerdict(bool active);
 
         /// <summary>
+        /// Account-level permissions the server reported for this player, or null while unknown —
+        /// no session yet, or a host with no entitlements store. Gated methods read it to refuse
+        /// locally; the server checks the same thing again regardless.
+        /// </summary>
+        SharedMeta.Core.PlayerPermissions? Permissions { get; }
+
+        /// <summary>Adopt a permission set the server pushed mid-session.</summary>
+        void ApplyPermissions(SharedMeta.Core.PlayerPermissions? permissions);
+
+        /// <summary>Raised when the server pushed a new permission set — refresh gated UI here.</summary>
+        event System.Action<SharedMeta.Core.PlayerPermissions>? PermissionsChanged;
+
+        /// <summary>
         /// True if session has been established with server.
         /// </summary>
         bool IsSessionConnected { get; }

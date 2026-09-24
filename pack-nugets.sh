@@ -33,9 +33,21 @@ echo "  Output:  $OUTPUT_DIR/"
 echo "═══════════════════════════════════════════"
 echo ""
 
-# Build the full solution first (ensures generator DLL is up to date)
+# Build the full solution first (ensures generator DLL is up to date).
+#
+# Clean + --no-incremental, а не просто build: pack идёт с --no-build и упаковывает
+# то, что лежит в bin. Инкрементальная сборка может не переисполнить source-генератор
+# для части TFM'ов, и его выход молча пропадает из DLL — сборка при этом зелёная, без
+# единого предупреждения. Так 0.42.0 уехал без Orleans-кодеков в Server.Core и Server
+# (net10.0/net11.0; net8.0 уцелел), и силос потребителя падал на старте
+# OrleansConfigurationException'ом про unserializable types.
+echo "▸ Cleaning previous build output..."
+dotnet clean SharedMeta.slnx -c "$CONFIG" --nologo -v q
+echo "  ✓ Clean succeeded"
+echo ""
+
 echo "▸ Building solution..."
-dotnet build SharedMeta.slnx -c "$CONFIG" $VERSION_ARG --nologo -v q
+dotnet build SharedMeta.slnx -c "$CONFIG" $VERSION_ARG --no-incremental --nologo -v q
 echo "  ✓ Build succeeded"
 echo ""
 

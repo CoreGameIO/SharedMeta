@@ -289,6 +289,36 @@ namespace SharedMeta.Generator.Generators
             // Events. Opt-in per method via [MetaMethod(ReplayEvents = ...)] — a delegate field
             // per method per direction is real weight on a large service, and most of them are
             // never subscribed.
+            // [RequirePermission] name sets. One static array per gated method so the local gate
+            // costs a field read and a string compare; ungated methods emit nothing at all.
+            // When the assembly declares its permissions, an unknown name fails the build here: a
+            // typo would otherwise compile into a requirement nobody can ever hold, and the method
+            // would look gated while being unreachable.
+            var declaredPermissions = MetaMethodFacts.ReadDeclaredPermissions(compilation);
+            foreach (var method in methods)
+            {
+                var requirement = MetaMethodFacts.ReadRequiredPermissions(method, compilation);
+                if (requirement.HasUnreadableArgument)
+                {
+                    sb.AppendLine($"#error SharedMeta: [RequirePermission] on '{interfaceName}.{method.Identifier.Text}' has an argument that is not a compile-time string. Use a literal or a const — a name the generator cannot read would leave the method ungated on the client.");
+                }
+                if (!requirement.IsGated) continue;
+
+                if (declaredPermissions != null)
+                {
+                    foreach (var name in requirement.Names)
+                    {
+                        if (declaredPermissions.Contains(name)) continue;
+                        var known = string.Join(", ", declaredPermissions.OrderBy(p => p, System.StringComparer.Ordinal));
+                        sb.AppendLine($"#error SharedMeta: [RequirePermission(\"{name}\")] on '{interfaceName}.{method.Identifier.Text}' names a permission this assembly does not declare. Add it to [assembly: DeclaredPermissions(...)] or fix the name. Declared: {known}.");
+                    }
+                }
+
+                var names = string.Join(", ", requirement.Names.Select(p => "\"" + p + "\""));
+                sb.AppendLine($"        private static readonly string[] {PermissionFieldName(method)} = new string[] {{ {names} }};");
+            }
+            sb.AppendLine();
+
             sb.AppendLine("        // Events fired when methods are replayed from broadcasts");
             foreach (var method in methods)
             {
@@ -670,7 +700,7 @@ namespace SharedMeta.Generator.Generators
             // Validation: must return void, must not combine with Query/Sync/explicit Mode.
             if (isSignalMethod)
             {
-                GenerateSignalMethod(sb, method, methodAlias, isQueryMethod, modeExplicit, syncApi, interfaceName, namespaceName, serializer, transforms);
+                GenerateSignalMethod(sb, method, methodAlias, isQueryMethod, modeExplicit, syncApi, interfaceName, namespaceName, serializer, transforms, compilation);
                 return;
             }
 
@@ -749,6 +779,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
                 sb.AppendLine($"            ThrowIfConnectionGone(\"{methodName}\");");
+                EmitPermissionGate(sb, method, compilation, methodAlias);
                 GenerateTransformNormalization(sb, transforms);
                 if (capabilitiesEnabled)
                 {
@@ -800,6 +831,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("        {");
                 sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
                 sb.AppendLine($"            ThrowIfConnectionGone(\"{methodName}\");");
+                EmitPermissionGate(sb, method, compilation, methodAlias);
                 GenerateTransformNormalization(sb, transforms);
                 if (capabilitiesEnabled)
                 {
@@ -2624,7 +2656,8 @@ namespace SharedMeta.Generator.Generators
         /// </summary>
         private static void GenerateSignalMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, bool isQueryCombo, bool modeExplicit, string syncApi, string interfaceName,
-            string namespaceName, DetectedSerializer serializer, List<ParameterTransform> transforms)
+            string namespaceName, DetectedSerializer serializer, List<ParameterTransform> transforms,
+            Compilation? compilation)
         {
             var methodName = method.Identifier.Text;
             var returnType = method.ReturnType.ToString();
@@ -2660,6 +2693,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        {");
             sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
             sb.AppendLine($"            ThrowIfConnectionGone(\"{methodName}\");");
+            EmitPermissionGate(sb, method, compilation, methodAlias);
 
             // Serialize arguments using the detected serializer (same pattern as Optimistic).
             GenerateArgumentSerialization(sb, method, transforms, paramCount, serializer);
@@ -2937,6 +2971,33 @@ namespace SharedMeta.Generator.Generators
                 if (result != null) return result;
             }
             return null;
+        }
+
+        /// <summary>
+        /// Field holding a gated method's permission names on the generated client. Keyed by alias
+        /// and version like the method id constants, so two versions of one alias stay distinct.
+        /// </summary>
+        private static string PermissionFieldName(MethodDeclarationSyntax method)
+        {
+            var alias = GetMethodAlias(method, method.Identifier.Text);
+            return $"_perm_{alias}_v{GetMethodVersion(method)}";
+        }
+
+        /// <summary>
+        /// Emits the local gate for a <c>[RequirePermission]</c> method: refuse before sending when
+        /// the session's set is known and holds none of the names. An unknown set passes through —
+        /// the server decides, and it would otherwise be impossible to call anything on a host that
+        /// reports no permissions.
+        /// </summary>
+        private static void EmitPermissionGate(StringBuilder sb, MethodDeclarationSyntax method,
+            Compilation? compilation, string methodAlias)
+        {
+            var requirement = MetaMethodFacts.ReadRequiredPermissions(method, compilation);
+            if (!requirement.IsGated) return;
+
+            var field = PermissionFieldName(method);
+            sb.AppendLine($"            if (!global::SharedMeta.Core.PermissionGate.IsAllowed(_network.Permissions, {field}))");
+            sb.AppendLine($"                throw global::SharedMeta.Core.PermissionGate.Denied(ServiceName, \"{methodAlias}\", {field});");
         }
 
         private static string GetEventName(string methodName) => GetEventName(methodName, "Replayed");

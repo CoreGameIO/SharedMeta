@@ -12,6 +12,7 @@ namespace SharedMeta.Transport.HttpPolling
     internal class HttpPollingBroadcastSender : IBroadcastSender
     {
         private readonly ConcurrentQueue<SessionResponse> _broadcasts = new();
+        private readonly ConcurrentQueue<SessionNotice> _notices = new();
         private readonly ConcurrentQueue<string> _deactivatingEntities = new();
         private volatile string? _sessionTerminated;
         private volatile TaskCompletionSource _signal = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -19,6 +20,12 @@ namespace SharedMeta.Transport.HttpPolling
         public void SendBroadcast(SessionResponse message)
         {
             _broadcasts.Enqueue(message);
+            SignalWaiter();
+        }
+
+        public void SendNotice(SessionNotice notice)
+        {
+            _notices.Enqueue(notice);
             SignalWaiter();
         }
 
@@ -73,6 +80,14 @@ namespace SharedMeta.Transport.HttpPolling
             }
             response.Broadcasts = broadcasts;
 
+            List<SessionNotice>? notices = null;
+            while (_notices.TryDequeue(out var notice))
+            {
+                notices ??= new();
+                notices.Add(notice);
+            }
+            response.Notices = notices;
+
             // Drain deactivating entities
             List<string>? deactivating = null;
             while (_deactivatingEntities.TryDequeue(out var entityId))
@@ -116,6 +131,7 @@ namespace SharedMeta.Transport.HttpPolling
         public void Reset()
         {
             while (_broadcasts.TryDequeue(out _)) { }
+            while (_notices.TryDequeue(out _)) { }
             while (_deactivatingEntities.TryDequeue(out _)) { }
             _sessionTerminated = null;
             ResetSignal();
@@ -124,6 +140,7 @@ namespace SharedMeta.Transport.HttpPolling
         private bool IsEmpty()
         {
             return _broadcasts.IsEmpty
+                   && _notices.IsEmpty
                    && _deactivatingEntities.IsEmpty
                    && _sessionTerminated == null;
         }

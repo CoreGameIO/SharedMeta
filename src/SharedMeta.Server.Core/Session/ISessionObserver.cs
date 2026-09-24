@@ -22,6 +22,13 @@ namespace SharedMeta.Server.Core.Session
         Task OnBatch(SessionResponse response);
 
         /// <summary>
+        /// Called with a message about the session itself (stall, permission change). Unsequenced
+        /// and never replayed — see <see cref="SessionNotice"/>.
+        /// </summary>
+        [OneWay]
+        Task OnNotice(SessionNotice notice);
+
+        /// <summary>
         /// Called when an entity the client is subscribed to is deactivating.
         /// Client should be notified to resubscribe if needed.
         /// </summary>

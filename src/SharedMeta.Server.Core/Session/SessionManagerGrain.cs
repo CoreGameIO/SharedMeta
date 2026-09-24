@@ -1116,6 +1116,14 @@ namespace SharedMeta.Server.Core.Session
 
         // ── Stall diagnostics (lazy, no timer) ────────────────────────────
 
+        public Task PushPermissionsAsync(SharedMeta.Core.PlayerPermissions permissions)
+        {
+            if (permissions == null) return Task.CompletedTask;
+
+            var notice = new SessionNotice { Permissions = permissions };
+            return _observerManager.Notify(o => o.OnNotice(notice));
+        }
+
         private Task PushStallNotification(StallStage stage, TimeSpan elapsed)
         {
             var notification = new StallNotification
@@ -1125,14 +1133,8 @@ namespace SharedMeta.Server.Core.Session
                 StashedCount = _orderingBuffer.Count,
                 ElapsedMilliseconds = (long)elapsed.TotalMilliseconds,
             };
-            var response = new SessionResponse
-            {
-                SequenceNumber = 0,
-                Operations = new List<SessionOp>(),
-                ServerTimeTicks = DateTime.UtcNow.Ticks,
-                StallNotification = notification,
-            };
-            return _observerManager.Notify(o => o.OnBatch(response));
+            var notice = new SessionNotice { Stall = notification };
+            return _observerManager.Notify(o => o.OnNotice(notice));
         }
 
 

@@ -2863,7 +2863,7 @@ Client side requires no changes. The grain stays single-threaded; ordering is re
 
 ### Stall Notifications and `ISessionHealthListener` (0.8.0+)
 
-When an ordering gap stays open beyond `SoftStallNotifyTimeout`, the server pushes a `StallNotification` to the client through the existing observer channel as a new `SessionResponse.StallNotification` field (with empty `Operations`). Stages:
+When an ordering gap stays open beyond `SoftStallNotifyTimeout`, the server pushes a `StallNotification` to the client as a `SessionNotice` (`notice.Stall`) — the unsequenced session channel, separate from `SessionResponse` broadcasts. Stages:
 
 | Stage | When | Typical UI |
 |-------|------|-----------|
@@ -3935,6 +3935,95 @@ await profileApi.RequestMatchAsync(2);
 
 ---
 
+---
+
+### Permissions — `[RequirePermission]` (0.42.0+)
+
+Account-level entitlements gating a method. For test and moderation surfaces: cheats, admin tools,
+support overrides.
+
+```csharp
+// Optional, but a typo becomes a build error once declared
+[assembly: DeclaredPermissions("Cheat", "Admin", "Support")]
+
+public interface ICheatService : IMetaService
+{
+    [MetaMethod(Mode = ExecutionMode.Server)]
+    [RequirePermission("Cheat")]
+    void GrantGold(int amount);
+
+    [MetaMethod(Mode = ExecutionMode.Server)]
+    [RequirePermission("Admin", "Support")]     // any one of them admits the call
+    void ResetProgress();
+}
+```
+
+On an interface the requirement covers every method it declares; a method's own attribute replaces
+the interface's rather than adding to it.
+
+**Granting and revoking (server only):**
+
+```csharp
+// Admin tooling, a background job, a console command — anything already inside the trust boundary
+var entitlements = serviceProvider.GetRequiredService<IPlayerEntitlements>();
+await entitlements.GrantAsync(playerId, new[] { "Cheat" });
+await entitlements.RevokeAsync(playerId, new[] { "Cheat" });
+var held = await entitlements.GetAsync(playerId);
+```
+
+The default implementation stores one set per player in a grain and is registered by the generated
+`ConfigureMeta`, so this works with no wiring. A game with its own account system registers its own
+`IPlayerEntitlements` before that call and the framework uses it instead.
+
+Always write through `IPlayerEntitlements`, never the storage grain directly: the service is what
+pushes the change into a live session. A write that skips it applies only from the player's next
+connect.
+
+**Shared game logic cannot grant anything.** There is deliberately no `Context` API for it: a
+permission game code could write would put `Cheat` behind any bug in any service.
+
+**How enforcement works:**
+
+- The authoritative check is the generated provider override on the server. It runs before arguments
+  are deserialized and before the service body, so a refused call cannot have mutated state.
+- The caller's set is resolved once when the session connects and stamped by the transport handler
+  onto every call, so a gated method costs a string comparison — no read of the store, no grain hop.
+  The handler overwrites whatever a packet claimed, so a modified client cannot grant itself anything.
+- A grant or revocation while the player is connected is pushed to that session: it refreshes the
+  connection's stamped set (the next call is judged by the new rights) and the client's copy behind it.
+  If that push is lost, the session keeps its previous rights until it reconnects, and the failure is
+  logged as an error — the trade accepted for not reading the store on every gated call.
+- Cross-entity and server-originated calls are not gated: they carry no player, and they are already
+  inside the trust boundary.
+- A `Signal` denial is logged and dropped — fire-and-forget has no channel to report it on.
+
+**On the client:**
+
+- The set arrives with the connection and is exposed as `client.Dispatcher.Permissions` — use it to
+  hide a cheat panel or an admin button.
+- Generated methods refuse locally with `MetaPermissionDeniedException` when the set is known and
+  holds none of the required names, saving a round trip. An unknown set (a host that wired no store)
+  passes through and lets the server answer.
+- A grant or revocation while the player is connected is pushed: `Dispatcher.PermissionsChanged`
+  fires with the new set, which is the signal to refresh gated UI.
+
+**Not for in-game roles.** Clan leader, party host, guild officer are properties of a (player,
+entity) pair: they live in that entity's state, change as a result of game logic, and are already
+synced and replayed. Check them in the method body against the state:
+
+```csharp
+public OperationResult KickMember(string playerId)
+{
+    if (Context.CallerId != State.LeaderId) return OperationResult.NoPermission;
+    ...
+}
+```
+
+A permission is an account-level fact with a different source of truth, a different lifetime, and a
+write path players must never reach. Use `EntityAccessPolicy.Authorized` to gate *subscription* by
+membership; it and `[RequirePermission]` answer different questions and compose.
+
+
 ## 19. Desync Diagnostics & Common Pitfalls
 
 ### IDesyncDiagnostics Interface
@@ -4496,6 +4585,8 @@ The runtime ignores the attribute. It is purely a marker for downstream tooling.
 | `[Tracked]` | Field | Push-based change tracking property for UI binding (client-only) |
 | `[Trigger]` | Method | Auto-execute after condition on another method |
 | `[MetaMethod(ReplayEvents = ...)]` | Method | Client-side UI events around an incoming broadcast: `On{Method}_Replaying` (before local state changes) / `On{Method}_Replayed` (after). Opt-in; default `None`. (0.41.0+) |
+| `[RequirePermission]` | Method / Interface | Account-level entitlement required to call (server-enforced). (0.42.0+) |
+| `[DeclaredPermissions]` | Assembly | Permission names this game recognizes; validates `[RequirePermission]`. (0.42.0+) |
 | `[ServerMetaService]` | Interface | Server-only service (generates replayer) |
 | `[StatelessMetaService(typeof(TConfig))]` | Interface | No-entity service resolving only a linked `[MetaConfig]`. (0.33.0+) |
 | `[StatelessMetaServiceImpl(typeof(IThing))]` | Class | Impl for `[StatelessMetaService]` — injects only a typed `Config` property. (0.33.0+) |

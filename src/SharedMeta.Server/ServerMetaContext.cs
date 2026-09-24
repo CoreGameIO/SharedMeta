@@ -345,11 +345,11 @@ namespace SharedMeta.Server
         {
             if (ServiceResolver == null)
                 throw new InvalidOperationException($"ServiceResolver not set. Cannot resolve {typeof(TService).Name}");
-            
+
             var impl = ServiceResolver(typeof(TService));
             if (impl == null)
                 throw new InvalidOperationException($"ServiceResolver returned null for {typeof(TService).Name}");
-                
+
             return (TService)impl;
         }
 

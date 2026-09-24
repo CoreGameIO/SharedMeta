@@ -161,6 +161,10 @@ namespace SharedMeta.Debug.Mux
             {
                 if (_connections.TryGetValue(tag, out var c)) c.RaiseBatch(msg);
             });
+            _hub.On<int, SessionNotice>(nameof(IMuxMetaHubClient.ReceiveNotice), (tag, notice) =>
+            {
+                if (_connections.TryGetValue(tag, out var c)) c.RaiseNotice(notice);
+            });
             _hub.On<int, string>(nameof(IMuxMetaHubClient.SessionTerminated), (tag, reason) =>
             {
                 if (_connections.TryGetValue(tag, out var c)) c.RaiseSessionTerminated(reason);

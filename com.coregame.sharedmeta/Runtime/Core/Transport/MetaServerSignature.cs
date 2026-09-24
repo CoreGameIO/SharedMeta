@@ -177,5 +177,21 @@ namespace SharedMeta.Core.Transport
         /// pay zero overhead on the dispatch path.
         /// </summary>
         public SharedMeta.Core.SnapshotTiming DeepStateCheck { get; init; }
+
+        /// <summary>
+        /// Mirror of <c>[RequirePermission]</c> — permissions any one of which admits a
+        /// client-originated call. Empty for the ungated majority.
+        /// </summary>
+        /// <remarks>
+        /// Here rather than only in the generated provider so a backend that does not run
+        /// <c>MetaProviderBase</c> can enforce the same gate from the same table — the local backend
+        /// reads this entry by methodId exactly as it reads <see cref="DeepStateCheck"/>.
+        /// <para>
+        /// Deliberately NOT folded into the server signature hash: a permission rename changes who
+        /// may call a method, not whether a client's build can, so invalidating every cached
+        /// annotation would cost a full re-handshake for every player and tell them nothing.
+        /// </para>
+        /// </remarks>
+        public string[] RequiredPermissions { get; init; } = System.Array.Empty<string>();
     }
 }

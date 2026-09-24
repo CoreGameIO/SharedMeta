@@ -104,6 +104,11 @@ public class ReconnectAuthRecoveryTests
             add => _inner.OnBatch += value;
             remove => _inner.OnBatch -= value;
         }
+        public event Action<SessionNotice>? OnNotice
+        {
+            add => _inner.OnNotice += value;
+            remove => _inner.OnNotice -= value;
+        }
         public event Action<string>? OnSessionTerminated
         {
             add => _inner.OnSessionTerminated += value;

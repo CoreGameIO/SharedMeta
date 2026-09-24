@@ -44,6 +44,14 @@ namespace SharedMeta.Debug.InProcess
             _connection.DeliverBroadcast(message);
         }
 
+        // Not subject to the packet-loss simulation: that models the sequenced stream, which the
+        // client recovers by resend. A notice has no such recovery, so dropping one would only test
+        // a loss real transports do not produce on a live connection.
+        public void SendNotice(SessionNotice notice)
+        {
+            _connection.DeliverNotice(notice);
+        }
+
         public void SendSessionTerminated(string reason)
         {
             _connection.DeliverSessionTerminated(reason);

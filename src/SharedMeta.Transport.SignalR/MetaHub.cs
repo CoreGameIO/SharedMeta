@@ -339,6 +339,23 @@ namespace SharedMeta.Transport.SignalR
             }
         }
 
+        public void SendNotice(SessionNotice notice)
+        {
+            _ = SendNoticeAsync(notice);
+        }
+
+        private async Task SendNoticeAsync(SessionNotice notice)
+        {
+            try
+            {
+                await _client.ReceiveNotice(notice);
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorSendingBroadcast(ex);
+            }
+        }
+
         public void SendSessionTerminated(string reason)
         {
             _ = _client.SessionTerminated(reason);

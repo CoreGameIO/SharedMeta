@@ -82,6 +82,7 @@ namespace SharedMeta.Core.Transport
 
             // Forward all events from inner connection (unless suppressed during simulated reconnect)
             _inner.OnBatch += response => { if (!_suppressInnerEvents) OnBatch?.Invoke(response); };
+            _inner.OnNotice += notice => { if (!_suppressInnerEvents) OnNotice?.Invoke(notice); };
             _inner.OnSessionTerminated += reason => { if (!_suppressInnerEvents) OnSessionTerminated?.Invoke(reason); };
             _inner.OnRequireSessionReconnect += reason => { if (!_suppressInnerEvents) OnRequireSessionReconnect?.Invoke(reason); };
             _inner.OnDisconnected += reason => { if (!_suppressInnerEvents) OnDisconnected?.Invoke(reason); };
@@ -97,6 +98,7 @@ namespace SharedMeta.Core.Transport
         // --- IConnection events ---
 
         public event Action<SessionResponse>? OnBatch;
+        public event Action<SessionNotice>? OnNotice;
         public event Action<string>? OnSessionTerminated;
         public event Action<string>? OnRequireSessionReconnect;
         public event Action<TransportDisconnectReason>? OnDisconnected;

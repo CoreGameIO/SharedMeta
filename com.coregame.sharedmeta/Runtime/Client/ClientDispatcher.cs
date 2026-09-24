@@ -183,6 +183,7 @@ namespace SharedMeta.Client
             _connection = connection ?? throw new ArgumentNullException(nameof(connection));
             _ordering = new OrderedDispatcher(DispatchResponseOps);
             _connection.OnBatch += HandleBatch;
+            _connection.OnNotice += HandleNotice;
             _connection.OnDisconnected += HandleDisconnected;
             _connection.OnSessionTerminated += HandleSessionTerminated;
             _connection.OnRequireSessionReconnect += HandleRequireSessionReconnect;
@@ -395,6 +396,29 @@ namespace SharedMeta.Client
         /// </summary>
         public bool DeepDesyncActive { get; private set; }
 
+        /// <summary>
+        /// Permissions the server reported for this player, or null while unknown (no store wired,
+        /// or not connected yet). Generated gates read it per call, so a push that replaces it takes
+        /// effect on the next call rather than needing a reconnect.
+        /// </summary>
+        public PlayerPermissions? Permissions { get; private set; }
+
+        /// <summary>
+        /// Replaces the session's permission set. Ignores an update that is not newer, so two
+        /// pushes racing cannot leave the older set in place.
+        /// </summary>
+        public void ApplyPermissions(PlayerPermissions? permissions)
+        {
+            if (permissions == null) return;
+            if (Permissions != null && permissions.Generation < Permissions.Generation) return;
+
+            Permissions = permissions;
+            PermissionsChanged?.Invoke(permissions);
+        }
+
+        /// <summary>Raised when the server pushed a new permission set — the signal to refresh gated UI.</summary>
+        public event Action<PlayerPermissions>? PermissionsChanged;
+
         public void ApplyDeepDesyncVerdict(bool active)
         {
             if (DeepDesyncActive == active) return;
@@ -503,6 +527,10 @@ namespace SharedMeta.Client
             // consumer wired a ClientSignature — opted-out clients stay annotation-less.
             Annotated = result.Annotated;
             DeepDesyncActive = result.DeepDesyncActive;
+            // Assigned rather than routed through ApplyPermissions: a reconnect can legitimately
+            // hand back a lower generation (different silo, restored state), and the connect answer
+            // is authoritative for the session it opens.
+            Permissions = result.Permissions;
 
             // Said once per session, because both halves of the answer are only knowable here: the
             // server owns the verdict, the build owns the coverage, and either one alone looks like
@@ -859,9 +887,46 @@ namespace SharedMeta.Client
 
         private void HandleBatch(SessionResponse response)
         {
-            LogDiag($"BATCH seq={response.SequenceNumber} ops={response.Operations?.Count ?? 0} stall={response.StallNotification?.Stage}");
+            LogDiag($"BATCH seq={response.SequenceNumber} ops={response.Operations?.Count ?? 0}");
             // ProcessServerResponse handles its own locking
             ProcessServerResponse(response);
+        }
+
+        /// <summary>
+        /// Notices bypass ordering and request matching entirely: they describe the session, not an
+        /// entity, and carry no sequence number.
+        /// </summary>
+        private void HandleNotice(SessionNotice notice)
+        {
+            if (notice.Permissions is { } permissions)
+            {
+                LogDiag($"PERMISSIONS gen={permissions.Generation} count={permissions.Names?.Length ?? 0}");
+                try
+                {
+                    ApplyPermissions(permissions);
+                }
+                catch (Exception ex)
+                {
+                    MetaLog.Error($"[ClientDispatcher] PermissionsChanged handler threw: {ex.Message}", ex);
+                }
+            }
+
+            if (notice.Stall is { } stall)
+            {
+                // Informational — client auto-retry already handles resending.
+                LogDiag($"STALL stage={stall.Stage} missing=#{stall.OldestMissingRequestId} stashed={stall.StashedCount} elapsed={stall.ElapsedMilliseconds}ms");
+                try
+                {
+                    if (stall.Stage == Core.Transport.StallStage.Recovered)
+                        SessionHealthListener?.OnSessionRecovered(stall);
+                    else
+                        SessionHealthListener?.OnSessionStalled(stall);
+                }
+                catch (Exception ex)
+                {
+                    MetaLog.Error($"[ClientDispatcher] SessionHealthListener threw: {ex.Message}", ex);
+                }
+            }
         }
 
         /// <summary>
@@ -887,28 +952,6 @@ namespace SharedMeta.Client
         /// </summary>
         private void ProcessServerResponse(SessionResponse response)
         {
-            // Stall notifications are out-of-band: pure informational, no ops to dispatch,
-            // SequenceNumber = 0 (no replay caching). Route directly to the health listener
-            // and return — bypasses the broadcast buffer and request matching entirely.
-            if (response.StallNotification is { } stall && (response.Operations == null || response.Operations.Count == 0))
-            {
-                // Server-side stall info — informational. Client auto-retry handles resending.
-                LogDiag($"STALL stage={stall.Stage} missing=#{stall.OldestMissingRequestId} stashed={stall.StashedCount} elapsed={stall.ElapsedMilliseconds}ms");
-
-                try
-                {
-                    if (stall.Stage == Core.Transport.StallStage.Recovered)
-                        SessionHealthListener?.OnSessionRecovered(stall);
-                    else
-                        SessionHealthListener?.OnSessionStalled(stall);
-                }
-                catch (Exception ex)
-                {
-                    MetaLog.Error($"[ClientDispatcher] SessionHealthListener threw: {ex.Message}", ex);
-                }
-                return;
-            }
-
             // Update server clock from every response.
             if (response.ServerTimeTicks > 0)
             {
@@ -919,7 +962,7 @@ namespace SharedMeta.Client
                 }
             }
 
-            // Seq==0 responses (errors, empty acks, stall-less empty responses) don't
+            // Seq==0 responses (errors, empty acks) don't
             // participate in sequence ordering — dispatch ops directly, if any. Seq>0
             // responses are handed to the ordered dispatcher; it reassembles by seq and
             // calls DispatchResponseOps in order.
@@ -1562,6 +1605,7 @@ namespace SharedMeta.Client
         public void Dispose()
         {
             _connection.OnBatch -= HandleBatch;
+            _connection.OnNotice -= HandleNotice;
             _connection.OnDisconnected -= HandleDisconnected;
             _connection.OnSessionTerminated -= HandleSessionTerminated;
             _connection.OnReconnecting -= HandleReconnecting;

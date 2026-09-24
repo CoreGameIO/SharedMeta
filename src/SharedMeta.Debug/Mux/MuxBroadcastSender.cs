@@ -44,6 +44,23 @@ namespace SharedMeta.Debug.Mux
             }
         }
 
+        public void SendNotice(SessionNotice notice)
+        {
+            _ = SendNoticeAsync(notice);
+        }
+
+        private async System.Threading.Tasks.Task SendNoticeAsync(SessionNotice notice)
+        {
+            try
+            {
+                await _client.ReceiveNotice(_sessionTag, notice);
+            }
+            catch (System.Exception ex)
+            {
+                _logger.LogWarning(ex, "[MuxBroadcastSender] tag={Tag} ReceiveNotice failed", _sessionTag);
+            }
+        }
+
         public void SendSessionTerminated(string reason)
         {
             _ = _client.SessionTerminated(_sessionTag, reason);

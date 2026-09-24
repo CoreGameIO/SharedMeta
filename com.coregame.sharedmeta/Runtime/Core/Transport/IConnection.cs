@@ -143,6 +143,13 @@ namespace SharedMeta.Core.Transport
         event Action<SessionResponse>? OnBatch;
 
         /// <summary>
+        /// Fired when the server sends a <see cref="SessionNotice"/> — a message about the session
+        /// rather than an entity (stall, permission change). A transport raises it for every notice it
+        /// receives; nothing about notices goes through <see cref="OnBatch"/>.
+        /// </summary>
+        event Action<SessionNotice>? OnNotice;
+
+        /// <summary>
         /// Fired when the session is terminated by the server.
         /// </summary>
         event Action<string>? OnSessionTerminated;
@@ -239,6 +246,13 @@ namespace SharedMeta.Core.Transport
         /// its clients paying for patch trees nobody asked for, or silently unverified.
         /// </summary>
         public bool DeepDesyncActive { get; set; }
+
+        /// <summary>
+        /// Permissions the server reported for this player, or null when it reported none — the
+        /// client then treats its set as unknown and lets the server refuse. Carried through the
+        /// transport untouched, like <see cref="DeepDesyncActive"/>.
+        /// </summary>
+        public SharedMeta.Core.PlayerPermissions? Permissions { get; set; }
     }
 
     /// <summary>

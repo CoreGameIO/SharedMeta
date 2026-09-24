@@ -27,6 +27,11 @@ namespace SharedMeta.Transport.HttpPolling
         public List<SessionResponse>? Broadcasts { get; set; }
 
         /// <summary>
+        /// Session notices queued since last poll, in the order the server sent them.
+        /// </summary>
+        public List<SessionNotice>? Notices { get; set; }
+
+        /// <summary>
         /// If non-null, the session was terminated with this reason.
         /// </summary>
         public string? SessionTerminated { get; set; }

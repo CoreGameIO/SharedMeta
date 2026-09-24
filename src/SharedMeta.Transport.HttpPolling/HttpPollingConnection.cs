@@ -36,6 +36,7 @@ namespace SharedMeta.Transport.HttpPolling
         public bool IsConnected => _isConnected;
 
         public event Action<SessionResponse>? OnBatch;
+        public event Action<SessionNotice>? OnNotice;
         public event Action<string>? OnSessionTerminated;
         // Server-push reconnect is a SignalR-only capability today: only the hub transports
         // wire RequireSessionReconnect. This transport never raises it, so a server restart
@@ -155,6 +156,7 @@ namespace SharedMeta.Transport.HttpPolling
                 Annotated = response.Annotated,
                 FailureReason = response.FailureReason,
                 DeepDesyncActive = response.DeepDesyncActive,
+                Permissions = response.Permissions,
             };
         }
 
@@ -347,12 +349,20 @@ namespace SharedMeta.Transport.HttpPolling
 
                     if (pollResponse == null) continue;
 
+                    // Notices first: a permission change in the same poll is then in force before
+                    // any handler run by the broadcasts below issues a gated call.
+                    if (pollResponse.Notices != null)
+                    {
+                        foreach (var notice in pollResponse.Notices)
+                            OnNotice?.Invoke(notice);
+                    }
+
                     // Process broadcasts
                     if (pollResponse.Broadcasts != null)
                     {
                         foreach (var broadcast in pollResponse.Broadcasts)
                         {
-                            if (broadcast.Operations is { Count: > 0 } || broadcast.StallNotification != null)
+                            if (broadcast.Operations is { Count: > 0 })
                             {
                                 OnBatch?.Invoke(broadcast);
                             }

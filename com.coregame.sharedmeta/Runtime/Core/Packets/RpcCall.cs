@@ -64,5 +64,22 @@ namespace SharedMeta.Core
         /// keeping client-side optimistic execution and server-side computation in sync.
         /// </summary>
         [Id(8), Key(8)] public string? CallerClientVersion { get; set; }
+
+        /// <summary>
+        /// Permissions the caller holds, stamped by the transport handler from the set it resolved
+        /// when the session connected. Null for a player holding none, which is the normal case —
+        /// the field then costs nothing on the wire.
+        /// </summary>
+        /// <remarks>
+        /// Server-set, exactly like <see cref="CallerId"/> and <see cref="DeepDesyncActive"/>: the
+        /// handler overwrites whatever arrived, so a forged packet cannot grant itself anything.
+        /// <para>
+        /// Carried on the call rather than read per gate so a cheat or admin method costs no extra
+        /// grain hop. The handler's copy is refreshed by the same push that updates the client, so a
+        /// change lands mid-session; if that push is lost, the session keeps its old rights until it
+        /// reconnects.
+        /// </para>
+        /// </remarks>
+        [Id(9), Key(9)] public string[]? CallerPermissions { get; set; }
     }
 }

@@ -1,6 +1,10 @@
 using SharedMeta.Core;
 using SharedMeta.Core.Framework;
 
+// Declaring the set turns a mistyped [RequirePermission("Cheat")] into a build error instead of a
+// method no caller can ever reach.
+[assembly: DeclaredPermissions("Cheat", "Admin", "Support")]
+
 namespace SharedMeta.Test.Meta1
 {
     /// <summary>
@@ -56,6 +60,23 @@ namespace SharedMeta.Test.Meta1
         /// </summary>
         [MetaMethod(Alias = "ApplyGrant", Mode = ExecutionMode.Server, GenerateClientApi = false)]
         int ApplyGrant(GrantRequest request);
+
+        /// <summary>
+        /// Cheat-shaped method: sets Sum outright, admissible only for a caller holding the
+        /// "Cheat" entitlement. The generated provider refuses it before the body runs, so a test
+        /// can assert that a refused call also left the state untouched.
+        /// </summary>
+        [MetaMethod(Alias = "CheatSetSum", Mode = ExecutionMode.Server)]
+        [RequirePermission("Cheat")]
+        void CheatSetSum(int value);
+
+        /// <summary>
+        /// Second gate on the same service, accepting either of two permissions — covers the
+        /// any-of semantics and that two gated methods keep separate name sets.
+        /// </summary>
+        [MetaMethod(Alias = "AdminBump", Mode = ExecutionMode.Server)]
+        [RequirePermission("Admin", "Support")]
+        void AdminBump(int value);
 
         /// <summary>
         /// Throws if value is negative. Used to test framework-level error handling.

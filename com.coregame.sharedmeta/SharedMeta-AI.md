@@ -1199,6 +1199,47 @@ shop.OnBuy_Replayed  += id => Tween(_before, state.Coins);
 
 ---
 
+---
+
+## Permissions (`[RequirePermission]`)
+
+Account-level entitlements gating a method — cheats, admin, support. **Not** in-game roles (clan
+leader, party host): those live in entity state and are checked in the body, where both sides evaluate
+them identically and replay reproduces them.
+
+```csharp
+[assembly: DeclaredPermissions("Cheat", "Admin", "Support")]   // optional; validates names at build
+
+[MetaMethod(Mode = ExecutionMode.Server)]
+[RequirePermission("Cheat")]                 // on an interface = every method it declares
+void GrantGold(int amount);
+
+[RequirePermission("Admin", "Support")]      // any one of them admits the call
+void ResetProgress();
+```
+
+**Server (authoritative):** generated provider override checks before args are deserialized and
+before the body — a refused call mutated nothing. The caller's set is resolved at SessionConnect and
+stamped by the handler onto every `RpcCall.CallerPermissions` (server-set, like `CallerId` — a forged
+packet cannot grant itself anything), so the gate is a string comparison with no store read. A grant
+or revocation mid-session is pushed and refreshes both the connection's stamped set and the client's;
+a lost push leaves that session on its old rights until it reconnects (logged as an error).
+Cross-entity / server-originated calls are not gated (no player, already trusted). A denied `Signal`
+is logged and dropped.
+
+**Store:** `IPlayerEntitlements` (server DI) — `GetAsync` / `GrantAsync` / `RevokeAsync` / `SetAsync`,
+grain-backed default registered by `ConfigureMeta`; register your own before it to substitute. There
+is no API for shared game logic to grant — by design, or `Cheat` would be reachable through any bug
+in any service.
+
+**Client:** set arrives on connect as `client.Dispatcher.Permissions`; generated methods refuse
+locally with `MetaPermissionDeniedException` when it is known and holds none of the names (unknown =
+pass through, server decides). `Dispatcher.PermissionsChanged` fires when the server pushes a change
+mid-session — refresh gated UI there.
+
+**Composes with `EntityAccessPolicy`:** that gates subscription by membership, this gates a method by
+entitlement. Different questions.
+
 ## Push-Based Change Tracking
 
 Push-based change tracking for UI binding. Client-only — `ChangeTracker` is null on server (zero overhead).
@@ -1532,6 +1573,8 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `[ServiceConfig(typeof(TConfig), "Name")]` | Interface | Independently-versioned config, repeatable, all symmetric (no privileged "primary") — resolves synchronously in every execution mode; replaces `[MetaService].ConfigType`/`DefaultConfig` (obsolete but functional). (0.33.0+) |
 | `[Tracked]` | Field | Push-based change tracking — generates property with tracking setter |
 | `[Trigger]` | Method | Auto-execute after condition on another method |
+| `[RequirePermission]` | Method / Interface | Account-level entitlement required to call (server-enforced, any-of) |
+| `[DeclaredPermissions]` | Assembly | Permission names this game recognizes; validates `[RequirePermission]` |
 | `[ServerMetaService]` | Interface | Server-only service (generates replayer) |
 | `[StatelessMetaService]` | Interface | No-entity service resolving only a linked `[MetaConfig]` |
 | `[StatelessMetaServiceImpl]` | Class | Impl for `[StatelessMetaService]` — injects only a typed `Config` property |

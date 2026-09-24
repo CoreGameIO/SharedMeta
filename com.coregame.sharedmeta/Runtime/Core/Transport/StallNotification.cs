@@ -6,7 +6,7 @@ namespace SharedMeta.Core.Transport
 {
     /// <summary>
     /// Stage of a server-side RPC stall, propagated to the client through
-    /// <see cref="SessionResponse.StallNotification"/>.
+    /// <see cref="SessionNotice.Stall"/>.
     /// </summary>
     public enum StallStage
     {
@@ -35,8 +35,8 @@ namespace SharedMeta.Core.Transport
     }
 
     /// <summary>
-    /// Information about an in-flight RPC ordering stall on the server, delivered as a field
-    /// of <see cref="SessionResponse"/>. Sent only when stall state changes; clients see at
+    /// Information about an in-flight RPC ordering stall on the server, delivered as a
+    /// <see cref="SessionNotice"/>. Sent only when stall state changes; clients see at
     /// most one transition per state per stall episode.
     /// </summary>
     [MemoryPackable, MessagePackObject, GenerateSerializer]

@@ -136,6 +136,8 @@ SharedMeta is a framework for **shared game meta-logic** between Client and Serv
 
 **InProcess transport** (`SharedMeta.Debug`) exists for testing — no network, direct method calls.
 
+**Two server→client channels.** `SessionResponse` (`IConnection.OnBatch`) is the sequenced stream: every response has a `SequenceNumber`, is kept in `PendingPackets` until acknowledged and is replayed on resume. `SessionNotice` (`IConnection.OnNotice`) carries messages about the session itself — request-ordering stalls, permission changes — with no sequence, no persistence and no replay; what still matters after a reconnect is reported again by `SessionConnect`. Keeping them apart means the sequenced envelope never carries optional side payloads, and no transport has to decide whether a response without operations is worth delivering. Every transport implements both: hub method `ReceiveNotice`, `PollResponse.Notices`, `ISessionObserver.OnNotice`, `IBroadcastSender.SendNotice`.
+
 ### 3.4 Code Generation: Roslyn Incremental Source Generator
 
 **Choice:** Compile-time source generation over runtime reflection.

@@ -188,17 +188,19 @@ public class SessionOrderingTests
     }
 
     /// <summary>
-    /// Captures observer batches with stall notifications and termination reasons.
+    /// Captures stall notices and termination reasons.
     /// </summary>
     private class TestObserver : ISessionObserver
     {
         private readonly ConcurrentQueue<StallNotification> _stalls = new();
         private readonly TaskCompletionSource<string> _terminated = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task OnBatch(SessionResponse response)
+        public Task OnBatch(SessionResponse response) => Task.CompletedTask;
+
+        public Task OnNotice(SessionNotice notice)
         {
-            if (response.StallNotification != null)
-                _stalls.Enqueue(response.StallNotification);
+            if (notice.Stall != null)
+                _stalls.Enqueue(notice.Stall);
             return Task.CompletedTask;
         }
 

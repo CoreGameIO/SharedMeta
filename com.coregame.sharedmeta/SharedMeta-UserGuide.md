@@ -736,6 +736,62 @@ the UI listens to. For a hook without touching the interface, use
 
 ---
 
+## Permissions — Cheats and Admin Tools (0.42.0+)
+
+Gate a method behind an account-level entitlement. The typical use is exactly what it sounds like:
+test cheats you can switch on for yourself, and moderation tools for your support staff.
+
+```csharp
+[assembly: DeclaredPermissions("Cheat", "Admin")]   // optional; makes a typo a build error
+
+public interface ICheatService : IMetaService
+{
+    [MetaMethod(Mode = ExecutionMode.Server)]
+    [RequirePermission("Cheat")]
+    void GrantGold(int amount);
+}
+```
+
+**Grant from server code** (admin console, a one-off job, your own dev tooling):
+
+```csharp
+var entitlements = serviceProvider.GetRequiredService<IPlayerEntitlements>();
+await entitlements.GrantAsync(playerId, new[] { "Cheat" });
+```
+
+Works out of the box — the framework stores one set per player and registers the store itself.
+
+**In the Unity client:**
+
+```csharp
+// Hide the cheat panel for players who cannot use it
+var held = client.Dispatcher.Permissions;
+cheatPanel.SetActive(held?.Has("Cheat") == true);
+
+// Fires when the server changes your entitlements while you are online
+client.Dispatcher.PermissionsChanged += set => cheatPanel.SetActive(set.Has("Cheat"));
+
+// Calling a gated method without the permission throws before anything is sent
+try { await cheats.GrantGoldAsync(1000); }
+catch (MetaPermissionDeniedException e) { Debug.Log($"needs {string.Join("/", e.Required)}"); }
+```
+
+The client-side check is a convenience. The server checks every gated call against its own store, so
+a modified client gains nothing by skipping it.
+
+**Do not use this for in-game roles** — clan leader, party host, guild officer. Those belong to the
+entity's state, change through game logic, and are checked in the method body:
+
+```csharp
+if (Context.CallerId != State.LeaderId) return OperationResult.NoPermission;
+```
+
+Permissions are account facts with a separate write path that shared game logic cannot reach; that
+separation is what keeps `Cheat` unreachable from a bug in ordinary gameplay code. To restrict who
+may *subscribe* to an entity, use `EntityAccessPolicy.Authorized` — the two compose.
+
+---
+
 ## Holding a Service Reference (`MetaRef<T>`, 0.40.0+)
 
 Do **not** cache an API client in a field or a DI singleton. Disconnecting an entity — and the
