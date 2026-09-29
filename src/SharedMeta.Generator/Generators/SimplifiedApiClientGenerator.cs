@@ -1056,7 +1056,7 @@ namespace SharedMeta.Generator.Generators
                     sb.AppendLine($"                if (!{fieldName}.AreEqual(serverResult, localResult))");
                     sb.AppendLine("                {");
                     sb.AppendLine($"                    _diagnostics?.OnResultMismatch(ServiceName, \"{methodAlias}\", serverResult, localResult);");
-                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult.MetaDescribe()}} local={{localResult.MetaDescribe()}} serverSeq={{response.Debug?.Info ?? \"<none>\"}} clientSeq={{_network.LastKnownEntitySequence}}\");");
+                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult.MetaDescribe()}} local={{localResult.MetaDescribe()}}\");");
                     if (serializer == DetectedSerializer.MemoryPack)
                         sb.AppendLine($"                    var localResultBytes = MemoryPackSerializer.Serialize(localResult);");
                     else
@@ -1071,7 +1071,7 @@ namespace SharedMeta.Generator.Generators
                     GenerateResultByteComparison(sb, returnType, serializer, "response.ResultBytes", "                ");
                     sb.AppendLine("                {");
                     sb.AppendLine($"                    _diagnostics?.OnResultMismatch(ServiceName, \"{methodAlias}\", serverResult, localResult);");
-                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult.MetaDescribe()}} local={{localResult.MetaDescribe()}} serverSeq={{response.Debug?.Info ?? \"<none>\"}} clientSeq={{_network.LastKnownEntitySequence}}\");");
+                    sb.AppendLine($"                    SharedMeta.Core.Logging.MetaLog.Error($\"[Desync] {{ServiceName}}.{methodAlias} entity={{_network.EntityId}} server={{serverResult.MetaDescribe()}} local={{localResult.MetaDescribe()}}\");");
                     GenerateResultMismatchReport(sb, methodAlias, "response.ResultBytes", "localResultBytes", "                    ");
                     sb.AppendLine($"                    throw new DesyncException(ServiceName, \"{methodAlias}\", serverResult, localResult, serverResult.MetaDescribe(), localResult.MetaDescribe());");
                     sb.AppendLine("                }");

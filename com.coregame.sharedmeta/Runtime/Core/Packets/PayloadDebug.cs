@@ -57,9 +57,7 @@ namespace SharedMeta.Core
         [Id(4), Key(4)] public SnapshotTiming DesyncTiming { get; set; }
 
         /// <summary>
-        /// 0.26.6+ Free-form server-stamped diagnostic info (e.g. <c>"seq=N"</c> for
-        /// entity-sequence). Migrated from the former <c>MetaOperation.Debug</c> string
-        /// when the field became <see cref="PayloadDebug"/>-typed.
+        /// Free-form diagnostic string. Reserved slot — the framework does not populate it.
         /// </summary>
         [Id(5), Key(5)] public string? Info { get; set; }
     }

@@ -29,7 +29,7 @@ namespace ClanWars.Client.Common
         public static async Task RunAsync(StressTestOptions options)
         {
             // Route SharedMeta's MetaLog through the console at Error level so framework-level
-            // diagnostics (e.g. the per-desync `[Desync] ... serverSeq=N clientSeq=M` line emitted
+            // diagnostics (e.g. the per-desync `[Desync] ...` line emitted
             // by generated *ApiClient) surface during stress runs. Lower-level info / debug stays
             // suppressed — the metrics renderer at end-of-run is the primary signal.
             MetaLog.SetLogger(new ConsoleMetaLogger(MetaLogLevel.Error));

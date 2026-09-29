@@ -28,12 +28,10 @@ namespace SharedMeta.Core.Network
         string? EntityId { get; }
 
         /// <summary>
-        /// 0.24.0+ Highest per-entity broadcast sequence number the client has observed for the
-        /// network's bound entity. Surfaced for desync diagnostic — generated <c>*ApiClient</c>
-        /// logs this alongside the server-stamped <c>response.Debug</c> ("seq=N") so a desync
-        /// reader can immediately tell whether the client's local replay ran against a stale
-        /// state (gap between client seq and server seq → ordering issue, broadcast not yet
-        /// applied) or a matching state (true result-computation divergence).
+        /// Highest per-entity sequence number the client has applied for the network's bound
+        /// entity. Claimed on Resume so the server can decide between catch-up and a full refresh.
+        /// Already advanced to N by the time a response for call N resolves, so it cannot tell
+        /// which state a local replay ran against.
         /// </summary>
         long LastKnownEntitySequence { get; }
 
