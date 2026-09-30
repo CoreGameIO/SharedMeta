@@ -25,9 +25,8 @@ namespace SharedMeta.Generator.Generators
     /// <summary>
     /// Scans a Roslyn <see cref="Compilation"/> for classes implementing
     /// <c>SharedMeta.Core.Diagnostics.IMetaResultComparer&lt;T&gt;</c> and returns a
-    /// type-name → comparer lookup. Mirrors the discovery pattern used for transformers
-    /// (<see cref="TransformerRegistrationGenerator.Analyze"/>) — marker-interface +
-    /// optional <c>[ResultComparer]</c> attribute for opt-out / priority.
+    /// type-name → comparer lookup: marker interface + optional <c>[ResultComparer]</c>
+    /// attribute for opt-out / priority.
     /// </summary>
     public static class ResultComparerScanner
     {

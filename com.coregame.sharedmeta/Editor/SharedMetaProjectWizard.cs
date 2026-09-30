@@ -3206,7 +3206,6 @@ The source generator (`CoreGame.SharedMeta.Generator`) produces:
 - `*ServiceExtensions.g.cs` — DI registration helpers
 - `*.Context.g.cs` — Context/State/dependency injection
 - `ServerMetaConfiguration.g.cs` — MetaProvider + service registration
-- `TransformerRegistrations.g.cs` — auto-registration of [Transformer] classes
 
 **Do not write** dispatcher, API client, or context injection code manually.
 

@@ -64,11 +64,15 @@ namespace SharedMeta.Generator.Generators
                     return "Task";
                 }
 
-                // Handle nullable reference types - strip the ?
+                // A nullable reference annotation is not on the wire: hash the type without it, or
+                // annotating a parameter reads as signature drift. Nullable<T> is a distinct wire
+                // shape and keeps its marker.
                 if (namedType.NullableAnnotation == NullableAnnotation.Annotated)
                 {
                     var nonNullable = namedType.WithNullableAnnotation(NullableAnnotation.NotAnnotated);
-                    return GetCanonicalTypeName(nonNullable) + "?";
+                    return namedType.IsReferenceType
+                        ? GetCanonicalTypeName(nonNullable)
+                        : GetCanonicalTypeName(nonNullable) + "?";
                 }
 
                 // Handle generic types

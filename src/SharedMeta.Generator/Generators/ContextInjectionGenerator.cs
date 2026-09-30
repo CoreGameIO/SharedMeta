@@ -876,9 +876,7 @@ namespace SharedMeta.Generator.Generators
         {
             var attr = method.GetAttributes().FirstOrDefault(a =>
                 a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaMethodAttribute");
-            if (attr == null) return false;
-            var modeArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "Mode");
-            return !modeArg.Value.IsNull && modeArg.Value.Value is int m && m == 8;
+            return SharedMeta.Generator.Utilities.MetaMethodFacts.ModeName(attr) == "Notification";
         }
 
         /// <summary>

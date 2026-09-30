@@ -505,11 +505,13 @@ namespace SharedMeta.Generator.Generators
             // entity invokes the protected method cross-entity, our subscribed client still
             // applies the resulting state changes and fires the event for any UI that wants
             // to observe them.
+            var triggersByMethod = ServerDispatcherGenerator.CollectTriggers(symbol, compilation);
             foreach (var method in methods)
             {
                 if (IsGenerateClientApiFalse(method)) continue;
                 methodComparers.TryGetValue(method, out var comparer);
-                GenerateMethod(sb, method, interfaceName, namespaceName, implClassName, stateTypeName, serializer, hasDeepDesync, comparer, capabilitiesEnabled, compilation);
+                triggersByMethod.TryGetValue(method.Identifier.Text, out var methodTriggers);
+                GenerateMethod(sb, method, interfaceName, namespaceName, implClassName, stateTypeName, serializer, hasDeepDesync, comparer, capabilitiesEnabled, compilation, methodTriggers);
             }
 
             // Context management
@@ -568,7 +570,8 @@ namespace SharedMeta.Generator.Generators
         private static void GenerateMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string interfaceName, string namespaceName, string implClassName, string? stateTypeName,
             DetectedSerializer serializer, bool hasDeepDesync = false, ResultComparerInfo? resultComparer = null,
-            bool capabilitiesEnabled = true, Compilation? compilation = null)
+            bool capabilitiesEnabled = true, Compilation? compilation = null,
+            List<ServerDispatcherGenerator.TriggerInfo>? triggers = null)
         {
             // Which arguments get boxed is decided here, once, from the compilation — the server
             // dispatcher derives the same answer from the same source, so both ends of the wire
@@ -868,11 +871,12 @@ namespace SharedMeta.Generator.Generators
 
             // Per-mode private implementations. Emitted only when the corresponding public dispatcher
             // can actually reach them — skipped when Sync = OnlySync since no async public dispatcher exists.
+            var localTriggers = BuildLocalTriggerBlock(triggers, methodAlias, methodVersion, interfaceName, namespaceName, hasDeepDesync);
             if (!onlySync)
             {
                 GenerateServerMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, transforms, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, resultComparer);
-                GenerateOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, transforms, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer, deepStateCheck);
-                GenerateCrossOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, transforms, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, resultComparer);
+                GenerateOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, transforms, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer, deepStateCheck, localTriggers);
+                GenerateCrossOptimisticMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, transforms, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, resultComparer, localTriggers);
                 GenerateServerPatchMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, transforms, serializer, interfaceName, namespaceName, stateTypeName);
                 GenerateServerReplaceMethod(sb, method, methodAlias, innerReturnType, isVoidReturn, isAsync, paramCount, callArgs, transforms, serializer, stateTypeName, interfaceName, namespaceName);
             }
@@ -881,8 +885,65 @@ namespace SharedMeta.Generator.Generators
             // LocalQuery's sync overload calls the impl directly (no _Optimistic round-trip helper).
             if (wantsSync && !isAsync && defaultMode == "Optimistic")
             {
-                GenerateOptimisticMethodSync(sb, method, methodAlias, innerReturnType, isVoidReturn, paramCount, callArgs, transforms, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer, deepStateCheck);
+                GenerateOptimisticMethodSync(sb, method, methodAlias, innerReturnType, isVoidReturn, paramCount, callArgs, transforms, serializer, interfaceName, namespaceName, stateTypeName, hasDeepDesync, skipServerOnFalse, resultComparer, deepStateCheck, localTriggers);
             }
+        }
+
+        /// <summary>
+        /// The server runs a method's triggers right after its body, on the same random streams.
+        /// A caller that executed the body locally (Optimistic / CrossOptimistic) must run them too,
+        /// or it keeps a state — and a random position — the server does not have. Emitted after
+        /// the body's own scroll deltas and deep-desync CRC are captured: the server reports those
+        /// per op, the method's excluding its triggers'.
+        /// </summary>
+        // SkipServerOnFalse: a default result means the call never reaches the server, so its
+        // triggers never run there either.
+        private static void EmitLocalTriggers(StringBuilder sb, string? localTriggers, bool skipServerOnFalse, string returnType)
+        {
+            if (localTriggers == null) return;
+            if (skipServerOnFalse)
+            {
+                sb.AppendLine($"            if (!System.Collections.Generic.EqualityComparer<{returnType}>.Default.Equals(localResult, default!))");
+                sb.AppendLine("            {");
+            }
+            sb.Append(localTriggers);
+            if (skipServerOnFalse)
+                sb.AppendLine("            }");
+        }
+
+        private static string? BuildLocalTriggerBlock(List<ServerDispatcherGenerator.TriggerInfo>? triggers,
+            string methodAlias, int methodVersion, string interfaceName, string namespaceName, bool hasDeepDesync)
+        {
+            if (triggers == null || triggers.Count == 0) return null;
+
+            var idConst = $"global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, methodAlias, methodVersion)}";
+            var b = new StringBuilder();
+            b.AppendLine("            MetaContextAccessor.Current = ctx;");
+            if (hasDeepDesync)
+                b.AppendLine("            ctx.PatchWrapper = null;");
+            b.AppendLine("            var _trTracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();");
+            b.AppendLine("            try");
+            b.AppendLine("            {");
+            // Conditions are all evaluated before any trigger runs, as the server dispatcher does.
+            for (int i = 0; i < triggers.Count; i++)
+            {
+                var cond = string.IsNullOrEmpty(triggers[i].Condition) ? "true" : $"_service.{triggers[i].Condition}()";
+                b.AppendLine($"                var _tr{i} = {cond};");
+            }
+            for (int i = 0; i < triggers.Count; i++)
+            {
+                var t = triggers[i];
+                var call = t.IsAwaitable
+                    ? $"BroadcastValidator.EnsureSyncCompletion(_service.{t.TriggerMethodName}(), ServiceName, \"{t.TriggerMethodAlias}\");"
+                    : $"_service.{t.TriggerMethodName}();";
+                b.AppendLine($"                if (_tr{i}) {call}");
+            }
+            b.AppendLine("            }");
+            b.AppendLine($"            catch (Exception ex) {{ MetaContextAccessor.Current = null; _trTracker.Discard(); SetError(ex, {idConst}, \"{methodAlias}\"); throw; }}");
+            b.AppendLine("            MetaContextAccessor.Current = null;");
+            b.AppendLine("            _trTracker.FlushAndNotify();");
+            b.AppendLine("            _stateContainer.NotifyMutated();");
+            return b.ToString();
         }
 
         /// <summary>
@@ -1234,7 +1295,8 @@ namespace SharedMeta.Generator.Generators
 
         private static void GenerateOptimisticMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs, List<ParameterTransform> transforms,
-            DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null, int deepStateCheck = 0)
+            DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null, int deepStateCheck = 0,
+            string? localTriggers = null)
         {
             var methodName = method.Identifier.Text;
             var methodVersion = GetMethodVersion(method);
@@ -1339,6 +1401,7 @@ namespace SharedMeta.Generator.Generators
             // Serialize arguments based on serializer
             GenerateArgumentSerialization(sb, method, transforms, paramCount, serializer);
             sb.AppendLine();
+            EmitLocalTriggers(sb, localTriggers, skipServerOnFalse && !isVoidReturn, returnType);
 
             var dsDebugArg = deepStateCheck != 0 ? ", debug: _dsDebug" : "";
 
@@ -1420,7 +1483,8 @@ namespace SharedMeta.Generator.Generators
         // continuation. Only differences: no `async`/`Task<>` wrapper, no `await` on impl call.
         private static void GenerateOptimisticMethodSync(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, int paramCount, string callArgs, List<ParameterTransform> transforms,
-            DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null, int deepStateCheck = 0)
+            DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, bool skipServerOnFalse = false, ResultComparerInfo? resultComparer = null, int deepStateCheck = 0,
+            string? localTriggers = null)
         {
             var methodName = method.Identifier.Text;
             var methodVersion = GetMethodVersion(method);
@@ -1517,6 +1581,7 @@ namespace SharedMeta.Generator.Generators
 
             GenerateArgumentSerialization(sb, method, transforms, paramCount, serializer);
             sb.AppendLine();
+            EmitLocalTriggers(sb, localTriggers, skipServerOnFalse && !isVoidReturn, returnType);
 
             var dsDebugArg = deepStateCheck != 0 ? ", debug: _dsDebug" : "";
 
@@ -1592,7 +1657,8 @@ namespace SharedMeta.Generator.Generators
 
         private static void GenerateCrossOptimisticMethod(StringBuilder sb, MethodDeclarationSyntax method,
             string methodAlias, string returnType, bool isVoidReturn, bool isAsyncServiceMethod, int paramCount, string callArgs, List<ParameterTransform> transforms,
-            DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, ResultComparerInfo? resultComparer = null)
+            DetectedSerializer serializer, string interfaceName, string namespaceName, string? stateTypeName, bool hasDeepDesync = false, ResultComparerInfo? resultComparer = null,
+            string? localTriggers = null)
         {
             var methodName = method.Identifier.Text;
             var methodVersion = GetMethodVersion(method);
@@ -1673,6 +1739,7 @@ namespace SharedMeta.Generator.Generators
             // Serialize arguments
             GenerateArgumentSerialization(sb, method, transforms, paramCount, serializer);
             sb.AppendLine();
+            EmitLocalTriggers(sb, localTriggers, false, returnType);
 
             // Fire-and-forget to server with IsCrossOptimistic flag + validation
             if (isVoidReturn)
@@ -1883,6 +1950,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"                    _stateContainer.Replace(_serializer.Unpack<{stateTypeName}>(stateData)!);");
             sb.AppendLine("                    _optimisticRandom?.Skip(response.RandomScrollDelta);");
             sb.AppendLine("                    ApplyNamedScrollSkips(response.NamedRandomScrollDeltas);");
+            sb.AppendLine("                    SkipTriggerRandoms(response.TriggerOperations);");
             sb.AppendLine("                }");
             sb.AppendLine("                else");
             sb.AppendLine("                {");
@@ -2208,22 +2276,8 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                }");
             }
 
-            // Sentinel / unknown: server emitted a method this client doesn't know (server-only,
-            // newer-version, removed-in-this-build). Server-side tailoring already includes
-            // PatchBytes/StateBytes for these legacy subscribers; apply them and consume the
-            // random scroll skips so the optimistic stream stays aligned. No body replay possible.
-            sb.AppendLine("                default:");
-            sb.AppendLine("                {");
-            sb.AppendLine("                    if (broadcast.StateBytes is { Length: > 0 } || broadcast.PatchBytes is { Length: > 0 })");
-            sb.AppendLine("                    {");
-            sb.AppendLine("                        _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
-            sb.AppendLine("                        ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
-            sb.AppendLine("                    }");
-            sb.AppendLine("                    else SharedMeta.Core.Logging.MetaLog.Warning($\"[{ServiceName}] broadcast for unknown MethodId=\" + broadcast.MethodId + \" arrived without patch/state bytes; ignoring.\");");
-            sb.AppendLine("                    ReplayTriggerOperations(broadcast.TriggerOperations, broadcast.CallerId, broadcast.ServerTimeTicks);");
-            sb.AppendLine("                    break;");
-            sb.AppendLine("                }");
-
+            // No default: HandleBroadcast routes only this service's ids here. Methods this client
+            // does not hold or know are finished by the resolver's entity-level handler.
             sb.AppendLine("            }");
             sb.AppendLine("            _tracker.FlushAndNotify();");
             sb.AppendLine("            }");
@@ -2271,6 +2325,19 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                    ClearContext();");
             sb.AppendLine($"                    _stateContainer.NotifyMutated();");
             sb.AppendLine("                }");
+            sb.AppendLine("            }");
+            sb.AppendLine("        }");
+            sb.AppendLine();
+
+            // A wholesale state replace already carries the triggers' effects; their random scrolls
+            // still have to be consumed.
+            sb.AppendLine("        private void SkipTriggerRandoms(List<MetaOperation>? triggerOperations)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            if (triggerOperations == null) return;");
+            sb.AppendLine("            foreach (var triggerOp in triggerOperations)");
+            sb.AppendLine("            {");
+            sb.AppendLine("                _optimisticRandom?.Skip(triggerOp.RandomScrollDelta);");
+            sb.AppendLine("                ApplyNamedScrollSkips(triggerOp.NamedRandomScrollDeltas);");
             sb.AppendLine("            }");
             sb.AppendLine("        }");
             sb.AppendLine();
@@ -2417,15 +2484,19 @@ namespace SharedMeta.Generator.Generators
                 : new List<string>();
             var callArgsStr = string.Join(", ", argNames);
 
+            // The replaced state already includes the triggers' effects: only their random scrolls
+            // are left to catch up on.
             sb.AppendLine($"{indent}if (broadcast.StateBytes is {{ Length: > 0 }})");
             sb.AppendLine($"{indent}{{");
             sb.AppendLine($"{indent}    _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
             sb.AppendLine($"{indent}    ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
+            sb.AppendLine($"{indent}    SkipTriggerRandoms(broadcast.TriggerOperations);");
             sb.AppendLine($"{indent}}}");
             sb.AppendLine($"{indent}else if (broadcast.PatchBytes is {{ Length: > 0 }})");
             sb.AppendLine($"{indent}{{");
             sb.AppendLine($"{indent}    _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
             sb.AppendLine($"{indent}    ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
+            sb.AppendLine($"{indent}    ReplayTriggerOperations(broadcast.TriggerOperations, broadcast.CallerId, broadcast.ServerTimeTicks);");
             sb.AppendLine($"{indent}}}");
             // Only this branch executes anything locally. The two above take the server's word —
             // a wholesale state replace or a server-computed diff — so there is no local result to
@@ -2481,9 +2552,8 @@ namespace SharedMeta.Generator.Generators
 
             sb.AppendLine($"{indent}    ClearContext();");
             sb.AppendLine($"{indent}    _stateContainer.NotifyMutated();");
+            sb.AppendLine($"{indent}    ReplayTriggerOperations(broadcast.TriggerOperations, broadcast.CallerId, broadcast.ServerTimeTicks);");
             sb.AppendLine($"{indent}}}");
-
-            sb.AppendLine($"{indent}ReplayTriggerOperations(broadcast.TriggerOperations, broadcast.CallerId, broadcast.ServerTimeTicks);");
 
             // The "after" event fires on every broadcast of the method, including the
             // ServerPatch / ServerReplace branches above where no local body ran — from the UI's

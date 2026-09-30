@@ -50,6 +50,11 @@ namespace SharedMeta.Client
         /// </summary>
         public void EndReplay()
         {
+            // The tape is positional and untagged: values the body did not read mean it took a
+            // different path than on the server (a ServerRandom / cross-entity read inside a branch
+            // only one side took). Named here, not as a wrong value later in unrelated code.
+            if (_reader != null && _reader.HasMore)
+                MetaLog.Error($"[Replay] Entity '{EntityId}': the replayed body left recorded server values unread — it diverged from the server's execution path.");
             _reader?.Dispose();
             _reader = null;
         }
@@ -62,11 +67,6 @@ namespace SharedMeta.Client
             return Task.FromResult<TEntityState?>(_serializer.Unpack<TEntityState>(stateBytes));
         }
 
-        public override void Observe<TInterface>(string id)
-        {
-            // Client observation logic (subscription)
-        }
-        
         // ============================================
         // Service Caching Helpers (used by generated code)
         // ============================================
@@ -86,37 +86,5 @@ namespace SharedMeta.Client
             // Client cannot resolve server services
             throw new InvalidOperationException($"Cannot resolve {typeof(TService).Name} on client. Use Replayer instead.");
         }
-
-        public override TInterface GetExternal<TInterface>()
-        {
-            var interfaceType = typeof(TInterface);
-            
-            // Check cache
-            if (_wrapperCache.TryGetValue(interfaceType, out var cached))
-            {
-                return (TInterface)cached;
-            }
-            
-            // Find generated Replayer type via naming convention
-            // IServerRandom -> Namespace.Client.ServerRandomReplayer
-            var interfaceName = interfaceType.Name;
-            var baseName = interfaceName.StartsWith("I") && interfaceName.Length > 1 && char.IsUpper(interfaceName[1])
-                ? interfaceName.Substring(1)
-                : interfaceName;
-            
-            var replayerTypeName = $"{interfaceType.Namespace}.Client.{baseName}Replayer";
-            var replayerType = interfaceType.Assembly.GetType(replayerTypeName);
-            
-            if (replayerType == null)
-            {
-                throw new InvalidOperationException($"Replayer type '{replayerTypeName}' not found. Ensure [{nameof(ServerMetaServiceAttribute)}] is on the interface.");
-            }
-            
-            // Instantiate: Replayer(IClientReplayContext context)
-            var replayer = Activator.CreateInstance(replayerType, this);
-            _wrapperCache[interfaceType] = replayer!;
-            return (TInterface)replayer!;
-        }
-
     }
 }

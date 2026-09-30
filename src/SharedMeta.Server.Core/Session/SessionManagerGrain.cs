@@ -368,7 +368,7 @@ namespace SharedMeta.Server.Core.Session
                 {
                     _persistentState.State.Populated = false;
                     _persistentState.State.CurrentSessionId = Guid.Empty;
-                    _pendingPackets.Clear();   // shared ref with State.PendingPackets
+                    ReleaseAndClearPendingPackets();   // shared ref with State.PendingPackets
                     _persistentState.State.LastDispatchedRequestId = 0;
                     try { await _persistentState.WriteStateAsync(); } catch { /* best effort */ }
                 }
@@ -589,6 +589,7 @@ namespace SharedMeta.Server.Core.Session
                 _persistentState.State.Populated = false;
                 _persistentState.State.CurrentSessionId = Guid.Empty;
                 _persistentState.State.PendingPackets = null;
+                _responseByRequestId = null;
                 _persistentState.State.LastDispatchedRequestId = 0;
                 try { await _persistentState.WriteStateAsync(); }
                 catch (Exception ex)
@@ -765,38 +766,18 @@ namespace SharedMeta.Server.Core.Session
             if (sessionId != _currentSessionId)
             {
                 _logger.RpcSessionSuperseded(requestId, sessionId, _currentSessionId);
-                return SessionResponse.ForError("Session superseded");
+                return SessionResponse.ForError("Session superseded", SessionErrorKind.SessionSuperseded);
             }
 
             if (lastAcknowledgedSequence > 0)
                 CleanupPendingPacketsBySequence(lastAcknowledgedSequence);
 
             // Idempotency: return cached response for duplicate requests (reconnection).
-            // Inlined nested loops — LINQ Any/FirstOrDefault on List<T> boxes the struct
-            // enumerator, and this is a hot path (per-RPC, ~3K calls/sec): per-stack alloc
-            // profile traced 32 MB/s to Enumerator[SessionOp] here.
-            if (requestId > 0)
+            if (requestId > 0 && _pendingPackets.Count > 0
+                && PendingResponseIndex().TryGetValue(requestId, out var cached))
             {
-                SessionResponse? cached = null;
-                for (int i = 0; i < _pendingPackets.Count; i++)
-                {
-                    var packet = _pendingPackets[i];
-                    var ops = packet.Operations;
-                    for (int j = 0; j < ops.Count; j++)
-                    {
-                        if (ops[j].RequestId == requestId)
-                        {
-                            cached = packet;
-                            break;
-                        }
-                    }
-                    if (cached != null) break;
-                }
-                if (cached != null)
-                {
-                    _logger.CachedResponseReturned(requestId);
-                    return cached;
-                }
+                _logger.CachedResponseReturned(requestId);
+                return cached;
             }
 
             // ── RPC reordering: stash out-of-order requests ──────────────
@@ -1117,7 +1098,7 @@ namespace SharedMeta.Server.Core.Session
                 ServerTimeTicks = DateTime.UtcNow.Ticks
             };
 
-            _pendingPackets.Add(response);
+            AddPendingPacket(response);
             CleanupPendingPacketsByCount();
             _logger.FastPath(_playerId, sessionSeq, allOps.Count, 0);
             return response;
@@ -1352,7 +1333,7 @@ namespace SharedMeta.Server.Core.Session
             _outgoingBatch.Clear();
 
             // Store for reconnection replay
-            _pendingPackets.Add(response);
+            AddPendingPacket(response);
             CleanupPendingPacketsByCount();
 
             // Park response on the grain instance so the cached _onBatchInvoker delegate can read
@@ -1634,14 +1615,65 @@ namespace SharedMeta.Server.Core.Session
                 removeUpTo++;
             if (removeUpTo > 0)
             {
-                _pendingPackets.RemoveRange(0, removeUpTo);
+                RemoveOldestPendingPackets(removeUpTo);
                 _logger.PacketsCleanedBySeq(removeUpTo, acknowledgedSequence);
             }
         }
 
         // Pool ref-count machinery was removed in the PooledPayload → ROM<byte> refactor.
         // OpBytes is now GC-backed; eviction just drops references and GC reclaims naturally.
-        private void ReleaseAndClearPendingPackets() => _pendingPackets.Clear();
+        private void ReleaseAndClearPendingPackets()
+        {
+            _pendingPackets.Clear();
+            _responseByRequestId?.Clear();
+        }
+
+        // requestId → the pending packet carrying its response. Every change to _pendingPackets
+        // goes through the helpers below so the index never answers for an evicted packet —
+        // a stale hit would return a reply the client already acknowledged, a miss would re-run
+        // the call. Built lazily: the persisted packet list comes back on activation without it.
+        private Dictionary<long, SessionResponse>? _responseByRequestId;
+
+        private Dictionary<long, SessionResponse> PendingResponseIndex()
+        {
+            if (_responseByRequestId != null) return _responseByRequestId;
+            var index = new Dictionary<long, SessionResponse>();
+            for (int i = 0; i < _pendingPackets.Count; i++)
+                IndexPacket(index, _pendingPackets[i]);
+            return _responseByRequestId = index;
+        }
+
+        private static void IndexPacket(Dictionary<long, SessionResponse> index, SessionResponse packet)
+        {
+            var ops = packet.Operations;
+            for (int j = 0; j < ops.Count; j++)
+                if (ops[j].RequestId > 0) index.TryAdd(ops[j].RequestId, packet);
+        }
+
+        private void AddPendingPacket(SessionResponse packet)
+        {
+            _pendingPackets.Add(packet);
+            if (_responseByRequestId != null) IndexPacket(_responseByRequestId, packet);
+        }
+
+        private void RemoveOldestPendingPackets(int count)
+        {
+            if (_responseByRequestId != null)
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    var packet = _pendingPackets[i];
+                    var ops = packet.Operations;
+                    for (int j = 0; j < ops.Count; j++)
+                    {
+                        var id = ops[j].RequestId;
+                        if (id > 0 && _responseByRequestId.TryGetValue(id, out var indexed) && ReferenceEquals(indexed, packet))
+                            _responseByRequestId.Remove(id);
+                    }
+                }
+            }
+            _pendingPackets.RemoveRange(0, count);
+        }
         private void ReleaseAndClearDeferredResponses() => _deferredResponses.Clear();
         private void ReleaseAndClearRpcBroadcastQueue() => _rpcBroadcastQueue.Clear();
         private void ReleaseAndClearEntityStates()
@@ -1747,8 +1779,8 @@ namespace SharedMeta.Server.Core.Session
             if (_pendingPackets.Count > MaxPendingPackets)
             {
                 var toRemove = _pendingPackets.Count - MaxPendingPackets / 2;
-                // ROM-backed by GC byte[] — eviction just drops the reference; no per-element work.
-                _pendingPackets.RemoveRange(0, toRemove);
+                // ROM-backed by GC byte[] — eviction just drops the reference.
+                RemoveOldestPendingPackets(toRemove);
                 _logger.PacketsCleanedByCount(toRemove);
             }
         }

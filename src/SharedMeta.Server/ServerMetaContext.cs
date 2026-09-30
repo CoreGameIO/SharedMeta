@@ -225,11 +225,6 @@ namespace SharedMeta.Server
             return _serializer.Unpack<TEntityState>(stateBytes);
         }
 
-        public override void Observe<TInterface>(string id)
-        {
-             // TODO
-        }
-
         /// <summary>
         /// Resolver for real service implementations.
         /// </summary>
@@ -351,49 +346,6 @@ namespace SharedMeta.Server
                 throw new InvalidOperationException($"ServiceResolver returned null for {typeof(TService).Name}");
 
             return (TService)impl;
-        }
-
-        public override TInterface GetExternal<TInterface>()
-        {
-            var interfaceType = typeof(TInterface);
-            
-            // Check cache
-            if (_wrapperCache.TryGetValue(interfaceType, out var cached))
-            {
-                return (TInterface)cached;
-            }
-            
-            // Resolve real implementation
-            if (ServiceResolver == null)
-            {
-                throw new InvalidOperationException($"ServiceResolver not set. Cannot resolve {interfaceType.Name}");
-            }
-            
-            var realImpl = ServiceResolver(interfaceType);
-            if (realImpl == null)
-            {
-                throw new InvalidOperationException($"ServiceResolver returned null for {interfaceType.Name}");
-            }
-            
-            // Find generated Recorder type via naming convention
-            // IServerRandom -> Namespace.Server.ServerRandomRecorder
-            var interfaceName = interfaceType.Name;
-            var baseName = interfaceName.StartsWith('I') && interfaceName.Length > 1 && char.IsUpper(interfaceName[1])
-                ? interfaceName.Substring(1)
-                : interfaceName;
-            
-            var recorderTypeName = $"{interfaceType.Namespace}.Server.{baseName}Recorder";
-            var recorderType = interfaceType.Assembly.GetType(recorderTypeName);
-            
-            if (recorderType == null)
-            {
-                throw new InvalidOperationException($"Recorder type '{recorderTypeName}' not found. Ensure [{nameof(ServerMetaServiceAttribute)}] is on the interface.");
-            }
-            
-            // Instantiate: Recorder(TInterface real, IServerRecordContext context)
-            var recorder = Activator.CreateInstance(recorderType, realImpl, this);
-            _wrapperCache[interfaceType] = recorder!;
-            return (TInterface)recorder!;
         }
     }
 }

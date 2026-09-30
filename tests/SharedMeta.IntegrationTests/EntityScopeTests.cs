@@ -18,9 +18,8 @@ namespace SharedMeta.IntegrationTests;
 /// <list type="bullet">
 ///   <item>Private: cross-entity call from a higher-version caller doesn't migrate the
 ///         target's schema and doesn't change the dispatched config — the pin wins.</item>
-///   <item>Shared: first subscriber's pin; subsequent joiners with a different patch on
-///         the same Major.Minor are downgraded to the pinned patch; Major.Minor mismatch
-///         rejects the subscribe.</item>
+///   <item>Shared: first subscriber's pin; joiners on any version are admitted and run
+///         under the pinned configs.</item>
 ///   <item>Global: subscribe permitted only when the joiner's resolved config covers the
 ///         schema the server is operating under (driven by
 ///         <see cref="IConfigVersionResolver.CurrentClientVersion"/>).</item>

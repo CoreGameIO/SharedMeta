@@ -44,9 +44,6 @@ namespace SharedMeta.Client
         /// </summary>
         public ConnectionHealthOptions? ConnectionHealthOptions { get; set; }
 
-        /// <summary>Transformer registry. Default: new TransformerRegistry().</summary>
-        public TransformerRegistry? TransformerRegistry { get; set; }
-
         /// <summary>Player ID. Default: random 8-char hex.</summary>
         public string? PlayerId { get; set; }
 
@@ -158,9 +155,6 @@ namespace SharedMeta.Client
         /// <summary>The serializer.</summary>
         public IMetaSerializer Serializer { get; }
 
-        /// <summary>The transformer registry.</summary>
-        public TransformerRegistry TransformerRegistry { get; }
-
         /// <summary>Player ID for this client session.</summary>
         public string PlayerId { get; set; }
 
@@ -202,7 +196,6 @@ namespace SharedMeta.Client
 
             Connection = connection ?? throw new ArgumentNullException(nameof(connection));
             Serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
-            TransformerRegistry = options.TransformerRegistry ?? new TransformerRegistry();
             // Seed PlayerId from the token source when not set explicitly — UserOwned entities are
             // keyed by the player id, so it must be the authenticated id (available once a token has
             // been acquired), not a random fallback. Acquire the token before constructing the client

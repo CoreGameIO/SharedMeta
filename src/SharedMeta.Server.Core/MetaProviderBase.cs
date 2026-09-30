@@ -76,6 +76,36 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         return op;
     }
 
+    // patch: true  → blank every trigger's PatchBytes (replay variant).
+    // patch: false → blank ReplayPayload of the triggers that carry a patch (patch variant).
+    private void StashTriggerPayloads(List<MetaOperation> triggers, bool patch)
+    {
+        _stashedTriggerPayloads.Clear();
+        foreach (var t in triggers)
+        {
+            if (patch)
+            {
+                _stashedTriggerPayloads.Add(t.PatchBytes);
+                t.PatchBytes = default;
+            }
+            else
+            {
+                _stashedTriggerPayloads.Add(t.ReplayPayload);
+                if (!t.PatchBytes.IsEmpty) t.ReplayPayload = default;
+            }
+        }
+    }
+
+    private void RestoreTriggerPayloads(List<MetaOperation> triggers, bool patch)
+    {
+        for (int i = 0; i < triggers.Count; i++)
+        {
+            if (patch) triggers[i].PatchBytes = _stashedTriggerPayloads[i];
+            else triggers[i].ReplayPayload = _stashedTriggerPayloads[i];
+        }
+        _stashedTriggerPayloads.Clear();
+    }
+
     // Terminal-output serialization for EntityCallResult.OpBytes / EntityBroadcast.OpBytes —
     // crosses the Orleans grain boundary, so call PackForExternalUsage which encodes "this
     // result outlives the current grain method" as an explicit method choice (no scratch).
@@ -142,6 +172,20 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// Set by EntityGrain to enable Context.SaveStateAsync() from service methods.
     /// </summary>
     public Func<Task>? SaveStateHandler { get; set; }
+
+    /// <summary>
+    /// Whether some subscriber must take a method as a patch. Set by EntityGrain; asked per
+    /// trigger, because triggers are known only after the triggering body ran.
+    /// </summary>
+    internal Func<ushort, bool>? TriggerForcePatchQuery { get; set; }
+
+    /// <summary>
+    /// Triggers of the last call that were patch-tracked only because a subscriber needs them
+    /// as patches (the triggering method itself did not need it). Valid until the next call.
+    /// </summary>
+    internal IReadOnlyList<ushort> FanOutPatchedTriggerIds => _fanOutPatchedTriggerIds;
+    private readonly List<ushort> _fanOutPatchedTriggerIds = new();
+    private readonly List<ReadOnlyMemory<byte>> _stashedTriggerPayloads = new();
 
     /// <summary>
     /// Server-side execution mode provider. Determines per-method execution mode.
@@ -710,6 +754,13 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     protected virtual int? GetMethodMinStateVersion(ushort methodId) => null;
 
     /// <summary>
+    /// Mode declared on <c>[MetaMethod]</c>, for the modes the server computes differently
+    /// (ServerPatch, ServerReplace). Generated per provider; the default provider of a runtime
+    /// <see cref="IExecutionModeProvider"/> override.
+    /// </summary>
+    protected virtual ExecutionMode GetDeclaredExecutionMode(ushort methodId) => ExecutionMode.Optimistic;
+
+    /// <summary>
     /// For <c>[NoMigrate]</c> calls: returns the config object pinned to the schema-floor
     /// branch — i.e. the highest config branch that does not require migration past
     /// the entity's current state schema. Generated providers override when the state
@@ -853,6 +904,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // pool tokens that the previous call's caller forgot to take (safety net — should
             // be empty in normal flow because EntityGrain Takes everything before returning).
             FlushPendingNamedScrollReturns();
+            _fanOutPatchedTriggerIds.Clear();
 
             // Rewind the intermediate scratch buffer for this call. Any ROMs the PREVIOUS
             // call handed out (replay/patch/state/triggers) have already been embedded into
@@ -868,8 +920,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             var namedScrollsBefore = CaptureNamedScrolls();
 
             // Determine server-side execution mode. 0.24.0+ keyed by methodId — no name plumbing.
-            var executionMode = ExecutionModeProvider?.GetMode(
-                call.MethodId, ExecutionMode.Optimistic) ?? ExecutionMode.Optimistic;
+            var declaredMode = GetDeclaredExecutionMode(call.MethodId);
+            var executionMode = ExecutionModeProvider?.GetMode(call.MethodId, declaredMode) ?? declaredMode;
 
             // Activate patch tracking when ServerPatch mode is in effect, deep-desync needs
             // a CRC, OR EntityGrain signals that at least one subscriber needs the patch
@@ -1027,8 +1079,19 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                     var triggerScrollBefore = _optimisticRandom.ScrollId;
                     var triggerNamedScrollsBefore = CaptureNamedScrolls();
 
+                    // A subscriber that takes the triggering method as a patch cannot run the
+                    // trigger bodies either; one that takes only this trigger as a patch can run
+                    // the method but not the trigger. Both need the trigger's own patch.
+                    bool triggerPatchForFanOut = requirePatchForFanOut;
+                    if (!triggerPatchForFanOut && executionMode != ExecutionMode.ServerPatch
+                        && TriggerForcePatchQuery != null && TriggerForcePatchQuery(triggerMethodId))
+                    {
+                        triggerPatchForFanOut = true;
+                        _fanOutPatchedTriggerIds.Add(triggerMethodId);
+                    }
+
                     PatchNode? triggerPatchRoot = null;
-                    if (executionMode == ExecutionMode.ServerPatch)
+                    if (executionMode == ExecutionMode.ServerPatch || triggerPatchForFanOut)
                     {
                         triggerPatchRoot = new PatchNode(-1);
                         MetaContext.PatchWrapper = CreatePatchWrapper(triggerPatchRoot);
@@ -1126,23 +1189,46 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             ReadOnlyMemory<byte> broadcastReplayBytes = default;
             ReadOnlyMemory<byte> broadcastPatchBytes = default;
 
-            // Variant 1: replay-eligible audience. Strip PatchBytes so the variant carries
-            // only the replay payload (and state, for ServerReplace which already null'd replay).
-            var origPatch = _pooledBroadcastOp.PatchBytes;
-            _pooledBroadcastOp.PatchBytes = default;
-            broadcastReplayBytes = PackBytes(Context.Serializer, _pooledBroadcastOp);
-            _pooledBroadcastOp.PatchBytes = origPatch;
+            // Trigger patches built only for the force-patch audience (not ServerPatch, where
+            // every recipient takes them) are stripped from the replay variant and replace the
+            // trigger replay in the patch variant.
+            var fanOutTriggers = executionMode != ExecutionMode.ServerPatch
+                && (requirePatchForFanOut || _fanOutPatchedTriggerIds.Count > 0)
+                ? _pooledBroadcastOp.Triggers : null;
+            bool anyTriggerPatch = false;
+            if (fanOutTriggers != null)
+                foreach (var t in fanOutTriggers)
+                    if (!t.PatchBytes.IsEmpty) { anyTriggerPatch = true; break; }
 
-            // Variant 2: patch-eligible audience. Only emit when force-patch tailoring is
-            // requested OR the call executed under ServerPatch (then ALL subscribers get patch
-            // and the replay variant is what we don't ship). For ServerPatch we still emit
-            // both variants but the broadcast distributor will use the patch variant.
-            if (requirePatchForFanOut && !origPatch.IsEmpty)
+            // Variant 1: the general audience. Normally the replay payload only (and state, for
+            // ServerReplace which already null'd replay). Under ServerPatch the method is not
+            // replayed anywhere — every subscriber takes the patch — unless the body changed
+            // nothing, where an empty patch would be indistinguishable from "no patch".
+            var origPatch = _pooledBroadcastOp.PatchBytes;
+            var origReplayForAll = _pooledBroadcastOp.ReplayPayload;
+            bool patchForAll = executionMode == ExecutionMode.ServerPatch && !origPatch.IsEmpty;
+            if (patchForAll) _pooledBroadcastOp.ReplayPayload = default;
+            else _pooledBroadcastOp.PatchBytes = default;
+            if (anyTriggerPatch) StashTriggerPayloads(fanOutTriggers!, patch: true);
+            broadcastReplayBytes = PackBytes(Context.Serializer, _pooledBroadcastOp);
+            if (anyTriggerPatch) RestoreTriggerPayloads(fanOutTriggers!, patch: true);
+            _pooledBroadcastOp.PatchBytes = origPatch;
+            _pooledBroadcastOp.ReplayPayload = origReplayForAll;
+
+            // Variant 2: patch-eligible audience — subscribers that must take the method or one
+            // of its triggers as a patch. The method's replay is swapped for its patch only when
+            // the method itself needs it; each trigger's, when that trigger has a patch.
+            bool methodPatchVariant = requirePatchForFanOut && !origPatch.IsEmpty;
+            if (!patchForAll && (methodPatchVariant || anyTriggerPatch))
             {
                 var origReplay = _pooledBroadcastOp.ReplayPayload;
-                _pooledBroadcastOp.ReplayPayload = default;
+                if (methodPatchVariant) _pooledBroadcastOp.ReplayPayload = default;
+                else _pooledBroadcastOp.PatchBytes = default;
+                if (anyTriggerPatch) StashTriggerPayloads(fanOutTriggers!, patch: false);
                 broadcastPatchBytes = PackBytes(Context.Serializer, _pooledBroadcastOp);
+                if (anyTriggerPatch) RestoreTriggerPayloads(fanOutTriggers!, patch: false);
                 _pooledBroadcastOp.ReplayPayload = origReplay;
+                _pooledBroadcastOp.PatchBytes = origPatch;
             }
 
             // Stash outgoing bytes for EntityGrain to pick up via TakeOutgoing*.

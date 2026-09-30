@@ -74,6 +74,21 @@ namespace SharedMeta.Generator.Utilities
         }
 
         /// <summary>
+        /// Member name of the <c>Mode</c> argument of a <c>[MetaMethod]</c> attribute, or null when the
+        /// argument is absent. Resolved through the enum type, never by ordinal.
+        /// </summary>
+        public static string? ModeName(AttributeData? metaMethodAttribute)
+        {
+            if (metaMethodAttribute == null) return null;
+            foreach (var named in metaMethodAttribute.NamedArguments)
+            {
+                if (named.Key == "Mode" && !named.Value.IsNull && named.Value.Value is int modeValue)
+                    return EnumMemberName(named.Value.Type, modeValue);
+            }
+            return null;
+        }
+
+        /// <summary>
         /// Execution modes clients can never originate. <c>Notification</c> is entity → entity
         /// fire-and-forget; there is no client-side caller by construction.
         /// </summary>

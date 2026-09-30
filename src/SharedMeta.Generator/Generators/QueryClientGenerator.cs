@@ -37,11 +37,9 @@ namespace SharedMeta.Generator.Generators
                 if (metaMethodAttr == null) continue;
 
                 // Accept both legacy [MetaMethod(Query = true)] and canonical [MetaMethod(Mode = ExecutionMode.Query)].
-                // Mode is stored as the enum's integer value: Query = 6 (see ExecutionMode declaration).
                 var queryArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Query");
                 bool legacyQuery = !queryArg.Value.IsNull && queryArg.Value.Value is true;
-                var modeArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Mode");
-                bool modeIsQuery = !modeArg.Value.IsNull && modeArg.Value.Value is int m && m == 6;
+                bool modeIsQuery = SharedMeta.Generator.Utilities.MetaMethodFacts.ModeName(metaMethodAttr) == "Query";
                 if (!legacyQuery && !modeIsQuery) continue;
 
                 var aliasArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Alias");

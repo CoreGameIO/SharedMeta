@@ -54,7 +54,7 @@ namespace SharedMeta.Client
         private readonly IConnection _connection;
         private readonly object _lock = new();
 
-        private readonly Dictionary<string, List<Action<SessionOp>>> _broadcastHandlers = new();
+        private readonly Dictionary<string, List<(string? StateTypeName, Action<SessionOp> Handler)>> _broadcastHandlers = new();
         // Keyed by the pair: two state types can share an entityId (Inventory/Wallet keyed by
         // playerId), and each is a separate subscription on the server.
         private readonly HashSet<(string EntityId, string StateTypeName)> _subscribedEntities = new();
@@ -387,7 +387,7 @@ namespace SharedMeta.Client
                 {
                     LogDiag($"ERROR reqId={pending.RequestId} {response.Error}");
 
-                    // "re-handshake" marker: server-side session handler is unbound (e.g. fresh
+                    // SessionNotConnected: server-side session handler is unbound (e.g. fresh
                     // transport reconnect before SessionConnect ran, server restart in flight).
                     // This is a transient transport-level state, NOT a call failure — the server
                     // also pushes RequireSessionReconnect, the client's recovery flow will re-run
@@ -396,7 +396,7 @@ namespace SharedMeta.Client
                     // in the RequestId sequence that breaks the server-side ordering buffer on
                     // the next Resume (client reports a stale LastCompletedRequestId because the
                     // skipped id was never completed and never bumped the counter).
-                    if (response.Error != null && response.Error.Contains("re-handshake", StringComparison.OrdinalIgnoreCase))
+                    if (response.ErrorKind == SessionErrorKind.SessionNotConnected)
                     {
                         LogDiag($"REHANDSHAKE_PENDING reqId={pending.RequestId} (kept for replay after re-handshake)");
                         return;
@@ -404,10 +404,10 @@ namespace SharedMeta.Client
 
                     lock (_lock) { _pendingRequests.Remove(pending.RequestId); }
 
-                    if (response.Error != null && response.Error.Contains("superseded", StringComparison.OrdinalIgnoreCase))
+                    if (response.ErrorKind == SessionErrorKind.SessionSuperseded)
                     {
                         pending.Tcs.TrySetException(new InvalidOperationException(response.Error));
-                        HandleSessionTerminated(response.Error);
+                        HandleSessionTerminated(response.Error ?? "Session superseded", superseded: true);
                         return;
                     }
 
@@ -425,7 +425,7 @@ namespace SharedMeta.Client
             }
         }
 
-        public IDisposable OnBroadcast(string entityId, Action<SessionOp> handler)
+        public IDisposable OnBroadcast(string entityId, Action<SessionOp> handler, string? stateTypeName = null)
         {
             if (string.IsNullOrEmpty(entityId))
                 throw new ArgumentNullException(nameof(entityId));
@@ -436,10 +436,10 @@ namespace SharedMeta.Client
             {
                 if (!_broadcastHandlers.TryGetValue(entityId, out var handlers))
                 {
-                    handlers = new List<Action<SessionOp>>();
+                    handlers = new List<(string?, Action<SessionOp>)>();
                     _broadcastHandlers[entityId] = handlers;
                 }
-                handlers.Add(handler);
+                handlers.Add((stateTypeName, handler));
             }
 
             return new BroadcastSubscription(this, entityId, handler);
@@ -826,7 +826,7 @@ namespace SharedMeta.Client
                 {
                     // See SendAndCompleteAsync — same "re-handshake" transient path. Keep pending
                     // so the post-SessionConnect ResendPendingRequestsAsync can replay it.
-                    if (response.Error != null && response.Error.Contains("re-handshake", StringComparison.OrdinalIgnoreCase))
+                    if (response.ErrorKind == SessionErrorKind.SessionNotConnected)
                     {
                         LogDiag($"REHANDSHAKE_RESEND reqId={pending.RequestId} (kept for replay after re-handshake)");
                         return;
@@ -834,10 +834,10 @@ namespace SharedMeta.Client
 
                     lock (_lock) { _pendingRequests.Remove(pending.RequestId); }
 
-                    if (response.Error != null && response.Error.Contains("superseded", StringComparison.OrdinalIgnoreCase))
+                    if (response.ErrorKind == SessionErrorKind.SessionSuperseded)
                     {
                         pending.Tcs.TrySetException(new InvalidOperationException(response.Error));
-                        HandleSessionTerminated(response.Error);
+                        HandleSessionTerminated(response.Error ?? "Session superseded", superseded: true);
                         return;
                     }
 
@@ -1174,8 +1174,23 @@ namespace SharedMeta.Client
                     return;
                 }
 
+                // State types sharing an entityId are separate grains: an op goes only to handlers
+                // of its own state type. Without a negotiated map (no signature) every handler under
+                // the id gets it, as before; with one, an id this build lacks reaches nobody.
+                string? opStateType = StateTypeNameFromServer(op.StateTypeId);
+                if (opStateType == null && Annotated?.ServerToClientStateTypes is { Length: > 0 })
+                {
+                    MetaLog.Warning($"[ClientDispatcher] Broadcast for entityId={op.EntityId} has a state type this client does not know (id={op.StateTypeId}); dropped.");
+                    return;
+                }
+
                 // Copy — handlers may unsubscribe during delivery (Dispose → RemoveBroadcastHandler)
-                handlersCopy = new List<Action<SessionOp>>(handlers);
+                handlersCopy = new List<Action<SessionOp>>(handlers.Count);
+                foreach (var (stateTypeName, handler) in handlers)
+                {
+                    if (opStateType != null && stateTypeName != null && stateTypeName != opStateType) continue;
+                    handlersCopy.Add(handler);
+                }
             }
 
             // EnterHandlerScope marks the current async context as nested inside a handler
@@ -1615,7 +1630,12 @@ namespace SharedMeta.Client
             }
         }
 
+        // Transport notification: the reason arrives as text on every transport, so supersede is
+        // recognised by the wording the server uses for it.
         private void HandleSessionTerminated(string reason)
+            => HandleSessionTerminated(reason, reason.Contains("superseded", StringComparison.OrdinalIgnoreCase));
+
+        private void HandleSessionTerminated(string reason, bool superseded)
         {
             List<PendingRequest> pendingToFail;
             lock (_lock)
@@ -1627,7 +1647,7 @@ namespace SharedMeta.Client
                 // since the transport never dropped. Treating that as a termination would kill the
                 // session the restart just created: the notification is about the session we
                 // deliberately abandoned, not about us.
-                if (_expectSelfSupersede && reason.Contains("superseded", StringComparison.OrdinalIgnoreCase))
+                if (_expectSelfSupersede && superseded)
                 {
                     _expectSelfSupersede = false;
                     MetaLog.Info("[ClientDispatcher] Ignoring self-supersede notification from our own session restart.");
@@ -1652,7 +1672,7 @@ namespace SharedMeta.Client
                 pending.Tcs.TrySetException(new InvalidOperationException($"Session terminated: {reason}"));
             }
 
-            if (reason.Contains("superseded", StringComparison.OrdinalIgnoreCase))
+            if (superseded)
             {
                 OnSessionSuperseded?.Invoke(reason);
             }
@@ -1699,7 +1719,12 @@ namespace SharedMeta.Client
             {
                 if (_broadcastHandlers.TryGetValue(entityId, out var handlers))
                 {
-                    handlers.Remove(handler);
+                    for (int i = 0; i < handlers.Count; i++)
+                    {
+                        if (handlers[i].Handler != handler) continue;
+                        handlers.RemoveAt(i);
+                        break;
+                    }
                 }
             }
         }

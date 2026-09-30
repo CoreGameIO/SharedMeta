@@ -17,13 +17,14 @@ namespace SharedMeta.Generator.Generators
         /// <summary>
         /// Represents a trigger method with its on-method and condition.
         /// </summary>
-        private class TriggerInfo
+        internal class TriggerInfo
         {
             public string TriggerMethodName { get; set; } = "";
             public string TriggerMethodAlias { get; set; } = "";
             public int TriggerMethodVersion { get; set; }
             public string OnMethod { get; set; } = "";
             public string? Condition { get; set; }
+            public bool IsAwaitable { get; set; }
         }
 
         public static string Generate(string symbol, string namespaceName, InterfaceDeclarationSyntax node, INamedTypeSymbol? interfaceSymbol = null, Compilation? compilation = null)
@@ -377,7 +378,7 @@ namespace SharedMeta.Generator.Generators
         /// <summary>
         /// Collects trigger information from both interface and implementation classes.
         /// </summary>
-        private static Dictionary<string, List<TriggerInfo>> CollectTriggers(INamedTypeSymbol? interfaceSymbol, Compilation? compilation)
+        internal static Dictionary<string, List<TriggerInfo>> CollectTriggers(INamedTypeSymbol? interfaceSymbol, Compilation? compilation)
         {
             var result = new Dictionary<string, List<TriggerInfo>>();
 
@@ -385,7 +386,7 @@ namespace SharedMeta.Generator.Generators
                 return result;
 
             // 1. Collect triggers from interface methods
-            CollectTriggersFromType(interfaceSymbol, result);
+            CollectTriggersFromType(interfaceSymbol, result, null);
 
             // 2. Find implementation classes and collect their triggers
             foreach (var syntaxTree in compilation.SyntaxTrees)
@@ -401,7 +402,7 @@ namespace SharedMeta.Generator.Generators
                     // Check if this class implements the interface
                     if (classSymbol.AllInterfaces.Any(i => SymbolEqualityComparer.Default.Equals(i, interfaceSymbol)))
                     {
-                        CollectTriggersFromType(classSymbol, result);
+                        CollectTriggersFromType(classSymbol, result, interfaceSymbol);
                     }
                 }
             }
@@ -412,7 +413,8 @@ namespace SharedMeta.Generator.Generators
         /// <summary>
         /// Collects triggers from a type's methods.
         /// </summary>
-        private static void CollectTriggersFromType(INamedTypeSymbol typeSymbol, Dictionary<string, List<TriggerInfo>> result)
+        private static void CollectTriggersFromType(INamedTypeSymbol typeSymbol, Dictionary<string, List<TriggerInfo>> result,
+            INamedTypeSymbol? implementedInterface)
         {
             foreach (var member in typeSymbol.GetMembers().OfType<IMethodSymbol>())
             {
@@ -427,7 +429,10 @@ namespace SharedMeta.Generator.Generators
                         // used everywhere else for method-id resolution).
                         var triggerAlias = member.Name;
                         var triggerVersion = 0;
-                        var metaMethodAttr = member.GetAttributes().FirstOrDefault(a =>
+                        // [Trigger] on an impl method: the alias and version live on the interface
+                        // method it implements, not on the impl.
+                        var metaMethodSource = FindImplementedInterfaceMethod(typeSymbol, member, implementedInterface) ?? member;
+                        var metaMethodAttr = metaMethodSource.GetAttributes().FirstOrDefault(a =>
                             a.AttributeClass?.Name == "MetaMethodAttribute" ||
                             a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaMethodAttribute");
                         if (metaMethodAttr != null)
@@ -446,6 +451,7 @@ namespace SharedMeta.Generator.Generators
                             TriggerMethodName = member.Name,
                             TriggerMethodAlias = triggerAlias,
                             TriggerMethodVersion = triggerVersion,
+                            IsAwaitable = member.ReturnType.Name is "Task" or "ValueTask",
                         };
 
                         // Extract "On" and "Condition" properties
@@ -475,6 +481,17 @@ namespace SharedMeta.Generator.Generators
                     }
                 }
             }
+        }
+
+        private static IMethodSymbol? FindImplementedInterfaceMethod(INamedTypeSymbol implType, IMethodSymbol implMethod, INamedTypeSymbol? iface)
+        {
+            if (iface == null) return null;
+            foreach (var ifaceMethod in iface.GetMembers().OfType<IMethodSymbol>())
+            {
+                if (SymbolEqualityComparer.Default.Equals(implType.FindImplementationForInterfaceMember(ifaceMethod), implMethod))
+                    return ifaceMethod;
+            }
+            return null;
         }
 
         /// <summary>

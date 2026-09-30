@@ -642,7 +642,7 @@ namespace SharedMeta.Server.Core.Transport
                 if (!TryEnsureSessionConnected("RpcCall"))
                 {
                     __m.MarkRejected();
-                    return SessionResponse.ForError("Session not connected — please re-handshake.");
+                    return SessionResponse.ForError("Session not connected — please re-handshake.", SessionErrorKind.SessionNotConnected);
                 }
 
                 if (string.IsNullOrEmpty(request.EntityId))

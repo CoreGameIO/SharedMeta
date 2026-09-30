@@ -934,7 +934,7 @@ namespace SharedMeta.Client
                 ConfigVersions = subResult.ConfigVersions,
                 Configs = serviceConfigs,
             };
-            newConnection.SubscribeBroadcasts(_serializer, config.PatchApplier, LookupConfigByMethodId, this);
+            newConnection.SubscribeBroadcasts(_serializer, ResolvePatchApplier(config), LookupConfigByMethodId, this);
             if (!string.IsNullOrEmpty(config.ServiceName))
                 newConnection.LocalServiceNames.Add(config.ServiceName);
             foreach (var methodId in config.MethodIds)
@@ -1370,6 +1370,11 @@ namespace SharedMeta.Client
                 var owningConfig = _configByMethodId?.Invoke(broadcast.MethodId);
                 if (owningConfig != null && owningConfig.StateType != StateType) return;
 
+                // A locally registered ApiClient finishes its own methods: random skips, trigger
+                // ops and events. For anything else — a service held by no local ApiClient, or a
+                // method this build does not know — this handler is the only one that runs.
+                bool ownedLocally = LocalMethodIds.Contains(broadcast.MethodId);
+
                 if (broadcast.StateBytes is { Length: > 0 } sb)
                 {
                     var newState = _serializer!.Unpack(StateType, sb);
@@ -1382,28 +1387,24 @@ namespace SharedMeta.Client
                             $"[MetaServiceResolver] State REPLACED for entity {EntityId} via ServerReplace broadcast — methodId={broadcast.MethodId}, stateBytes={sb.Length}");
                         StateContainer.ReplaceObject(newState);
                     }
+                    if (!ownedLocally)
+                    {
+                        SkipRandoms(broadcast.RandomScrollDelta, broadcast.NamedRandomScrollDeltas);
+                        // The replaced state already includes the triggers' effects.
+                        if (broadcast.TriggerOperations != null)
+                            foreach (var t in broadcast.TriggerOperations)
+                                SkipRandoms(t.RandomScrollDelta, t.NamedRandomScrollDeltas);
+                    }
                     return;
                 }
 
                 if (broadcast.PatchBytes is { Length: > 0 } pb)
                 {
-                    if (_patchApplier != null)
+                    ApplyPatch(pb);
+                    if (!ownedLocally)
                     {
-                        // ChangeTracker has to be active or [Tracked] field setters touched
-                        // by the patch applier won't notify subscribers — UIs wired to
-                        // Tracked{State}.OnChanged would silently miss ServerPatch broadcasts.
-                        var tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();
-                        try
-                        {
-                            _patchApplier(StateContainer.State, pb, _serializer!);
-                            tracker.FlushAndNotify();
-                        }
-                        catch
-                        {
-                            tracker.Discard();
-                            throw;
-                        }
-                        StateContainer.NotifyMutated();
+                        SkipRandoms(broadcast.RandomScrollDelta, broadcast.NamedRandomScrollDeltas);
+                        ApplyTriggerOperations(broadcast);
                     }
                     return;
                 }
@@ -1413,7 +1414,7 @@ namespace SharedMeta.Client
                 // service whose ApiClient is registered locally, that client's own
                 // DispatchServiceBroadcast will replay the method (per-method events fire,
                 // _service field is reused). Skip here to avoid double-application.
-                if (LocalMethodIds.Contains(broadcast.MethodId)) return;
+                if (ownedLocally) return;
 
                 // Foreign service — look up its config by MethodId and use the
                 // EntityReplayDispatcher to instantiate the impl class on the fly and
@@ -1446,12 +1447,82 @@ namespace SharedMeta.Client
                         _crossEntityResolver,
                         Configs);
                     StateContainer.NotifyMutated();
+                    ApplyTriggerOperations(broadcast);
                 }
                 catch (Exception ex)
                 {
                     Core.Logging.MetaLog.Error(
                         $"[EntityReplay] methodId={broadcast.MethodId} on entity '{EntityId}' failed: {ex.Message}",
                         ex);
+                }
+            }
+
+            private void ApplyPatch(byte[] patchBytes)
+            {
+                if (_patchApplier == null) return;
+                // ChangeTracker has to be active or [Tracked] field setters touched
+                // by the patch applier won't notify subscribers — UIs wired to
+                // Tracked{State}.OnChanged would silently miss ServerPatch broadcasts.
+                var tracker = SharedMeta.Core.Reactive.ChangeTracker.Activate();
+                try
+                {
+                    _patchApplier(StateContainer.State, patchBytes, _serializer!);
+                    tracker.FlushAndNotify();
+                }
+                catch
+                {
+                    tracker.Discard();
+                    throw;
+                }
+                StateContainer.NotifyMutated();
+            }
+
+            private void SkipRandoms(long delta, long[]? namedDeltas)
+            {
+                if (delta > 0) OptimisticRandom?.Skip(delta);
+                if (namedDeltas == null || NamedRandoms == null) return;
+                var limit = Math.Min(namedDeltas.Length, NamedRandoms.Length);
+                for (int i = 0; i < limit; i++)
+                    if (namedDeltas[i] > 0) NamedRandoms[i].Skip(namedDeltas[i]);
+            }
+
+            // Trigger ops of a broadcast no local ApiClient handles: patch when the server sent
+            // one (the random stream then skips), otherwise replay through the trigger's own
+            // service, which advances the random itself.
+            private void ApplyTriggerOperations(NetworkBroadcast broadcast)
+            {
+                if (broadcast.TriggerOperations == null) return;
+                foreach (var t in broadcast.TriggerOperations)
+                {
+                    if (!t.PatchBytes.IsEmpty)
+                    {
+                        ApplyPatch(t.PatchBytes.ToArray());
+                        SkipRandoms(t.RandomScrollDelta, t.NamedRandomScrollDeltas);
+                        continue;
+                    }
+                    var triggerConfig = _configByMethodId?.Invoke(t.MethodId);
+                    if (triggerConfig?.EntityReplayDispatcher == null || triggerConfig.StateType != StateType)
+                    {
+                        Core.Logging.MetaLog.Warning(
+                            $"[EntityReplay] trigger methodId={t.MethodId} on entity '{EntityId}' has no patch and no replayer here; skipped.");
+                        SkipRandoms(t.RandomScrollDelta, t.NamedRandomScrollDeltas);
+                        continue;
+                    }
+                    triggerConfig.EntityReplayDispatcher(
+                        StateContainer.State,
+                        t.MethodId,
+                        Array.Empty<byte>(),
+                        t.ReplayPayload.IsEmpty ? Array.Empty<byte>() : t.ReplayPayload.ToArray(),
+                        broadcast.CallerId,
+                        broadcast.ServerTimeTicks,
+                        _serializer!,
+                        OptimisticRandom,
+                        NamedRandoms,
+                        ResolveConfigForBroadcast(
+                            t.ExecutedConfigVersions is { Count: > 0 } tv ? tv[0] : default),
+                        _crossEntityResolver,
+                        Configs);
+                    StateContainer.NotifyMutated();
                 }
             }
 

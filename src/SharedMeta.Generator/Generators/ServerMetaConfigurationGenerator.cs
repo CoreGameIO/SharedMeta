@@ -389,6 +389,7 @@ namespace SharedMeta.Generator.Generators
                 bool isOpenAccess = false;
                 bool isSignal = false;
                 bool isLocalQuery = false;
+                string? declaredMode = null;
                 if (metaMethodAttr != null)
                 {
                     // Legacy bool form.
@@ -398,18 +399,11 @@ namespace SharedMeta.Generator.Generators
                     var signalArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Signal");
                     bool legacySignal = !signalArg.Value.IsNull && signalArg.Value.Value is true;
 
-                    // Canonical Mode form. Mode is an int (enum value); compare against known positions.
-                    // ExecutionMode layout: LocalQuery=0, Optimistic=1, Server=2, CrossOptimistic=3,
-                    // ServerPatch=4, ServerReplace=5, Query=6, Signal=7.
-                    bool modeIsQuery = false;
-                    bool modeIsSignal = false;
-                    var modeArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Mode");
-                    if (!modeArg.Value.IsNull && modeArg.Value.Value is int modeVal)
-                    {
-                        if (modeVal == 0) isLocalQuery = true;
-                        else if (modeVal == 6) modeIsQuery = true;
-                        else if (modeVal == 7) modeIsSignal = true;
-                    }
+                    // Canonical Mode form, read by enum member name.
+                    declaredMode = SharedMeta.Generator.Utilities.MetaMethodFacts.ModeName(metaMethodAttr);
+                    isLocalQuery = declaredMode == "LocalQuery";
+                    bool modeIsQuery = declaredMode == "Query";
+                    bool modeIsSignal = declaredMode == "Signal";
 
                     isQuery = legacyQuery || modeIsQuery;
                     isSignal = legacySignal || modeIsSignal;
@@ -467,7 +461,8 @@ namespace SharedMeta.Generator.Generators
                     SkipMigration = skipMigration,
                     MinStateVersion = minStateVersion,
                     GenerateClientApi = generateClientApi,
-                    RequiredPermissions = MetaMethodFacts.ReadRequiredPermissions(member, serviceInterface).Names
+                    RequiredPermissions = MetaMethodFacts.ReadRequiredPermissions(member, serviceInterface).Names,
+                    DeclaredMode = declaredMode,
                 });
             }
 
@@ -618,11 +613,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"namespace {rootNamespace}.Server");
             sb.AppendLine("{");
 
-            // 1. Generate GameServiceDiscovery concrete implementation
-            GenerateGameServiceDiscovery(sb, services);
-            sb.AppendLine();
-
-            // 2. Generate MetaProvider for each state type
+            // MetaProvider for each state type
             foreach (var kvp in byStateType)
             {
                 GenerateMetaProvider(sb, kvp.Key, kvp.Value, allServerDeps);
@@ -721,11 +712,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"namespace {rootNamespace}.Server");
             sb.AppendLine("{");
 
-            // 1. Generate GameServiceDiscovery concrete implementation
-            GenerateGameServiceDiscovery(sb, services);
-            sb.AppendLine();
-
-            // 2. Generate MetaProvider for each state type
+            // MetaProvider for each state type
             foreach (var kvp in byStateType)
             {
                 GenerateMetaProvider(sb, kvp.Key, kvp.Value, allServerDeps);
@@ -760,49 +747,6 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("}");
             sb.AppendLine("#endif // SHAREDMETA_SERVER");
             return sb.ToString();
-        }
-
-        private static void GenerateGameServiceDiscovery(StringBuilder sb, List<ServiceImplInfo> services)
-        {
-            sb.AppendLine("    /// <summary>");
-            sb.AppendLine("    /// Generated server implementation of GameServiceDiscoveryBase.");
-            sb.AppendLine("    /// Provides service dispatchers and factory methods.");
-            sb.AppendLine("    /// </summary>");
-            sb.AppendLine("    public sealed class GameServiceDiscovery : GameServiceDiscoveryBase");
-            sb.AppendLine("    {");
-            sb.AppendLine("        public static readonly GameServiceDiscovery Instance = new();");
-            sb.AppendLine();
-            sb.AppendLine("        private GameServiceDiscovery() { }");
-            sb.AppendLine();
-
-            // GetDispatcher
-            sb.AppendLine("        public override ServerDispatcher? GetDispatcher(string serviceName)");
-            sb.AppendLine("        {");
-            sb.AppendLine("            return serviceName switch");
-            sb.AppendLine("            {");
-            foreach (var service in services)
-            {
-                sb.AppendLine($"                \"{service.InterfaceName}\" => (svc, methodId, payload, ser) => {service.InterfaceName}Dispatcher.Dispatch(({service.InterfaceName})svc, methodId, payload, ser),");
-            }
-            sb.AppendLine("                _ => null");
-            sb.AppendLine("            };");
-            sb.AppendLine("        }");
-            sb.AppendLine();
-
-            // CreateService
-            sb.AppendLine("        public override object CreateService(string serviceName)");
-            sb.AppendLine("        {");
-            sb.AppendLine("            return serviceName switch");
-            sb.AppendLine("            {");
-            foreach (var service in services)
-            {
-                sb.AppendLine($"                \"{service.InterfaceName}\" => new {service.ImplClassFullName}(),");
-            }
-            sb.AppendLine("                _ => throw new InvalidOperationException($\"Unknown service: {serviceName}\")");
-            sb.AppendLine("            };");
-            sb.AppendLine("        }");
-
-            sb.AppendLine("    }");
         }
 
         private static void GenerateMetaProvider(
@@ -2173,6 +2117,26 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine();
             }
 
+            // Declared server-computed modes. Every other mode runs the same way on the server, so
+            // only these two need a case; the rest fall to Optimistic.
+            var serverComputedMethods = services
+                .SelectMany(s => s.MethodSignatures)
+                .Where(m => m.DeclaredMode == "ServerPatch" || m.DeclaredMode == "ServerReplace")
+                .ToList();
+            if (serverComputedMethods.Count > 0)
+            {
+                sb.AppendLine("        protected override global::SharedMeta.Core.ExecutionMode GetDeclaredExecutionMode(ushort methodId)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            return methodId switch");
+                sb.AppendLine("            {");
+                foreach (var m in serverComputedMethods)
+                    sb.AppendLine($"                global::{migrationIdsNs}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(m.ServiceName, m.MethodAlias, m.Version)} => global::SharedMeta.Core.ExecutionMode.{m.DeclaredMode},");
+                sb.AppendLine("                _ => global::SharedMeta.Core.ExecutionMode.Optimistic");
+                sb.AppendLine("            };");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+            }
+
             // GetSchemaFloorConfig / GetSchemaFloorConfigVersion — used when [NoMigrate] is in
             // play. Resolve to the lowest config version that satisfies all migration thresholds
             // for the current state schema (so the call sees the same config branch the entity
@@ -2458,13 +2422,6 @@ namespace SharedMeta.Generator.Generators
                 .ToList();
             var deepDesyncNames = string.Join(", ", deepDesyncServices.Select(n => $"\"{n}\""));
             sb.AppendLine($"            services.AddHostedService(sp => new global::SharedMeta.Server.Core.DeepDesyncStartupReport(new string[] {{ {deepDesyncNames} }}, sp.GetService<Microsoft.Extensions.Options.IOptions<global::SharedMeta.Server.Core.Grains.EntityGrainOptions>>(), sp.GetService<Microsoft.Extensions.Logging.ILogger<global::SharedMeta.Server.Core.DeepDesyncStartupReport>>()));");
-            sb.AppendLine();
-            sb.AppendLine("            // Service resolver (resolves from DI)");
-            sb.AppendLine("            Func<Type, object> serviceResolver = type =>");
-            sb.AppendLine("            {");
-            sb.AppendLine("                var sp = services.BuildServiceProvider();");
-            sb.AppendLine("                return sp.GetRequiredService(type);");
-            sb.AppendLine("            };");
             sb.AppendLine();
             sb.AppendLine("            // Register provider factories for each state type");
             sb.AppendLine("            // Note: entityCallHandler is null here - set by Orleans grain when needed for cross-entity calls");

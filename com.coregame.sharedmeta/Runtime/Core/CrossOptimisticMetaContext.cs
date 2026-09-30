@@ -33,16 +33,6 @@ namespace SharedMeta.Core
                 "Use Server or Optimistic mode for cross-entity state reading.");
         }
 
-        public override void Observe<TInterface>(string id)
-        {
-            // Not supported in cross-entity context
-        }
-
-        public override TInterface GetExternal<TInterface>()
-        {
-            throw new NotImplementedException("GetExternal not supported in CrossOptimistic context.");
-        }
-
         public override bool TryGetCached(Type key, out object? value)
         {
             return _wrapperCache.TryGetValue(key, out value);

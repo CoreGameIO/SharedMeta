@@ -179,6 +179,7 @@ namespace SharedMeta.Server.Core.Grains
                 providerBase.EntityCallOneWayHandler = HandleCrossEntityOneWayAsync;
                 providerBase.EntityStateHandler = LoadCrossEntityStateAsync;
                 providerBase.SaveStateHandler = ForcePersistStateAsync;
+                providerBase.TriggerForcePatchQuery = IsMethodForcePatched;
 
                 // 0.24.0+ Forward the server signature so the provider can do reverse
                 // methodId → (Service, Alias, Version) resolution for diagnostics. Trigger
@@ -884,7 +885,6 @@ namespace SharedMeta.Server.Core.Grains
             {
                 __m.MarkError();
                 _logger.ErrorHandlingCall(ex);
-                System.Console.WriteLine($"[EG.HandleCallAsync] {_entityId} EXCEPTION: {ex}");
                 return new EntityCallResult
                 {
                     EntitySequenceNumber = operationSequence,
@@ -1193,11 +1193,14 @@ namespace SharedMeta.Server.Core.Grains
         /// replay-only broadcast to such a client makes it replay a body it is known to
         /// disagree with, which is a silent desync.
         /// </remarks>
-        private bool ShouldForcePatchForFanOut(ushort methodId, string serviceName, string methodName)
-        {
-            bool byMethod = _forcePatchMethodRefs != null
+        private bool IsMethodForcePatched(ushort methodId)
+            => _forcePatchMethodRefs != null
                 && methodId < _forcePatchMethodRefs.Length
                 && _forcePatchMethodRefs[methodId] > 0;
+
+        private bool ShouldForcePatchForFanOut(ushort methodId, string serviceName, string methodName)
+        {
+            bool byMethod = IsMethodForcePatched(methodId);
             bool byService = _forcePatchServiceRefs.ContainsKey(serviceName);
             if (!byMethod && !byService) return false;
 
@@ -1419,6 +1422,11 @@ namespace SharedMeta.Server.Core.Grains
             string serviceName, string methodName, ushort methodId,
             long operationSequence, string? excludePlayerId)
         {
+            // Triggers force-patched on their own (the method itself is not) — a subscriber
+            // needing any of them takes the patch variant, which carries their patches.
+            var patchedTriggers = _activeProviderBase?.FanOutPatchedTriggerIds;
+            if (patchedTriggers is { Count: 0 }) patchedTriggers = null;
+
             bool replayEmpty = replayPayload.IsEmpty;
             bool patchEmpty = patchPayload.IsEmpty;
             if (replayEmpty && patchEmpty)
@@ -1427,13 +1435,14 @@ namespace SharedMeta.Server.Core.Grains
                 return default;
             if (excludePlayerId != null && _subscriberRefs.Count == 1 && _subscriberRefs.ContainsKey(excludePlayerId))
                 return default;
-            return new ValueTask(DistributeBroadcastsImpl(replayPayload, patchPayload, serviceName, methodName, methodId, operationSequence, excludePlayerId));
+            return new ValueTask(DistributeBroadcastsImpl(replayPayload, patchPayload, serviceName, methodName, methodId, patchedTriggers, operationSequence, excludePlayerId));
         }
 
         private async Task DistributeBroadcastsImpl(
             ReadOnlyMemory<byte> replayPayload,
             ReadOnlyMemory<byte> patchPayload,
             string serviceName, string methodName, ushort methodId,
+            IReadOnlyList<ushort>? patchedTriggers,
             long operationSequence, string? excludePlayerId)
         {
             var entityId = _entityId;
@@ -1459,7 +1468,9 @@ namespace SharedMeta.Server.Core.Grains
                 {
                     // Pick variant: subscriber's force-patch contributions (method-level OR
                     // service-level) dictate the patch variant; everyone else gets replay.
-                    bool subscriberNeedsPatch = patchAvailable && SubscriberNeedsPatch(playerId, serviceName, methodId);
+                    bool subscriberNeedsPatch = patchAvailable
+                        && (SubscriberNeedsPatch(playerId, serviceName, methodId)
+                            || (patchedTriggers != null && SubscriberNeedsAnyPatch(playerId, patchedTriggers)));
                     var opPayload = subscriberNeedsPatch ? patchPayload : replayPayload;
                     if (opPayload.IsEmpty) continue;
 
@@ -1501,6 +1512,14 @@ namespace SharedMeta.Server.Core.Grains
                 for (int i = 0; i < meth.Count; i++)
                     if (meth[i] == methodId) return true;
             }
+            return false;
+        }
+
+        private bool SubscriberNeedsAnyPatch(string playerId, IReadOnlyList<ushort> methodIds)
+        {
+            if (!_subscriberForcePatchContributions.TryGetValue(playerId, out var meth)) return false;
+            for (int i = 0; i < methodIds.Count; i++)
+                if (meth.Contains(methodIds[i])) return true;
             return false;
         }
     }

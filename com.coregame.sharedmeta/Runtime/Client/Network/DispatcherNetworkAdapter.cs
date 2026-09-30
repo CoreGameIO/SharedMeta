@@ -86,7 +86,7 @@ namespace SharedMeta.Client.Network
             _stateTypeName = stateTypeName;
 
             // Subscribe to broadcasts for this entity
-            _broadcastSubscription = _dispatcher.OnBroadcast(_entityId, HandleBroadcast);
+            _broadcastSubscription = _dispatcher.OnBroadcast(_entityId, HandleBroadcast, _stateTypeName);
 
             // Forward disconnect events
             _dispatcher.Connection.OnDisconnected += HandleDisconnected;
@@ -113,6 +113,15 @@ namespace SharedMeta.Client.Network
             return map[serverMethodId];
         }
 
+        // Trigger ops name a method too; the generated trigger dispatch switches on client ids.
+        // The op list is this adapter's own unpacked copy, so translating in place is safe.
+        private void TranslateTriggerMethodIds(System.Collections.Generic.List<MetaOperation>? triggers)
+        {
+            if (triggers == null) return;
+            for (int i = 0; i < triggers.Count; i++)
+                triggers[i].MethodId = TranslateIncomingMethodId(triggers[i].MethodId);
+        }
+
         private void HandleBroadcast(SessionOp sessionOp)
         {
             var op = UnpackOp(sessionOp);
@@ -130,6 +139,7 @@ namespace SharedMeta.Client.Network
             var pre = OnBroadcastPre;
             var post = OnBroadcast;
             if (pre == null && post == null) return;
+            TranslateTriggerMethodIds(op.Triggers);
 
             // One instance, raised twice: OnBroadcastPre reaches "before" observers ahead of
             // every state-application path, OnBroadcast drives the appliers and "after"
@@ -207,6 +217,7 @@ namespace SharedMeta.Client.Network
             }
 
             var op = UnpackOp(sessionOp);
+            TranslateTriggerMethodIds(op.Triggers);
             T result = default!;
             var resultBytes = op.ResultBytes;
             if (!resultBytes.IsEmpty)
@@ -253,6 +264,7 @@ namespace SharedMeta.Client.Network
             }
 
             var op = UnpackOp(sessionOp);
+            TranslateTriggerMethodIds(op.Triggers);
             return new VoidCallResponse
             {
                 ReplayContext = op.ReplayPayload.ToArray(),
@@ -291,6 +303,7 @@ namespace SharedMeta.Client.Network
             }
 
             var op = UnpackOp(sessionOp);
+            TranslateTriggerMethodIds(op.Triggers);
             return new ByteCallResponse
             {
                 ResultBytes = op.ResultBytes.ToArray(),

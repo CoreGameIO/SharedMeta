@@ -63,10 +63,11 @@ namespace SharedMeta.Core
         /// <summary>
         /// Multi-player session entity — e.g. a PvP match, a co-op raid, an ephemeral party.
         /// The first subscriber establishes the config-version pin for the duration of the
-        /// active session. Subsequent subscribers' resolved versions must agree with the
-        /// pin on Major.Minor of every relevant config; patch differences are tolerated by
-        /// downgrading the joiner to the entity's pinned patch. Major.Minor mismatch rejects
-        /// the subscribe — incompatible clients cannot play together in the same session.
+        /// active session; every call runs under it. Joiners on any version are admitted:
+        /// configs evolve additively, and where a <c>[MetaConfigStructureBoundary]</c> lies
+        /// between a joiner's version and the pin, that joiner takes the affected services as
+        /// server patches instead of replaying them. The admissible client range is enforced
+        /// at the transport (<c>MinClientVersion</c> / <c>MaxClientVersion</c>).
         ///
         /// When all subscribers leave and the grain deactivates, the pin is dropped. The next
         /// session naturally picks up newer versions and migrates state via
@@ -879,27 +880,28 @@ namespace SharedMeta.Core
     }
 
     /// <summary>
-    /// Marks a transformer class and specifies resolution mode.
-    /// By default, transformers are auto-registered in generated code.
+    /// Marks a transformer class. By default the generator discovers it at compile time and
+    /// applies it to every parameter of its complex type.
     /// </summary>
     [AttributeUsage(AttributeTargets.Class)]
     public class TransformerAttribute : Attribute
     {
         /// <summary>
-        /// If true, resolve transformer via DI. If false, create via Activator.
+        /// The transformer needs DI. Such a transformer is never applied: generated call sites
+        /// use one shared parameterless instance, and the client has no container to resolve from.
         /// </summary>
         public bool UseResolver { get; set; } = false;
 
         /// <summary>
-        /// If true, skip auto-registration in generated TransformerRegistry.
-        /// Use this when you want to register the transformer manually.
+        /// Exclude from discovery; the transformer applies only where a parameter names it with
+        /// <see cref="TransformAttribute"/>.
         /// </summary>
         public bool NoAutoRegister { get; set; } = false;
     }
 
     /// <summary>
     /// Explicitly specify a transformer for a method parameter.
-    /// Overrides auto-discovery from TransformerRegistry.
+    /// Overrides compile-time discovery.
     /// </summary>
     [AttributeUsage(AttributeTargets.Parameter)]
     public class TransformAttribute : Attribute

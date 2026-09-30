@@ -148,7 +148,7 @@ namespace SharedMeta.Server.Core.Session
         ///     index, the client's local global index OR <see cref="ClientSignatureAnnotated.UnknownClientMethodId"/>
         ///     (client doesn't know this method). Shipped to the client for inbound broadcast
         ///     translation.</item>
-        ///   <item><b>clientToServer</b> (length = client's method count) — at client's local
+        ///   <item><b>clientToServer</b> (length = highest client GlobalIndex + 1) — at client's local
         ///     global index, the server's global index OR <c>ushort.MaxValue</c> (rejected method).
         ///     Kept server-internal; used by the connection handler to translate inbound
         ///     <c>RpcCall.MethodId</c> to the server-side dispatch key.</item>
@@ -164,7 +164,7 @@ namespace SharedMeta.Server.Core.Session
                 if (m.GlobalIndex + 1 > statusLen) statusLen = m.GlobalIndex + 1;
 
             var statuses = new MethodStatus[statusLen];
-            var clientToServer = new ushort[signature.KnownMethods.Count];
+            var clientToServer = new ushort[statusLen];
             for (int i = 0; i < clientToServer.Length; i++) clientToServer[i] = ushort.MaxValue;
 
             if (_serverSignature == null)

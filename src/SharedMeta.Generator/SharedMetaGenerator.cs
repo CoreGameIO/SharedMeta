@@ -600,42 +600,6 @@ namespace SharedMeta.Generator
                 }
             });
 
-            // Transformer Registration Generation
-            // Scans for classes implementing IArgumentTransformer or IStateArgumentTransformer
-            var transformerPipeline = context.SyntaxProvider.CreateSyntaxProvider(
-                predicate: static (node, _) => node is ClassDeclarationSyntax cds && cds.BaseList != null,
-                transform: static (ctx, _) =>
-                {
-                    var classNode = (ClassDeclarationSyntax)ctx.Node;
-                    var symbol = ctx.SemanticModel.GetDeclaredSymbol(classNode) as INamedTypeSymbol;
-                    if (symbol == null) return null;
-
-                    return TransformerRegistrationGenerator.Analyze(symbol);
-                }
-            ).Where(static info => info != null);
-
-            // Collect all transformers and generate a single registration file per assembly
-            var collected = transformerPipeline.Collect();
-
-            context.RegisterSourceOutput(collected, (spc, transformers) =>
-            {
-                var validTransformers = transformers.Where(t => t != null).ToList()!;
-                if (validTransformers.Count == 0) return;
-
-                // Group by namespace for better organization
-                var byNamespace = validTransformers
-                    .GroupBy(t => GetNamespace(t!.TransformerFullName))
-                    .ToList();
-
-                foreach (var group in byNamespace)
-                {
-                    var ns = group.Key;
-                    var source = TransformerRegistrationGenerator.Generate(ns, group!);
-                    var safeNs = ns.Replace(".", "_");
-                    spc.AddSource($"TransformerRegistrations_{safeNs}.g.cs", source);
-                }
-            });
-
             // 0.29.1+ Read-only contract validator (LocalQuery / Query method bodies). Combines
             // the impl pipeline with AnalyzerConfigOptionsProvider so the validator becomes a
             // no-op when the host opts out via
@@ -667,11 +631,6 @@ namespace SharedMeta.Generator
             });
         }
 
-        private static string GetNamespace(string fullTypeName)
-        {
-            var lastDot = fullTypeName.LastIndexOf('.');
-            return lastDot > 0 ? fullTypeName.Substring(0, lastDot) : "Global";
-        }
 
         /// <summary>
         /// Recursively find all types with a specific attribute in a namespace.

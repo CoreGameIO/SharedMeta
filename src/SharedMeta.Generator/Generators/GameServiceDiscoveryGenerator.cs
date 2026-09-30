@@ -36,6 +36,9 @@ namespace SharedMeta.Generator.Generators
         /// <summary>Schema cap declared via <c>[MinStateVersion(N)]</c>; null when uncapped.</summary>
         public int? MinStateVersion { get; set; }
 
+        /// <summary><c>ExecutionMode</c> member name from <c>[MetaMethod(Mode = …)]</c>; null when not set.</summary>
+        public string? DeclaredMode { get; set; }
+
         /// <summary>
         /// Permissions from <c>[RequirePermission]</c> on the method or its declaring interface —
         /// any one of them admits a client-originated call. Empty when the method is ungated, which
@@ -389,32 +392,7 @@ namespace SharedMeta.Generator.Generators
             // Legacy "MethodSignatures dictionary + GetMethodSignatures()" emit was removed —
             // SessionConnectRequest no longer carries that field; the validator path was dead.
             EmitClientSignature(sb, serviceList.SelectMany(s => s.MethodSignatures).ToList(), serviceList, rootNamespace);
-            sb.AppendLine();
-
-            // Abstract method for getting dispatcher (to be implemented in server project)
-            sb.AppendLine("        /// <summary>");
-            sb.AppendLine("        /// Get the server dispatcher for a service.");
-            sb.AppendLine("        /// Override in server implementation.");
-            sb.AppendLine("        /// </summary>");
-            sb.AppendLine("        public abstract ServerDispatcher? GetDispatcher(string serviceName);");
-            sb.AppendLine();
-
-            sb.AppendLine("        /// <summary>");
-            sb.AppendLine("        /// Create a new instance of the service implementation.");
-            sb.AppendLine("        /// Override in server implementation.");
-            sb.AppendLine("        /// </summary>");
-            sb.AppendLine("        public abstract object CreateService(string serviceName);");
             sb.AppendLine("    }");
-            sb.AppendLine();
-
-            // Generate delegate types
-            sb.AppendLine("    /// <summary>Delegate for dispatching RPC calls to services.</summary>");
-            sb.AppendLine("    /// <remarks>0.24.0+: <c>methodId</c> is the server-side global index from");
-            sb.AppendLine("    /// <see cref=\"global::SharedMeta.Generated.GameMethodIds\"/>. Encoding (alias, version)");
-            sb.AppendLine("    /// into a single ushort eliminates the per-call string switch and the legacy");
-            sb.AppendLine("    /// nested methodVersion subroute.</remarks>");
-            sb.AppendLine("    public delegate System.Threading.Tasks.ValueTask<DispatchResult> ServerDispatcher(");
-            sb.AppendLine("        object service, ushort methodId, byte[] payload, IMetaSerializer serializer);");
 
             sb.AppendLine("}");
 

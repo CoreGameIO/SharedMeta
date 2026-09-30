@@ -48,15 +48,36 @@ namespace SharedMeta.Core.Transport
         /// </summary>
         [Id(3), Key(3), MemoryPackOrder(3)] public long ServerTimeTicks { get; set; }
 
+        /// <summary>
+        /// What kind of top-level error <see cref="Error"/> is. The client decides between keeping
+        /// the call for a resend, failing it, and ending the session from this — never from the text.
+        /// </summary>
+        [Id(4), Key(4), MemoryPackOrder(4)] public SessionErrorKind ErrorKind { get; set; }
+
         /// <summary>True if there was a top-level error.</summary>
         [IgnoreMember, MemoryPackIgnore] public bool HasError => Error != null;
 
         /// <summary>
         /// Creates an error SessionResponse.
         /// </summary>
-        public static SessionResponse ForError(string error)
+        public static SessionResponse ForError(string error, SessionErrorKind kind = SessionErrorKind.Failed)
         {
-            return new SessionResponse { Error = error };
+            return new SessionResponse { Error = error, ErrorKind = kind };
         }
+    }
+
+    /// <summary>Kind of a top-level <see cref="SessionResponse"/> error.</summary>
+    public enum SessionErrorKind : byte
+    {
+        None = 0,
+        /// <summary>The call failed; retrying it unchanged will fail the same way.</summary>
+        Failed = 1,
+        /// <summary>
+        /// No session is bound to this transport connection yet (fresh reconnect, server restart).
+        /// Transient: the call is resent once the client re-runs SessionConnect.
+        /// </summary>
+        SessionNotConnected = 2,
+        /// <summary>A newer connection took over this player's session; this one is over.</summary>
+        SessionSuperseded = 3,
     }
 }

@@ -1108,7 +1108,7 @@ Client                          Server
 
 **Use case:** Hotfixing server logic when clients can't be updated. The server runs corrected code, generates a state diff, and clients apply it without executing their buggy version.
 
-**Server decides:** The server determines whether to use ServerPatch mode via its own `IExecutionModeProvider` (injected via DI). The client reacts to the presence of `PatchBytes` in the response.
+**Server decides:** A method declared `Mode = ExecutionMode.ServerPatch` runs as ServerPatch on the server; the server's own `IExecutionModeProvider` (injected via DI) can switch any method to or from it at runtime. The client reacts to the presence of `PatchBytes` in the response. Every subscriber receives the patch, not a body replay — unless the call changed nothing, in which case the broadcast falls back to replay.
 
 #### PatchState Wrapper
 
@@ -1675,7 +1675,7 @@ Sibling-bypass is a **typed in-process call** — semantically equivalent to inv
 
 #### What's not preserved (by design)
 
-- **`[Transformer]` Box/Unbox** — transformers run on serialization boundaries (`WriteWithAutoBox` / `ReadWithAutoUnbox`). Sibling-bypass skips both, so transformers don't fire. If your method depends on a transformer, the dep can't be a sibling — has to be a real cross-entity dep (different `TState`).
+- **`[Transformer]` Box/Unbox** — transformers run on serialization boundaries (the generated argument packing and unpacking). Sibling-bypass skips both, so transformers don't fire. If your method depends on a transformer, the dep can't be a sibling — has to be a real cross-entity dep (different `TState`).
 - **Implicit rollback on exception** — sibling-bypass shares the outer's mutation pipeline. If a sibling throws after a partial mutation, the partial state IS observable to the outer. User code that needs rollback should snapshot state before the sibling call and restore on catch.
 - **Per-service `Config` on direct-dispatch of secondary-config services** — only via the explicit `Get{Iface}SiblingAsync()` path. Direct dispatch of a service whose `ConfigType` differs from the state's primary config falls back to `Context.Config` (the primary's type) and crashes on the cast — so secondary-config services should always be invoked via the sibling-async accessor on the primary service.
 
@@ -2018,6 +2018,8 @@ public partial class CardGameServiceImpl : ICardGameService
 ```
 
 Triggers execute server-side as nested operations within the parent call. The trigger's result is included in `TriggerOperations` of the response.
+
+On clients, triggers follow their method: an Optimistic / CrossOptimistic caller runs them locally right after the body (all conditions first, then the triggers in order — as the server does); broadcast recipients replay them, or apply their patches when the method reached them as a patch; after a ServerReplace the replaced state already contains them.
 
 ### Framework Contracts (Lobby / Matchmaking)
 

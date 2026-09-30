@@ -130,8 +130,12 @@ namespace SharedMeta.Core.Transport
         /// </summary>
         /// <param name="entityId">Entity to listen to</param>
         /// <param name="handler">Handler for broadcast operations</param>
+        /// <param name="stateTypeName">
+        /// Only ops of this state type reach the handler — state types sharing an entityId are
+        /// separate grains. Null receives every op under the entityId.
+        /// </param>
         /// <returns>Subscription that can be disposed to unsubscribe</returns>
-        IDisposable OnBroadcast(string entityId, Action<SessionOp> handler);
+        IDisposable OnBroadcast(string entityId, Action<SessionOp> handler, string? stateTypeName = null);
 
         /// <summary>
         /// Get missing broadcasts for gap recovery.
