@@ -2375,6 +2375,34 @@ public class PlayerTransformer : IStateArgumentTransformer<Player, int, GameStat
 }
 ```
 
+### Config-Aware Transformer
+
+Sends a stable key and rebuilds the definition from a `[ServiceConfig]` config on each side:
+
+```csharp
+[Transformer]
+public class ItemDefTransformer : IConfigArgumentTransformer<ItemDefinition, string, ItemCatalog>
+{
+    public string Box(ItemDefinition item, ItemCatalog catalog) => item.Id;
+    public ItemDefinition Unbox(string id, ItemCatalog catalog) => catalog.Items[id];
+}
+```
+
+`IStateConfigArgumentTransformer<TComplex, TSimple, TState, TConfig>` receives both the state and
+the config (e.g. an owned instance from state joined with its definition from config).
+
+- Every service whose meta method takes the transformed type must declare the config with
+  `[ServiceConfig(typeof(ItemCatalog), "...")]`; otherwise the build fails with an error naming the
+  method and the config. The legacy `[MetaService(ConfigType = ...)]` is not a source.
+- The client uses the entity's resolved configs (its config provider must be registered), the
+  server uses the call's resolved configs.
+- Server-originated calls (`GetServerApi`, cross-entity hops) and query proxies box with the
+  config of the meta call they run in. A cross-entity hop works when the calling service declares
+  the config too; `GetServerApi` from code outside a meta call throws, naming the transformer and
+  the config.
+- Each side resolves its own config, so keep the wire value stable across config versions (an id,
+  not a list index).
+
 ### Discovery
 
 No registration call. The generator finds `[Transformer]` classes in the compilation and applies

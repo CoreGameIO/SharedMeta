@@ -1396,7 +1396,7 @@ namespace SharedMeta.Generator.Generators
             // it has no way to know a cross-entity hop wrote the argument instead of a client.
             var transforms = TransformerAnalysis.Analyze(parameters, compilation);
             foreach (var t in transforms.Where(t => t.Transformed))
-                sb.AppendLine($"            var {t.WireLocal} = {TransformerAnalysis.BoxExpr(t, t.Name, TransformerAnalysis.AmbientStateExpr(t))};");
+                sb.AppendLine($"            var {t.WireLocal} = {TransformerAnalysis.BoxExpr(t, t.Name, TransformScope.Ambient)};");
             paramNames = transforms.Select(t => t.Transformed ? t.WireLocal : t.Name).ToList();
 
             if (paramNames.Count == 0)

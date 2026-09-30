@@ -266,7 +266,7 @@ namespace SharedMeta.Generator.Generators
                     if (t.Transformed)
                     {
                         sb.AppendLine($"                    var {t.WireLocal} = reader.Read<{t.WireType}>();");
-                        sb.AppendLine($"                    var {t.Name} = {TransformerAnalysis.UnboxExpr(t, t.WireLocal, TransformerAnalysis.ContextStateExpr(t, "_ctx"))};");
+                        sb.AppendLine($"                    var {t.Name} = {TransformerAnalysis.UnboxExpr(t, t.WireLocal, TransformScope.Context("_ctx"))};");
                     }
                     else
                     {
@@ -348,7 +348,7 @@ namespace SharedMeta.Generator.Generators
 
             foreach (var t in transforms.Where(t => t.Transformed))
             {
-                sb.AppendLine($"                    var {t.Name} = {TransformerAnalysis.UnboxExpr(t, t.WireLocal, TransformerAnalysis.ContextStateExpr(t, contextExpr))};");
+                sb.AppendLine($"                    var {t.Name} = {TransformerAnalysis.UnboxExpr(t, t.WireLocal, TransformScope.Context(contextExpr))};");
             }
         }
 
@@ -906,7 +906,7 @@ namespace SharedMeta.Generator.Generators
                         if (t.Transformed)
                         {
                             sb.AppendLine($"                    var {t.WireLocal} = reader.Read<{t.WireType}>();");
-                            sb.AppendLine($"                    var {t.Name} = {TransformerAnalysis.UnboxExpr(t, t.WireLocal, TransformerAnalysis.ContextStateExpr(t, "context"))};");
+                            sb.AppendLine($"                    var {t.Name} = {TransformerAnalysis.UnboxExpr(t, t.WireLocal, TransformScope.Context("context"))};");
                         }
                         else
                         {

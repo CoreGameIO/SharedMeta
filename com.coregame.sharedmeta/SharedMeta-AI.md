@@ -1302,7 +1302,19 @@ public class PlayerTransformer : IStateArgumentTransformer<Player, int, GameStat
     public Player Unbox(int id, GameState state) =>
         state.Players.FirstOrDefault(p => p.Id == id);
 }
+
+// Config-aware transformer — the config must be declared via [ServiceConfig] on every service
+// whose method takes ItemDefinition (build error otherwise). Also IStateConfigArgumentTransformer.
+[Transformer]
+public class ItemDefTransformer : IConfigArgumentTransformer<ItemDefinition, string, ItemCatalog>
+{
+    public string Box(ItemDefinition item, ItemCatalog catalog) => item.Id;
+    public ItemDefinition Unbox(string id, ItemCatalog catalog) => catalog.Items[id];
+}
 ```
+
+Server-originated calls box with the config of the meta call they run in: a cross-entity hop needs
+the calling service to declare the config too; `GetServerApi` outside a meta call throws.
 
 Usage in methods:
 ```csharp

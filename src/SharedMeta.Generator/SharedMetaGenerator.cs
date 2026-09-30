@@ -34,6 +34,12 @@ namespace SharedMeta.Generator
                 var interfaceName = symbol.Name;
                 var namespaceName = symbol.ContainingNamespace.ToDisplayString();
 
+                // Its own file, emitted only on failure: reported once per service, whichever of
+                // the outputs below the service ends up producing.
+                var configErrors = Utilities.TransformerAnalysis.ConfigDeclarationErrors(symbol, ctx.SemanticModel.Compilation);
+                if (configErrors.Count > 0)
+                    spc.AddSource($"{interfaceName}TransformerConfigErrors.g.cs", string.Join("\n", configErrors) + "\n");
+
                 // Server Dispatcher Generation (with trigger support)
                 var serverSource = ServerDispatcherGenerator.Generate(interfaceName, namespaceName, node, symbol, ctx.SemanticModel.Compilation);
                 spc.AddSource($"{interfaceName}Dispatcher.g.cs", serverSource);

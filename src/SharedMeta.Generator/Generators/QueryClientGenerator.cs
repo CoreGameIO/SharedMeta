@@ -168,7 +168,7 @@ namespace SharedMeta.Generator.Generators
             // would leave it reading a length header out of member data.
             var transforms = TransformerAnalysis.Analyze(method.Parameters, compilation);
             foreach (var t in transforms.Where(t => t.Transformed))
-                sb.AppendLine($"            var {t.WireLocal} = {TransformerAnalysis.BoxExpr(t, t.Name, TransformerAnalysis.AmbientStateExpr(t))};");
+                sb.AppendLine($"            var {t.WireLocal} = {TransformerAnalysis.BoxExpr(t, t.Name, TransformScope.Ambient)};");
             string Arg(ParameterTransform t) => t.Transformed ? t.WireLocal : t.Name;
 
             if (method.Parameters.Length == 0)

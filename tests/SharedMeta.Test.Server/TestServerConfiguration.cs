@@ -72,6 +72,8 @@ public static class TestServerConfiguration
         // Live-rollout fixture: a provider whose content an admin can republish at runtime.
         // Singleton, and the test mutates the same instance the grains read.
         services.AddSingleton<IMetaConfigProvider<RolloutConfig>>(RolloutConfigProvider);
+        // Config-aware argument transformer fixture.
+        services.AddSingleton<IMetaConfigProvider<ItemCatalogConfig>>(new TestItemCatalogConfigProvider());
         services.AddSingleton<IConfigVersionResolver>(ConfigVersionResolver);
         return services.ConfigureMeta(configureServices);
     }
@@ -209,6 +211,12 @@ public class TestAdditionalFixtureSeasonConfigProvider : IMetaConfigProvider<Add
         Major = version.Major,
         Minor = version.Minor,
     };
+}
+
+/// <summary>Provider for <see cref="ItemCatalogConfig"/> — Major mirrors the resolved version.</summary>
+public class TestItemCatalogConfigProvider : IMetaConfigProvider<ItemCatalogConfig>
+{
+    public ItemCatalogConfig GetConfig(MetaConfigVersion version) => new() { Major = version.Major };
 }
 
 /// <summary>Provider for <see cref="SymmetricFixtureShopConfig"/> — Major mirrors the resolved version.</summary>

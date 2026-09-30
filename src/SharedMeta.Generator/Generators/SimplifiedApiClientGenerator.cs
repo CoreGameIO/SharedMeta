@@ -1176,8 +1176,8 @@ namespace SharedMeta.Generator.Generators
         {
             foreach (var t in transforms.Where(t => t.Transformed))
             {
-                var boxed = TransformerAnalysis.BoxExpr(t, t.Name, "_state");
-                sb.AppendLine($"            {t.Name} = {TransformerAnalysis.UnboxExpr(t, boxed, "_state")};");
+                var boxed = TransformerAnalysis.BoxExpr(t, t.Name, TransformScope.ApiClient);
+                sb.AppendLine($"            {t.Name} = {TransformerAnalysis.UnboxExpr(t, boxed, TransformScope.ApiClient)};");
             }
         }
 
@@ -1194,7 +1194,7 @@ namespace SharedMeta.Generator.Generators
             // member, same as any other — the framing is untouched, which is what lets the
             // MemoryPack fast path stay usable for methods that use transformers.
             foreach (var t in transforms.Where(t => t.Transformed))
-                sb.AppendLine($"            var {t.WireLocal} = {TransformerAnalysis.BoxExpr(t, t.Name, "_state")};");
+                sb.AppendLine($"            var {t.WireLocal} = {TransformerAnalysis.BoxExpr(t, t.Name, TransformScope.ApiClient)};");
 
             string Arg(ParameterTransform t) => t.Transformed ? t.WireLocal : t.Name;
 
@@ -2422,7 +2422,7 @@ namespace SharedMeta.Generator.Generators
 
             foreach (var t in transforms.Where(t => t.Transformed))
             {
-                sb.AppendLine($"                    var {t.Name} = {TransformerAnalysis.UnboxExpr(t, t.WireLocal, "_state")};");
+                sb.AppendLine($"                    var {t.Name} = {TransformerAnalysis.UnboxExpr(t, t.WireLocal, TransformScope.ApiClient)};");
             }
         }
 

@@ -227,7 +227,7 @@ namespace SharedMeta.Generator.Generators
             // Box first: the dispatcher on the other side reads the boxed shape, and it cannot
             // tell a server-originated call from a client one.
             foreach (var t in transforms.Where(t => t.Transformed))
-                sb.AppendLine($"            var {t.WireLocal} = {TransformerAnalysis.BoxExpr(t, "@" + t.Name, TransformerAnalysis.AmbientStateExpr(t))};");
+                sb.AppendLine($"            var {t.WireLocal} = {TransformerAnalysis.BoxExpr(t, "@" + t.Name, TransformScope.Ambient)};");
 
             if (paramNames.Count == 0)
             {

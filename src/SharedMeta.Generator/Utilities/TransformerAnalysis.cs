@@ -23,8 +23,11 @@ namespace SharedMeta.Generator.Utilities
         /// <summary>Fully-qualified boxed type, or null when this parameter is not transformed.</summary>
         public string? SimpleType { get; set; }
 
-        /// <summary>Fully-qualified state type for <c>IStateArgumentTransformer</c>, else null.</summary>
+        /// <summary>Fully-qualified state type for state-aware transformers, else null.</summary>
         public string? StateType { get; set; }
+
+        /// <summary>Fully-qualified <c>[ServiceConfig]</c> type for config-aware transformers, else null.</summary>
+        public string? ConfigType { get; set; }
 
         public bool Transformed => TransformerType != null;
 
@@ -33,6 +36,57 @@ namespace SharedMeta.Generator.Utilities
 
         /// <summary>Name of the generated local holding the wire-shaped value.</summary>
         public string WireLocal => "__wire_" + Name;
+    }
+
+    /// <summary>
+    /// Where a generated call site finds the state and config a transformer may ask for.
+    /// </summary>
+    public sealed class TransformScope
+    {
+        private readonly System.Func<ParameterTransform, string> _state;
+        private readonly System.Func<ParameterTransform, string> _config;
+
+        private TransformScope(System.Func<ParameterTransform, string> state, System.Func<ParameterTransform, string> config)
+        {
+            _state = state;
+            _config = config;
+        }
+
+        public string StateExpr(ParameterTransform t) => _state(t);
+        public string ConfigExpr(ParameterTransform t) => _config(t);
+
+        /// <summary>Generated ApiClient: its own entity's state and resolved service configs.</summary>
+        public static TransformScope ApiClient { get; } = new(
+            _ => "_state",
+            t => $"(global::SharedMeta.Core.ServiceConfigLookup.Find<{t.ConfigType}>(_serviceConfigs)"
+                 + MissingConfig(t, "is not resolved for this entity (is its client config provider registered?)"));
+
+        /// <summary>Code running with a <c>MetaContext</c> in scope (dispatchers).</summary>
+        public static TransformScope Context(string contextExpr) => new(
+            t => $"(({t.StateType}){contextExpr}.StateObject)",
+            t => $"({contextExpr}.GetServiceConfig<{t.ConfigType}>()"
+                 + MissingConfig(t, "is not resolved for this call (is its config provider registered?)"));
+
+        /// <summary>
+        /// A sender that owns no state or configs of its own — server-originated calls (admin
+        /// APIs, cross-entity hops) and query proxies. The transformer needs what its Box was
+        /// written against; the ambient meta call is the only candidate, and if it lacks it there
+        /// is no sensible fallback, so fail with a message that names the cause.
+        /// </summary>
+        public static TransformScope Ambient { get; } = new(
+            t => $"(global::SharedMeta.Core.MetaContextAccessor.Current?.StateObject as {t.StateType}"
+                 + $" ?? throw new System.InvalidOperationException("
+                 + $"\"Transformer {Display(t.TransformerType)} needs a {Display(t.StateType)} context, which this call path does not have.\"))",
+            t => $"(global::SharedMeta.Core.MetaContextAccessor.Current?.GetServiceConfig<{t.ConfigType}>()"
+                 + MissingConfig(t, "this call path does not have: it boxes with the config of the meta call it runs in,"
+                                    + " so call it from a meta method whose service declares that config"));
+
+        private static string MissingConfig(ParameterTransform t, string reason)
+            => $" ?? throw new System.InvalidOperationException("
+               + $"\"Transformer {Display(t.TransformerType)} needs config {Display(t.ConfigType)}, which {reason}.\"))";
+
+        /// <summary>Type name for messages — without the <c>global::</c> alias code needs.</summary>
+        internal static string Display(string? fqn) => (fqn ?? "").Replace("global::", "");
     }
 
     /// <summary>
@@ -52,12 +106,15 @@ namespace SharedMeta.Generator.Utilities
         private const string TransformerAttr = "SharedMeta.Core.TransformerAttribute";
         private const string SimpleInterface = "SharedMeta.Core.IArgumentTransformer<";
         private const string StateInterface = "SharedMeta.Core.IStateArgumentTransformer<";
+        private const string ConfigInterface = "SharedMeta.Core.IConfigArgumentTransformer<";
+        private const string StateConfigInterface = "SharedMeta.Core.IStateConfigArgumentTransformer<";
 
         private sealed class CatalogEntry
         {
             public string TransformerType = "";
             public string SimpleType = "";
             public string? StateType;
+            public string? ConfigType;
         }
 
         // Scanning every referenced assembly for transformer implementations is not free, and the
@@ -149,33 +206,59 @@ namespace SharedMeta.Generator.Utilities
             => transforms.Any(t => t.Transformed);
 
         /// <summary>Expression producing the boxed (wire-shaped) value for a transformed parameter.</summary>
-        public static string BoxExpr(ParameterTransform t, string valueExpr, string stateExpr)
-            => t.StateType != null
-                ? $"global::SharedMeta.Core.MetaTransformer<{t.TransformerType}>.Instance.Box({valueExpr}, {stateExpr})"
-                : $"global::SharedMeta.Core.MetaTransformer<{t.TransformerType}>.Instance.Box({valueExpr})";
+        public static string BoxExpr(ParameterTransform t, string valueExpr, TransformScope scope)
+            => $"global::SharedMeta.Core.MetaTransformer<{t.TransformerType}>.Instance.Box({Args(t, valueExpr, scope)})";
 
         /// <summary>Expression producing the method-shaped value from a boxed one.</summary>
-        public static string UnboxExpr(ParameterTransform t, string valueExpr, string stateExpr)
-            => t.StateType != null
-                ? $"global::SharedMeta.Core.MetaTransformer<{t.TransformerType}>.Instance.Unbox({valueExpr}, {stateExpr})"
-                : $"global::SharedMeta.Core.MetaTransformer<{t.TransformerType}>.Instance.Unbox({valueExpr})";
+        public static string UnboxExpr(ParameterTransform t, string valueExpr, TransformScope scope)
+            => $"global::SharedMeta.Core.MetaTransformer<{t.TransformerType}>.Instance.Unbox({Args(t, valueExpr, scope)})";
+
+        private static string Args(ParameterTransform t, string valueExpr, TransformScope scope)
+        {
+            var args = valueExpr;
+            if (t.StateType != null) args += ", " + scope.StateExpr(t);
+            if (t.ConfigType != null) args += ", " + scope.ConfigExpr(t);
+            return args;
+        }
 
         /// <summary>
-        /// State expression for code that runs with a <c>MetaContext</c> in scope (dispatchers).
+        /// One <c>#error</c> line per parameter of <paramref name="service"/> whose config-aware
+        /// transformer needs a config the service does not declare with <c>[ServiceConfig]</c>.
         /// </summary>
-        public static string ContextStateExpr(ParameterTransform t, string contextExpr)
-            => $"(({t.StateType}){contextExpr}.StateObject)";
+        /// <remarks>
+        /// Configs are looked up by type in the entity's resolved <c>[ServiceConfig]</c> list at
+        /// runtime; an undeclared type is never resolved, so without this check the call would
+        /// build and then throw on its first use. The legacy <c>ConfigType</c> is not a source —
+        /// it lives outside that list and is on its way out.
+        /// </remarks>
+        public static List<string> ConfigDeclarationErrors(INamedTypeSymbol service, Compilation compilation)
+        {
+            var errors = new List<string>();
 
-        /// <summary>
-        /// State expression for a sender that owns no state of its own — server-originated calls
-        /// (admin APIs, cross-entity hops). A state-aware transformer needs the state its Box was
-        /// written against; the ambient meta call is the only candidate, and if it is the wrong
-        /// state type there is no sensible fallback, so fail with a message that names the cause.
-        /// </summary>
-        public static string AmbientStateExpr(ParameterTransform t)
-            => $"(global::SharedMeta.Core.MetaContextAccessor.Current?.StateObject as {t.StateType}"
-               + $" ?? throw new System.InvalidOperationException("
-               + $"\"Transformer {t.TransformerType} needs a {t.StateType} context, which this call path does not have.\"))";
+            var declared = new HashSet<string>(service.GetAttributes()
+                .Where(a => a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.ServiceConfigAttribute"
+                            && a.ConstructorArguments.Length > 0
+                            && a.ConstructorArguments[0].Value is ITypeSymbol)
+                .Select(a => Fqn((ITypeSymbol)a.ConstructorArguments[0].Value!)));
+
+            var methods = service.GetMembers().OfType<IMethodSymbol>()
+                .Where(m => m.MethodKind == MethodKind.Ordinary)
+                .Concat(ImplDeclaredMethods.SymbolsForService(service, compilation));
+
+            foreach (var method in methods)
+            {
+                foreach (var t in Analyze(method.Parameters, compilation))
+                {
+                    if (t.ConfigType == null || declared.Contains(t.ConfigType)) continue;
+                    var config = TransformScope.Display(t.ConfigType);
+                    errors.Add($"#error SharedMeta: {service.Name}.{method.Name} parameter '{t.Name}' uses transformer "
+                               + $"{TransformScope.Display(t.TransformerType)}, which needs config {config}, but {service.Name} "
+                               + $"does not declare it. Add [ServiceConfig(typeof({config}), \"...\")] to {service.Name}.");
+                }
+            }
+
+            return errors;
+        }
 
         private static void Apply(ParameterTransform entry, CatalogEntry? found)
         {
@@ -183,6 +266,7 @@ namespace SharedMeta.Generator.Utilities
             entry.TransformerType = found.TransformerType;
             entry.SimpleType = found.SimpleType;
             entry.StateType = found.StateType;
+            entry.ConfigType = found.ConfigType;
         }
 
         private static CatalogEntry? Lookup(Compilation compilation, string complexTypeFqn)
@@ -245,44 +329,38 @@ namespace SharedMeta.Generator.Utilities
                 if (requireAutoRegister && Flag(attr, "NoAutoRegister")) return null;
             }
 
-            var stateIface = type.AllInterfaces.FirstOrDefault(i =>
-                i.ConstructedFrom.ToDisplayString().StartsWith(StateInterface));
-            if (stateIface != null && stateIface.TypeArguments.Length >= 3)
-            {
-                return new CatalogEntry
-                {
-                    TransformerType = Fqn(type),
-                    SimpleType = Fqn(stateIface.TypeArguments[1]),
-                    StateType = Fqn(stateIface.TypeArguments[2]),
-                };
-            }
+            var contract = FindContract(type);
+            if (contract == null) return null;
+            var (iface, hasState, hasConfig) = contract.Value;
 
-            var simpleIface = type.AllInterfaces.FirstOrDefault(i =>
-                i.ConstructedFrom.ToDisplayString().StartsWith(SimpleInterface));
-            if (simpleIface != null && simpleIface.TypeArguments.Length >= 2)
+            return new CatalogEntry
             {
-                return new CatalogEntry
-                {
-                    TransformerType = Fqn(type),
-                    SimpleType = Fqn(simpleIface.TypeArguments[1]),
-                };
-            }
-
-            return null;
+                TransformerType = Fqn(type),
+                SimpleType = Fqn(iface.TypeArguments[1]),
+                StateType = hasState ? Fqn(iface.TypeArguments[2]) : null,
+                ConfigType = hasConfig ? Fqn(iface.TypeArguments[hasState ? 3 : 2]) : null,
+            };
         }
 
         private static string? ComplexTypeOf(INamedTypeSymbol type)
         {
-            var stateIface = type.AllInterfaces.FirstOrDefault(i =>
-                i.ConstructedFrom.ToDisplayString().StartsWith(StateInterface));
-            if (stateIface != null && stateIface.TypeArguments.Length >= 3)
-                return Fqn(stateIface.TypeArguments[0]);
+            var contract = FindContract(type);
+            return contract == null ? null : Fqn(contract.Value.Iface.TypeArguments[0]);
+        }
 
-            var simpleIface = type.AllInterfaces.FirstOrDefault(i =>
-                i.ConstructedFrom.ToDisplayString().StartsWith(SimpleInterface));
-            if (simpleIface != null && simpleIface.TypeArguments.Length >= 2)
-                return Fqn(simpleIface.TypeArguments[0]);
+        /// <summary>
+        /// The transformer interface a type is generated against. A type implementing several
+        /// takes the one carrying the most context, in a fixed order so every build agrees.
+        /// </summary>
+        private static (INamedTypeSymbol Iface, bool HasState, bool HasConfig)? FindContract(INamedTypeSymbol type)
+        {
+            INamedTypeSymbol? Find(string prefix, int arity) => type.AllInterfaces.FirstOrDefault(i =>
+                i.TypeArguments.Length == arity && i.ConstructedFrom.ToDisplayString().StartsWith(prefix));
 
+            if (Find(StateConfigInterface, 4) is { } stateConfig) return (stateConfig, true, true);
+            if (Find(StateInterface, 3) is { } state) return (state, true, false);
+            if (Find(ConfigInterface, 3) is { } config) return (config, false, true);
+            if (Find(SimpleInterface, 2) is { } simple) return (simple, false, false);
             return null;
         }
 

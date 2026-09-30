@@ -22,6 +22,7 @@ Subscribers move to their own store and survive idle deactivation; reconnect and
 - A subscription lost with its store is repaired on the player's next call; if the player missed operations, that call fails and the client reloads the entity (`SessionNotice.SubscriptionLost`).
 - `SessionResponse.ErrorKind` — the client decides resend / fail / supersede from it, not from the message text.
 - A replay that leaves recorded server values unread is logged as an error naming the entity.
+- Config-aware argument transformers: `IConfigArgumentTransformer<TComplex, TSimple, TConfig>` and `IStateConfigArgumentTransformer<…, TState, TConfig>` box/unbox against a `[ServiceConfig]` config. The build fails if a service using one does not declare that config.
 
 ### Changed
 
