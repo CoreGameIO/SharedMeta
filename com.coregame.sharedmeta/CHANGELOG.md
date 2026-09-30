@@ -29,6 +29,8 @@ Subscribers move to their own store and survive idle deactivation; reconnect and
 - Subscribe, unsubscribe and reconnect no longer rewrite the entity state.
 - Under ServerPatch every subscriber receives the patch, not only the caller.
 - Resent-RPC lookup is O(1) instead of a scan over all unacknowledged packets.
+- A method that throws on the server sends the entity's resulting state and random positions to every subscriber (the caller gets it with its exception) and writes nothing to storage. Not a rollback — see GUIDE "When a Method Throws on the Server". New `INetwork.OnStateResync` (no-op default).
+- The generated dispatcher refuses a client call to a `GenerateClientApi = false` method with `MetaNotClientCallableException` (an `InvalidOperationException`, same message).
 
 ### Fixed
 
@@ -45,6 +47,7 @@ Subscribers move to their own store and survive idle deactivation; reconnect and
 - An entity subscribed on demand for a CrossOptimistic call could not apply patches when the last-registered config had no applier.
 - Annotating a parameter nullable reported the method's signature as drifted.
 - `EntityScope.Shared` documentation promised a subscribe rejection that does not happen.
+- A method that threw, or a call refused by a permission gate, took an operation sequence number nothing was delivered under: every other subscriber's session stalled for good. A throw after mutating state also left subscribers diverged and wrote the partial state.
 
 ## [0.42.0] - 2026-09-24
 

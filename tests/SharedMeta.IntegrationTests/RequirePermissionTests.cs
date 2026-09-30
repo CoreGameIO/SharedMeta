@@ -137,6 +137,40 @@ public class RequirePermissionTests
     }
 
     /// <summary>
+    /// A refused call ran nothing, so it must not take an operation sequence number: one that
+    /// nothing is delivered under stalls every other subscriber waiting for it.
+    /// </summary>
+    [Fact(Timeout = 60_000)]
+    public async Task ForgedCall_DoesNotStallOtherSubscribers()
+    {
+        var (entityId, api, _, setup) = await ClientAsync("perm_forged_stall");
+        await using var _d = setup;
+        var server = new InProcessServer(_fixture.CreateHandlerFactory());
+        await using var observer = new TestClientSetup(server, "perm_observer_" + Guid.NewGuid().ToString("N"));
+        await observer.ConnectAsync();
+        var observerApi = await observer.CreateResolver().GetServiceAsync<CounterServiceApiClient>(entityId);
+
+        await api.AddValueAsync(5, 1);   // consumes requestId 1
+
+        var forged = new SharedMeta.Core.Transport.RpcCallRequest
+        {
+            EntityId = entityId,
+            StateTypeId = TestStateTypeIds.Of<CounterState>(),
+            RequestId = 2,
+            MethodId = global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_CheatSetSum_v0,
+            Payload = setup.MetaClient.Serializer.Pack(9999),
+            ServerTimeTicks = DateTime.UtcNow.Ticks,
+        };
+        await setup.MetaClient.Connection.RpcCallAsync(forged);
+
+        // The observer's own call: its reply is held until every earlier number has reached this
+        // session, so a burned number would park it for good.
+        await observerApi.AddValueAsync(1, 1).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(6, observerApi.State.Sum);
+    }
+
+    /// <summary>
     /// A revocation through the entitlements service applies to the session already running: the
     /// push refreshes the connection's stamped set, so the next call is judged by the new rights
     /// without a reconnect.

@@ -822,6 +822,7 @@ namespace SharedMeta.Server.Core.Grains
             var state = _persistentState.State;
             var operationSequence = ++state.EntitySequenceNumber;
             var forcePersist = false;
+            var failed = false;
 
             // Update caller's last active time
             if (call.CallerId != null && Subscribers.TryGetValue(call.CallerId, out var callerSub))
@@ -864,6 +865,22 @@ namespace SharedMeta.Server.Core.Grains
                     forcePersist = true;
                 }
 
+                if (providerResult.Error != null)
+                {
+                    failed = true;
+                    // The caller takes the resync from its response, not from the fan-out.
+                    var (sequence, opBytes) = await SettleFailedCallAsync(
+                        call, providerResult.Error, providerResult.Rejected, operationSequence, responsePayload,
+                        callServiceName, callMethodName, excludePlayerId: call.CallerId);
+                    return new EntityCallResult
+                    {
+                        EntitySequenceNumber = sequence,
+                        OpBytes = opBytes,
+                        Error = providerResult.Error,
+                        CallerNotSubscribed = callerNotSubscribed,
+                    };
+                }
+
                 PersistRandomBytes();
 
                 await DistributeBroadcasts(
@@ -885,9 +902,16 @@ namespace SharedMeta.Server.Core.Grains
             {
                 __m.MarkError();
                 _logger.ErrorHandlingCall(ex);
+                failed = true;
+                // Reaches here only from outside the provider's own catch — a permission gate in
+                // the generated override, or the grain's own post-dispatch work.
+                var (sequence, opBytes) = await SettleFailedCallAsync(
+                    call, ex.Message, MetaProviderBase<TState>.IsRejection(ex), operationSequence, default,
+                    callServiceName, callMethodName, excludePlayerId: call.CallerId);
                 return new EntityCallResult
                 {
-                    EntitySequenceNumber = operationSequence,
+                    EntitySequenceNumber = sequence,
+                    OpBytes = opBytes,
                     Error = ex.Message,
                     CallerNotSubscribed = callerNotSubscribed,
                 };
@@ -899,8 +923,54 @@ namespace SharedMeta.Server.Core.Grains
                 // released as a safety net by MetaProviderBase.FlushPendingOutgoing at the
                 // next provider entry.
                 // Lifecycle work only — telemetry flushes via RpcMeasurement.Dispose.
-                await PersistIfNeeded(forcePersist);
+                if (!failed) await PersistIfNeeded(forcePersist);
             }
+        }
+
+        /// <summary>
+        /// Settles a call that did not complete. Returns the sequence number and response op for
+        /// the caller.
+        /// </summary>
+        /// <remarks>
+        /// A refusal ran no code: its sequence number is handed back, since a number nothing is
+        /// delivered under stalls every other subscriber's session waiting for it.
+        /// <para>
+        /// A method that threw may have changed state and consumed randoms first — a defect, but
+        /// one every subscriber must see the same way. The resulting state and random positions go
+        /// out under the call's sequence number (the caller gets them in its response), and the
+        /// call writes nothing: the store keeps the state from before it, restorable, until the next
+        /// successful call persists as usual (in-memory state included).
+        /// </para>
+        /// </remarks>
+        private async Task<(long Sequence, ReadOnlyMemory<byte> OpBytes)> SettleFailedCallAsync(
+            RpcCall call, string error, bool rejected, long operationSequence, ReadOnlyMemory<byte> refusalOp,
+            string serviceName, string methodName, string? excludePlayerId)
+        {
+            if (rejected)
+            {
+                _persistentState.State.EntitySequenceNumber = operationSequence - 1;
+                return (operationSequence - 1, refusalOp);
+            }
+
+            // Not marked dirty: with nothing else pending, deactivation leaves the store as it was.
+            PersistRandomBytes();
+
+            var named = _provider!.GetNamedRandomsBytes();
+            var resync = (ReadOnlyMemory<byte>)_serializer.PackForExternalUsage(new MetaOperation
+            {
+                MethodId = call.MethodId,
+                CallerId = call.CallerId,
+                Error = error,
+                ServerTimeTicks = call.ServerTimeTicks,
+                StateBytes = _provider.GetStateBytes(),
+                OptimisticRandomBytes = _provider.GetOptimisticRandomBytes(),
+                NamedRandomsBytes = named.Length > 0 ? named : null,
+            });
+
+            await DistributeBroadcasts(
+                resync, default, serviceName, methodName, call.MethodId,
+                operationSequence, excludePlayerId);
+            return (operationSequence, resync);
         }
 
         // SECURITY INVARIANT: this entry point must NEVER be reached by direct client traffic.
@@ -931,6 +1001,7 @@ namespace SharedMeta.Server.Core.Grains
             var state = _persistentState.State;
             var operationSequence = ++state.EntitySequenceNumber;
             var forcePersist = false;
+            var failed = false;
 
             try
             {
@@ -963,6 +1034,21 @@ namespace SharedMeta.Server.Core.Grains
                     patchPayload = mpbTake.TakeOutgoingBroadcastPatch();
                 }
 
+                if (providerResult.Error != null)
+                {
+                    failed = true;
+                    // No exclusion: a CrossOptimistic originator inlined this call as a success,
+                    // and no client response carries the resync here.
+                    var (sequence, _) = await SettleFailedCallAsync(
+                        call, providerResult.Error, providerResult.Rejected, operationSequence, default,
+                        callServiceName, callMethodName, excludePlayerId: null);
+                    return new CrossEntityCallReturn
+                    {
+                        EntitySequenceNumber = sequence,
+                        Error = providerResult.Error,
+                    };
+                }
+
                 PersistRandomBytes();
 
                 // Conditional caller exclusion:
@@ -993,9 +1079,13 @@ namespace SharedMeta.Server.Core.Grains
             {
                 __m.MarkError();
                 _logger.ErrorHandlingCrossEntityCall(ex);
+                failed = true;
+                var (sequence, _) = await SettleFailedCallAsync(
+                    call, ex.Message, MetaProviderBase<TState>.IsRejection(ex), operationSequence, default,
+                    callServiceName, callMethodName, excludePlayerId: null);
                 return new CrossEntityCallReturn
                 {
-                    EntitySequenceNumber = operationSequence,
+                    EntitySequenceNumber = sequence,
                     Error = ex.Message,
                 };
             }
@@ -1003,7 +1093,7 @@ namespace SharedMeta.Server.Core.Grains
             {
                 // Outgoing pool tokens are NOT released here — receivers own them.
                 // Lifecycle work only — telemetry flushes via CrossEntityCallMeasurement.Dispose.
-                await PersistIfNeeded(forcePersist);
+                if (!failed) await PersistIfNeeded(forcePersist);
             }
         }
 

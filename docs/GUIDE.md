@@ -2346,6 +2346,27 @@ await api.MoveAsync(0, 0); // works again
 
 **Design rationale:** Game code that catches and swallows exceptions (e.g., `catch { return MoveResult.Blocked; }`) can silently hide bugs. Framework-level error handling ensures exceptions are always logged and the service enters a visible error state, making issues immediately diagnosable.
 
+### When a Method Throws on the Server
+
+An exception in meta code is a defect, not a way to reject a call — return a value
+(`SkipServerOnFalse`, a result type) to refuse. The framework does not roll back; it keeps every
+subscriber consistent with the server and the entity working:
+
+- The entity's resulting state, including whatever the method changed before throwing and the
+  random positions it consumed, goes to every subscriber under the call's sequence number. Clients
+  install it in place of their own (an Optimistic caller's prediction included). No method replays
+  and no replay event fires.
+- The caller receives the exception as usual, with the server's state already installed.
+- The failed call writes nothing to storage: the store keeps the state from before the call until
+  the next successful call persists as usual. With `PersistencePolicy.EveryCall`, that is the
+  restorable state if the one after the failure turns out broken.
+- Framework refusals (a missing `[RequirePermission]`, a client calling a
+  `GenerateClientApi = false` method) run no code. They change nothing and send nothing.
+
+**Cost:** each failed call ships the full state to every subscriber. A method that a client can
+make throw at will (for example a lookup of a client-supplied id that is not there) lets one player
+flood a shared entity's subscribers. Validate arguments and return a result instead of throwing.
+
 ---
 
 ## 9. Argument Transformers

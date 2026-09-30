@@ -90,8 +90,19 @@ namespace SharedMeta.Core.Packets
         // detects a CRC mismatch — see SharedMeta.Core.PayloadDebug) ──────────────
         [Id(15), Key(15)] public SharedMeta.Core.PayloadDebug? Debug { get; set; }
 
+        // ── Failure resync (set with Error when the method threw on the server) ──
+        // The body may have mutated state and consumed randoms before throwing, so the op carries
+        // the entity's state (StateBytes) and absolute random positions: every subscriber installs
+        // them instead of replaying. Absolute, not deltas — an Optimistic caller already advanced
+        // its own randoms by a different amount.
+        [Id(19), Key(19)] public byte[]? OptimisticRandomBytes { get; set; }
+        [Id(20), Key(20)] public byte[]? NamedRandomsBytes { get; set; }
+
         [IgnoreMember] public bool HasError => Error != null;
         [IgnoreMember] public bool Success => Error == null;
+
+        /// <summary>The method failed on the server and this op carries the resulting state.</summary>
+        [IgnoreMember] public bool IsFailureResync => Error != null && !StateBytes.IsEmpty;
 
         /// <summary>
         /// Clears all mutable state so the instance can be returned to a pool and reused.
@@ -115,6 +126,8 @@ namespace SharedMeta.Core.Packets
             Triggers = null;
             Debug = null;
             CallerId = null;
+            OptimisticRandomBytes = null;
+            NamedRandomsBytes = null;
         }
     }
 }

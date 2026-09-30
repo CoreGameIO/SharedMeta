@@ -106,6 +106,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         _stashedTriggerPayloads.Clear();
     }
 
+    /// <summary>
+    /// Framework refusals thrown before a method body runs — the entity's state is untouched.
+    /// </summary>
+    internal static bool IsRejection(Exception ex)
+        => ex is MetaPermissionDeniedException || ex is MetaNotClientCallableException;
+
     // Terminal-output serialization for EntityCallResult.OpBytes / EntityBroadcast.OpBytes —
     // crosses the Orleans grain boundary, so call PackForExternalUsage which encodes "this
     // result outlives the current grain method" as an explicit method choice (no scratch).
@@ -1262,6 +1268,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             {
                 ResponseBytes = errBytes,
                 Error = ex.Message,
+                Rejected = IsRejection(ex),
             };
         }
         finally

@@ -427,7 +427,7 @@ namespace SharedMeta.Client
                 // shared container regardless of which service the broadcast came from. This is what
                 // lets a client that subscribed to only one of several services on the entity still
                 // receive every state update.
-                newConnection.SubscribeBroadcasts(_serializer, ResolvePatchApplier(config), LookupConfigByMethodId, this);
+                newConnection.SubscribeBroadcasts(_serializer, ResolvePatchApplier(config), LookupConfigByMethodId, this, InstallStateResync);
             }
 
             // Create API client using factory — pass the container as the third positional arg.
@@ -934,7 +934,7 @@ namespace SharedMeta.Client
                 ConfigVersions = subResult.ConfigVersions,
                 Configs = serviceConfigs,
             };
-            newConnection.SubscribeBroadcasts(_serializer, ResolvePatchApplier(config), LookupConfigByMethodId, this);
+            newConnection.SubscribeBroadcasts(_serializer, ResolvePatchApplier(config), LookupConfigByMethodId, this, InstallStateResync);
             if (!string.IsNullOrEmpty(config.ServiceName))
                 newConnection.LocalServiceNames.Add(config.ServiceName);
             foreach (var methodId in config.MethodIds)
@@ -1043,29 +1043,50 @@ namespace SharedMeta.Client
                     if (v.StateBytes is not { Length: > 0 })
                         continue; // Refreshed without bytes — malformed, skip
 
-                    var newState = _serializer.Unpack(connection.StateType, v.StateBytes);
-                    if (newState == null) continue;
-
                     // Diagnostic: Refreshed verdict ships fresh server-side state that overwrites
                     // ANY local optimistic mutations. Logs the moment of state replacement so a
                     // visible "state rollback on reconnect" can be traced to the exact verdict.
                     Core.Logging.MetaLog.Info(
                         $"[MetaServiceResolver] State REPLACED for entity {v.EntityId} via Refreshed verdict — seq={v.EntitySequenceNumber}, stateBytes={v.StateBytes.Length}");
-                    connection.StateContainer.ReplaceObject(newState);
+                    InstallSnapshot(connection, v.StateBytes, v.OptimisticRandomBytes, v.NamedRandomsBytes);
+                }
+            }
+        }
 
-                    if (v.OptimisticRandomBytes is { Length: > 0 })
-                        connection.OptimisticRandom = _serializer.Unpack<MetaRandom>(v.OptimisticRandomBytes);
+        /// <summary>
+        /// A method failed on the server: its state (and random positions) replace the local ones,
+        /// whatever this client predicted or replayed.
+        /// </summary>
+        private void InstallStateResync(EntityConnection connection, Core.Network.NetworkStateResync resync)
+        {
+            Core.Logging.MetaLog.Warning(
+                $"[MetaServiceResolver] Entity '{connection.EntityId}': methodId={resync.MethodId} failed on the server " +
+                $"({resync.Error}); installing the server's state.");
+            lock (_lock)
+            {
+                InstallSnapshot(connection, resync.StateBytes, resync.OptimisticRandomBytes, resync.NamedRandomsBytes);
+            }
+        }
 
-                    if (v.NamedRandomsBytes is { Length: > 0 } nrBytes)
-                        connection.NamedRandoms = _serializer.Unpack<MetaRandom[]>(nrBytes);
+        // Caller holds _lock.
+        private void InstallSnapshot(EntityConnection connection, byte[] stateBytes, byte[]? optimisticRandomBytes, byte[]? namedRandomsBytes)
+        {
+            var newState = _serializer.Unpack(connection.StateType, stateBytes);
+            if (newState == null) return;
 
-                    foreach (var (clientType, apiClient) in connection.ApiClients)
-                    {
-                        if (_serviceConfigs.TryGetValue(clientType, out var config))
-                        {
-                            config.StateRefresher?.Invoke(apiClient, newState, connection.OptimisticRandom, connection.NamedRandoms);
-                        }
-                    }
+            connection.StateContainer.ReplaceObject(newState);
+
+            if (optimisticRandomBytes is { Length: > 0 })
+                connection.OptimisticRandom = _serializer.Unpack<MetaRandom>(optimisticRandomBytes);
+
+            if (namedRandomsBytes is { Length: > 0 })
+                connection.NamedRandoms = _serializer.Unpack<MetaRandom[]>(namedRandomsBytes);
+
+            foreach (var (clientType, apiClient) in connection.ApiClients)
+            {
+                if (_serviceConfigs.TryGetValue(clientType, out var config))
+                {
+                    config.StateRefresher?.Invoke(apiClient, newState, connection.OptimisticRandom, connection.NamedRandoms);
                 }
             }
         }
@@ -1314,6 +1335,7 @@ namespace SharedMeta.Client
             public HashSet<string> LocalServiceNames { get; } = new();
 
             private Action<NetworkBroadcast>? _broadcastHandler;
+            private Action<Core.Network.NetworkStateResync>? _stateResyncHandler;
             private IMetaSerializer? _serializer;
             private Action<object, byte[], IMetaSerializer>? _patchApplier;
             private Func<ushort, MetaServiceConfig?>? _configByMethodId;
@@ -1338,7 +1360,8 @@ namespace SharedMeta.Client
                 IMetaSerializer serializer,
                 Action<object, byte[], IMetaSerializer>? patchApplier,
                 Func<ushort, MetaServiceConfig?> configByMethodId,
-                ICrossEntityResolver? crossEntityResolver)
+                ICrossEntityResolver? crossEntityResolver,
+                Action<EntityConnection, Core.Network.NetworkStateResync> installStateResync)
             {
                 _serializer = serializer;
                 _patchApplier = patchApplier;
@@ -1346,6 +1369,8 @@ namespace SharedMeta.Client
                 _crossEntityResolver = crossEntityResolver;
                 _broadcastHandler = HandleEntityBroadcast;
                 Network.OnBroadcast += _broadcastHandler;
+                _stateResyncHandler = resync => installStateResync(this, resync);
+                Network.OnStateResync += _stateResyncHandler;
             }
 
             private void HandleEntityBroadcast(NetworkBroadcast broadcast)
@@ -1532,6 +1557,11 @@ namespace SharedMeta.Client
                 {
                     try { Network.OnBroadcast -= _broadcastHandler; } catch { }
                     _broadcastHandler = null;
+                }
+                if (_stateResyncHandler != null && Network != null)
+                {
+                    try { Network.OnStateResync -= _stateResyncHandler; } catch { }
+                    _stateResyncHandler = null;
                 }
                 foreach (var apiClient in ApiClients.Values)
                 {

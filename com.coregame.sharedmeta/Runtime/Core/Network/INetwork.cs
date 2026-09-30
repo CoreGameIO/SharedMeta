@@ -168,6 +168,30 @@ namespace SharedMeta.Core.Network
         /// Connection lost.
         /// </summary>
         event Action<string>? OnDisconnected;
+
+        /// <summary>
+        /// A method failed on the server; this carries the entity's resulting state, to install
+        /// in place of the local one. Raised for the caller's own failed call (before its awaiting
+        /// code sees the exception) and for other players' failed calls. Not a broadcast: no
+        /// method replays and no replay event fires.
+        /// </summary>
+        event Action<NetworkStateResync>? OnStateResync { add { } remove { } }
+    }
+
+    /// <summary>
+    /// The entity's state and random positions after a method threw on the server.
+    /// </summary>
+    public class NetworkStateResync
+    {
+        /// <summary>Client-local id of the method that failed.</summary>
+        public ushort MethodId { get; set; }
+
+        /// <summary>The server's error message.</summary>
+        public string? Error { get; set; }
+
+        public byte[] StateBytes { get; set; } = Array.Empty<byte>();
+        public byte[]? OptimisticRandomBytes { get; set; }
+        public byte[]? NamedRandomsBytes { get; set; }
     }
 
     /// <summary>

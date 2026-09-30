@@ -73,6 +73,13 @@ namespace SharedMeta.Server.Core
         /// <summary>Top-level error (provider could not dispatch). Method-body errors are
         /// embedded in the serialized ResponseBytes via <c>MetaOperation.Error</c>.</summary>
         public string? Error { get; init; }
+
+        /// <summary>
+        /// With <see cref="Error"/>: the framework refused the call before the method ran
+        /// (e.g. a client calling a server-only method), so state is untouched. Without it an
+        /// error means the method failed and may have left state partially changed.
+        /// </summary>
+        public bool Rejected { get; init; }
     }
 
     /// <summary>

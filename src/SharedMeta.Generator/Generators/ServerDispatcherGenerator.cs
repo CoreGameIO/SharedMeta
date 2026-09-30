@@ -238,7 +238,7 @@ namespace SharedMeta.Generator.Generators
             if (!info.GenerateClientApi)
             {
                 sb.AppendLine("                    if (_ctx.IsClientCall)");
-                sb.AppendLine($"                        throw new System.InvalidOperationException(\"Method '{symbol}.{info.Alias}' is not callable from clients\");");
+                sb.AppendLine($"                        throw new global::SharedMeta.Core.MetaNotClientCallableException(\"{symbol}\", \"{info.Alias}\");");
             }
 
             if (paramCount == 0)
@@ -885,7 +885,7 @@ namespace SharedMeta.Generator.Generators
             if (!info.GenerateClientApi)
             {
                 sb.AppendLine("                    if (context.IsClientCall)");
-                sb.AppendLine($"                        throw new System.InvalidOperationException(\"Method '{symbol}.{info.Alias}' is not callable from clients\");");
+                sb.AppendLine($"                        throw new global::SharedMeta.Core.MetaNotClientCallableException(\"{symbol}\", \"{info.Alias}\");");
             }
 
             if (paramCount > 0)

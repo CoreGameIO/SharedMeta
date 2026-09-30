@@ -162,4 +162,17 @@ namespace SharedMeta.Core
             return $"Caller lacks permission for '{service}.{method}' — requires {names}.";
         }
     }
+
+    /// <summary>
+    /// Thrown by the generated server dispatcher when a client calls a
+    /// <c>[MetaMethod(GenerateClientApi = false)]</c> method. A refusal before the method runs —
+    /// the entity's state is untouched, so the call consumes no operation sequence.
+    /// </summary>
+    public class MetaNotClientCallableException : InvalidOperationException
+    {
+        public MetaNotClientCallableException(string service, string method)
+            : base($"Method '{service}.{method}' is not callable from clients")
+        {
+        }
+    }
 }

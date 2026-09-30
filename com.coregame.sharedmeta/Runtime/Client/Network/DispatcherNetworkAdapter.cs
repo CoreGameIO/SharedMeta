@@ -71,6 +71,7 @@ namespace SharedMeta.Client.Network
         public event Action<NetworkBroadcast>? OnBroadcastPre;
         public event Action<NetworkBroadcast>? OnBroadcast;
         public event Action<string>? OnDisconnected;
+        public event Action<NetworkStateResync>? OnStateResync;
 
         public DispatcherNetworkAdapter(
             IClientDispatcher dispatcher,
@@ -122,9 +123,35 @@ namespace SharedMeta.Client.Network
                 triggers[i].MethodId = TranslateIncomingMethodId(triggers[i].MethodId);
         }
 
+        private void RaiseStateResync(MetaOperation op)
+        {
+            OnStateResync?.Invoke(new NetworkStateResync
+            {
+                MethodId = TranslateIncomingMethodId(op.MethodId),
+                Error = op.Error,
+                StateBytes = op.StateBytes.ToArray(),
+                OptimisticRandomBytes = op.OptimisticRandomBytes,
+                NamedRandomsBytes = op.NamedRandomsBytes,
+            });
+        }
+
+        // Before the caller's exception: code awaiting the failed call must already see the
+        // server's state when it catches.
+        private void RaiseStateResyncFromFailedCall(SessionOp sessionOp)
+        {
+            if (sessionOp.OpBytes.Length == 0) return;
+            var op = UnpackOp(sessionOp);
+            if (op.IsFailureResync) RaiseStateResync(op);
+        }
+
         private void HandleBroadcast(SessionOp sessionOp)
         {
             var op = UnpackOp(sessionOp);
+            if (op.IsFailureResync)
+            {
+                RaiseStateResync(op);
+                return;
+            }
             // Translate server's global method index → client's local index via the
             // per-signature ServerToClientMethodIds map sent in ClientCapabilities. When the
             // server emits a method the client doesn't know (e.g. server-only), the sentinel
@@ -213,6 +240,7 @@ namespace SharedMeta.Client.Network
 
             if (sessionOp.HasError)
             {
+                RaiseStateResyncFromFailedCall(sessionOp);
                 throw new InvalidOperationException($"RPC call failed: {sessionOp.ErrorMessage}");
             }
 
@@ -260,6 +288,7 @@ namespace SharedMeta.Client.Network
 
             if (sessionOp.HasError)
             {
+                RaiseStateResyncFromFailedCall(sessionOp);
                 throw new InvalidOperationException($"RPC call failed: {sessionOp.ErrorMessage}");
             }
 
@@ -299,6 +328,7 @@ namespace SharedMeta.Client.Network
 
             if (sessionOp.HasError)
             {
+                RaiseStateResyncFromFailedCall(sessionOp);
                 throw new InvalidOperationException($"RPC call failed: {sessionOp.ErrorMessage}");
             }
 

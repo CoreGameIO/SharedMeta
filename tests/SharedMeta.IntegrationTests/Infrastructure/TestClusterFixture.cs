@@ -133,7 +133,8 @@ public class TestClusterFixture : IAsyncLifetime
         public void Configure(ISiloBuilder siloBuilder)
         {
             siloBuilder
-                .AddMemoryGrainStorage("Default")
+                // "Default" is the counting pass-through registered below.
+                .AddMemoryGrainStorage("DefaultMemory")
                 // Surface Error-level diagnostics from server-side framework code (EntityGrain,
                 // MetaProviderBase, SessionManagerGrain) to the test console. Default DI logging
                 // returns NullLogger, which silently dropped every ProviderCallError — that's
@@ -174,6 +175,11 @@ public class TestClusterFixture : IAsyncLifetime
 
                     // Register execution mode provider (shared with tests)
                     services.AddSingleton<IExecutionModeProvider>(SharedModeProvider);
+
+                    services.AddKeyedSingleton<global::Orleans.Storage.IGrainStorage>(
+                        "Default",
+                        (sp, _) => new CountingGrainStorage(
+                            sp.GetRequiredKeyedService<global::Orleans.Storage.IGrainStorage>("DefaultMemory")));
 
                     // Subscriber records in a store tests can make forget a grain — registered
                     // before ConfigureTestMeta, so the framework's "Default" alias stands aside.
