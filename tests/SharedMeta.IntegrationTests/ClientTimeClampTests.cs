@@ -52,7 +52,7 @@ public class ClientTimeClampTests
             EntityId = entityId,
             // The session grain keys subscriptions by (entityId, stateType); without this the
             // forged call is refused as "not subscribed" before it can reach the body.
-            StateTypeName = typeof(CounterState).FullName!,
+            StateTypeId = TestStateTypeIds.Of<CounterState>(),
             RequestId = 2,
             MethodId = global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_Add_v0,
             Payload = PackAddValueArgs(5, 2),
@@ -91,7 +91,7 @@ public class ClientTimeClampTests
             EntityId = entityId,
             // The session grain keys subscriptions by (entityId, stateType); without this the
             // forged call is refused as "not subscribed" before it can reach the body.
-            StateTypeName = typeof(CounterState).FullName!,
+            StateTypeId = TestStateTypeIds.Of<CounterState>(),
             RequestId = 2,
             MethodId = global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_Add_v0,
             Payload = PackAddValueArgs(5, 2),
@@ -126,7 +126,7 @@ public class ClientTimeClampTests
             EntityId = entityId,
             // The session grain keys subscriptions by (entityId, stateType); without this the
             // forged call is refused as "not subscribed" before it can reach the body.
-            StateTypeName = typeof(CounterState).FullName!,
+            StateTypeId = TestStateTypeIds.Of<CounterState>(),
             RequestId = 2,
             MethodId = global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_Add_v0,
             Payload = PackAddValueArgs(5, 2),
@@ -161,7 +161,7 @@ public class ClientTimeClampTests
             EntityId = entityId,
             // The session grain keys subscriptions by (entityId, stateType); without this the
             // forged call is refused as "not subscribed" before it can reach the body.
-            StateTypeName = typeof(CounterState).FullName!,
+            StateTypeId = TestStateTypeIds.Of<CounterState>(),
             RequestId = 2,
             MethodId = global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_Add_v0,
             Payload = PackAddValueArgs(5, 2),

@@ -450,6 +450,12 @@ namespace SharedMeta.Generator.Generators
                     .Append('@').Append(s.Version)
                     .Append('#').Append(s.ArgHash.ToString("X16"));
             }
+            // State types: the index is the wire id, so a different list must be a different
+            // signature — otherwise the server would serve an annotation built for another mapping.
+            var stateTypes = CanonicalStateTypes(services);
+            canonicalSb.Append("||states=");
+            foreach (var st in stateTypes)
+                canonicalSb.Append(st).Append(';');
             var signatureHash = SignatureHashGenerator.ComputeFnv1aHash(canonicalSb.ToString());
 
             sb.AppendLine("        /// <summary>");
@@ -481,6 +487,7 @@ namespace SharedMeta.Generator.Generators
                 cIdx++;
             }
             sb.AppendLine("                },");
+            EmitStateTypeList(sb, "KnownStateTypes", "System.Collections.Generic.List<string>", stateTypes);
             sb.AppendLine("            };");
             sb.AppendLine();
 
@@ -609,6 +616,10 @@ namespace SharedMeta.Generator.Generators
             serverCanonicalSb.Append("||boundaries=");
             foreach (var b in serverBoundariesForHash)
                 serverCanonicalSb.Append(b.ConfigTypeFullName).Append('@').Append(b.MinConfigVersion).Append(';');
+            // State-type ids are part of the annotation (ServerToClientStateTypes).
+            serverCanonicalSb.Append("||states=");
+            foreach (var st in stateTypes)
+                serverCanonicalSb.Append(st).Append(';');
             var serverSignatureHash = SignatureHashGenerator.ComputeFnv1aHash(serverCanonicalSb.ToString());
 
             sb.AppendLine("        public static readonly global::SharedMeta.Core.Transport.MetaServerSignature ServerSignature =");
@@ -677,7 +688,30 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("                    },");
             }
             sb.AppendLine("                },");
+            EmitStateTypeList(sb, "StateTypes", "string[]", stateTypes);
             sb.AppendLine("            };");
+        }
+
+        /// <summary>
+        /// State types the services are bound to, full name, ordinal order. The position is the
+        /// state-type id on the wire, identically on client and server signatures of one build.
+        /// </summary>
+        private static List<string> CanonicalStateTypes(List<DiscoveredServiceInfo> services)
+            => services
+                .Select(s => s.StateTypeFullName)
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Select(n => n!)
+                .Distinct(System.StringComparer.Ordinal)
+                .OrderBy(n => n, System.StringComparer.Ordinal)
+                .ToList();
+
+        private static void EmitStateTypeList(StringBuilder sb, string property, string collectionType, List<string> stateTypes)
+        {
+            sb.AppendLine($"                {property} = new {collectionType}");
+            sb.AppendLine("                {");
+            foreach (var st in stateTypes)
+                sb.AppendLine($"                    \"{st}\",");
+            sb.AppendLine("                },");
         }
 
         /// <summary>Escape a string for safe embedding as a C# string literal.</summary>

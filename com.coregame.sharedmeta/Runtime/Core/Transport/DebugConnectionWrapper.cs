@@ -117,10 +117,10 @@ namespace SharedMeta.Core.Transport
         public Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(Guid sessionId, MetaClientSignature signature)
             => _inner.RegisterClientSignatureAsync(sessionId, signature);
 
-        public Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, string stateTypeName)
-            => _inner.SubscribeAsync(entityId, stateTypeName);
+        public Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, ushort stateTypeId)
+            => _inner.SubscribeAsync(entityId, stateTypeId);
 
-        public Task<bool> UnsubscribeAsync(string entityId) => _inner.UnsubscribeAsync(entityId);
+        public Task<bool> UnsubscribeAsync(string entityId, ushort stateTypeId) => _inner.UnsubscribeAsync(entityId, stateTypeId);
         public Task AcknowledgeSequenceAsync(long sequenceNumber) => _inner.AcknowledgeSequenceAsync(sequenceNumber);
         public Task<bool> SetDebugOptionsAsync(DebugOptionsRequest request) => _inner.SetDebugOptionsAsync(request);
         public Task<DesyncReportResponse> SendDesyncReportAsync(DesyncReportRequest request) => _inner.SendDesyncReportAsync(request);

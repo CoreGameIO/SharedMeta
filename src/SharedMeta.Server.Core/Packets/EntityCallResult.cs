@@ -30,6 +30,13 @@ namespace SharedMeta.Server.Core.Grains
         /// <c>MetaOperation.Error</c>.</summary>
         [Id(3)] public string? Error { get; set; }
 
+        /// <summary>
+        /// The caller is not among the grain's subscribers although its session routed the call
+        /// here, so it holds the subscription. Only happens when the subscriber store lost the
+        /// entry across a reactivation; the session repairs the registration.
+        /// </summary>
+        [Id(4)] public bool CallerNotSubscribed { get; set; }
+
         /// <summary>True if a top-level error was reported.</summary>
         public bool HasError => Error != null;
 

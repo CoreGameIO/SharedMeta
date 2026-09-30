@@ -295,7 +295,8 @@ namespace SharedMeta.Client
                 },
                 Serializer,
                 modeProvider,
-                diagnostics
+                diagnostics,
+                (entityId, stateTypeName) => _dispatcher.UnsubscribeAsync(entityId, stateTypeName)
             );
         }
 

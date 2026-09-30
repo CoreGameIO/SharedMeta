@@ -199,6 +199,70 @@ namespace SharedMeta.Server.Core.Transport
             return (entry.ServiceName, entry.Alias, entry.Version);
         }
 
+        // State types cross the wire as ids — the client's on the way in, the server's on the way
+        // out — and stay names inside the server. These are the only translation points.
+
+        // Per-connection copy of the registry's table for the negotiated signature: the RPC path
+        // resolves a state type on every call and should not pay an async hop for it.
+        private string?[]? _clientStateTypeNames;
+        private ulong _clientStateTypeNamesHash;
+
+        /// <summary>Client state-type id → name this server knows; null when unresolvable.</summary>
+        private ValueTask<string?> ResolveClientStateTypeAsync(ushort clientStateTypeId, ulong signatureHash)
+        {
+            if (signatureHash == 0 || _signatureRegistry == null) return new ValueTask<string?>((string?)null);
+            var names = _clientStateTypeNames;
+            if (names != null && _clientStateTypeNamesHash == signatureHash)
+                return new ValueTask<string?>(clientStateTypeId < names.Length ? names[clientStateTypeId] : null);
+            return ResolveClientStateTypeSlowAsync(clientStateTypeId, signatureHash);
+        }
+
+        private async ValueTask<string?> ResolveClientStateTypeSlowAsync(ushort clientStateTypeId, ulong signatureHash)
+        {
+            var names = await _signatureRegistry!.TryGetClientStateTypeNamesAsync(signatureHash);
+            if (names == null) return null;
+            _clientStateTypeNames = names;
+            _clientStateTypeNamesHash = signatureHash;
+            return clientStateTypeId < names.Length ? names[clientStateTypeId] : null;
+        }
+
+        /// <summary>
+        /// Stamps each claim with its resolved state-type name for the session grain. An
+        /// unresolvable claim keeps an empty name, which the grain answers with a Failed verdict
+        /// — the same outcome as a claim for a state type the server doesn't have.
+        /// </summary>
+        private async Task<List<SubscriptionClaim>?> ResolveClaimsAsync(List<SubscriptionClaim>? claims, ulong signatureHash)
+        {
+            if (claims == null) return null;
+            foreach (var claim in claims)
+                claim.StateTypeName = await ResolveClientStateTypeAsync(claim.StateTypeId, signatureHash) ?? "";
+            return claims;
+        }
+
+        /// <summary>Wire copies of the grain's verdicts: server state-type id in, name out.</summary>
+        private List<SubscriptionResult>? ToWireVerdicts(List<SubscriptionResult>? verdicts)
+        {
+            if (verdicts == null) return null;
+            var wire = new List<SubscriptionResult>(verdicts.Count);
+            foreach (var v in verdicts)
+            {
+                wire.Add(new SubscriptionResult
+                {
+                    EntityId = v.EntityId,
+                    Status = v.Status,
+                    EntitySequenceNumber = v.EntitySequenceNumber,
+                    StateBytes = v.StateBytes,
+                    OptimisticRandomBytes = v.OptimisticRandomBytes,
+                    NamedRandomsBytes = v.NamedRandomsBytes,
+                    FailureReason = v.FailureReason,
+                    ConfigVersions = v.ConfigVersions,
+                    StateTypeId = _serverSignature?.StateTypeIdOrUnknown(v.StateTypeName)
+                                  ?? ClientSignatureAnnotated.UnknownClientStateTypeId,
+                });
+            }
+            return wire;
+        }
+
         #region IMetaConnectionHandler
 
         public async Task<SessionConnectResponse> SessionConnectAsync(SessionConnectRequest request)
@@ -335,7 +399,7 @@ namespace SharedMeta.Server.Core.Transport
                     request.LastAcknowledgedSequence,
                     request.Mode,
                     request.LastCompletedRequestId,
-                    request.ClaimedSubscriptions,
+                    await ResolveClaimsAsync(request.ClaimedSubscriptions, request.ClientSignatureHash),
                     request.ClientVersion,
                     request.ClientSignatureHash);
 
@@ -418,10 +482,7 @@ namespace SharedMeta.Server.Core.Transport
                     FailureReason = result.FailureReason,
                     DeepDesyncActive = DeepDesyncActive,
                     Permissions = Permissions,
-                    // 0.24.0+ Server-driven ResubscribedEntities replaced by client-driven
-                    // Subscriptions[] — grain produces these directly from the per-claim
-                    // ReclaimSubscriptionAsync verdicts; no further DTO mapping needed.
-                    Subscriptions = result.Subscriptions,
+                    Subscriptions = ToWireVerdicts(result.Subscriptions),
                 };
                 return __scResponse;
             }
@@ -508,13 +569,14 @@ namespace SharedMeta.Server.Core.Transport
                     return new SubscribeResponse { Success = false, Error = "EntityId is required" };
                 }
 
-                if (string.IsNullOrEmpty(request.StateTypeName))
+                var stateTypeName = await ResolveClientStateTypeAsync(request.StateTypeId, _clientSignatureHash);
+                if (stateTypeName == null)
                 {
-                    return new SubscribeResponse { Success = false, Error = "StateTypeName is required" };
+                    return new SubscribeResponse { Success = false, Error = $"State type id {request.StateTypeId} is unknown to this server for the client's signature" };
                 }
 
                 var grain = SessionManagerGrainOrThrow;
-                var result = await grain.SubscribeToEntityAsync(request.EntityId, request.StateTypeName, _clientVersion, _clientSignatureHash);
+                var result = await grain.SubscribeToEntityAsync(request.EntityId, stateTypeName, _clientVersion, _clientSignatureHash);
 
                 _logger.HandlerSubscribe(PlayerId!, request.EntityId, result.Success);
 
@@ -550,8 +612,11 @@ namespace SharedMeta.Server.Core.Transport
 
                 if (!string.IsNullOrEmpty(request.EntityId))
                 {
+                    var stateTypeName = await ResolveClientStateTypeAsync(request.StateTypeId, _clientSignatureHash);
+                    if (stateTypeName == null)
+                        return new UnsubscribeResponse { Success = false, Error = $"State type id {request.StateTypeId} is unknown to this server for the client's signature" };
                     var grain = SessionManagerGrainOrThrow;
-                    await grain.UnsubscribeFromEntityAsync(request.EntityId, request.StateTypeName);
+                    await grain.UnsubscribeFromEntityAsync(request.EntityId, stateTypeName);
                 }
 
                 _logger.HandlerUnsubscribe(PlayerId!, request.EntityId);
@@ -650,11 +715,19 @@ namespace SharedMeta.Server.Core.Transport
                     Debug = request.Debug  // 0.26.6+ piggybacked PayloadDebug (deep-state CRCs)
                 };
 
+                var stateTypeName = await ResolveClientStateTypeAsync(request.StateTypeId, _clientSignatureHash);
+                if (stateTypeName == null)
+                {
+                    __m.MarkRejected();
+                    return SessionResponse.ForError(
+                        $"State type id {request.StateTypeId} is unknown to this server for the client's signature.");
+                }
+
                 var grain = SessionManagerGrainOrThrow;
 
                 var response = await grain.SendToEntityAsync(
                     request.EntityId,
-                    request.StateTypeName,
+                    stateTypeName,
                     request.RequestId,
                     call,
                     request.LastAcknowledgedSequence,

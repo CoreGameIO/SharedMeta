@@ -3478,10 +3478,41 @@ services.Configure<EntityGrainOptions>(o =>
 | `OnDeactivationOnly` | `PersistencePolicy.OnDeactivationOnly()` | Max performance, risk of data loss on crash |
 
 **Always persisted regardless of policy:**
-- Subscribe/unsubscribe operations
+- Subscribe/unsubscribe/reconnect — to the subscriber store (below), not the entity state
 - Errors (sequence number already incremented)
 - Grain deactivation
 - Methods marked with `[MetaMethod(ForcePersist = true)]`
+
+### Subscriber Store
+
+Who is subscribed to an entity is kept in its own record, apart from the entity state, under the
+grain storage name `EntitySubscriptionStorage.ProviderName` (`"SharedMetaSubscriptions"`). Every
+subscribe, unsubscribe and reconnect writes it; the entity state is not rewritten for them. When an
+entity deactivates with players subscribed (idle collection, rebalancing), the next activation
+restores them from this record — broadcasts keep reaching them without a re-subscribe.
+
+The record is small and written often, so a fast store fits it. Register one under that name:
+
+```csharp
+siloBuilder.AddRedisGrainStorage(EntitySubscriptionStorage.ProviderName, o => { /* ... */ });
+```
+
+Without a registration it falls back to the `"Default"` provider.
+
+The record is recoverable data. If the store loses it (a flushed Redis), the next call from each
+affected player is detected with one dictionary lookup and repaired:
+
+- the player missed nothing meanwhile — re-registered silently, the call succeeds;
+- operations happened that the player never received — the call fails with an error saying the
+  subscription was lost (the server **did** apply it), and the client reloads the entity's state,
+  which already contains that call.
+
+A player who only watches the entity and never calls it is not detected: after such a loss they
+stop receiving broadcasts until their next call or reconnect.
+
+`EntityGrainOptions.SubscriberTtl` prunes entries left behind by a crash. Graceful deactivation
+stamps every subscriber as active, so an entity idle long enough to be collected does not drop its
+live subscribers.
 
 ### ForcePersist
 

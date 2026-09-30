@@ -65,6 +65,44 @@ namespace SharedMeta.Core.Transport
         public ServerMethodEntry? GetMethodEntry(ushort methodId)
             => methodId < _idToEntry.Length ? _idToEntry[methodId] : null;
 
+        private readonly IReadOnlyList<string> _stateTypes = System.Array.Empty<string>();
+        private readonly Dictionary<string, ushort> _stateTypeIds = new();
+
+        /// <summary>
+        /// Every state type the server's services are bound to, by full name, sorted ordinally.
+        /// The index is the server's state-type id, sent on the wire wherever a state type is named
+        /// server → client; clients translate it through
+        /// <see cref="ClientSignatureAnnotated.ServerToClientStateTypes"/>.
+        /// </summary>
+        public IReadOnlyList<string> StateTypes
+        {
+            get => _stateTypes;
+            init
+            {
+                _stateTypes = value ?? System.Array.Empty<string>();
+                _stateTypeIds = new Dictionary<string, ushort>(_stateTypes.Count);
+                for (int i = 0; i < _stateTypes.Count; i++)
+                    _stateTypeIds[_stateTypes[i]] = (ushort)i;
+            }
+        }
+
+        /// <summary>Server state-type id for a full name; null when this server has no such state type.</summary>
+        public ushort? ResolveStateTypeId(string stateTypeName)
+            => _stateTypeIds.TryGetValue(stateTypeName, out var id) ? id : null;
+
+        /// <summary>
+        /// Server state-type id for a full name, or <see cref="ClientSignatureAnnotated.UnknownClientStateTypeId"/>
+        /// — the form every wire field takes.
+        /// </summary>
+        public ushort StateTypeIdOrUnknown(string? stateTypeName)
+            => stateTypeName != null && _stateTypeIds.TryGetValue(stateTypeName, out var id)
+                ? id
+                : ClientSignatureAnnotated.UnknownClientStateTypeId;
+
+        /// <summary>Server state-type id of the service owning a method; unknown sentinel when none.</summary>
+        public ushort StateTypeIdOfMethod(ushort methodId)
+            => StateTypeIdOrUnknown(GetMethodEntry(methodId)?.StateTypeName);
+
         /// <summary>
         /// <c>[MetaConfigStructureBoundary]</c> declarations harvested from every
         /// <c>[MetaConfig]</c> class. Drives per-subscriber boundary compute on the server.

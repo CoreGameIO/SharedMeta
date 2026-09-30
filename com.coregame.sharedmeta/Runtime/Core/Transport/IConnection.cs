@@ -65,14 +65,16 @@ namespace SharedMeta.Core.Transport
                 "This transport does not implement the 0.22.0 compatibility-negotiation handshake.");
 
         /// <summary>
-        /// Subscribe to an entity.
+        /// Subscribe to an entity. <paramref name="stateTypeId"/> is the client state-type id
+        /// (index into the client signature's <c>KnownStateTypes</c>).
         /// </summary>
-        Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, string stateTypeName);
+        Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, ushort stateTypeId);
 
         /// <summary>
-        /// Unsubscribe from an entity.
+        /// Unsubscribe from an entity. The server keys subscriptions by (entityId, state type), so
+        /// <paramref name="stateTypeId"/> must match the one passed to <see cref="SubscribeAsync"/>.
         /// </summary>
-        Task<bool> UnsubscribeAsync(string entityId);
+        Task<bool> UnsubscribeAsync(string entityId, ushort stateTypeId);
 
         /// <summary>
         /// Execute an RPC call on an entity.

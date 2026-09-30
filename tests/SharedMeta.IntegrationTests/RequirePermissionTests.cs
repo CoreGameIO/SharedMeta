@@ -120,7 +120,7 @@ public class RequirePermissionTests
         var forged = new SharedMeta.Core.Transport.RpcCallRequest
         {
             EntityId = entityId,
-            StateTypeName = typeof(CounterState).FullName!,
+            StateTypeId = TestStateTypeIds.Of<CounterState>(),
             RequestId = 2,
             MethodId = global::SharedMeta.Test.Meta1.Generated.GameMethodIds.ICounterService_CheatSetSum_v0,
             Payload = setup.MetaClient.Serializer.Pack(9999),

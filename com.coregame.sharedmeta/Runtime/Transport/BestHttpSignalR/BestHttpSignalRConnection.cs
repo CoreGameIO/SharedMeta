@@ -327,14 +327,14 @@ namespace SharedMeta.Transport.BestHttp
             });
         }
 
-        public async Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, string stateTypeName)
+        public async Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, ushort stateTypeId)
         {
             EnsureConnected();
 
             var response = await _proxy!.Subscribe(new SubscribeRequest
             {
                 EntityId = entityId,
-                StateTypeName = stateTypeName
+                StateTypeId = stateTypeId
             });
 
             return new ConnectionSubscribeResult
@@ -351,13 +351,14 @@ namespace SharedMeta.Transport.BestHttp
             };
         }
 
-        public async Task<bool> UnsubscribeAsync(string entityId)
+        public async Task<bool> UnsubscribeAsync(string entityId, ushort stateTypeId)
         {
             EnsureConnected();
 
             var response = await _proxy!.Unsubscribe(new UnsubscribeRequest
             {
-                EntityId = entityId
+                EntityId = entityId,
+                StateTypeId = stateTypeId,
             });
 
             return response.Success;

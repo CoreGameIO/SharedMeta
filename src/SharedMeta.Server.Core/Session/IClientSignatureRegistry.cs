@@ -75,6 +75,13 @@ namespace SharedMeta.Server.Core.Session
         Task<ClientSignatureAnnotated?> TryGetAnnotatedAsync(ulong signatureHash);
 
         /// <summary>
+        /// Client state-type id → state-type full name this server knows (null where it knows
+        /// none), for translating the state-type ids a client puts on the wire. Null when the
+        /// signature has never been registered.
+        /// </summary>
+        Task<string?[]?> TryGetClientStateTypeNamesAsync(ulong signatureHash);
+
+        /// <summary>
         /// 0.24.0+ Hash of the server signature this registry was constructed against. Returned
         /// on every <see cref="SessionConnectResponse.ServerSignatureHash"/> so the client can
         /// detect when its locally cached annotation has been invalidated by a server redeploy.

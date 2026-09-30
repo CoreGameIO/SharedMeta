@@ -45,6 +45,7 @@ namespace SharedMeta.Server.Core.Grains
         where TState : class, ISharedState, new()
     {
         private readonly IPersistentState<EntityGrainState<TState>> _persistentState;
+        private readonly IPersistentState<EntitySubscribersState> _subscribersState;
         private readonly IMetaProviderFactory<TState> _providerFactory;
         private readonly IMetaSerializer _serializer;
         private readonly ILogger _logger;
@@ -109,6 +110,7 @@ namespace SharedMeta.Server.Core.Grains
 
         public EntityGrain(
             [PersistentState("entity", "Default")] IPersistentState<EntityGrainState<TState>> persistentState,
+            [PersistentState("entitySubscribers", EntitySubscriptionStorage.ProviderName)] IPersistentState<EntitySubscribersState> subscribersState,
             IMetaProviderFactory<TState> providerFactory,
             IMetaSerializer serializer,
             ILogger<EntityGrain<TState>> logger,
@@ -120,6 +122,7 @@ namespace SharedMeta.Server.Core.Grains
             IClientSignatureRegistry? signatureRegistry = null)
         {
             _persistentState = persistentState ?? throw new ArgumentNullException(nameof(persistentState));
+            _subscribersState = subscribersState ?? throw new ArgumentNullException(nameof(subscribersState));
             _providerFactory = providerFactory ?? throw new ArgumentNullException(nameof(providerFactory));
             _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -142,59 +145,23 @@ namespace SharedMeta.Server.Core.Grains
             var state = _persistentState.State;
 
             _logger.EntityGrainActivated(typeof(TState).Name, entityId);
-            _logger.EntityStateLoaded(typeof(TState).Name, entityId, state.Subscribers.Count, state.EntitySequenceNumber);
 
             SharedMeta.Server.Core.Telemetry.MetricEvents.Grain.Activated(typeof(TState).Name);
 
-            // Prune expired subscribers
+            var subscribers = Subscribers;
+            _logger.EntityStateLoaded(typeof(TState).Name, entityId, subscribers.Count, state.EntitySequenceNumber);
+
+            // Prune expired subscribers. LastActiveUtc is refreshed on graceful deactivation, so this
+            // removes entries left behind by a crash, not live subscribers of an idle entity.
             var cutoff = DateTime.UtcNow - _options.SubscriberTtl;
-            var expired = state.Subscribers.Where(kv => kv.Value.LastActiveUtc < cutoff).Select(kv => kv.Key).ToList();
+            var expired = subscribers.Where(kv => kv.Value.LastActiveUtc < cutoff).Select(kv => kv.Key).ToList();
             if (expired.Count > 0)
             {
                 foreach (var playerId in expired)
-                    state.Subscribers.Remove(playerId);
+                    subscribers.Remove(playerId);
 
                 _logger.ExpiredSubscribersPruned(entityId, expired.Count);
-                await _persistentState.WriteStateAsync();
-                ResetPersistenceTracking();
-            }
-
-            // Reconstruct grain references for surviving subscribers
-            foreach (var (playerId, sub) in state.Subscribers)
-            {
-                _subscriberRefs[playerId] = GrainFactory.GetGrain<ISessionManagerReference>(playerId);
-                _logger.SubscriberRestored(entityId, playerId);
-            }
-
-            // 0.24.0+ Rehydrate force-patch refcounts for surviving subscribers using their
-            // persisted ClientSignatureHash. Each subscriber's force-patch contributions get
-            // re-applied to the grain-local counters, so the next HandleCallAsync activates
-            // patch tracking on the correct method set without needing the client to re-subscribe.
-            // Skips subscribers whose ClientSignatureHash is 0 (legacy / pre-0.24 persisted state)
-            // — they'll be repopulated naturally on their next Subscribe.
-            if (_signatureRegistry != null && _serverSignature != null)
-            {
-                foreach (var (playerId, sub) in state.Subscribers)
-                {
-                    if (sub.ClientSignatureHash == 0) continue;
-                    var annotated = await _signatureRegistry.TryGetAnnotatedAsync(sub.ClientSignatureHash);
-                    var clientToServer = await _signatureRegistry.TryGetClientToServerMapAsync(sub.ClientSignatureHash);
-                    if (annotated == null || clientToServer == null) continue;
-                    EnsureForcePatchRefs();
-                    var contributions = new List<ushort>();
-                    var statuses = annotated.Statuses;
-                    int max = statuses.Length < clientToServer.Length ? statuses.Length : clientToServer.Length;
-                    for (ushort clientId = 0; clientId < max; clientId++)
-                    {
-                        if (statuses[clientId] != MethodStatus.ForceServerPatch) continue;
-                        var serverId = clientToServer[clientId];
-                        if (serverId == ushort.MaxValue) continue;
-                        contributions.Add(serverId);
-                        IncrementMethodRef(serverId);
-                    }
-                    if (contributions.Count > 0)
-                        _subscriberForcePatchContributions[playerId] = contributions;
-                }
+                await WriteSubscribersAsync();
             }
 
             // Create and initialize provider with persisted state
@@ -253,6 +220,16 @@ namespace SharedMeta.Server.Core.Grains
             // HandleCallAsync (lazy, capped to call.CallerClientVersion). Fresh entities
             // run base init through the same path via the "fresh entity floor" rule.
 
+            // Restore surviving subscribers through the subscribe-time registration so broadcast
+            // targets and both force-patch granularities come back without the client re-subscribing.
+            // After provider init: the service-level overlay reads the provider's config versions.
+            foreach (var (playerId, sub) in subscribers.ToList())
+            {
+                await RegisterSubscriberAsync(playerId, GrainFactory.GetGrain<ISessionManagerReference>(playerId),
+                    sub.ClientVersion, sub.ClientSignatureHash, ComputePerEntityCapabilities(sub.ClientVersion));
+                _logger.SubscriberRestored(entityId, playerId);
+            }
+
             ResetPersistenceTracking();
 
             await base.OnActivateAsync(cancellationToken);
@@ -270,6 +247,18 @@ namespace SharedMeta.Server.Core.Grains
             {
                 await _persistentState.WriteStateAsync();
                 _logger.EntityStatePersisted(entityId);
+            }
+
+            // Subscribers outlive this activation (idle collection, rebalancing) and the next one
+            // restores them from this record. Stamp them as live now: their LastActiveUtc tracks
+            // calls, and an entity idle long enough to be collected would otherwise come back with
+            // every subscriber past the TTL and pruned.
+            if (Subscribers.Count > 0)
+            {
+                var now = DateTime.UtcNow;
+                foreach (var sub in Subscribers.Values)
+                    sub.LastActiveUtc = now;
+                await WriteSubscribersAsync();
             }
 
             SharedMeta.Server.Core.Telemetry.MetricEvents.Grain.Deactivated(
@@ -428,7 +417,96 @@ namespace SharedMeta.Server.Core.Grains
                 });
             }
 
-            state.Subscribers[playerId] = new PersistedSubscriberInfo
+            await RegisterSubscriberAsync(playerId, sessionManager, clientVersion, clientSignatureHash, augmentedCaps);
+
+            _logger.PlayerSubscribed(_entityId, playerId);
+
+            await WriteSubscribersAsync();
+
+            // Snapshot StateBytes is NOT pool-tracked: Orleans's in-silo copier shares the
+            // ROM by reference (no defensive copy of the inner byte[]) for cross-grain hops,
+            // so releasing the pool slot at the next HandleCallAsync entry would recycle the
+            // buffer while the receiving SessionManager / client still references the same
+            // bytes. Allocate a fresh byte[] for the snapshot — the cost is a single state
+            // serialization per subscribe (not on the per-RPC hot path).
+            ReadOnlyMemory<byte> stateBytes = _provider?.GetStateBytes() ?? _serializer.Pack(state.UserState);
+
+            var namedBytes = _provider?.GetNamedRandomsBytes();
+            return new EntitySnapshot
+            {
+                StateBytes = stateBytes,
+                CurrentSequenceNumber = state.EntitySequenceNumber,
+                OptimisticRandomBytes = _provider?.GetOptimisticRandomBytes(),
+                NamedRandomsBytes = namedBytes is { Length: > 0 } ? namedBytes : null,
+                // Scope-aware effective version: pinned for Private/Shared, resolver-driven
+                // for Global — so the client materializes the same config the server will
+                // dispatch under, not its own natural branch. Index 0 = legacy primary (when
+                // declared); remaining are [ServiceConfig] entries (0.33.0+) — without appending
+                // these, a fresh subscriber's initial Context.Configs would resolve under
+                // default(MetaConfigVersion) instead of the branch matching their app version.
+                ConfigVersions = BuildConfigVersionsList(clientVersion),
+                AugmentedCapabilities = augmentedCaps,
+            };
+            }
+            catch
+            {
+                __m.MarkError();
+                throw;
+            }
+        }
+
+        private Dictionary<string, PersistedSubscriberInfo> Subscribers => _subscribersState.State.Subscribers;
+
+        /// <summary>
+        /// Persists the subscriber record. A failure is logged, not thrown: the in-memory set is
+        /// authoritative for this activation, and a record lost with its store is detected and
+        /// repaired on the next call from each affected player.
+        /// </summary>
+        private async Task WriteSubscribersAsync()
+        {
+            try
+            {
+                await _subscribersState.WriteStateAsync();
+            }
+            catch (Orleans.Storage.InconsistentStateException)
+            {
+                // The store lost or replaced the record (e.g. a flushed Redis), so our ETag is
+                // stale. Re-read for a fresh ETag, then write this activation's set back over it.
+                var live = new Dictionary<string, PersistedSubscriberInfo>(Subscribers);
+                try
+                {
+                    await _subscribersState.ReadStateAsync();
+                    _subscribersState.State.Subscribers = live;
+                    await _subscribersState.WriteStateAsync();
+                }
+                catch (Exception ex)
+                {
+                    _subscribersState.State.Subscribers = live;
+                    _logger.LogWarning(ex, "[EntityGrain] Subscriber record write failed after ETag refresh: entity={EntityId}", _entityId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[EntityGrain] Subscriber record write failed: entity={EntityId}", _entityId);
+            }
+        }
+
+        /// <summary>
+        /// Writes everything the grain keeps per subscriber: the persisted entry (with the client
+        /// version server-originated calls resolve configs against), the broadcast target, and
+        /// the method- and service-level force-patch contributions. Shared by subscribe, the
+        /// reclaim cheap path and activation restore — a path that restored only the broadcast
+        /// target would leave a legacy client receiving replay variants of methods it was told to
+        /// take as patches. Does not persist; callers write the record.
+        /// </summary>
+        private async Task RegisterSubscriberAsync(
+            string playerId,
+            ISessionManagerReference sessionManager,
+            string? clientVersion,
+            ulong clientSignatureHash,
+            SharedMeta.Core.Transport.EntityAugmentedCapabilities? augmentedCaps)
+        {
+            Subscribers[playerId] = new PersistedSubscriberInfo
             {
                 PlayerId = playerId,
                 LastActiveUtc = DateTime.UtcNow,
@@ -437,11 +515,10 @@ namespace SharedMeta.Server.Core.Grains
             };
             _subscriberRefs[playerId] = sessionManager;
 
-            // 0.24.0+ Resolve this subscriber's force-patch declarations from the silo-local
-            // annotation cache. Walk Statuses[] for ForceServerPatch entries and translate
-            // each client method id to its server-side counterpart via the clientToServer map.
-            // Foreign entries can't false-trigger because the translation drops anything the
-            // server doesn't know (clientToServer[i] == ushort.MaxValue).
+            // Force-patch declarations come from the silo-local annotation cache. Walk Statuses[]
+            // for ForceServerPatch entries and translate each client method id to its server-side
+            // counterpart; the translation drops anything the server doesn't know
+            // (clientToServer[i] == ushort.MaxValue), so foreign entries can't false-trigger.
             ClientSignatureAnnotated? annotated = null;
             ushort[]? clientToServer = null;
             if (clientSignatureHash != 0 && _signatureRegistry != null)
@@ -476,11 +553,8 @@ namespace SharedMeta.Server.Core.Grains
                     _subscriberForcePatchContributions[playerId] = contributions;
             }
 
-            // Apply the per-entity force-patch overlay computed above (non-trackable services
-            // already rejected the subscription before any state mutation). Stored in the local
-            // refcount (HandleCallAsync activates patch tracking) AND shipped on the snapshot
-            // (client gates the call locally without round trip). Same unconditional-drop pattern
-            // as method-level above.
+            // Per-entity service-level overlay. Callers have already rejected subscribers whose
+            // overlay names non-trackable services. Same unconditional-drop pattern as above.
             if (_subscriberForcePatchServiceContributions.Remove(playerId, out var priorSvc))
             {
                 foreach (var svc in priorSvc)
@@ -495,42 +569,6 @@ namespace SharedMeta.Server.Core.Grains
                     IncrementServiceRef(svc);
                 }
                 _subscriberForcePatchServiceContributions[playerId] = svcContributions;
-            }
-
-            _logger.PlayerSubscribed(_entityId, playerId);
-
-            await _persistentState.WriteStateAsync();
-            ResetPersistenceTracking();
-
-            // Snapshot StateBytes is NOT pool-tracked: Orleans's in-silo copier shares the
-            // ROM by reference (no defensive copy of the inner byte[]) for cross-grain hops,
-            // so releasing the pool slot at the next HandleCallAsync entry would recycle the
-            // buffer while the receiving SessionManager / client still references the same
-            // bytes. Allocate a fresh byte[] for the snapshot — the cost is a single state
-            // serialization per subscribe (not on the per-RPC hot path).
-            ReadOnlyMemory<byte> stateBytes = _provider?.GetStateBytes() ?? _serializer.Pack(state.UserState);
-
-            var namedBytes = _provider?.GetNamedRandomsBytes();
-            return new EntitySnapshot
-            {
-                StateBytes = stateBytes,
-                CurrentSequenceNumber = state.EntitySequenceNumber,
-                OptimisticRandomBytes = _provider?.GetOptimisticRandomBytes(),
-                NamedRandomsBytes = namedBytes is { Length: > 0 } ? namedBytes : null,
-                // Scope-aware effective version: pinned for Private/Shared, resolver-driven
-                // for Global — so the client materializes the same config the server will
-                // dispatch under, not its own natural branch. Index 0 = legacy primary (when
-                // declared); remaining are [ServiceConfig] entries (0.33.0+) — without appending
-                // these, a fresh subscriber's initial Context.Configs would resolve under
-                // default(MetaConfigVersion) instead of the branch matching their app version.
-                ConfigVersions = BuildConfigVersionsList(clientVersion),
-                AugmentedCapabilities = augmentedCaps,
-            };
-            }
-            catch
-            {
-                __m.MarkError();
-                throw;
             }
         }
 
@@ -583,26 +621,21 @@ namespace SharedMeta.Server.Core.Grains
                     // Signature change at the same seq is rare but possible (client rebuild
                     // between disconnect and reconnect without touching state). Fall through
                     // to full Subscribe so access-policy + capability cache re-run.
-                    if (state.Subscribers.TryGetValue(playerId, out var existing)
+                    if (Subscribers.TryGetValue(playerId, out var existing)
                         && existing.ClientSignatureHash != clientSignatureHash)
                     {
                         // fall through to Refreshed path
                     }
-                    else
+                    else if (TryPrepareCheapReclaim(clientVersion, out var augmentedCaps))
                     {
-                        // Either subscriber entry exists with matching signature — refresh
-                        // liveness — or it's missing (TTL/restart) and we re-register. Either
-                        // way data is in sync, ship Continued, no snapshot needed.
-                        if (existing == null)
-                        {
-                            existing = new PersistedSubscriberInfo
-                            {
-                                ClientSignatureHash = clientSignatureHash,
-                            };
-                            state.Subscribers[playerId] = existing;
-                        }
-                        existing.LastActiveUtc = DateTime.UtcNow;
-                        _subscriberRefs[playerId] = sessionManager;
+                        // Data is in sync — ship Continued, no snapshot. The subscriber entry is
+                        // usually missing here (every transport disconnect unsubscribes), so
+                        // re-register in full rather than just the broadcast target: client
+                        // version and force-patch contributions go with it.
+                        await RegisterSubscriberAsync(playerId, sessionManager, clientVersion, clientSignatureHash, augmentedCaps);
+                        // Persist like subscribe does: the disconnect before this persisted the
+                        // removal, so without it a crash would restore the entity without this player.
+                        await WriteSubscribersAsync();
                         return new SubscriptionResult
                         {
                             EntityId = _entityId,
@@ -664,6 +697,27 @@ namespace SharedMeta.Server.Core.Grains
             }
         }
 
+        /// <summary>
+        /// The subscribe-time checks a Continued reclaim still owes: config pins (cleared when the
+        /// last subscriber left) re-established as a first subscribe would, a Shared pin mismatch
+        /// and a rejecting per-entity overlay both declined. Declined → the caller takes the full
+        /// subscribe path, which reports the rejection.
+        /// </summary>
+        private bool TryPrepareCheapReclaim(string? clientVersion, out SharedMeta.Core.Transport.EntityAugmentedCapabilities? augmentedCaps)
+        {
+            augmentedCaps = null;
+            if (_provider is MetaProviderBase<TState> mpbPin && mpbPin.Scope != EntityScope.Global)
+            {
+                if (mpbPin.ActiveConfigPins.Count == 0)
+                    mpbPin.EstablishConfigPinsFromClientVersion(clientVersion);
+                else if (mpbPin.Scope == EntityScope.Shared && !mpbPin.ValidateClientCompatibleWithPins(clientVersion, out _))
+                    return false;
+            }
+
+            augmentedCaps = ComputePerEntityCapabilities(clientVersion);
+            return augmentedCaps is not { RejectedServices.Count: > 0 };
+        }
+
         // Full type name of TState, matching the format the client resolver keys its
         // config-by-state-type-name registry on (config.StateType.FullName ?? config.StateType.Name).
         private static string StateTypeName => typeof(TState).FullName ?? typeof(TState).Name;
@@ -709,11 +763,11 @@ namespace SharedMeta.Server.Core.Grains
         {
             // Telemetry: decrement subscriber gauge regardless of whether the player was
             // actually present (idempotency — UnsubscribeAsync may fire from disposed sessions).
-            if (_persistentState.State.Subscribers.ContainsKey(playerId))
+            if (Subscribers.ContainsKey(playerId))
             {
                 SharedMeta.Server.Core.Telemetry.MetricEvents.Subscriber.Removed(typeof(TState).Name);
             }
-            _persistentState.State.Subscribers.Remove(playerId);
+            Subscribers.Remove(playerId);
             _subscriberRefs.Remove(playerId);
 
             // Decrement force-patch refcounts for this player's prior contributions.
@@ -733,7 +787,7 @@ namespace SharedMeta.Server.Core.Grains
             // Pin lives only while there are active subscribers. When the last leaves,
             // drop pins so the next first-subscriber re-establishes fresh — picks up any
             // patch published while the entity was effectively idle.
-            if (_persistentState.State.Subscribers.Count == 0
+            if (Subscribers.Count == 0
                 && _provider is MetaProviderBase<TState> mpbClear
                 && mpbClear.ActiveConfigPins.Count > 0)
             {
@@ -743,8 +797,7 @@ namespace SharedMeta.Server.Core.Grains
                     _entityId);
             }
 
-            await _persistentState.WriteStateAsync();
-            ResetPersistenceTracking();
+            await WriteSubscribersAsync();
         }
 
         public async ValueTask<EntityCallResult> HandleCallAsync(RpcCall call)
@@ -770,8 +823,13 @@ namespace SharedMeta.Server.Core.Grains
             var forcePersist = false;
 
             // Update caller's last active time
-            if (call.CallerId != null && state.Subscribers.TryGetValue(call.CallerId, out var callerSub))
+            if (call.CallerId != null && Subscribers.TryGetValue(call.CallerId, out var callerSub))
                 callerSub.LastActiveUtc = DateTime.UtcNow;
+
+            // Client RPCs arrive only through a session holding the subscription, so a caller we
+            // don't broadcast to means the subscriber record lost it across a reactivation. One
+            // lookup; the session repairs it. (Server-side callers never read the flag.)
+            var callerNotSubscribed = call.CallerId != null && !_subscriberRefs.ContainsKey(call.CallerId);
 
             try
             {
@@ -818,7 +876,8 @@ namespace SharedMeta.Server.Core.Grains
                     EntitySequenceNumber = operationSequence,
                     OpBytes = responsePayload,
                     CrossEntityCalls = providerResult.CrossEntityCalls,
-                    Error = providerResult.Error
+                    Error = providerResult.Error,
+                    CallerNotSubscribed = callerNotSubscribed,
                 };
             }
             catch (Exception ex)
@@ -829,7 +888,8 @@ namespace SharedMeta.Server.Core.Grains
                 return new EntityCallResult
                 {
                     EntitySequenceNumber = operationSequence,
-                    Error = ex.Message
+                    Error = ex.Message,
+                    CallerNotSubscribed = callerNotSubscribed,
                 };
             }
             finally
@@ -1163,7 +1223,7 @@ namespace SharedMeta.Server.Core.Grains
         private string? ResolveOwnerClientVersion()
         {
             string? lowest = null;
-            foreach (var subscriber in _persistentState.State.Subscribers.Values)
+            foreach (var subscriber in Subscribers.Values)
             {
                 var version = subscriber.ClientVersion;
                 if (string.IsNullOrEmpty(version)) continue;
@@ -1274,6 +1334,7 @@ namespace SharedMeta.Server.Core.Grains
                 EntitySequenceNumber = result.EntitySequenceNumber,
                 MethodId = methodId,
                 ResultBytes = result.ResultBytes,
+                StateTypeId = _serverSignature.StateTypeIdOfMethod(methodId),
             };
         }
 

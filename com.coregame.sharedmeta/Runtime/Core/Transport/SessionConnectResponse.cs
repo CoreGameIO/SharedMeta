@@ -271,13 +271,16 @@ namespace SharedMeta.Core.Transport
         [Id(10), Key(10)] public List<MetaConfigVersion>? ConfigVersions { get; set; }
 
         /// <summary>
-        /// 0.33.0+ Full type name of the state this verdict resolves — echoes the corresponding
-        /// <see cref="SubscriptionClaim.StateTypeName"/>. entityId alone doesn't uniquely identify
-        /// a connection (the server addresses entities by (state type, entityId), so two claims
-        /// can share an entityId across different state types, e.g. Inventory/Profile/Wallet all
-        /// keyed by playerId) — the client needs this to correlate a verdict back to the right
-        /// connection on Resume.
+        /// Server state-type id of the verdict's entity; the client translates it through
+        /// <see cref="ClientSignatureAnnotated.ServerToClientStateTypes"/>. entityId alone does
+        /// not identify the connection when state types share an entityId.
         /// </summary>
-        [Id(11), Key(11)] public string StateTypeName { get; set; } = "";
+        [Id(11), Key(11)] public ushort StateTypeId { get; set; }
+
+        /// <summary>
+        /// The state type by name. Set by the server grains for each other, and by the client
+        /// dispatcher after translating <see cref="StateTypeId"/>. Never on the wire.
+        /// </summary>
+        [Id(12), IgnoreMember, MemoryPackIgnore] public string StateTypeName { get; set; } = "";
     }
 }

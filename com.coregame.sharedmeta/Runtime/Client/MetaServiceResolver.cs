@@ -97,16 +97,33 @@ namespace SharedMeta.Client
         /// <param name="serializer">Serializer for RPC calls</param>
         /// <param name="modeProvider">Execution mode provider</param>
         /// <param name="diagnostics">Optional diagnostics handler</param>
+        /// <param name="unsubscriber">Ends the server-side subscription when a connection is
+        /// disconnected. Parameters: (entityId, stateTypeName) — the same pair the factory was called
+        /// with. Null leaves the subscription open (a resolver without a session behind it).</param>
         public MetaServiceResolver(
             Func<string, string, Task<NetworkSubscribeResult>> networkFactory,
             IMetaSerializer serializer,
             IExecutionModeProvider modeProvider,
-            IDesyncDiagnostics? diagnostics = null)
+            IDesyncDiagnostics? diagnostics = null,
+            Func<string, string, Task>? unsubscriber = null)
         {
             _networkFactory = networkFactory;
             _serializer = serializer;
             _modeProvider = modeProvider;
             _diagnostics = diagnostics;
+            _unsubscriber = unsubscriber;
+        }
+
+        private readonly Func<string, string, Task>? _unsubscriber;
+
+        // Disconnect = the player is done with the entity: dispose locally, then end the server-side
+        // subscription so the entity stops broadcasting to (and the session stops reclaiming) it.
+        private async Task DisconnectConnectionsAsync(List<EntityConnection> connections)
+        {
+            DisposeAndAnnounce(connections);
+            if (_unsubscriber == null) return;
+            foreach (var connection in connections)
+                await _unsubscriber(connection.EntityId, StateKey(connection.StateType));
         }
 
         /// <summary>
@@ -476,9 +493,7 @@ namespace SharedMeta.Client
                 }
             }
 
-            if (connections != null)
-                DisposeAndAnnounce(connections);
-            return Task.CompletedTask;
+            return connections != null ? DisconnectConnectionsAsync(connections) : Task.CompletedTask;
         }
 
         /// <summary>
@@ -494,9 +509,9 @@ namespace SharedMeta.Client
                 RemoveConnection(entityId, typeof(TState), out connection);
             }
 
-            if (connection != null)
-                DisposeAndAnnounce(new List<EntityConnection> { connection });
-            return Task.CompletedTask;
+            return connection != null
+                ? DisconnectConnectionsAsync(new List<EntityConnection> { connection })
+                : Task.CompletedTask;
         }
 
         public TState GetState<TState>(string entityId) where TState : class, ISharedState

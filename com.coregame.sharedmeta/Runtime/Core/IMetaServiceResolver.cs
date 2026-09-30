@@ -23,7 +23,8 @@ namespace SharedMeta.Core
         Task<TApiClient> GetServiceAsync<TApiClient>(string entityId) where TApiClient : class;
 
         /// <summary>
-        /// Disconnect from an entity.
+        /// Disconnect from every state type under an entity: disposes its API clients and ends the
+        /// server-side subscription, so the entity stops broadcasting to this player.
         /// </summary>
         /// <param name="entityId">Entity to disconnect from</param>
         Task DisconnectAsync(string entityId);

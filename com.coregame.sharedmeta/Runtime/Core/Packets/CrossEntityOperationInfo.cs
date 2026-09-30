@@ -16,5 +16,11 @@ namespace SharedMeta.Core.Packets
         [Id(1), Key(1)] public long EntitySequenceNumber { get; set; }
         [Id(2), Key(2)] public ushort MethodId { get; set; }
         [Id(3), Key(3), MemoryPackAllowSerialize] public ReadOnlyMemory<byte> ResultBytes { get; set; }
+
+        /// <summary>
+        /// Server state-type id of the target entity — with <see cref="EntityId"/>, whose
+        /// sequence <see cref="EntitySequenceNumber"/> is.
+        /// </summary>
+        [Id(4), Key(4)] public ushort StateTypeId { get; set; }
     }
 }

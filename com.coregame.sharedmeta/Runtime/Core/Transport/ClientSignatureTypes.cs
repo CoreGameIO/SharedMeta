@@ -70,6 +70,14 @@ namespace SharedMeta.Core.Transport
         /// <c>(ServiceName, Alias, Version)</c> so the canonical form is stable.
         /// </summary>
         [Id(2), Key(2), MemoryPackOrder(2)] public List<KnownMethodEntry> KnownMethods { get; set; } = new();
+
+        /// <summary>
+        /// Every state type the client's services are bound to, by full name, sorted ordinally.
+        /// The index is the client's state-type id — what it puts on the wire wherever a state
+        /// type is named (subscribe, RPC, claims). The server translates by name, the same way it
+        /// translates method ids.
+        /// </summary>
+        [Id(3), Key(3), MemoryPackOrder(3)] public List<string> KnownStateTypes { get; set; } = new();
     }
 
     /// <summary>
@@ -244,7 +252,17 @@ namespace SharedMeta.Core.Transport
         /// </summary>
         [Id(3), Key(3), MemoryPackOrder(3)] public MethodStatus[] Statuses { get; set; } = System.Array.Empty<MethodStatus>();
 
+        /// <summary>
+        /// Server state-type id → client state-type id, indexed by the server's id; length = the
+        /// server's state-type count. <see cref="UnknownClientStateTypeId"/> where the client has
+        /// no such state type. Applied to every state-type id the server sends (ops, verdicts).
+        /// </summary>
+        [Id(4), Key(4), MemoryPackOrder(4)] public ushort[] ServerToClientStateTypes { get; set; } = System.Array.Empty<ushort>();
+
         /// <summary>Sentinel value in <see cref="ServerToClient"/> for "client does not know this server method".</summary>
         public const ushort UnknownClientMethodId = 0xFFFF;
+
+        /// <summary>Sentinel in <see cref="ServerToClientStateTypes"/>, and on the wire for "no state type".</summary>
+        public const ushort UnknownClientStateTypeId = 0xFFFF;
     }
 }

@@ -31,7 +31,7 @@ namespace SharedMeta.Client.Network
         public string ClientId => _dispatcher.Connection.ConnectionId;
         public string? PlayerId { get; set; }
         public string? EntityId => _entityId;
-        public long LastKnownEntitySequence => _dispatcher.GetLastKnownEntitySequence(_entityId);
+        public long LastKnownEntitySequence => _dispatcher.GetLastKnownEntitySequence(_entityId, _stateTypeName ?? "");
         public long ServerTimeTicks => _serverTimeClock();
         public bool DeepDesyncActive => _dispatcher.DeepDesyncActive;
 

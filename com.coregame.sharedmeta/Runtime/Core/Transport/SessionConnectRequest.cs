@@ -109,10 +109,19 @@ namespace SharedMeta.Core.Transport
     public partial class SubscriptionClaim
     {
         [Id(0), Key(0)] public string EntityId { get; set; } = "";
-        [Id(1), Key(1)] public string StateTypeName { get; set; } = "";
+
+        /// <summary>Client state-type id, as in <see cref="SubscribeRequest.StateTypeId"/>.</summary>
+        [Id(1), Key(1)] public ushort StateTypeId { get; set; }
+
         /// <summary>Highest entity sequence number the client has applied locally for this entity.
         /// Used by the server to detect gaps (anything below current entity seq = gap → Refreshed).</summary>
         [Id(2), Key(2)] public long LastKnownEntitySequence { get; set; }
+
+        /// <summary>
+        /// Server-internal: the state type <see cref="StateTypeId"/> resolved to, set by the
+        /// connection handler for the session grain. Never on the client wire.
+        /// </summary>
+        [Id(3), IgnoreMember, MemoryPackIgnore] public string StateTypeName { get; set; } = "";
     }
 
     /// <summary>

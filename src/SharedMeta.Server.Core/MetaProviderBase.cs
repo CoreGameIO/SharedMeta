@@ -1219,7 +1219,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             EntityId = targetEntityId,
             MethodId = methodId,
             ResultBytes = result.ResultBytes,
-            EntitySequenceNumber = 0  // self-call shares outer's sequence; no separate seq increment
+            EntitySequenceNumber = 0,  // self-call shares outer's sequence; no separate seq increment
+            StateTypeId = ServerSignature?.StateTypeIdOfMethod(methodId) ?? ClientSignatureAnnotated.UnknownClientStateTypeId,
         };
     }
 

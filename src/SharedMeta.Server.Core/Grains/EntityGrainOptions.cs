@@ -6,8 +6,10 @@ namespace SharedMeta.Server.Core.Grains;
 public class EntityGrainOptions
 {
     /// <summary>
-    /// How long a subscriber remains valid after their last activity.
-    /// Expired subscribers are pruned on entity reactivation.
+    /// How long a subscriber entry survives without activity before reactivation prunes it.
+    /// Activity is the player's own calls, and every graceful deactivation stamps all subscribers
+    /// as active — so this removes entries left behind by a crash, not the live subscribers of an
+    /// entity that went idle.
     /// </summary>
     public TimeSpan SubscriberTtl { get; set; } = TimeSpan.FromMinutes(10);
 

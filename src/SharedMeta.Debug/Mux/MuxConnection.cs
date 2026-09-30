@@ -108,12 +108,12 @@ namespace SharedMeta.Debug.Mux
                 Signature = signature,
             });
 
-        public async Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, string stateTypeName)
+        public async Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, ushort stateTypeId)
         {
             var resp = await _hub.Subscribe(_sessionTag, new SubscribeRequest
             {
                 EntityId = entityId,
-                StateTypeName = stateTypeName,
+                StateTypeId = stateTypeId,
             });
             return new ConnectionSubscribeResult
             {
@@ -128,9 +128,9 @@ namespace SharedMeta.Debug.Mux
             };
         }
 
-        public async Task<bool> UnsubscribeAsync(string entityId)
+        public async Task<bool> UnsubscribeAsync(string entityId, ushort stateTypeId)
         {
-            var resp = await _hub.Unsubscribe(_sessionTag, new UnsubscribeRequest { EntityId = entityId });
+            var resp = await _hub.Unsubscribe(_sessionTag, new UnsubscribeRequest { EntityId = entityId, StateTypeId = stateTypeId });
             return resp.Success;
         }
 

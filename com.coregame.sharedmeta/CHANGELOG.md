@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.43.0] - Unreleased
+
+Subscribers move to their own store and survive idle deactivation; reconnect and session-loss recovery keep client and server in sync.
+
+### Breaking
+
+- Entity subscribers persist in a separate record under grain storage `EntitySubscriptionStorage.ProviderName` (`"SharedMetaSubscriptions"`), falling back to `"Default"`. `EntityGrainState.Subscribers` is removed; subscriptions from before the upgrade are not carried over.
+- **Wire-breaking:** state types travel as negotiated ids instead of full names (subscribe, unsubscribe, RPC, claims, verdicts, ops). Update client and server together.
+- `IConnection.SubscribeAsync` / `UnsubscribeAsync` take a `ushort stateTypeId`; `IClientDispatcher.UnsubscribeAsync` takes the `stateTypeName`. Migration: custom transports put the id on the request as given.
+- `IClientDispatcher.GetLastKnownEntitySequence` takes the state type name.
+- `MetaServiceResolver.DisconnectAsync` now ends the server-side subscription.
+
+### Added
+
+- Register a fast store (e.g. Redis) under `EntitySubscriptionStorage.ProviderName` for subscriber records.
+- A subscription lost with its store is repaired on the player's next call; if the player missed operations, that call fails and the client reloads the entity (`SessionNotice.SubscriptionLost`).
+
+### Changed
+
+- Subscribe, unsubscribe and reconnect no longer rewrite the entity state.
+
+### Fixed
+
+- An entity collected after 15 minutes idle came back with no subscribers and stopped broadcasting.
+- Reconnect dropped a legacy client's force-patch tailoring and client version on the entity.
+- Default session-loss recovery kept the client's stale state instead of installing the re-subscribed snapshots.
+- Unsubscribing never reached the server; the entity kept broadcasting to the player and Resume reclaimed the subscription.
+- Two state types sharing an entityId: only one was claimed on Resume and recovered after session loss, and both claimed one merged sequence number.
+- Removed misleading `serverSeq` / `clientSeq` from the generated desync log.
+
 ## [0.42.0] - 2026-09-24
 
 Account-level permissions: `[RequirePermission]` gates a method server-side, and the client learns what it holds.

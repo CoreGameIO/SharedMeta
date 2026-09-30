@@ -14,7 +14,10 @@ public partial class EntityGrainState<TState> where TState : class, ISharedState
 {
     [Id(0), Key(0), MemoryPackOrder(0)] public TState UserState { get; set; } = new();
     [Id(1), Key(1), MemoryPackOrder(1)] public long EntitySequenceNumber { get; set; }
-    [Id(2), Key(2), MemoryPackOrder(2)] public Dictionary<string, PersistedSubscriberInfo> Subscribers { get; set; } = new();
+
+    // Id(2) was the subscriber map — moved to its own record (EntitySubscribersState) in 0.43.0.
+    // Not migrated: subscribers do not survive a full redeploy anyway. Never reuse Id(2).
+
     [Id(3), Key(3), MemoryPackOrder(3)] public byte[]? ServerRandomBytes { get; set; }
     [Id(4), Key(4), MemoryPackOrder(4)] public byte[]? OptimisticRandomBytes { get; set; }
     [Id(5), Key(5), MemoryPackOrder(5)] public int Version { get; set; }
@@ -29,6 +32,17 @@ public partial class EntityGrainState<TState> where TState : class, ISharedState
     /// Null/empty for states without named randoms. Restored via IMetaProviderContext.NamedRandomsBytes.
     /// </summary>
     [Id(7), Key(7), MemoryPackOrder(7)] public byte[]? NamedRandomsBytes { get; set; }
+}
+
+/// <summary>
+/// Who is subscribed to an entity. A record of its own, apart from <see cref="EntityGrainState{TState}"/>,
+/// so subscription churn writes a few hundred bytes to a store the host picks
+/// (<see cref="EntitySubscriptionStorage.ProviderName"/>) instead of rewriting the entity's state.
+/// </summary>
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject, GenerateSerializer]
+public partial class EntitySubscribersState
+{
+    [Id(0), Key(0), MemoryPackOrder(0)] public Dictionary<string, PersistedSubscriberInfo> Subscribers { get; set; } = new();
 }
 
 /// <summary>

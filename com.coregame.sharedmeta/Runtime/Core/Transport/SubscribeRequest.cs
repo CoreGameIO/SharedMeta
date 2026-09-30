@@ -14,10 +14,10 @@ namespace SharedMeta.Core.Transport
         [Id(0), Key(0)] public string EntityId { get; set; } = "";
 
         /// <summary>
-        /// Type name of the entity state (e.g., "GameState").
-        /// Used by server to resolve the correct grain type.
+        /// Client state-type id — index into the client signature's <c>KnownStateTypes</c>. The
+        /// server translates it to the state type that selects the entity grain.
         /// </summary>
-        [Id(1), Key(1)] public string StateTypeName { get; set; } = "";
+        [Id(1), Key(1)] public ushort StateTypeId { get; set; }
 
         /// <summary>
         /// Client application version (e.g. "1.4.3"). Optional — when present the server resolves

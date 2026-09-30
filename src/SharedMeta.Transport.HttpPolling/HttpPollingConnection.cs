@@ -169,13 +169,13 @@ namespace SharedMeta.Transport.HttpPolling
                 MetaJsonContext.Default.RegisterClientSignatureRequest);
         }
 
-        public async Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, string stateTypeName)
+        public async Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, ushort stateTypeId)
         {
             EnsureSessionConnected();
 
             var response = await PostAsync<SubscribeResponse>(
                 "/subscribe",
-                new SubscribeRequest { EntityId = entityId, StateTypeName = stateTypeName },
+                new SubscribeRequest { EntityId = entityId, StateTypeId = stateTypeId },
                 MetaJsonContext.Default.SubscribeRequest);
 
             return new ConnectionSubscribeResult
@@ -192,13 +192,13 @@ namespace SharedMeta.Transport.HttpPolling
             };
         }
 
-        public async Task<bool> UnsubscribeAsync(string entityId)
+        public async Task<bool> UnsubscribeAsync(string entityId, ushort stateTypeId)
         {
             EnsureSessionConnected();
 
             var response = await PostAsync<UnsubscribeResponse>(
                 "/unsubscribe",
-                new UnsubscribeRequest { EntityId = entityId },
+                new UnsubscribeRequest { EntityId = entityId, StateTypeId = stateTypeId },
                 MetaJsonContext.Default.UnsubscribeRequest);
 
             return response.Success;

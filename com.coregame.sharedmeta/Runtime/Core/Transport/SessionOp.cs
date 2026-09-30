@@ -53,6 +53,14 @@ namespace SharedMeta.Core.Transport
         /// </summary>
         [Id(5), Key(5), MemoryPackOrder(5)] public long EntitySequenceNumber { get; set; }
 
+        /// <summary>
+        /// Server state-type id of the entity this op belongs to — with <see cref="EntityId"/>,
+        /// the grain whose <see cref="EntitySequenceNumber"/> this is. State types sharing an
+        /// entityId have independent sequences. <see cref="ClientSignatureAnnotated.UnknownClientStateTypeId"/>
+        /// when there is none (session-level errors).
+        /// </summary>
+        [Id(6), Key(6), MemoryPackOrder(6)] public ushort StateTypeId { get; set; }
+
         /// <summary>True if there was a top-level error.</summary>
         [IgnoreMember, MemoryPackIgnore] public bool HasError => Error != null;
 

@@ -39,6 +39,7 @@ namespace SharedMeta.Server.Core.Session
         // only needs ServerToClient to translate incoming wire ids; ClientToServer is for
         // the server's inbound RPC dispatch translation.
         private readonly ConcurrentDictionary<ulong, ushort[]> _clientToServerCache = new();
+        private readonly ConcurrentDictionary<ulong, string?[]> _clientStateTypeNamesCache = new();
 
         // Lazily resolved on first use so unit tests can construct the registry with a
         // null IGrainFactory and exercise the pure compute path without touching Orleans.
@@ -74,6 +75,7 @@ namespace SharedMeta.Server.Core.Session
                 return annotated;
 
             _clientToServerCache[signature.SignatureHash] = clientToServer;
+            _clientStateTypeNamesCache[signature.SignatureHash] = ComputeClientStateTypeNames(signature);
 
             if (!await Manager.IsKnownAsync(signature.SignatureHash)) {
                 var sigGrain = _grainFactory.GetGrain<IClientSignatureGrain>((long)signature.SignatureHash);
@@ -97,10 +99,8 @@ namespace SharedMeta.Server.Core.Session
             var sig = await sigGrain.GetSignatureAsync();
             if (sig == null) return null;
 
-            var (annotated, clientToServer) = ComputeAnnotatedAndMap(sig);
-            _annotatedCache.TryAdd(signatureHash, annotated);
-            _clientToServerCache.TryAdd(signatureHash, clientToServer);
-            return annotated;
+            CacheComputed(signatureHash, sig);
+            return _annotatedCache[signatureHash];
         }
 
         public async Task<ushort[]?> TryGetClientToServerMapAsync(ulong signatureHash)
@@ -114,10 +114,28 @@ namespace SharedMeta.Server.Core.Session
             var sig = await sigGrain.GetSignatureAsync();
             if (sig == null) return null;
 
+            CacheComputed(signatureHash, sig);
+            return _clientToServerCache[signatureHash];
+        }
+
+        public async Task<string?[]?> TryGetClientStateTypeNamesAsync(ulong signatureHash)
+        {
+            if (_clientStateTypeNamesCache.TryGetValue(signatureHash, out var cached)) return cached;
+
+            var sigGrain = _grainFactory.GetGrain<IClientSignatureGrain>((long)signatureHash);
+            var sig = await sigGrain.GetSignatureAsync();
+            if (sig == null) return null;
+
+            CacheComputed(signatureHash, sig);
+            return _clientStateTypeNamesCache[signatureHash];
+        }
+
+        private void CacheComputed(ulong signatureHash, MetaClientSignature sig)
+        {
             var (annotated, clientToServer) = ComputeAnnotatedAndMap(sig);
             _annotatedCache.TryAdd(signatureHash, annotated);
             _clientToServerCache.TryAdd(signatureHash, clientToServer);
-            return clientToServer;
+            _clientStateTypeNamesCache.TryAdd(signatureHash, ComputeClientStateTypeNames(sig));
         }
 
         /// <summary>
@@ -288,7 +306,38 @@ namespace SharedMeta.Server.Core.Session
                 ServerSignatureHash = _serverSignature.SignatureHash,
                 ServerToClient = serverToClient,
                 Statuses = statuses,
+                ServerToClientStateTypes = ComputeServerToClientStateTypes(signature),
             }, clientToServer);
+        }
+
+        /// <summary>Server state-type id → client state-type id, matched by full name.</summary>
+        private ushort[] ComputeServerToClientStateTypes(MetaClientSignature signature)
+        {
+            var serverStates = _serverSignature!.StateTypes;
+            var map = new ushort[serverStates.Count];
+            for (int i = 0; i < map.Length; i++)
+                map[i] = ClientSignatureAnnotated.UnknownClientStateTypeId;
+            for (int c = 0; c < signature.KnownStateTypes.Count; c++)
+            {
+                var serverId = _serverSignature.ResolveStateTypeId(signature.KnownStateTypes[c]);
+                if (serverId.HasValue) map[serverId.Value] = (ushort)c;
+            }
+            return map;
+        }
+
+        /// <summary>
+        /// Client state-type id → state-type name this server knows, null where it knows none.
+        /// Server-internal: the connection handler resolves inbound state-type ids with it.
+        /// </summary>
+        private string?[] ComputeClientStateTypeNames(MetaClientSignature signature)
+        {
+            var names = new string?[signature.KnownStateTypes.Count];
+            for (int c = 0; c < names.Length; c++)
+            {
+                var name = signature.KnownStateTypes[c];
+                names[c] = _serverSignature == null || _serverSignature.ResolveStateTypeId(name).HasValue ? name : null;
+            }
+            return names;
         }
     }
 }

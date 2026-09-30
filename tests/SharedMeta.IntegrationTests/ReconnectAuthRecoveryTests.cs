@@ -86,9 +86,9 @@ public class ReconnectAuthRecoveryTests
         public Task GracefulDisconnectAsync() => _inner.GracefulDisconnectAsync();
         public Task<RegisterClientSignatureResponse> RegisterClientSignatureAsync(Guid sessionId, MetaClientSignature signature)
             => _inner.RegisterClientSignatureAsync(sessionId, signature);
-        public Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, string stateTypeName)
-            => _inner.SubscribeAsync(entityId, stateTypeName);
-        public Task<bool> UnsubscribeAsync(string entityId) => _inner.UnsubscribeAsync(entityId);
+        public Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, ushort stateTypeId)
+            => _inner.SubscribeAsync(entityId, stateTypeId);
+        public Task<bool> UnsubscribeAsync(string entityId, ushort stateTypeId) => _inner.UnsubscribeAsync(entityId, stateTypeId);
         public Task<SessionResponse> RpcCallAsync(RpcCallRequest request) => _inner.RpcCallAsync(request);
         public Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request) => _inner.QueryCallAsync(request);
         public Task SignalCallAsync(SignalCallRequest request) => _inner.SignalCallAsync(request);

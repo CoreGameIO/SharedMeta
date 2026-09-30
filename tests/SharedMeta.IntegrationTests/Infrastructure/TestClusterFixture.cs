@@ -175,6 +175,13 @@ public class TestClusterFixture : IAsyncLifetime
                     // Register execution mode provider (shared with tests)
                     services.AddSingleton<IExecutionModeProvider>(SharedModeProvider);
 
+                    // Subscriber records in a store tests can make forget a grain — registered
+                    // before ConfigureTestMeta, so the framework's "Default" alias stands aside.
+                    services.AddKeyedSingleton<global::Orleans.Storage.IGrainStorage>(
+                        SharedMeta.Server.Core.Grains.EntitySubscriptionStorage.ProviderName,
+                        (sp, _) => new LosableSubscriptionStorage(
+                            sp.GetRequiredKeyedService<global::Orleans.Storage.IGrainStorage>("Default")));
+
                     // Configure test meta services
                     services.ConfigureTestMeta();
                 });

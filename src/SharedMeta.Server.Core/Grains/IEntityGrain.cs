@@ -31,12 +31,13 @@ namespace SharedMeta.Server.Core.Grains
         /// (entity id + last-known entity sequence number) on Resume. The grain verifies its
         /// persisted state and returns one of three verdicts:
         /// <list type="bullet">
-        /// <item><c>Continued</c> — subscriber present, sequence numbers match, signature hash
-        /// unchanged. No state shipped; client keeps its current view, server refreshes the live
-        /// <see cref="ISessionManagerReference"/> binding so broadcasts resume flowing.</item>
-        /// <item><c>Refreshed</c> — subscriber missing (eviction / never persisted) or sequence
-        /// gap detected. Behaves like a full <see cref="SubscribeAsync"/>: migration, schema
-        /// gate, force-patch refcounts, snapshot. State + randoms + config version returned.</item>
+        /// <item><c>Continued</c> — sequence numbers match and the signature hash is unchanged
+        /// (or the subscriber entry is gone, as after any transport disconnect). No state shipped;
+        /// the grain re-registers the subscriber in full — broadcast binding, client version,
+        /// force-patch contributions, config pins.</item>
+        /// <item><c>Refreshed</c> — sequence gap or signature change. Behaves like a full
+        /// <see cref="SubscribeAsync"/>: migration, schema gate, force-patch refcounts, snapshot.
+        /// State + randoms + config version returned.</item>
         /// <item><c>Failed</c> — access policy denied or schema incompatible. Reported with
         /// <c>FailureReason</c>; client surfaces to game via IMetaSubscriptionRecoveryHandler.</item>
         /// </list>

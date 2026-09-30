@@ -604,13 +604,11 @@ namespace SharedMeta.Server.Core.Session
         {
             _observerManager.Clear();
 
-            // 0.24.0+ Subscriptions live on the client now — no server-side stash. We just
-            // unsubscribe from entity grains to stop broadcasts flowing into a dead session.
-            // On Resume the client re-claims via ClaimedSubscriptions; entity grains see this
-            // as a fresh subscriber and return Refreshed (which is correct — there may be a
-            // gap during the disconnect window). The Continued cheap-path only kicks in after
-            // silo-shutdown reactivation, where OnDeactivateAsync(reason=ShuttingDown) skips
-            // the unsubscribe loop and state.Subscribers survives.
+            // Subscriptions live on the client — no server-side stash. Unsubscribing stops
+            // broadcasts flowing into a dead session. On Resume the client re-claims each
+            // subscription: an entity whose sequence moved during the gap answers Refreshed with
+            // a snapshot; an unchanged one answers Continued and re-registers the subscriber in
+            // full (client version, force-patch contributions, config pins).
             var subscribers = AllSubscriptions().ToList();
             foreach (var sub in subscribers)
             {
@@ -875,6 +873,7 @@ namespace SharedMeta.Server.Core.Session
                                 RequestId = requestId,
                                 Error = "Request was processed by a previous server instance — result no longer available",
                                 OpBytes = ReadOnlyMemory<byte>.Empty,
+                                StateTypeId = StateTypeIdOf(stateTypeName),
                             }
                         },
                         ServerTimeTicks = DateTime.UtcNow.Ticks,
@@ -922,6 +921,7 @@ namespace SharedMeta.Server.Core.Session
                                 RequestId = stashed.RequestId,
                                 Error = $"Not subscribed to entity {stashed.EntityId}",
                                 OpBytes = ReadOnlyMemory<byte>.Empty,
+                                StateTypeId = StateTypeIdOf(stashed.StateTypeName),
                             });
                             continue;
                         }
@@ -1018,12 +1018,37 @@ namespace SharedMeta.Server.Core.Session
             // Append directly to allOps to avoid an intermediate List<SessionOp> per RPC.
             AppendPrecedingOps(state, entityId, stateTypeName, allOps);
 
+            if (result.CallerNotSubscribed
+                && !await TryRepairLostSubscriptionAsync(entityId, stateTypeName, grainRef, state, result.EntitySequenceNumber))
+            {
+                // The client missed operations the entity never sent it, so this call's result
+                // can't be applied on top of its view — a Server-mode replay would run against
+                // stale state. Fail it instead and have the client re-subscribe: the snapshot it
+                // gets already contains this call. Deferring would park it on a gap nothing fills.
+                allOps.Add(new SessionOp
+                {
+                    EntityId = entityId,
+                    RequestId = requestId,
+                    Error = $"Subscription to entity {entityId} was lost on the server. The call was applied; " +
+                            "the client is reloading the entity's state.",
+                    OpBytes = ReadOnlyMemory<byte>.Empty,
+                    StateTypeId = StateTypeIdOf(stateTypeName),
+                });
+                MergeOutgoingBatch(allOps);
+                var notice = new SessionNotice
+                {
+                    SubscriptionLost = new SubscriptionLostNotice { EntityId = entityId, StateTypeId = StateTypeIdOf(stateTypeName) },
+                };
+                await _observerManager.Notify(o => o.OnNotice(notice));
+                return false;
+            }
+
             if (state.KnownEntitySequence >= result.EntitySequenceNumber - 1)
             {
                 // Fast path — append result op directly
                 state.KnownEntitySequence = Math.Max(state.KnownEntitySequence, result.EntitySequenceNumber);
-                allOps.Add(CallResultToSessionOp(entityId, requestId, result));
-                DrainHeldBroadcasts(state, entityId);
+                allOps.Add(CallResultToSessionOp(entityId, stateTypeName, requestId, result));
+                DrainHeldBroadcasts(state, entityId, stateTypeName);
                 MergeOutgoingBatch(allOps);
                 return false;
             }
@@ -1041,6 +1066,31 @@ namespace SharedMeta.Server.Core.Session
             });
             MergeOutgoingBatch(allOps);
             return true;
+        }
+
+        /// <summary>
+        /// The entity reported that it no longer broadcasts to us — its subscriber record was lost
+        /// across a reactivation. When nothing was missed (this call is the next op after what we
+        /// hold) re-registering at the call's sequence is enough and the client never notices.
+        /// Returns false when the client has missed operations and must reload the entity.
+        /// </summary>
+        private async Task<bool> TryRepairLostSubscriptionAsync(
+            string entityId, string stateTypeName, IEntityGrainBase grainRef, EntityOrderingState state, long callSequence)
+        {
+            if (state.KnownEntitySequence < callSequence - 1)
+                return false;
+            if (!TryGetSubscription(entityId, stateTypeName, out var sub))
+                return false;
+
+            var verdict = await grainRef.ReclaimSubscriptionAsync(
+                _playerId, this.AsReference<ISessionManagerReference>(), callSequence,
+                sub.ClientVersion, sub.ClientSignatureHash);
+            _logger.LogWarning(
+                "[SessionManager:{Player}] Entity {EntityId} had lost this subscription; reclaim verdict {Status}",
+                _playerId, entityId, verdict.Status);
+            // Refreshed: another write landed between the call and the reclaim, so ops were missed
+            // after all. Failed: the subscription can't be re-established. The client reloads.
+            return verdict.Status == SubscriptionStatus.Continued;
         }
 
         /// <summary>
@@ -1239,7 +1289,7 @@ namespace SharedMeta.Server.Core.Session
             {
                 // In order — buffer for batch delivery
                 state.KnownEntitySequence = entitySequenceNumber;
-                BufferBroadcast(entityId, broadcast, entitySequenceNumber);
+                BufferBroadcast(entityId, stateTypeName, broadcast, entitySequenceNumber);
 
                 DrainAndResolve(state, entityId, stateTypeName);
             }
@@ -1265,12 +1315,12 @@ namespace SharedMeta.Server.Core.Session
         /// yet (FlushOutgoingBatch stamps it); per-entity sequence flows through as-is so the
         /// client can track its highest seen seq per entity.
         /// </summary>
-        private void BufferBroadcast(string entityId, EntityBroadcast broadcast, long entitySequenceNumber)
+        private void BufferBroadcast(string entityId, string stateTypeName, EntityBroadcast broadcast, long entitySequenceNumber)
         {
             _logger.BufferBroadcast(_playerId, entityId);
 
             // Add to outgoing batch
-            _outgoingBatch.Add(BroadcastToSessionOp(entityId, broadcast, entitySequenceNumber));
+            _outgoingBatch.Add(BroadcastToSessionOp(entityId, stateTypeName, broadcast, entitySequenceNumber));
         }
 
         /// <summary>
@@ -1319,7 +1369,7 @@ namespace SharedMeta.Server.Core.Session
             }
         }
 
-        private void DrainHeldBroadcasts(EntityOrderingState state, string entityId)
+        private void DrainHeldBroadcasts(EntityOrderingState state, string entityId, string stateTypeName)
         {
             while (state.HeldBroadcasts.Count > 0)
             {
@@ -1342,7 +1392,7 @@ namespace SharedMeta.Server.Core.Session
                 // is already inlined in the cross-call's replay payload. Skip emission; only
                 // advance the sequence counter so subsequent broadcasts aren't held forever.
                 if (!ReferenceEquals(firstValue, CrossCallSlotMarker))
-                    BufferBroadcast(entityId, firstValue, firstKey);
+                    BufferBroadcast(entityId, stateTypeName, firstValue, firstKey);
             }
         }
 
@@ -1368,7 +1418,7 @@ namespace SharedMeta.Server.Core.Session
                 if (b.EntitySequenceNumber == expectedNext)
                 {
                     state.KnownEntitySequence = b.EntitySequenceNumber;
-                    allOps.Add(BroadcastToSessionOp(b.EntityId, b.Broadcast, b.EntitySequenceNumber));
+                    allOps.Add(BroadcastToSessionOp(b.EntityId, b.StateTypeName, b.Broadcast, b.EntitySequenceNumber));
                 }
                 else if (b.EntitySequenceNumber > expectedNext)
                 {
@@ -1388,7 +1438,7 @@ namespace SharedMeta.Server.Core.Session
             while (true)
             {
                 var knownBefore = state.KnownEntitySequence;
-                DrainHeldBroadcasts(state, entityId);
+                DrainHeldBroadcasts(state, entityId, stateTypeName);
                 ResolveDeferredResponses(entityId, stateTypeName);
                 if (state.KnownEntitySequence == knownBefore)
                     break;
@@ -1413,7 +1463,7 @@ namespace SharedMeta.Server.Core.Session
                 _deferredResponses.RemoveAt(i);
                 state.KnownEntitySequence = Math.Max(state.KnownEntitySequence, deferred.RequiredEntitySeq);
 
-                var deferredOp = CallResultToSessionOp(entityId, deferred.RequestId, deferred.Result);
+                var deferredOp = CallResultToSessionOp(entityId, stateTypeName, deferred.RequestId, deferred.Result);
 
                 _logger.DeferredResolved(deferred.RequestId);
 
@@ -1440,15 +1490,20 @@ namespace SharedMeta.Server.Core.Session
         /// already filters those subscribers out anyway.
         /// </para>
         /// </summary>
-        private SessionOp BroadcastToSessionOp(string entityId, EntityBroadcast broadcast, long entitySequenceNumber)
+        private SessionOp BroadcastToSessionOp(string entityId, string stateTypeName, EntityBroadcast broadcast, long entitySequenceNumber)
         {
             return new SessionOp {
                 EntityId = entityId,
                 RequestId = 0,
                 OpBytes = broadcast.OpBytes,
                 EntitySequenceNumber = entitySequenceNumber,
+                StateTypeId = StateTypeIdOf(stateTypeName),
             };
         }
+
+        // Server state-type id for the wire; the client translates it to its own.
+        private ushort StateTypeIdOf(string stateTypeName)
+            => _serverSignature?.StateTypeIdOrUnknown(stateTypeName) ?? ClientSignatureAnnotated.UnknownClientStateTypeId;
 
         /// <summary>
         /// Convert an EntityCallResult to a SessionOp. The entity sequence number from
@@ -1456,7 +1511,7 @@ namespace SharedMeta.Server.Core.Session
         /// the client can populate <see cref="SubscriptionClaim.LastKnownEntitySequence"/> on
         /// next Resume.
         /// </summary>
-        private SessionOp CallResultToSessionOp(string entityId, long requestId, EntityCallResult result)
+        private SessionOp CallResultToSessionOp(string entityId, string stateTypeName, long requestId, EntityCallResult result)
         {
             return new SessionOp {
                 EntityId = entityId,
@@ -1465,6 +1520,7 @@ namespace SharedMeta.Server.Core.Session
                 Error = result.Error,
                 CrossEntityOperations = result.CrossEntityCalls,
                 EntitySequenceNumber = result.EntitySequenceNumber,
+                StateTypeId = StateTypeIdOf(stateTypeName),
             };
         }
 

@@ -94,11 +94,10 @@ namespace SharedMeta.Core.Transport
         IConnection Connection { get; }
 
         /// <summary>
-        /// 0.24.0+ Highest per-entity broadcast sequence the client has observed. Returns 0 when
-        /// no broadcast or Subscribe seed has been recorded yet. Used by generated <c>*ApiClient</c>
-        /// desync diagnostics to compare against the server-stamped seq in <c>response.Debug</c>.
+        /// Highest per-entity sequence the client has applied, claimed on the next Resume. Returns 0
+        /// when no broadcast or Subscribe seed has been recorded yet.
         /// </summary>
-        long GetLastKnownEntitySequence(string? entityId);
+        long GetLastKnownEntitySequence(string? entityId, string stateTypeName);
 
         /// <summary>
         /// Subscribe to an entity and receive initial state.
@@ -110,9 +109,10 @@ namespace SharedMeta.Core.Transport
         Task<ConnectResponse> SubscribeAsync(string entityId, string? stateTypeName = null);
 
         /// <summary>
-        /// Unsubscribe from an entity.
+        /// Unsubscribe from an entity. <paramref name="stateTypeName"/> must match the one passed to
+        /// <see cref="SubscribeAsync"/> — other state types sharing the entityId stay subscribed.
         /// </summary>
-        Task UnsubscribeAsync(string entityId);
+        Task UnsubscribeAsync(string entityId, string stateTypeName);
 
         /// <summary>
         /// Send an RPC call to an entity and receive response.

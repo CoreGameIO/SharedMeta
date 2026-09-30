@@ -5,8 +5,9 @@ using MessagePack;
 namespace SharedMeta.Core.Transport
 {
     /// <summary>
-    /// A message from the server about the session itself rather than about any entity: a stall in
-    /// request ordering, a change to the player's permissions. Exactly one payload is set per notice.
+    /// A message from the server about the session itself rather than an entity operation: a stall
+    /// in request ordering, a change to the player's permissions, a subscription the server lost.
+    /// Exactly one payload is set per notice.
     /// </summary>
     /// <remarks>
     /// Notices travel on their own channel, apart from <see cref="SessionResponse"/>. They carry no
@@ -33,5 +34,21 @@ namespace SharedMeta.Core.Transport
         /// misses this is refused by the server rather than wrongly admitted.
         /// </summary>
         [Id(1), Key(1), MemoryPackOrder(1)] public SharedMeta.Core.PlayerPermissions? Permissions { get; set; }
+
+        /// <summary>
+        /// The server lost this subscription and the client missed operations on it. The client
+        /// re-subscribes and installs the returned snapshot as its view of the entity.
+        /// </summary>
+        [Id(2), Key(2), MemoryPackOrder(2)] public SubscriptionLostNotice? SubscriptionLost { get; set; }
+    }
+
+    /// <summary>Identifies the subscription a <see cref="SessionNotice.SubscriptionLost"/> is about.</summary>
+    [MemoryPackable(GenerateType.VersionTolerant), MessagePackObject, GenerateSerializer, Immutable]
+    public partial class SubscriptionLostNotice
+    {
+        [Id(0), Key(0), MemoryPackOrder(0)] public string EntityId { get; set; } = "";
+
+        /// <summary>Server state-type id; the client translates it like any other.</summary>
+        [Id(1), Key(1), MemoryPackOrder(1)] public ushort StateTypeId { get; set; }
     }
 }

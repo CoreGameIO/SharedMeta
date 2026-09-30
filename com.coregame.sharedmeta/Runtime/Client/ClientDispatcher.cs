@@ -20,6 +20,9 @@ namespace SharedMeta.Client
         // entityId alone doesn't uniquely identify a subscription (see SendAsync) — carried
         // through to RpcCallRequest so SessionManagerGrain can route to the right one.
         public string StateTypeName { get; init; } = "";
+        // Resolved once when the call is issued, so an undeclared state type fails the call
+        // instead of every resend.
+        public ushort StateTypeId { get; init; }
         public ushort MethodId { get; init; }  // 0.24.0+: stamped from RpcCall.MethodId
         public ReadOnlyMemory<byte> Payload { get; init; }
         public bool IsCrossOptimistic { get; init; }
@@ -52,11 +55,18 @@ namespace SharedMeta.Client
         private readonly object _lock = new();
 
         private readonly Dictionary<string, List<Action<SessionOp>>> _broadcastHandlers = new();
-        private readonly Dictionary<string, string> _subscribedEntities = new(); // entityId → stateTypeName
-        // 0.24.0+ Highest per-entity broadcast sequence we've observed. Used to populate
-        // SubscriptionClaim.LastKnownEntitySequence on next Resume so the server's entity grain
-        // can return Continued (no gap, no state shipped) instead of Refreshed (full snapshot).
-        private readonly Dictionary<string, long> _lastKnownEntitySeq = new();
+        // Keyed by the pair: two state types can share an entityId (Inventory/Wallet keyed by
+        // playerId), and each is a separate subscription on the server.
+        private readonly HashSet<(string EntityId, string StateTypeName)> _subscribedEntities = new();
+        // Highest sequence applied per entity grain — (entityId, state type), since state types
+        // sharing an entityId are separate grains with independent sequences. Claimed on Resume
+        // so the grain can answer Continued (no state shipped) instead of Refreshed.
+        private readonly Dictionary<(string EntityId, string StateTypeName), long> _lastKnownEntitySeq = new();
+
+        // Client state-type name → id, from the signature in use. Rebuilt when the signature
+        // object changes; read under _lock.
+        private MetaClientSignature? _stateTypeIdsSignature;
+        private Dictionary<string, ushort>? _stateTypeIds;
         private long _nextRequestId;
 
         // Pending RPC requests awaiting response
@@ -196,12 +206,76 @@ namespace SharedMeta.Client
             ImmediateMode = false;
         }
 
+        // State types cross the wire as ids: this client's on the way out, the server's on the way
+        // in (translated through the annotation). Inside the client they stay names.
+
+        /// <summary>Client state-type id for a name; throws when this build doesn't declare it.</summary>
+        private ushort ClientStateTypeId(string stateTypeName)
+        {
+            var signature = ClientSignature ?? ClientSignatureDefault.Value
+                ?? throw new InvalidOperationException(
+                    "No client signature: state types are sent as signature ids. Register services (RegisterAllServices) or set MetaClientOptions.ClientSignature.");
+            lock (_lock)
+            {
+                if (!ReferenceEquals(_stateTypeIdsSignature, signature) || _stateTypeIds == null)
+                {
+                    _stateTypeIds = new Dictionary<string, ushort>(signature.KnownStateTypes.Count);
+                    for (int i = 0; i < signature.KnownStateTypes.Count; i++)
+                        _stateTypeIds[signature.KnownStateTypes[i]] = (ushort)i;
+                    _stateTypeIdsSignature = signature;
+                }
+                if (_stateTypeIds.TryGetValue(stateTypeName, out var id)) return id;
+            }
+            throw new InvalidOperationException(
+                $"State type '{stateTypeName}' is not in the client signature — no [MetaService] of this build is bound to it.");
+        }
+
+        /// <summary>
+        /// State-type name for an id the server sent, or null when this client has no such state
+        /// type (a newer server) or no annotation to translate with.
+        /// </summary>
+        private string? StateTypeNameFromServer(ushort serverStateTypeId)
+        {
+            var map = Annotated?.ServerToClientStateTypes;
+            if (map == null || serverStateTypeId >= map.Length) return null;
+            var clientId = map[serverStateTypeId];
+            var known = (ClientSignature ?? ClientSignatureDefault.Value)?.KnownStateTypes;
+            return known != null && clientId < known.Count ? known[clientId] : null;
+        }
+
+        /// <summary>
+        /// The subscription an op with this server state-type id belongs to. When the id can't be
+        /// translated, falls back to the only state type subscribed under the entityId; with none
+        /// or several it returns null and the op does not move any sequence — the next Resume
+        /// then claims low and gets a snapshot, never a wrong Continued.
+        /// </summary>
+        private string? ResolveOpStateTypeLocked(string entityId, ushort serverStateTypeId)
+        {
+            var name = StateTypeNameFromServer(serverStateTypeId);
+            if (name != null) return name;
+            string? only = null;
+            foreach (var (id, type) in _subscribedEntities)
+            {
+                if (id != entityId) continue;
+                if (only != null) return null;
+                only = type;
+            }
+            return only;
+        }
+
+        private void AdvanceSeqLocked(string entityId, string stateTypeName, long seq)
+        {
+            var key = (entityId, stateTypeName);
+            if (!_lastKnownEntitySeq.TryGetValue(key, out var prev) || seq > prev)
+                _lastKnownEntitySeq[key] = seq;
+        }
+
         public async Task<ConnectResponse> SubscribeAsync(string entityId, string? stateTypeName = null)
         {
             if (string.IsNullOrEmpty(entityId))
                 throw new ArgumentNullException(nameof(entityId));
 
-            var result = await _connection.SubscribeAsync(entityId, stateTypeName ?? "");
+            var result = await _connection.SubscribeAsync(entityId, ClientStateTypeId(stateTypeName ?? ""));
 
             if (!result.Success)
             {
@@ -218,12 +292,11 @@ namespace SharedMeta.Client
 
             lock (_lock)
             {
-                _subscribedEntities[entityId] = stateTypeName ?? "";
-                // 0.24.0+ Seed per-entity seq tracker from the Subscribe snapshot so the next
-                // Resume claim is accurate even if no broadcast arrives between Subscribe and
-                // Resume (rare timing window — usually broadcasts start flowing immediately).
+                _subscribedEntities.Add((entityId, stateTypeName ?? ""));
+                // Seed the sequence from the snapshot so the next Resume claim is accurate even if
+                // no broadcast arrives before it.
                 if (result.EntitySequenceNumber > 0)
-                    _lastKnownEntitySeq[entityId] = result.EntitySequenceNumber;
+                    _lastKnownEntitySeq[(entityId, stateTypeName ?? "")] = result.EntitySequenceNumber;
             }
 
             return new ConnectResponse
@@ -237,18 +310,31 @@ namespace SharedMeta.Client
             };
         }
 
-        public async Task UnsubscribeAsync(string entityId)
+        public async Task UnsubscribeAsync(string entityId, string stateTypeName)
         {
             if (string.IsNullOrEmpty(entityId))
                 throw new ArgumentNullException(nameof(entityId));
 
-            await _connection.UnsubscribeAsync(entityId);
-
+            // Local bookkeeping first: once the call is issued the subscription is gone as far as
+            // this client is concerned, and a Resume racing it must not claim it back.
             lock (_lock)
             {
-                _subscribedEntities.Remove(entityId);
-                _lastKnownEntitySeq.Remove(entityId);
-                _broadcastHandlers.Remove(entityId);
+                _subscribedEntities.Remove((entityId, stateTypeName ?? ""));
+                _lastKnownEntitySeq.Remove((entityId, stateTypeName ?? ""));
+            }
+            // Broadcast handlers are not touched: each adapter owns and disposes its own, and a
+            // sibling state type on the same entityId keeps receiving.
+
+            // A send that fails still unsubscribes in effect: a dropped transport already removed the
+            // server-side subscription, and the next Resume no longer claims it.
+            try
+            {
+                if (!await _connection.UnsubscribeAsync(entityId, ClientStateTypeId(stateTypeName ?? "")))
+                    MetaLog.Warning($"[ClientDispatcher] Server did not confirm unsubscribe from {entityId} ({stateTypeName})");
+            }
+            catch (Exception ex)
+            {
+                MetaLog.Warning($"[ClientDispatcher] Unsubscribe from {entityId} ({stateTypeName}) not sent: {ex.Message}");
             }
         }
 
@@ -260,6 +346,7 @@ namespace SharedMeta.Client
                 throw new ArgumentNullException(nameof(call));
 
             var payloadBytes = call.Payload;
+            var stateTypeId = ClientStateTypeId(stateTypeName ?? "");
 
             PendingRequest pending;
             lock (_lock)
@@ -270,6 +357,7 @@ namespace SharedMeta.Client
                     RequestId = requestId,
                     EntityId = entityId,
                     StateTypeName = stateTypeName ?? "",
+                    StateTypeId = stateTypeId,
                     MethodId = call.MethodId,
                     Payload = payloadBytes,
                     IsCrossOptimistic = call.IsCrossOptimistic,
@@ -368,8 +456,15 @@ namespace SharedMeta.Client
         {
             lock (_lock)
             {
-                return _subscribedEntities.ContainsKey(entityId);
+                return IsSubscribedLocked(entityId);
             }
+        }
+
+        private bool IsSubscribedLocked(string entityId)
+        {
+            foreach (var (id, _) in _subscribedEntities)
+                if (id == entityId) return true;
+            return false;
         }
 
         /// <summary>
@@ -472,12 +567,9 @@ namespace SharedMeta.Client
             // Resume when we have a non-empty sessionId, StartNew otherwise.
             var effectiveMode = mode ?? (sessionId != Guid.Empty ? SessionConnectMode.Resume : SessionConnectMode.StartNew);
 
-            // 0.24.0+ Build subscription claims from the locally-tracked _subscribedEntities.
-            // Only meaningful on Resume — StartNew explicitly discards the prior session, so
-            // claims are skipped to avoid double-subscribe noise. LastKnownEntitySequence comes
-            // from _lastKnownEntitySeq (running max of per-entity seq across all incoming
-            // SessionOps); zero means we haven't seen any broadcast for this entity yet, which
-            // makes the entity grain ship a Refreshed snapshot (correct fallback).
+            // Claims from the locally-tracked subscriptions, only on Resume — StartNew discards the
+            // prior session. Each claims its own grain's sequence; zero (nothing seen yet) makes
+            // the grain ship a Refreshed snapshot, the correct fallback.
             List<SubscriptionClaim>? claims = null;
             if (effectiveMode == SessionConnectMode.Resume)
             {
@@ -488,11 +580,11 @@ namespace SharedMeta.Client
                         claims = new List<SubscriptionClaim>(_subscribedEntities.Count);
                         foreach (var (entityId, stateTypeName) in _subscribedEntities)
                         {
-                            _lastKnownEntitySeq.TryGetValue(entityId, out var lastSeq);
+                            _lastKnownEntitySeq.TryGetValue((entityId, stateTypeName), out var lastSeq);
                             claims.Add(new SubscriptionClaim
                             {
                                 EntityId = entityId,
-                                StateTypeName = stateTypeName,
+                                StateTypeId = ClientStateTypeId(stateTypeName),
                                 LastKnownEntitySequence = lastSeq,
                             });
                         }
@@ -655,11 +747,14 @@ namespace SharedMeta.Client
                 {
                     foreach (var v in result.Subscriptions)
                     {
-                        _lastKnownEntitySeq.TryGetValue(v.EntityId,  out var known);
-                        MetaLog.Info($"[ClientDispatcher] Subscription {v.EntityId} EntitySequenceNumber = {v.EntitySequenceNumber} Known = {known}");
-                        if (v.Status == SubscriptionStatus.Failed) continue;
+                        // The wire names the state type by server id; everything downstream
+                        // (resolver, seq tracking) works on names.
+                        v.StateTypeName = StateTypeNameFromServer(v.StateTypeId) ?? "";
+                        _lastKnownEntitySeq.TryGetValue((v.EntityId, v.StateTypeName), out var known);
+                        MetaLog.Info($"[ClientDispatcher] Subscription {v.EntityId} ({v.StateTypeName}) EntitySequenceNumber = {v.EntitySequenceNumber} Known = {known}");
+                        if (v.Status == SubscriptionStatus.Failed || v.StateTypeName.Length == 0) continue;
                         if (v.EntitySequenceNumber > 0)
-                            _lastKnownEntitySeq[v.EntityId] = v.EntitySequenceNumber;
+                            _lastKnownEntitySeq[(v.EntityId, v.StateTypeName)] = v.EntitySequenceNumber;
                     }
                 }
                 OnSubscriptionsReclaimed?.Invoke(result.Subscriptions);
@@ -911,6 +1006,9 @@ namespace SharedMeta.Client
                 }
             }
 
+            if (notice.SubscriptionLost is { } lost)
+                _ = ReloadLostSubscriptionAsync(lost);
+
             if (notice.Stall is { } stall)
             {
                 // Informational — client auto-retry already handles resending.
@@ -1002,16 +1100,16 @@ namespace SharedMeta.Client
 
             foreach (var op in response.Operations)
             {
-                // 0.24.0+ Track highest per-entity sequence number for SubscriptionClaim on next
-                // Resume. Server stamps each SessionOp with the entity-grain's seq at the moment
-                // it was produced — we keep the running max. Zero means the op had no entity
-                // association (e.g. session-level transient errors), don't track that.
+                // Track the highest sequence per grain for the next Resume claim. The server stamps
+                // each op with its grain's sequence and state-type id. Zero sequence means no
+                // entity association (session-level errors) — not tracked.
                 if (op.EntitySequenceNumber > 0 && !string.IsNullOrEmpty(op.EntityId))
                 {
                     lock (_lock)
                     {
-                        if (!_lastKnownEntitySeq.TryGetValue(op.EntityId, out var prev) || op.EntitySequenceNumber > prev)
-                            _lastKnownEntitySeq[op.EntityId] = op.EntitySequenceNumber;
+                        var stateType = ResolveOpStateTypeLocked(op.EntityId, op.StateTypeId);
+                        if (stateType != null)
+                            AdvanceSeqLocked(op.EntityId, stateType, op.EntitySequenceNumber);
                     }
                 }
 
@@ -1030,8 +1128,9 @@ namespace SharedMeta.Client
                             var ce = crossOps[i];
                             if (ce.EntitySequenceNumber > 0 && !string.IsNullOrEmpty(ce.EntityId))
                             {
-                                if (!_lastKnownEntitySeq.TryGetValue(ce.EntityId, out var cePrev) || ce.EntitySequenceNumber > cePrev)
-                                    _lastKnownEntitySeq[ce.EntityId] = ce.EntitySequenceNumber;
+                                var ceStateType = ResolveOpStateTypeLocked(ce.EntityId, ce.StateTypeId);
+                                if (ceStateType != null)
+                                    AdvanceSeqLocked(ce.EntityId, ceStateType, ce.EntitySequenceNumber);
                             }
                         }
                     }
@@ -1357,11 +1456,13 @@ namespace SharedMeta.Client
 
             // Capture the old sessionId + subscribed entities BEFORE we reset state.
             Guid oldSessionId;
+            List<(string EntityId, string StateTypeName)> knownSubscriptions;
             List<string> knownEntityIds;
             lock (_lock)
             {
                 oldSessionId = _sessionId;
-                knownEntityIds = new List<string>(_subscribedEntities.Keys);
+                knownSubscriptions = new List<(string, string)>(_subscribedEntities);
+                knownEntityIds = knownSubscriptions.Select(s => s.EntityId).Distinct().ToList();
                 _sessionId = Guid.Empty;
                 _lastAcknowledgedSequence = 0;
                 IsSessionConnected = false;
@@ -1397,7 +1498,7 @@ namespace SharedMeta.Client
             switch (action)
             {
                 case SessionRecoveryAction.Reconnect:
-                    await RecoverViaReconnectAsync(knownEntityIds);
+                    await RecoverViaReconnectAsync(knownSubscriptions);
                     break;
                 case SessionRecoveryAction.Restart:
                     OnConnectionStatusChanged?.Invoke(ConnectionStatus.Disconnected, "Session restart requested");
@@ -1411,7 +1512,7 @@ namespace SharedMeta.Client
             }
         }
 
-        private async Task RecoverViaReconnectAsync(List<string> knownEntityIds)
+        private async Task RecoverViaReconnectAsync(List<(string EntityId, string StateTypeName)> knownSubscriptions)
         {
             try
             {
@@ -1424,27 +1525,19 @@ namespace SharedMeta.Client
                     return;
                 }
 
-                // Re-subscribe to entities the player had open. Server returns fresh state
-                // through Subscribe — local optimistic mutations that didn't reach the old
-                // server are dropped (matches the SessionLostException already raised on
-                // pending RPCs).
-                Dictionary<string, string> entitiesToResubscribe;
+                // Re-subscribe to entities the player had open, and install each snapshot as a
+                // Refreshed verdict. The local state still carries optimistic mutations whose RPCs
+                // just failed with the old session — keeping it would leave the client running on a
+                // state the server never had, with nothing to flag it until a later replay diverges.
+                // Skip anything the game unsubscribed from while the recovery handler ran.
+                var toResubscribe = new List<(string EntityId, string StateTypeName)>(knownSubscriptions.Count);
                 lock (_lock)
-                    entitiesToResubscribe = new Dictionary<string, string>(_subscribedEntities);
-
-                foreach (var entityId in knownEntityIds)
                 {
-                    if (!entitiesToResubscribe.TryGetValue(entityId, out var stateTypeName)) continue;
-                    try
-                    {
-                        await _connection.SubscribeAsync(entityId, stateTypeName);
-                        MetaLog.Info($"[ClientDispatcher] Re-subscribed to {entityId} on fresh session");
-                    }
-                    catch (Exception ex)
-                    {
-                        MetaLog.Error($"[ClientDispatcher] Failed to re-subscribe to {entityId}: {ex.Message}");
-                    }
+                    foreach (var subscription in knownSubscriptions)
+                        if (_subscribedEntities.Contains(subscription))
+                            toResubscribe.Add(subscription);
                 }
+                await ResubscribeAsRefreshedAsync(toResubscribe);
 
                 MetaLog.Info("[ClientDispatcher] Session recovery via Reconnect complete");
                 OnConnectionStatusChanged?.Invoke(ConnectionStatus.Connected, "Reconnected (new session)");
@@ -1453,6 +1546,72 @@ namespace SharedMeta.Client
             {
                 MetaLog.Error($"[ClientDispatcher] Reconnect recovery failed: {ex.Message}");
                 OnConnectionStatusChanged?.Invoke(ConnectionStatus.Failed, ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Subscribes again to each (entityId, stateTypeName) and installs every returned snapshot
+        /// through <see cref="OnSubscriptionsReclaimed"/> as a Refreshed verdict — the same path a
+        /// Resume's verdicts take — replacing the local view of those entities.
+        /// </summary>
+        private async Task ResubscribeAsRefreshedAsync(IReadOnlyList<(string EntityId, string StateTypeName)> subscriptions)
+        {
+            var refreshed = new List<SubscriptionResult>(subscriptions.Count);
+            foreach (var (entityId, stateTypeName) in subscriptions)
+            {
+                try
+                {
+                    var sub = await _connection.SubscribeAsync(entityId, ClientStateTypeId(stateTypeName));
+                    if (!sub.Success)
+                    {
+                        MetaLog.Error($"[ClientDispatcher] Failed to re-subscribe to {entityId}: {sub.Error}");
+                        continue;
+                    }
+                    refreshed.Add(new SubscriptionResult
+                    {
+                        EntityId = entityId,
+                        StateTypeName = stateTypeName,
+                        Status = SubscriptionStatus.Refreshed,
+                        EntitySequenceNumber = sub.EntitySequenceNumber,
+                        StateBytes = sub.StateBytes,
+                        OptimisticRandomBytes = sub.OptimisticRandomBytes,
+                        NamedRandomsBytes = sub.NamedRandomsBytes,
+                        ConfigVersions = sub.ConfigVersions,
+                    });
+                    MetaLog.Info($"[ClientDispatcher] Re-subscribed to {entityId}");
+                }
+                catch (Exception ex)
+                {
+                    MetaLog.Error($"[ClientDispatcher] Failed to re-subscribe to {entityId}: {ex.Message}");
+                }
+            }
+
+            if (refreshed.Count == 0) return;
+            lock (_lock)
+            {
+                // The snapshot is now the local view; the next Resume claims its sequence.
+                foreach (var v in refreshed)
+                    _lastKnownEntitySeq[(v.EntityId, v.StateTypeName)] = v.EntitySequenceNumber;
+            }
+            OnSubscriptionsReclaimed?.Invoke(refreshed);
+        }
+
+        private async Task ReloadLostSubscriptionAsync(SubscriptionLostNotice lost)
+        {
+            var stateTypeName = StateTypeNameFromServer(lost.StateTypeId);
+            if (stateTypeName == null)
+            {
+                MetaLog.Error($"[ClientDispatcher] Server lost the subscription to {lost.EntityId}, state type id {lost.StateTypeId} unknown to this client — cannot reload it");
+                return;
+            }
+            MetaLog.Warning($"[ClientDispatcher] Server lost the subscription to {lost.EntityId} ({stateTypeName}) — reloading its state");
+            try
+            {
+                await ResubscribeAsRefreshedAsync(new[] { (lost.EntityId, stateTypeName) });
+            }
+            catch (Exception ex)
+            {
+                MetaLog.Error($"[ClientDispatcher] Reloading {lost.EntityId} after a lost subscription failed: {ex.Message}", ex);
             }
         }
 
@@ -1506,7 +1665,7 @@ namespace SharedMeta.Client
         private RpcCallRequest BuildRequest(PendingRequest pending) => new()
         {
             EntityId = pending.EntityId,
-            StateTypeName = pending.StateTypeName,
+            StateTypeId = pending.StateTypeId,
             RequestId = pending.RequestId,
             MethodId = pending.MethodId,
             Payload = pending.Payload,
@@ -1551,17 +1710,15 @@ namespace SharedMeta.Client
         public int PendingRequestCount { get { lock (_lock) return _pendingRequests.Count; } }
 
         /// <summary>
-        /// 0.24.0+ Highest per-entity broadcast sequence the client has observed for the given
-        /// entity. Used by generated <c>*ApiClient</c> desync diagnostics to compare against the
-        /// server-stamped seq in <c>response.Debug</c>. Returns 0 when no broadcast has been
-        /// observed yet (cold subscribe + no broadcast since).
+        /// Highest per-entity sequence the client has applied, claimed on the next Resume. Returns 0
+        /// when no broadcast has been observed yet (cold subscribe + no broadcast since).
         /// </summary>
-        public long GetLastKnownEntitySequence(string? entityId)
+        public long GetLastKnownEntitySequence(string? entityId, string stateTypeName)
         {
             if (string.IsNullOrEmpty(entityId)) return 0;
             lock (_lock)
             {
-                return _lastKnownEntitySeq.TryGetValue(entityId, out var seq) ? seq : 0;
+                return _lastKnownEntitySeq.TryGetValue((entityId!, stateTypeName), out var seq) ? seq : 0;
             }
         }
 

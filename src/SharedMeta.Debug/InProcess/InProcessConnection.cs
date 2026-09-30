@@ -121,14 +121,14 @@ namespace SharedMeta.Debug.InProcess
             };
         }
 
-        public async Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, string stateTypeName)
+        public async Task<ConnectionSubscribeResult> SubscribeAsync(string entityId, ushort stateTypeId)
         {
             EnsureConnected();
 
             var response = await _server.SubscribeAsync(_connectionId, new SubscribeRequest
             {
                 EntityId = entityId,
-                StateTypeName = stateTypeName
+                StateTypeId = stateTypeId
             });
 
             return new ConnectionSubscribeResult
@@ -145,13 +145,14 @@ namespace SharedMeta.Debug.InProcess
             };
         }
 
-        public async Task<bool> UnsubscribeAsync(string entityId)
+        public async Task<bool> UnsubscribeAsync(string entityId, ushort stateTypeId)
         {
             EnsureConnected();
 
             var response = await _server.UnsubscribeAsync(_connectionId, new UnsubscribeRequest
             {
-                EntityId = entityId
+                EntityId = entityId,
+                StateTypeId = stateTypeId,
             });
 
             return response.Success;
