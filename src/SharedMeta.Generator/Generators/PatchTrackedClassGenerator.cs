@@ -207,37 +207,13 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("        " + prop.ToFullString().Trim());
             }
 
-            // Generate entity service getters (cross-entity call proxies)
-            // These are generated in Context.g.cs for the original class; we need them here too
-            if (attr.ConstructorArguments.Length > 2)
-            {
-                var depsArg = attr.ConstructorArguments[2];
-                if (!depsArg.IsNull && depsArg.Values.Length > 0)
-                {
-                    foreach (var dep in depsArg.Values)
-                    {
-                        if (dep.Value is INamedTypeSymbol depSymbol)
-                        {
-                            GenerateDependencyGetter(sb, depSymbol);
+            // The raw impl's alias for the tracked state. Here State already is the wrapper.
+            sb.AppendLine($"        protected {stateTypeName}PatchWrapper PatchState => State;");
 
-                            // Sibling = an entity service hosted on the SAME state. The original
-                            // impl gets a Get{Iface}SiblingAsync() accessor from ContextInjection;
-                            // the copied method bodies may call it, so emit the same accessor here
-                            // (the copy is a separate class and doesn't inherit the original's
-                            // generated members). Reuses ContextInjectionGenerator so both stay
-                            // byte-identical (incl. the #if SHAREDMETA_SERVER / client branches).
-                            var depState = ContextInjectionGenerator.ReadDepStateType(depSymbol);
-                            if (depState != null && depState == stateTypeName)
-                            {
-                                ContextInjectionGenerator.GenerateSiblingAsyncGetter(
-                                    sb, depSymbol, stateTypeName,
-                                    ContextInjectionGenerator.ReadDepConfigType(depSymbol),
-                                    ContextInjectionGenerator.ReadDepServiceConfigTypes(depSymbol));
-                            }
-                        }
-                    }
-                }
-            }
+            // Dependency accessors come from the same emitter as the raw impl's Context partial:
+            // the copy inherits nothing, and a separately maintained set drifted (a bridge
+            // dependency produced a call to a method MetaContext never had).
+            ContextInjectionGenerator.GenerateDependencyAccessors(sb, symbol, attr, stateTypeName);
 
             // Build set of methods to skip (server-only, MetaInit, IsAuthorized)
             var skipMethods = new HashSet<string> { "IsAuthorized" };
@@ -303,44 +279,6 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("}");
 
             return sb.ToString();
-        }
-
-        private static void GenerateDependencyGetter(StringBuilder sb, INamedTypeSymbol depSymbol)
-        {
-            var interfaceName = depSymbol.Name;
-            var baseName = interfaceName;
-            if (baseName.StartsWith("I") && baseName.Length > 1 && char.IsUpper(baseName[1]))
-                baseName = baseName.Substring(1);
-
-            // Check if entity service (IMetaService) or server service
-            bool isEntityService = depSymbol.AllInterfaces.Any(i => i.ToDisplayString() == "SharedMeta.Core.IMetaService")
-                || depSymbol.Interfaces.Any(i => i.ToDisplayString() == "SharedMeta.Core.IMetaService");
-
-            var ns = depSymbol.ContainingNamespace.ToDisplayString();
-            var entityCallerInterface = $"{interfaceName}EntityCaller";
-
-            if (isEntityService)
-            {
-                // Same pattern as ContextInjectionGenerator.GenerateEntityServiceGetter
-                sb.AppendLine();
-                sb.AppendLine($"        protected {entityCallerInterface} Get{interfaceName}(string entityId)");
-                sb.AppendLine("        {");
-                sb.AppendLine("            if (Context.IsServer)");
-                sb.AppendLine($"                return new {baseName}EntityRecorder(entityId, (IServerRecordContext)Context);");
-                sb.AppendLine("            else if (Context.CrossEntityResolver != null)");
-                sb.AppendLine($"                return new {baseName}LocalEntityCaller(entityId, Context.CrossEntityResolver);");
-                sb.AppendLine("            else");
-                sb.AppendLine($"                return new {baseName}EntityReplayer((IClientReplayContext)Context);");
-                sb.AppendLine("        }");
-            }
-            else
-            {
-                sb.AppendLine();
-                sb.AppendLine($"        protected {depSymbol.ToDisplayString()} Get{interfaceName}()");
-                sb.AppendLine("        {");
-                sb.AppendLine($"            return Context.GetService<{depSymbol.ToDisplayString()}>();");
-                sb.AppendLine("        }");
-            }
         }
 
         private static string? FindDefaultConfigType(Compilation compilation)

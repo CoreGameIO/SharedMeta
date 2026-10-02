@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.43.0] - 2026-10-01
+
+Subscribers move to their own store and survive idle deactivation; reconnect and session-loss recovery keep client and server in sync; triggers and server-computed modes behave as documented; a method failing on the server no longer stalls or diverges subscribers; transformers can read a service config.
+
+### Breaking
+
+- Entity subscribers persist in a separate record under grain storage `EntitySubscriptionStorage.ProviderName` (`"SharedMetaSubscriptions"`), falling back to `"Default"`. `EntityGrainState.Subscribers` is removed; subscriptions from before the upgrade are not carried over.
+- **Wire-breaking:** state types travel as negotiated ids instead of full names (subscribe, unsubscribe, RPC, claims, verdicts, ops). Update client and server together.
+- `IConnection.SubscribeAsync` / `UnsubscribeAsync` take a `ushort stateTypeId`; `IClientDispatcher.UnsubscribeAsync` takes the `stateTypeName`. Migration: custom transports put the id on the request as given.
+- `IClientDispatcher.GetLastKnownEntitySequence` takes the state type name.
+- `MetaServiceResolver.DisconnectAsync` now ends the server-side subscription.
+- `[MetaMethod(Mode = ServerPatch | ServerReplace)]` is now honoured by the server without a runtime `IExecutionModeProvider` override: the method ships a patch / the full state instead of a body replay.
+- `IClientDispatcher.OnBroadcast` takes an optional `stateTypeName`.
+- Removed dead API: `MetaContext` transformer helpers (`GetTransformer`, `BoxValue`, `UnboxValue`, `TryAutoBox`, `TryAutoUnbox`, `ReadWithAutoUnbox`, `WriteWithAutoBox`, `TransformerRegistry`), `MetaContext.Observe` / `GetExternal`, `TransformerRegistry` / `ITransformerInvoker`, `MetaClient(Options).TransformerRegistry`, generated `TransformerRegistrations`, `GameServiceDiscoveryBase.GetDispatcher` / `CreateService` and the generated server `GameServiceDiscovery`. Migration: box by hand with `MetaTransformer<T>.Instance`; reach `[ServerMetaService]` bridges as declared dependencies; call services from server code with `GetServerApi<T>(entityId)`.
+- Signature arg hashes change (nullable reference annotations no longer count); clients re-register once.
+
+### Added
+
+- Register a fast store (e.g. Redis) under `EntitySubscriptionStorage.ProviderName` for subscriber records.
+- A subscription lost with its store is repaired on the player's next call; if the player missed operations, that call fails and the client reloads the entity (`SessionNotice.SubscriptionLost`).
+- `SessionResponse.ErrorKind` — the client decides resend / fail / supersede from it, not from the message text.
+- A replay that leaves recorded server values unread is logged as an error naming the entity.
+- Config-aware argument transformers: `IConfigArgumentTransformer<TComplex, TSimple, TConfig>` and `IStateConfigArgumentTransformer<…, TState, TConfig>` box/unbox against a `[ServiceConfig]` config. The build fails if a service using one does not declare that config.
+
+### Changed
+
+- Subscribe, unsubscribe and reconnect no longer rewrite the entity state.
+- Under ServerPatch every subscriber receives the patch, not only the caller.
+- Resent-RPC lookup is O(1) instead of a scan over all unacknowledged packets.
+- A method that throws on the server sends the entity's resulting state and random positions to every subscriber (the caller gets it with its exception) and writes nothing to storage. Not a rollback — see GUIDE "When a Method Throws on the Server". New `INetwork.OnStateResync` (no-op default).
+- The generated dispatcher refuses a client call to a `GenerateClientApi = false` method with `MetaNotClientCallableException` (an `InvalidOperationException`, same message).
+
+### Fixed
+
+- An entity collected after 15 minutes idle came back with no subscribers and stopped broadcasting.
+- Reconnect dropped a legacy client's force-patch tailoring and client version on the entity.
+- Default session-loss recovery kept the client's stale state instead of installing the re-subscribed snapshots.
+- Unsubscribing never reached the server; the entity kept broadcasting to the player and Resume reclaimed the subscription.
+- Two state types sharing an entityId: only one was claimed on Resume and recovered after session loss, and both claimed one merged sequence number.
+- Removed misleading `serverSeq` / `clientSeq` from the generated desync log.
+- Triggers: an Optimistic / CrossOptimistic caller never ran them locally; clients taking a method or its trigger as a force-patch got trigger replays; broadcasts of methods without a local ApiClient dropped them; ServerReplace applied them twice; trigger method ids were not translated for clients with a different method table; a versioned `[Trigger]` on an impl method did not compile.
+- A patch or state replace for a method without a local ApiClient left the optimistic random behind the server.
+- An op for a method the client does not know was applied to every state type under its entityId.
+- A client signature with gaps in `GlobalIndex` failed registration.
+- An entity subscribed on demand for a CrossOptimistic call could not apply patches when the last-registered config had no applier.
+- Annotating a parameter nullable reported the method's signature as drifted.
+- `EntityScope.Shared` documentation promised a subscribe rejection that does not happen.
+- A method that threw, or a call refused by a permission gate, took an operation sequence number nothing was delivered under: every other subscriber's session stalled for good. A throw after mutating state also left subscribers diverged and wrote the partial state.
+- The `_PatchTracked` copy (generated for every service on a state with a ServerPatch or versioned method) did not compile when a service declared a `[ServerMetaService]` or `[StatelessMetaService]` dependency or used `PatchState`; a self-targeted entity dependency in the copy bypassed the sibling short-circuit.
+
 ## [0.42.0] - 2026-09-24
 
 Account-level permissions: `[RequirePermission]` gates a method server-side, and the client learns what it holds.

@@ -74,6 +74,8 @@ public static class TestServerConfiguration
         services.AddSingleton<IMetaConfigProvider<RolloutConfig>>(RolloutConfigProvider);
         // Config-aware argument transformer fixture.
         services.AddSingleton<IMetaConfigProvider<ItemCatalogConfig>>(new TestItemCatalogConfigProvider());
+        // _PatchTracked copy dependency fixture: the [ServerMetaService] bridge.
+        services.AddTransient<IPatchCopyBridge, TestPatchCopyBridge>();
         services.AddSingleton<IConfigVersionResolver>(ConfigVersionResolver);
         return services.ConfigureMeta(configureServices);
     }
@@ -211,6 +213,12 @@ public class TestAdditionalFixtureSeasonConfigProvider : IMetaConfigProvider<Add
         Major = version.Major,
         Minor = version.Minor,
     };
+}
+
+/// <summary>Server side of <see cref="IPatchCopyBridge"/>.</summary>
+public class TestPatchCopyBridge : IPatchCopyBridge
+{
+    public Task<int> Lookup(int key) => Task.FromResult(key * 10);
 }
 
 /// <summary>Provider for <see cref="ItemCatalogConfig"/> — Major mirrors the resolved version.</summary>

@@ -792,6 +792,36 @@ may *subscribe* to an entity, use `EntityAccessPolicy.Authorized` — the two co
 
 ---
 
+## When a Method Throws on the Server (0.43.0+)
+
+An exception in a meta method is a bug, not a way to say "no". To refuse an action, return a value:
+
+```csharp
+[MetaMethod(SkipServerOnFalse = true)]
+bool Buy(string itemId);
+
+public bool Buy(string itemId)
+{
+    if (!Config.Items.TryGetValue(itemId, out var item)) return false;   // not Config.Items[itemId]
+    if (State.Gold < item.Price) return false;
+    State.Gold -= item.Price;
+    return true;
+}
+```
+
+If a method does throw on the server, nothing is rolled back — the framework keeps everyone in sync
+instead:
+
+- every client subscribed to the entity receives the server's resulting state, including whatever
+  the method changed before throwing, and replaces its own (your Optimistic prediction included);
+- your `await` throws as usual, and by then the state you read is already the server's;
+- the failed call is not saved — storage keeps the state from before it until the next successful call.
+
+Each failure sends the whole state to every subscriber. Never let client input make a method throw
+(a missing id, an out-of-range index): on a shared entity one player could flood everyone.
+
+---
+
 ## Holding a Service Reference (`MetaRef<T>`, 0.40.0+)
 
 Do **not** cache an API client in a field or a DI singleton. Disconnecting an entity — and the

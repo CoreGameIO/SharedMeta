@@ -189,10 +189,31 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("        }");
             }
 
-            // Collect entity services for generating proxy classes
-            var entityServices = new List<INamedTypeSymbol>();
+            GenerateDependencyAccessors(sb, symbol, attr, stateTypeName);
 
-            // Arg 2: Params Dependencies (Optional)
+            sb.AppendLine("    }");
+
+            // 0.20.0: helper classes ({Iface}EntityCaller + Recorder/Replayer/LocalEntityCaller/
+            // SiblingCaller) are emitted by EntityCallerHelpersGenerator — one shared file per
+            // (namespace, dep) pair, regardless of how many consumers in that namespace declare
+            // the dep. This impl partial only contains the consumer-specific bits: getters and
+            // accessor properties. SharedMetaGenerator drives the helpers generator separately.
+
+            sb.AppendLine("}");
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Accessors for the impl's declared dependencies (<c>[MetaServiceImpl]</c> argument 3):
+        /// entity services, siblings, stateless services and <c>[ServerMetaService]</c> bridges.
+        /// </summary>
+        /// <remarks>
+        /// Shared with the <c>_PatchTracked</c> copy: method bodies are copied verbatim and compile
+        /// against these names, so both classes must get the same set, classified the same way.
+        /// </remarks>
+        internal static void GenerateDependencyAccessors(StringBuilder sb, INamedTypeSymbol symbol, AttributeData attr, string stateTypeName)
+        {
             if (attr.ConstructorArguments.Length > 2)
             {
                 var depsArg = attr.ConstructorArguments[2];
@@ -227,7 +248,6 @@ namespace SharedMeta.Generator.Generators
                                     var depServiceConfigs = ReadDepServiceConfigTypes(depSymbol);
                                     GenerateSiblingAsyncGetter(sb, depSymbol, stateTypeName, depConfig, depServiceConfigs);
                                 }
-                                entityServices.Add(depSymbol);
                             }
                             else if (IsStatelessMetaService(depSymbol))
                             {
@@ -245,18 +265,6 @@ namespace SharedMeta.Generator.Generators
                     }
                 }
             }
-
-            sb.AppendLine("    }");
-
-            // 0.20.0: helper classes ({Iface}EntityCaller + Recorder/Replayer/LocalEntityCaller/
-            // SiblingCaller) are emitted by EntityCallerHelpersGenerator — one shared file per
-            // (namespace, dep) pair, regardless of how many consumers in that namespace declare
-            // the dep. This impl partial only contains the consumer-specific bits: getters and
-            // accessor properties. SharedMetaGenerator drives the helpers generator separately.
-
-            sb.AppendLine("}");
-
-            return sb.ToString();
         }
 
         /// <summary>

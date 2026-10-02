@@ -262,6 +262,8 @@ Client                                    Server
 
 Server-only execution. Instead of replay payload, server sends a state diff patch. Client applies patch directly.
 
+**0.43.0+:** the declared `[MetaMethod(Mode = ServerPatch | ServerReplace)]` is honoured by the server itself (generated `GetDeclaredExecutionMode`) — no runtime `IExecutionModeProvider` override needed. Under ServerPatch every subscriber receives the patch, not only the caller.
+
 **Use case:** Hotfixing server logic when clients can't be updated.
 
 **Patch-tracking copy (0.24.2+):** to produce a diff the server runs a generated `{Impl}_PatchTracked` copy of the service where `State` is rebound to the typed `{State}PatchWrapper` — so ordinary `State.X = …` writes track without manual `PatchState`. The copy is auto-generated (decoupled from `DeepDesync`) for any **force-patch-able** service: a client-callable `Optimistic`/`Server`/`CrossOptimistic` method with `Version > MinCompatibleVersion`, or a `[MetaConfigStructureBoundary]` config, or any `ServerPatch` method. Generation is **per state, including siblings** — every service on a force-patch-able state gets the copy, and `ResolveSiblingByType` returns the sibling's copy under patch tracking, so a force-patched call fanning out to a sibling (`BuyEnergy → EnergyService.AddPurchasedEnergy`) tracks the sibling's mutations too. Opt out with `[MetaService(PatchTracking = false)]`: no copy, and force-patch clients are **rejected** at negotiation (method-level → `Rejected`) or subscribe (config-boundary → `FeatureRequirement`) instead of being served an empty patch. Bodies must be copy-compatible (mutate via `State`, wrapper-typed helpers, no `wrapper→raw` collection leaks — the type system enforces it; see *DeepDesync*).
@@ -971,7 +973,7 @@ public partial class ProfileService : IProfileService
 {
     public async Task<string> JoinMap(JoinMapRequest r)
     {
-        var mapId = await Context.MapManager.RequestMap(new MapRequest { ... });
+        var mapId = await MapManager.RequestMap(new MapRequest { ... });   // generated property on the impl
         State.CurrentMapId = mapId;
         return mapId;
     }
@@ -1279,6 +1281,8 @@ TrackedGameState.OnChanged += args =>
 
 **Service error handling:** Generated API clients catch exceptions during shared method execution at the framework level. On exception: (1) log via `MetaLog.Error`, (2) set `HasError = true` / `ErrorException`, (3) fire `OnServiceError` event, (4) re-throw. Subsequent calls throw `ServiceErrorStateException` until `ClearError()` or reconnect. Subscribe: `api.OnServiceError += (svc, ex) => Debug.LogError(ex);`
 
+**Method throws on the server (0.43.0+):** an exception in meta code is a defect, not a rejection path — refuse with a return value (`SkipServerOnFalse`, result type). No rollback: the entity's resulting state (partial mutation included) and absolute random positions go to every subscriber under the call's sequence number via `INetwork.OnStateResync` (the caller gets it before its exception, replacing an Optimistic prediction). The failed call writes nothing to storage — the store keeps the pre-call state until the next successful call. Framework refusals (`MetaPermissionDeniedException`, `MetaNotClientCallableException`) change nothing, send nothing and consume no sequence number. Cost: each failure ships full state to all subscribers — don't let client input make a method throw (validate ids, return a result).
+
 ---
 
 ## Argument Transformers
@@ -1508,6 +1512,18 @@ services.Configure<EntityGrainOptions>(o =>
 | `EveryNMinutes` | `PersistencePolicy.EveryNMinutes(5.0)` | Save when M minutes passed |
 | `RequestsOrTime` | `PersistencePolicy.RequestsOrTime(10, 5.0)` | N requests OR M minutes |
 | `OnDeactivationOnly` | `PersistencePolicy.OnDeactivationOnly()` | Max performance, risk of data loss |
+
+A call whose method threw is never persisted (see *Method throws on the server*).
+
+### Subscriber Store (0.43.0+)
+
+Subscribers live in their own record, not in the entity state, under grain storage `EntitySubscriptionStorage.ProviderName` (`"SharedMetaSubscriptions"`, falls back to `"Default"`). Subscribe / unsubscribe / reconnect write only that record; an entity deactivated with players subscribed restores them on the next activation. Small and write-heavy — register a fast store:
+
+```csharp
+siloBuilder.AddRedisGrainStorage(EntitySubscriptionStorage.ProviderName, o => { /* ... */ });
+```
+
+If the store loses a record, the player's next call repairs it; if they missed operations meanwhile, that call fails and the client reloads the entity (`SessionNotice.SubscriptionLost`).
 
 ### ForcePersist
 

@@ -1823,21 +1823,21 @@ public interface IPlayerProfileService : IMetaService
     Task<string> JoinMap(JoinMapRequest request);
 }
 
-// IMapManager listed as a dependency — generator auto-injects it into Context
+// IMapManager listed as a dependency — the generator adds a MapManager property to the impl
 [MetaServiceImpl(typeof(IPlayerProfileService), typeof(ProfileState), typeof(IMapManager))]
 public partial class PlayerProfileService : IPlayerProfileService
 {
     public async Task<string> JoinMap(JoinMapRequest request)
     {
-        var mapId = await Context.MapManager.RequestMap(new MapRequest { ... });
+        var mapId = await MapManager.RequestMap(new MapRequest { ... });
         State.CurrentMapId = mapId;     // state mutation goes into [SharedState]
         return mapId;
     }
 }
 ```
 
-The `Context.MapManager` getter is produced by the generated `*.Context.g.cs`
-partial. On server it points at your real impl (wrapped by the generated `Recorder`);
+The `MapManager` property is produced by the generated `*.Context.g.cs`
+partial (and the same accessor in the `_PatchTracked` copy). On server it points at your real impl (wrapped by the generated `Recorder`);
 on client it points at the generated `Replayer` that feeds the pre-recorded return
 value back from the replay payload. The same `JoinMap` method body runs on both
 sides with no `#if SERVER` branching.
@@ -2361,7 +2361,10 @@ subscriber consistent with the server and the entity working:
   the next successful call persists as usual. With `PersistencePolicy.EveryCall`, that is the
   restorable state if the one after the failure turns out broken.
 - Framework refusals (a missing `[RequirePermission]`, a client calling a
-  `GenerateClientApi = false` method) run no code. They change nothing and send nothing.
+  `GenerateClientApi = false` method — `MetaNotClientCallableException`) run no code. They change
+  nothing and send nothing.
+- On the client the state arrives through `INetwork.OnStateResync`, not `OnBroadcast`. A custom
+  `INetwork` compiles without it (no-op default) but then never resyncs.
 
 **Cost:** each failed call ships the full state to every subscriber. A method that a client can
 make throw at will (for example a lookup of a client-supplied id that is not there) lets one player
@@ -3530,9 +3533,11 @@ services.Configure<EntityGrainOptions>(o =>
 
 **Always persisted regardless of policy:**
 - Subscribe/unsubscribe/reconnect — to the subscriber store (below), not the entity state
-- Errors (sequence number already incremented)
 - Grain deactivation
 - Methods marked with `[MetaMethod(ForcePersist = true)]`
+
+**Never persisted:** a call whose method threw. The store keeps the state from before it until the
+next successful call writes as usual — see [When a Method Throws on the Server](#when-a-method-throws-on-the-server).
 
 ### Subscriber Store
 
@@ -3556,7 +3561,7 @@ affected player is detected with one dictionary lookup and repaired:
 - the player missed nothing meanwhile — re-registered silently, the call succeeds;
 - operations happened that the player never received — the call fails with an error saying the
   subscription was lost (the server **did** apply it), and the client reloads the entity's state,
-  which already contains that call.
+  which already contains that call. The server announces it with `SessionNotice.SubscriptionLost`.
 
 A player who only watches the entity and never calls it is not detected: after such a loss they
 stop receiving broadcasts until their next call or reconnect.

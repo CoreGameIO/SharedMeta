@@ -1,8 +1,8 @@
 # Changelog
 
-## [0.43.0] - Unreleased
+## [0.43.0] - 2026-10-01
 
-Subscribers move to their own store and survive idle deactivation; reconnect and session-loss recovery keep client and server in sync; triggers and server-computed modes behave as documented.
+Subscribers move to their own store and survive idle deactivation; reconnect and session-loss recovery keep client and server in sync; triggers and server-computed modes behave as documented; a method failing on the server no longer stalls or diverges subscribers; transformers can read a service config.
 
 ### Breaking
 
@@ -48,6 +48,7 @@ Subscribers move to their own store and survive idle deactivation; reconnect and
 - Annotating a parameter nullable reported the method's signature as drifted.
 - `EntityScope.Shared` documentation promised a subscribe rejection that does not happen.
 - A method that threw, or a call refused by a permission gate, took an operation sequence number nothing was delivered under: every other subscriber's session stalled for good. A throw after mutating state also left subscribers diverged and wrote the partial state.
+- The `_PatchTracked` copy (generated for every service on a state with a ServerPatch or versioned method) did not compile when a service declared a `[ServerMetaService]` or `[StatelessMetaService]` dependency or used `PatchState`; a self-targeted entity dependency in the copy bypassed the sibling short-circuit.
 
 ## [0.42.0] - 2026-09-24
 

@@ -12,6 +12,7 @@ Framework for shared game meta-logic between Client and Server with deterministi
 - **Push-based change tracking** — `[Tracked]` fields for reactive UI binding (client-only, zero server overhead)
 - **Cross-entity calls** — call methods on other entities from server-side logic
 - **State patching** — ServerPatch mode for efficient partial state updates
+- **Resilient sync** — subscriptions survive entity deactivation, reconnect and session loss re-install server state, and a method failing on the server resyncs every client instead of stalling them
 - **Pluggable transport** — SignalR, HTTP polling, in-process (testing)
 - **Pluggable serialization** — MemoryPack, MessagePack
 
