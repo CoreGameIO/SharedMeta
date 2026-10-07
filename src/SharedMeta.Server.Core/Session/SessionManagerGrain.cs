@@ -243,7 +243,7 @@ namespace SharedMeta.Server.Core.Session
             IMetaSerializer serializer,
             ILogger<SessionManagerGrain> logger,
             IEntityGrainResolver entityGrainResolver,
-            [PersistentState("sessionMgr", "Default")] IPersistentState<SessionManagerGrainState> persistentState,
+            [PersistentState(SessionStorage.StateName, SessionStorage.ProviderName)] IPersistentState<SessionManagerGrainState> persistentState,
             IOptions<SessionManagerOptions>? options = null,
             MetaServerSignature? serverSignature = null)
         {

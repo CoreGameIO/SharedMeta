@@ -3555,7 +3555,19 @@ siloBuilder.AddRedisGrainStorage(EntitySubscriptionStorage.ProviderName, o => { 
 
 Without a registration it falls back to the `"Default"` provider.
 
-The record is recoverable data. If the store loses it (a flushed Redis), the next call from each
+Session resume records (`SessionManagerGrain`) work the same way under
+`SessionStorage.ProviderName` (`"SharedMetaSessions"`), also falling back to `"Default"`. They are
+disposable — without one the client gets `SessionUnknown` and reconnects in full — so an in-memory
+provider or a store that can be wiped fits them:
+
+```csharp
+siloBuilder.AddMemoryGrainStorage(SessionStorage.ProviderName);
+```
+
+When the record's format changes incompatibly, the framework moves it to a new state name
+(`SessionStorage.StateName`), so old records are ignored instead of failing activation.
+
+The subscriber record is recoverable data. If the store loses it (a flushed Redis), the next call from each
 affected player is detected with one dictionary lookup and repaired:
 
 - the player missed nothing meanwhile — re-registered silently, the call succeeds;

@@ -2482,6 +2482,9 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            // Subscriber records: host-chosen store, falling back to \"Default\" when none is registered.");
             sb.AppendLine("            SharedMeta.Server.Core.Grains.EntitySubscriptionStorage.AddSharedMetaSubscriptionStorage(services);");
             sb.AppendLine();
+            sb.AppendLine("            // Session resume records: host-chosen store, falling back to \"Default\" when none is registered.");
+            sb.AppendLine("            SharedMeta.Server.Core.Session.SessionStorage.AddSharedMetaSessionStorage(services);");
+            sb.AppendLine();
             sb.AppendLine("            // 0.26.2+: Register config download URL resolver as fallback only — TryAdd lets a host-side");
             sb.AppendLine("            // AddSingleton<IConfigDownloadUrlResolver>(...) win without RemoveAll/ordering tricks. The");
             sb.AppendLine("            // default GeneratedConfigDownloadUrlResolver delegates to IMetaConfigProvider<T>.GetDownloadUrl");

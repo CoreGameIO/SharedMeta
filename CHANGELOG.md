@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.43.1] - 2026-10-07
+
+Session manager records from versions before 0.43.0 no longer block server start-up.
+
+### Fixed
+
+- `SessionManagerGrain` failed to activate on records written before 0.43.0 (`SessionResponse` field 4 changed type). The record now lives under a new state name `"sessionMgr2"`; old records are ignored and the client reconnects once. Old `sessionMgr` data can be deleted.
+
+### Added
+
+- Session resume records persist under grain storage `SessionStorage.ProviderName` (`"SharedMetaSessions"`), falling back to `"Default"`. Register a separate provider (in-memory, or a store that can be wiped) to keep them apart from game state.
+
 ## [0.43.0] - 2026-10-01
 
 Subscribers move to their own store and survive idle deactivation; reconnect and session-loss recovery keep client and server in sync; triggers and server-computed modes behave as documented; a method failing on the server no longer stalls or diverges subscribers; transformers can read a service config.

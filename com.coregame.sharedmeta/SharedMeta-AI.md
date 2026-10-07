@@ -1525,6 +1525,8 @@ siloBuilder.AddRedisGrainStorage(EntitySubscriptionStorage.ProviderName, o => { 
 
 If the store loses a record, the player's next call repairs it; if they missed operations meanwhile, that call fails and the client reloads the entity (`SessionNotice.SubscriptionLost`).
 
+Session resume records (`SessionManagerGrain`) use `SessionStorage.ProviderName` (`"SharedMetaSessions"`, falls back to `"Default"`). Disposable — losing one means a full reconnect — so in-memory storage is fine. Incompatible format changes move the record to a new `SessionStorage.StateName`; old records are ignored.
+
 ### ForcePersist
 
 Mark critical methods that must always persist state:
