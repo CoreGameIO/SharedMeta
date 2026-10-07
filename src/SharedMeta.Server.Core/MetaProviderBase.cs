@@ -127,6 +127,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     public Func<Type, object>? ServiceResolver { get; set; }
 
     /// <summary>
+    /// Resolver for optional infrastructure: returns null when the service is not registered,
+    /// instead of throwing like <see cref="ServiceResolver"/>. Set before Initialize is called.
+    /// </summary>
+    public Func<Type, object?>? OptionalServiceResolver { get; set; }
+
+    /// <summary>
     /// Handler for cross-entity calls (when a service calls another entity).
     /// Returns CrossEntityCallInfo with EntitySequenceNumber and ResultBytes.
     /// The last <c>ushort</c> argument is the server-side global <c>MethodId</c> stamped

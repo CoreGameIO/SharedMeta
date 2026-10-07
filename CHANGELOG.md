@@ -2,11 +2,12 @@
 
 ## [0.43.1] - 2026-10-07
 
-Session manager records from versions before 0.43.0 no longer block server start-up.
+Session manager records from versions before 0.43.0 no longer block server start-up; entity activation stops logging a caught exception when config versioning is unused.
 
 ### Fixed
 
 - `SessionManagerGrain` failed to activate on records written before 0.43.0 (`SessionResponse` field 4 changed type). The record now lives under a new state name `"sessionMgr2"`; old records are ignored and the client reconnects once. Old `sessionMgr` data can be deleted.
+- Entity activation no longer throws and logs a caught exception when `IConfigVersionResolver` is not registered; optional services resolve through `MetaProviderBase.OptionalServiceResolver`.
 
 ### Added
 

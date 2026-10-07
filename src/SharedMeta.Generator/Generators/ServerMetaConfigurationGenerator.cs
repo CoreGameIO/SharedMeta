@@ -917,10 +917,17 @@ namespace SharedMeta.Generator.Generators
                 }
                 // IConfigVersionResolver is optional server-wide infrastructure (Global-scope
                 // client-version substitution) — most projects never register it, so its absence
-                // is a normal configuration, not a fault. Debug, not Error: an Error here is read
-                // as "the server is misconfigured" on every entity activation of a healthy host.
-                sb.AppendLine($"                try {{ _configVersionResolver = ServiceResolver(typeof(SharedMeta.Server.Core.IConfigVersionResolver)) as SharedMeta.Server.Core.IConfigVersionResolver; }}");
-                sb.AppendLine($"                catch (Exception e) {{ logger?.LogDebug(e, \"No IConfigVersionResolver registered — server-originated calls fall back to the entity owner's version.\"); }}");
+                // is a normal configuration, not a fault. Resolved without throwing: a caught
+                // exception per entity activation cost a stack trace in the log every time.
+                // The try/catch path remains for hosts that construct the factory with only a
+                // throwing ServiceResolver.
+                sb.AppendLine("                if (OptionalServiceResolver != null)");
+                sb.AppendLine("                    _configVersionResolver = OptionalServiceResolver(typeof(SharedMeta.Server.Core.IConfigVersionResolver)) as SharedMeta.Server.Core.IConfigVersionResolver;");
+                sb.AppendLine("                else");
+                sb.AppendLine("                {");
+                sb.AppendLine("                    try { _configVersionResolver = ServiceResolver(typeof(SharedMeta.Server.Core.IConfigVersionResolver)) as SharedMeta.Server.Core.IConfigVersionResolver; }");
+                sb.AppendLine("                    catch (Exception) { /* not registered — server-originated calls fall back to the entity owner's version */ }");
+                sb.AppendLine("                }");
                 // Secondary/[ServiceConfig] providers are NOT optional — the state declared them,
                 // so a missing DI registration is a real misconfiguration. Previously caught and
                 // discarded silently: the field stayed null, GetCachedServiceConfigVersionsForClient
@@ -2298,13 +2305,16 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("    {");
             sb.AppendLine("        private readonly Func<Type, object>? _serviceResolver;");
             sb.AppendLine("        private readonly global::SharedMeta.Server.EntityCallHandler? _entityCallHandler;");
+            sb.AppendLine("        private readonly Func<Type, object?>? _optionalServiceResolver;");
             sb.AppendLine();
             sb.AppendLine($"        public {factoryName}(");
             sb.AppendLine("            Func<Type, object>? serviceResolver = null,");
-            sb.AppendLine("            global::SharedMeta.Server.EntityCallHandler? entityCallHandler = null)");
+            sb.AppendLine("            global::SharedMeta.Server.EntityCallHandler? entityCallHandler = null,");
+            sb.AppendLine("            Func<Type, object?>? optionalServiceResolver = null)");
             sb.AppendLine("        {");
             sb.AppendLine("            _serviceResolver = serviceResolver;");
             sb.AppendLine("            _entityCallHandler = entityCallHandler;");
+            sb.AppendLine("            _optionalServiceResolver = optionalServiceResolver;");
             sb.AppendLine("        }");
             sb.AppendLine();
             sb.AppendLine($"        public IMetaProvider<{stateTypeFullName}> Create()");
@@ -2312,7 +2322,7 @@ namespace SharedMeta.Generator.Generators
             // The factory deliberately activates nothing: [MetaServiceImpl(DeepDesync = true)] only
             // generates the supporting infrastructure, and who the analysis is on for is decided by
             // EntityGrainOptions.DeepDesyncMode, applied by EntityGrain on activation.
-            sb.AppendLine($"            return new {providerName}(_serviceResolver, _entityCallHandler);");
+            sb.AppendLine($"            return new {providerName}(_serviceResolver, _entityCallHandler) {{ OptionalServiceResolver = _optionalServiceResolver }};");
             sb.AppendLine("        }");
             sb.AppendLine("    }");
         }
@@ -2435,7 +2445,8 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"            services.AddSingleton<IMetaProviderFactory<{stateTypeFullName}>>(sp =>");
                 sb.AppendLine($"                new {factoryName}(");
                 sb.AppendLine("                    t => sp.GetRequiredService(t),");
-                sb.AppendLine("                    entityCallHandler: null));");
+                sb.AppendLine("                    entityCallHandler: null,");
+                sb.AppendLine("                    optionalServiceResolver: t => sp.GetService(t)));");
                 sb.AppendLine();
             }
 
