@@ -164,6 +164,10 @@ namespace SharedMeta.Server.Core.Grains
                 await WriteSubscribersAsync();
             }
 
+            // Before provider init so [MetaInit] and migrations see the normalized state.
+            var normalizedOnLoad = state.UserState is IStateLoadedHook loadedHook
+                && loadedHook.OnLoadedFromStorage();
+
             // Create and initialize provider with persisted state
             _provider = _providerFactory.Create();
 
@@ -232,6 +236,11 @@ namespace SharedMeta.Server.Core.Grains
             }
 
             ResetPersistenceTracking();
+
+            // Persist the normalization on deactivation so stored records converge. Skipped for
+            // an entity without a record — an activation with no calls must not create one.
+            if (normalizedOnLoad && _persistentState.RecordExists)
+                _isDirty = true;
 
             await base.OnActivateAsync(cancellationToken);
         }

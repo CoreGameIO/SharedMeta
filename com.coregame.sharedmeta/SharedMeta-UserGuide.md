@@ -238,6 +238,29 @@ public partial class GameServiceImpl : IGameService
 - `Context.Random` and `Context.ServerRandom` — deterministic randomness for init
 - `Config` — pinned to the appropriate branch for this step
 - `Context.Version` / `Context.ConfigVersion` — current schema and config version (0.19.0+)
+
+### Normalizing Loaded State (`IStateLoadedHook`)
+
+When a member was added after old records were written, it loads as `null`. Fix it on load instead of bumping a schema version:
+
+```csharp
+public partial class GameState : ISharedState, IStateLoadedHook
+{
+    [MemoryPackOrder(5)] public List<string> Badges { get; set; } = new();
+
+    public bool OnLoadedFromStorage()
+    {
+        if (Badges != null) return false;
+        Badges = new List<string>();
+        return true;   // changed — persist on deactivation
+    }
+}
+```
+
+- Server-only, once per entity activation, before `[MetaInit]`. The client always receives the already-normalized state.
+- Return `true` when something changed — the entity is saved on deactivation even if nobody called it.
+- Keep it idempotent and check for **absence** (`??=`), not emptiness — an empty list may be legitimate gameplay.
+- Not for caches/indexes over state (they go stale on later changes) and not for versioned migrations (use `[MetaInit]`).
 - `State` — entity state to mutate
 
 ---

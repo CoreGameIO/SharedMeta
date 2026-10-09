@@ -293,6 +293,30 @@ public partial class ProfileServiceImpl : IProfileService
 
 **Note:** `[MetaInit]` is a server-only step. Random values used during init are not replayed on the client — the client receives the already-initialized state snapshot.
 
+### Normalizing Loaded State (`IStateLoadedHook`)
+
+For values missing in old records — typically a member added after records were written, which deserializes as `null` — implement `IStateLoadedHook` on the state instead of bumping a schema version:
+
+```csharp
+public partial class ProfileState : ISharedState, IStateLoadedHook
+{
+    [Key(5), MemoryPackOrder(5)] public List<string> Badges { get; set; } = new();
+
+    public bool OnLoadedFromStorage()
+    {
+        if (Badges != null) return false;
+        Badges = new List<string>();
+        return true;   // changed — persist on deactivation
+    }
+}
+```
+
+- Runs on the server once per entity activation, right after the state is read from storage and **before** `[MetaInit]` / migrations, so they see the normalized state. Also runs on the default state of an entity that has no record yet.
+- Server-only. Clients never deserialize state on their own — every snapshot comes from the server — so they always receive the normalized values.
+- Return `true` when anything changed: the entity is persisted on deactivation even without calls (no immediate write; never for an entity without a record). Stored records converge, and the normalization can later be removed.
+- Must be idempotent and use only the state itself — no `Context`, random, time or services. Condition on **absence** (`??=`), not emptiness: `if (Items.Count == 0)` also fires after gameplay legitimately emptied the collection.
+- Not for derived caches or indexes over state: methods, ServerPatch appliers and replay mutate the state afterwards without rebuilding them. Not for versioned data transforms — those belong in `[MetaInit]`.
+
 ---
 
 ## 3. Static Game Configuration

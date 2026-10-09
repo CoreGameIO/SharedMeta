@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.44.0] - 2026-10-09
+
+A state can normalize itself after it is read from storage, e.g. fill a member added after old records were written.
+
+### Added
+
+- `IStateLoadedHook` on an `ISharedState`: `bool OnLoadedFromStorage()` runs on the server once per entity activation, before `[MetaInit]`. Returning `true` persists the fix on deactivation, even without calls. Clients always receive the normalized state.
+
 ## [0.43.1] - 2026-10-07
 
 Session manager records from versions before 0.43.0 no longer block server start-up; entity activation stops logging a caught exception when config versioning is unused.

@@ -553,6 +553,24 @@ public partial class ProfileServiceImpl : IProfileService
 - `Context.Random` / `Context.ServerRandom` — deterministic randomness
 - `Config` — pinned to the appropriate branch for this step (see [Per-Client Config Branches & State Migration](#per-client-config-branches--state-migration))
 - `Context.Version` / `Context.ConfigVersion` — current schema and config version (0.19.0+)
+
+### Normalizing Loaded State (`IStateLoadedHook`)
+
+`ISharedState` may implement `IStateLoadedHook.OnLoadedFromStorage()` to fill values missing in old records (a member added later deserializes as `null`):
+
+```csharp
+public bool OnLoadedFromStorage()
+{
+    if (Badges != null) return false;
+    Badges = new List<string>();
+    return true;   // persist on deactivation
+}
+```
+
+- Server-only; `EntityGrain.OnActivateAsync` calls it once per activation, before provider init and `[MetaInit]`. Also runs on the default state of an entity with no record.
+- Clients never deserialize state themselves (no client-side storage) — they get the normalized snapshot. A client-side counterpart is deliberately absent.
+- `true` → grain marked dirty, persisted on deactivation (only if a record exists). No immediate write.
+- Rules: idempotent, state-only (no Context/random/time/services), condition on absence not emptiness. Not for derived caches/indexes (stale after methods, ServerPatch, replay); not for versioned transforms (`[MetaInit]`).
 - `State` — entity state to mutate
 
 ### Static Game Configuration
