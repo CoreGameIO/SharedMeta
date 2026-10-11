@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.44.1] - 2026-10-11
+
+Unity no longer reports GUID conflicts with the Addressables package on import.
+
+### Fixed
+
+- `MessagePackMetaSerializer.cs.meta` and `MetaMessagePackOptions.cs.meta` shared GUIDs with test scripts in `com.unity.addressables` 2.11.2; both now have unique GUIDs.
+
 ## [0.44.0] - 2026-10-09
 
 A state can normalize itself after it is read from storage, e.g. fill a member added after old records were written.
