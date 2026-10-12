@@ -875,13 +875,15 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // provider (registry round-trip) has nothing cached for a version no one subscribed
             // under. Warm it first rather than requiring the version to have been seen before —
             // a config must be resolvable for whatever version the call runs as, not only for
-            // versions that happen to be cached. Only on the server-originated path: a real
-            // client's version was warmed at subscribe.
+            // versions that happen to be cached.
             if (string.IsNullOrEmpty(call.CallerClientVersion))
             {
                 await InitializeConfigAsync(ResolveClientConfigVersion(callerVersion));
                 await InitializeConfigsAsync(callerVersion);
             }
+            // Client calls too: subscribe-time warming does not survive a config publish, which
+            // drops this entity's caches while it stays active.
+            await WarmConfigCachesAsync(callerVersion);
 
             var perCallConfig = GetCachedConfigForClient(callerVersion);
             if (perCallConfig != null)
@@ -1378,6 +1380,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         }
         else
         {
+            await WarmConfigCachesAsync(call.CallerClientVersion);
             var perCallConfig = GetCachedConfigForClient(call.CallerClientVersion);
             if (perCallConfig != null)
             {
@@ -1670,6 +1673,21 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
 
     /// <summary>Called by generated <see cref="OnDeactivating"/> overrides to drop the per-call config cache.</summary>
     protected virtual void ClearConfigCache() { }
+
+    /// <summary>
+    /// Drops the per-call config caches when any config provider's
+    /// <see cref="IMetaConfigProvider{TConfig}.PublishGeneration"/> moved since the last check.
+    /// Returns true when it dropped them.
+    /// </summary>
+    protected virtual bool DropConfigCachesIfRepublished() => false;
+
+    /// <summary>
+    /// Fills the per-call config caches for <paramref name="clientVersion"/> through
+    /// <c>GetConfigAsync</c>, so the synchronous per-call getters that follow only read. Without
+    /// it, an async-backed provider fails those getters for any version it has not materialized —
+    /// e.g. right after a publish on a still-active entity. Cheap on a warm cache.
+    /// </summary>
+    public virtual Task WarmConfigCachesAsync(string? clientVersion) => Task.CompletedTask;
 
     /// <summary>
     /// Returns true when the client's resolved config version is high enough to be

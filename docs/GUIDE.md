@@ -453,9 +453,11 @@ Flow on each RPC:
 
 1. Client sends RPC with its `clientVersion` (carried in `RpcCall.CallerClientVersion`, populated by the connection handler from session state — clients don't set it explicitly).
 2. Generated provider looks up `clientVersion → resolved MetaConfigVersion` via `[MetaConfigVersion]` rules on the config class. **Cached per-grain** by `clientVersion`.
-3. Looks up `resolved version → TConfig instance` via `IMetaConfigProvider<TConfig>.GetConfig(version)`. **Cached per-grain** by version.
+3. Materializes `resolved version → TConfig instance` through `IMetaConfigProvider<TConfig>.GetConfigAsync(version)` before dispatch (RPCs and queries, client- and server-originated). **Cached per-grain**; the method body then reads it synchronously.
 4. `MetaContext.Config` is set to that instance for the duration of the call.
-5. Both caches invalidate when `IMetaConfigProvider.CurrentVersion` advances (runtime patch deploy).
+5. The per-grain caches invalidate when the provider's `PublishGeneration` moves (runtime publish / unpublish); the next call re-materializes via step 3, so an active entity picks up a publish without failing a call.
+
+An async-backed provider (registry, DB, blob storage) only needs `GetConfigAsync` to fetch; its sync `GetConfig` may serve already-materialized versions and throw on a miss. `BroadcastingConfigProvider` replaces a republished version's cached instance before announcing it, so its sync reads (`[NoMigrate]` floor configs, migration steps, the HTTP config endpoint) never miss either.
 
 `EntityGrainState.ConfigVersion` was **removed in 0.19.0** — `Id(6)` is reserved as a tombstone in the serialization contract so existing persisted data deserializes cleanly. Config is no longer pinned per-entity; it's resolved per-call from the connecting client's version, so a single grain serves multiple branches without re-activation.
 

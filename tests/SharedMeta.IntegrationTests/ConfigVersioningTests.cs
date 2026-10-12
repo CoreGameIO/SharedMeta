@@ -17,6 +17,8 @@ namespace SharedMeta.IntegrationTests;
 [MemoryPackable] public partial class VersioningTestConfigObserver { [MemoryPackOrder(0)] public int Knob { get; set; } }
 [MemoryPackable] public partial class VersioningTestConfigRepublish { [MemoryPackOrder(0)] public int Knob { get; set; } }
 [MemoryPackable] public partial class VersioningTestConfigUnpublish { [MemoryPackOrder(0)] public int Knob { get; set; } }
+[MemoryPackable] public partial class VersioningTestConfigSyncRepublish { [MemoryPackOrder(0)] public int Knob { get; set; } }
+[MemoryPackable] public partial class VersioningTestConfigNewPublish { [MemoryPackOrder(0)] public int Knob { get; set; } }
 
 /// <summary>
 /// 0.21.0: grain-backed <see cref="IConfigRegistry"/> + observer-pattern
@@ -159,6 +161,60 @@ public class ConfigVersioningTests
         }, TimeSpan.FromSeconds(10));
 
         await Assert.ThrowsAsync<InvalidOperationException>(async () => await provider.GetConfigAsync(v));
+    }
+
+    /// <summary>
+    /// Entity grains read the provider through the sync <c>GetConfig</c>, which cannot fetch. A
+    /// republish used to drop the entry and leave it empty until something awaited
+    /// <c>GetConfigAsync</c>; the sync read must instead keep serving — old bytes until the
+    /// refresh lands, new bytes after — and never miss.
+    /// </summary>
+    [Fact(Timeout = 30_000)]
+    public async Task Provider_Republish_SyncGetConfigNeverMisses()
+    {
+        var registry = new GrainConfigRegistry(_fixture.GrainFactory);
+        var v = new MetaConfigVersion(7, 0, 0);
+        await registry.PublishAsync(v, new VersioningTestConfigSyncRepublish { Knob = 1 }, _fixture.Serializer);
+
+        await using var provider = new BroadcastingConfigProvider<VersioningTestConfigSyncRepublish>(
+            registry, _fixture.Serializer, _fixture.GrainFactory);
+        await provider.InitializeAsync();
+        await provider.GetConfigAsync(v);
+        var generation = provider.PublishGeneration;
+
+        await registry.PublishAsync(v, new VersioningTestConfigSyncRepublish { Knob = 999 }, _fixture.Serializer);
+
+        // GetConfig throwing fails the test immediately instead of being retried.
+        await WaitUntilAsync(() => provider.GetConfig(v).Knob == 999, TimeSpan.FromSeconds(10));
+        Assert.True(provider.PublishGeneration > generation);
+    }
+
+    /// <summary>
+    /// A version published while the provider runs — never fetched on this silo — must be readable
+    /// through the sync <c>GetConfig</c> by the time it becomes resolvable. Otherwise an unpinned
+    /// entity resolving "latest patch" switches to it and fails every call.
+    /// </summary>
+    [Fact(Timeout = 30_000)]
+    public async Task Provider_NewPublish_ResolvableOnlyOnceMaterialized()
+    {
+        var registry = new GrainConfigRegistry(_fixture.GrainFactory);
+        var v1 = new MetaConfigVersion(8, 0, 1);
+        var v2 = new MetaConfigVersion(8, 0, 2);
+        await registry.PublishAsync(v1, new VersioningTestConfigNewPublish { Knob = 1 }, _fixture.Serializer);
+
+        await using var provider = new BroadcastingConfigProvider<VersioningTestConfigNewPublish>(
+            registry, _fixture.Serializer, _fixture.GrainFactory);
+        await provider.InitializeAsync();
+        await provider.GetConfigAsync(v1);
+
+        await registry.PublishAsync(v2, new VersioningTestConfigNewPublish { Knob = 2 }, _fixture.Serializer);
+
+        await WaitUntilAsync(() =>
+        {
+            var latest = provider.ResolveLatestMatching(8, 0);
+            var config = provider.GetConfig(latest); // must never miss for a resolvable version
+            return latest == v2 && config.Knob == 2;
+        }, TimeSpan.FromSeconds(10));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────────────

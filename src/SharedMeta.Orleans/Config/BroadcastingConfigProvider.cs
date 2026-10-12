@@ -89,6 +89,9 @@ namespace SharedMeta.Orleans.Config
         // grain that already cached the instance never called back in to notice.
         private int _publishGeneration;
 
+        private long _refreshSeq;
+        private readonly ConcurrentDictionary<MetaConfigVersion, long> _latestRefresh = new();
+
         /// <inheritdoc />
         public int PublishGeneration => Volatile.Read(ref _publishGeneration);
 
@@ -151,14 +154,39 @@ namespace SharedMeta.Orleans.Config
 
         // ── IConfigUpdateObserver ──────────────────────────────────────────────────────
 
-        public Task OnConfigPublished(MetaConfigVersion version)
+        public async Task OnConfigPublished(MetaConfigVersion version)
         {
-            // Drop the cached entry so the next GetConfigAsync refetches; add to known set
-            // so ResolveLatestMatching reflects the new version immediately.
-            _cache.TryRemove(version, out _);
+            // Swap the fresh instance in BEFORE the version becomes resolvable and grains are told
+            // to drop their caches. Dropping the entry instead left a hole that the sync GetConfig
+            // cannot fill: every entity resolving to this version failed each call until something
+            // on the silo happened to await GetConfigAsync for it. Safe to await here — the callback
+            // is [OneWay], so the directory grain's fan-out never waits on this fetch.
+            var seq = Interlocked.Increment(ref _refreshSeq);
+            _latestRefresh[version] = seq;
+            try
+            {
+                var bytes = await _registry.GetAsync(typeof(TConfig), version);
+                if (bytes == null)
+                    _cache.TryRemove(version, out _);
+                else
+                {
+                    var config = _serializer.Unpack<TConfig>(bytes);
+                    // Overlapping republishes of one version: only the newest refresh may write,
+                    // otherwise a slow older fetch would pin stale bytes until the next publish.
+                    if (_latestRefresh.TryGetValue(version, out var latest) && latest == seq)
+                        _cache[version] = config;
+                }
+            }
+            catch (Exception ex)
+            {
+                // Fall back to invalidation: the async paths refetch on miss.
+                _cache.TryRemove(version, out _);
+                _logger.LogWarning(ex,
+                    "[BroadcastingConfigProvider:{Type}] refresh of v{Version} on publish failed — entry invalidated",
+                    typeof(TConfig).Name, version);
+            }
             Mutate(known => known.Add(version));
             Interlocked.Increment(ref _publishGeneration);
-            return Task.CompletedTask;
         }
 
         public Task OnConfigUnpublished(MetaConfigVersion version)

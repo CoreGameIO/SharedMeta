@@ -592,8 +592,9 @@ Link to service: `[MetaService(StateType = typeof(GameState), DefaultConfig = tr
 Access in service code via the auto-injected `Config` property (also available during `[MetaInit]`).
 
 Server provides config via `IMetaConfigProvider<TConfig>`:
-- `CurrentVersion` — current published `MetaConfigVersion` (3-part `Major.Minor.Patch` since 0.19.0)
-- `GetConfig(MetaConfigVersion version)` — return config for a specific version (called repeatedly during migration steps; cache it)
+- `GetConfig(MetaConfigVersion version)` — return config for a specific version (called repeatedly during migration steps; cache it). An async-backed provider may serve only already-materialized versions here and throw on a miss
+- `GetConfigAsync(MetaConfigVersion version)` — async materialization; the framework calls it before every dispatch (RPC and query), so per-call config never depends on a sync fetch
+- `PublishGeneration` — bump on publish/unpublish; active entities drop their cached config and re-materialize on the next call
 - `ResolveLatestMatching(int major, int minor)` — materialize an `x` capture in a `[MetaConfigVersion]` rule's `Patch` slot
 - `GetDownloadUrl(MetaConfigVersion version)` — optional URL for client download
 

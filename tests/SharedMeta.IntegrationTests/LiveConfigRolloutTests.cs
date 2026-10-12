@@ -1,3 +1,4 @@
+using SharedMeta.Client;
 using SharedMeta.Debug.InProcess;
 using SharedMeta.IntegrationTests.Infrastructure;
 using SharedMeta.Test.Meta1;
@@ -94,5 +95,43 @@ public class LiveConfigRolloutTests
             SharedMeta.Test.Server.TestServerConfiguration.RolloutConfigProvider.Publish(payout);
             Assert.Equal(payout, await api.ReadPayoutAsync());
         }
+    }
+
+    /// <summary>
+    /// A publish against a subscribed entity whose providers are async-backed. The publish drops
+    /// the entity's config caches; client calls used to refill them through the sync
+    /// <c>GetConfig</c> only, which an async-backed provider cannot serve for a version it no longer
+    /// holds — so every RPC and query of the still-active entity failed with "no cached config".
+    /// Subscribe-time warming did not help: it ran once, before the publish.
+    /// </summary>
+    [Fact(Timeout = 30_000)]
+    public async Task Publish_AsyncBackedProviders_ActiveSubscribedEntityKeepsServing()
+    {
+        var primary = SharedMeta.Test.Server.TestServerConfiguration.AsyncRolloutPrimaryProvider;
+        var extra = SharedMeta.Test.Server.TestServerConfiguration.AsyncRolloutExtraProvider;
+        primary.Publish(10);
+        extra.Publish(1);
+
+        var entityId = $"async_rollout_{Guid.NewGuid():N}";
+        var server = new InProcessServer(_fixture.CreateHandlerFactory());
+        await using var client = new TestClientSetup(server, "alice", clientAppVersion: "1.0.0");
+        // ServerPatch and query calls only — the client-side values are never read.
+        client.MetaClient.Resolver.RegisterConfigProvider(
+            new StaticConfigProvider<AsyncRolloutPrimaryConfig>(new AsyncRolloutPrimaryConfig()));
+        client.MetaClient.Resolver.RegisterConfigProvider(
+            new StaticConfigProvider<AsyncRolloutExtraConfig>(new AsyncRolloutExtraConfig()));
+        await client.ConnectAsync();
+        var api = await client.CreateResolver().GetServiceAsync<AsyncRolloutServiceApiClient>(entityId);
+        var query = new AsyncRolloutServiceQueryApi(client.Connection, client.Serializer).EntityApi(entityId);
+
+        Assert.Equal(1001, await api.RecordAsync());
+
+        primary.Publish(42);
+        extra.Publish(5);
+        Assert.Equal(4205, await api.RecordAsync());
+
+        primary.Publish(7);
+        Assert.Equal(705, await query.PeekAsync());
+        Assert.Equal(705, await api.RecordAsync());
     }
 }

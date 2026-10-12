@@ -34,6 +34,12 @@ public static class TestServerConfiguration
     /// </summary>
     public static readonly TestRolloutConfigProvider RolloutConfigProvider = new();
 
+    /// <summary>Async-backed providers for the publish-on-active-entity fixture.</summary>
+    public static readonly AsyncOnlyConfigProvider<AsyncRolloutPrimaryConfig> AsyncRolloutPrimaryProvider =
+        new(v => new AsyncRolloutPrimaryConfig { Payout = v });
+    public static readonly AsyncOnlyConfigProvider<AsyncRolloutExtraConfig> AsyncRolloutExtraProvider =
+        new(v => new AsyncRolloutExtraConfig { Bonus = v });
+
     /// <summary>
     /// Register all test meta services using generated ConfigureMeta.
     /// </summary>
@@ -72,6 +78,8 @@ public static class TestServerConfiguration
         // Live-rollout fixture: a provider whose content an admin can republish at runtime.
         // Singleton, and the test mutates the same instance the grains read.
         services.AddSingleton<IMetaConfigProvider<RolloutConfig>>(RolloutConfigProvider);
+        services.AddSingleton<IMetaConfigProvider<AsyncRolloutPrimaryConfig>>(AsyncRolloutPrimaryProvider);
+        services.AddSingleton<IMetaConfigProvider<AsyncRolloutExtraConfig>>(AsyncRolloutExtraProvider);
         // Config-aware argument transformer fixture.
         services.AddSingleton<IMetaConfigProvider<ItemCatalogConfig>>(new TestItemCatalogConfigProvider());
         // _PatchTracked copy dependency fixture: the [ServerMetaService] bridge.
@@ -310,4 +318,39 @@ public class TestRolloutConfigProvider : IMetaConfigProvider<RolloutConfig>
 
     public RolloutConfig GetConfig(MetaConfigVersion version)
         => new RolloutConfig { Payout = Volatile.Read(ref _payout) };
+}
+
+/// <summary>
+/// Async-backed provider with the contract of <c>BroadcastingConfigProvider</c>: the sync
+/// <see cref="GetConfig"/> serves only what <see cref="GetConfigAsync"/> materialized and throws on
+/// a miss, and a publish drops the materialized entries before bumping
+/// <see cref="PublishGeneration"/>. Entities must therefore reach every config through the async
+/// path after a publish — a sync read alone fails.
+/// </summary>
+public class AsyncOnlyConfigProvider<TConfig> : IMetaConfigProvider<TConfig> where TConfig : class
+{
+    private readonly Func<int, TConfig> _create;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<MetaConfigVersion, TConfig> _cache = new();
+    private int _value;
+    private int _generation;
+
+    public AsyncOnlyConfigProvider(Func<int, TConfig> create) => _create = create;
+
+    public int PublishGeneration => Volatile.Read(ref _generation);
+
+    /// <summary>Simulate an admin publish; also resets between tests (the provider is a fixture singleton).</summary>
+    public void Publish(int value)
+    {
+        Volatile.Write(ref _value, value);
+        _cache.Clear();
+        Interlocked.Increment(ref _generation);
+    }
+
+    public TConfig GetConfig(MetaConfigVersion version)
+        => _cache.TryGetValue(version, out var cached)
+            ? cached
+            : throw new InvalidOperationException($"no cached config for {version}");
+
+    public Task<TConfig> GetConfigAsync(MetaConfigVersion version)
+        => Task.FromResult(_cache.GetOrAdd(version, _ => _create(Volatile.Read(ref _value))));
 }

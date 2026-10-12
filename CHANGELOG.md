@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.44.2] - 2026-10-12
+
+A config publish while the server runs no longer breaks entities that stay active.
+
+### Fixed
+
+- After a config publish or republish (e.g. a rolling redeploy with changed config), every RPC and query of an active entity failed with `no cached config for X` until it deactivated. Per-call config is now materialized through `GetConfigAsync` before every dispatch, client calls and queries included.
+- `BroadcastingConfigProvider` replaces a republished version's cached instance before announcing the publish, instead of dropping it; a newly published version becomes resolvable only once it is materialized. Sync reads (`[NoMigrate]` floor configs, migration steps, HTTP config endpoint) no longer miss after a publish.
+
 ## [0.44.1] - 2026-10-11
 
 Unity no longer reports GUID conflicts with the Addressables package on import.

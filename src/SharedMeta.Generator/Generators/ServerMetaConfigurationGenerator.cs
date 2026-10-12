@@ -1081,12 +1081,9 @@ namespace SharedMeta.Generator.Generators
                 // GetCachedConfigForClient — per-call config cache:
                 //   1. clientVersion → resolved MetaConfigVersion (via [MetaConfigVersion] rules)
                 //   2. resolved version → TConfig instance (one entry per branch per grain activation)
-                // 0.21.0: cache is cleared only on grain deactivation (ClearConfigCache). Live admin
-                // rollouts of a new config patch arrive via the BroadcastingConfigProvider observer
-                // path, which drops the stale TConfig entry from the provider's internal cache; the
-                // next call here re-fetches via GetConfig and stores the fresh instance under the
-                // same clientVersion key (because clientVersion → resolved-version mapping is stable
-                // for that branch).
+                // Cleared on deactivation and whenever a provider's PublishGeneration moves. The sync
+                // GetConfig below cannot fetch, so a dispatch first runs WarmConfigCachesAsync, which
+                // refills these entries through GetConfigAsync; here they are normally a cache hit.
                 sb.AppendLine($"        private readonly System.Collections.Generic.Dictionary<string, {configType}> _configCacheByClient = new System.Collections.Generic.Dictionary<string, {configType}>();");
                 sb.AppendLine();
                 sb.AppendLine("        protected override object? GetCachedConfigForClient(string? clientVersion)");
@@ -1163,16 +1160,60 @@ namespace SharedMeta.Generator.Generators
                 // entities never pin, which is where the rollout was actually being lost.
                 sb.AppendLine("        private int _seenConfigPublishGeneration;");
                 sb.AppendLine();
-                sb.AppendLine("        private void DropConfigCachesIfRepublished()");
+                sb.AppendLine("        protected override bool DropConfigCachesIfRepublished()");
                 sb.AppendLine("        {");
                 sb.AppendLine("            int gen = 0;");
                 if (configType != null)
                     sb.AppendLine("            if (_configProvider != null) gen += _configProvider.PublishGeneration;");
                 foreach (var sc in serviceConfigTypes)
                     sb.AppendLine($"            if (_serviceConfigProvider_{sc.Ident} != null) gen += _serviceConfigProvider_{sc.Ident}.PublishGeneration;");
-                sb.AppendLine("            if (gen == _seenConfigPublishGeneration) return;");
+                sb.AppendLine("            if (gen == _seenConfigPublishGeneration) return false;");
                 sb.AppendLine("            _seenConfigPublishGeneration = gen;");
                 sb.AppendLine("            ClearConfigCache();");
+                sb.AppendLine("            return true;");
+                sb.AppendLine("        }");
+                sb.AppendLine();
+
+                // Async counterpart of the sync per-call getters: same invalidation, same
+                // (scope, pin, client) resolution and the same cache keys, but materialized through
+                // GetConfigAsync. The sync getters can only read what an async-backed provider
+                // already holds — after a publish dropped the grain cache, or for a version never
+                // warmed on this silo, they would throw on every call of a still-active entity.
+                bool warmAwaits = configType != null || serviceConfigTypes.Count > 0;
+                sb.AppendLine($"        public override {(warmAwaits ? "async " : "")}System.Threading.Tasks.Task WarmConfigCachesAsync(string? clientVersion)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            DropConfigCachesIfRepublished();");
+                if (!warmAwaits)
+                    sb.AppendLine("            return System.Threading.Tasks.Task.CompletedTask;");
+                if (configType != null)
+                {
+                    sb.AppendLine("            if (_configProvider != null)");
+                    sb.AppendLine("            {");
+                    if (stateScope == 2) // EntityScope.Global
+                    {
+                        sb.AppendLine("                var _effectiveClient = _configVersionResolver?.CurrentClientVersion;");
+                        sb.AppendLine("                if (!string.IsNullOrEmpty(_effectiveClient) && !_configCacheByClient.ContainsKey(_effectiveClient!))");
+                        sb.AppendLine("                {");
+                        sb.AppendLine("                    var _resolved = _configProvider.ResolveForClient(_effectiveClient, _configVersionPolicyResolver);");
+                        sb.AppendLine("                    _configCacheByClient[_effectiveClient!] = await _configProvider.GetConfigAsync(_resolved);");
+                        sb.AppendLine("                }");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"                bool _hasPin = TryGetConfigPin(typeof({configType}).FullName!, out var _pinned);");
+                        sb.AppendLine("                var _effectiveClient = EffectiveClientVersion(clientVersion);");
+                        sb.AppendLine("                var _key = _effectiveClient ?? string.Empty;");
+                        sb.AppendLine("                // No pin and no version: leave the sync getter to raise its own error.");
+                        sb.AppendLine("                if ((_hasPin || !string.IsNullOrEmpty(_effectiveClient)) && !_configCacheByClient.ContainsKey(_key))");
+                        sb.AppendLine("                {");
+                        sb.AppendLine("                    var _resolved = _hasPin ? _pinned : ResolveClientConfigVersion(_effectiveClient);");
+                        sb.AppendLine("                    _configCacheByClient[_key] = await _configProvider.GetConfigAsync(_resolved);");
+                        sb.AppendLine("                }");
+                    }
+                    sb.AppendLine("            }");
+                }
+                if (serviceConfigTypes.Count > 0)
+                    sb.AppendLine("            await InitializeConfigsAsync(clientVersion);");
                 sb.AppendLine("        }");
                 sb.AppendLine();
             }
