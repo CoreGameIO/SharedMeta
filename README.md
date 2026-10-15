@@ -264,6 +264,12 @@ if (otherState != null)
 
 Recorded to replay payload for deterministic client replay.
 
+When a projection is enough, call the target's Query method through a declared dependency instead — the target runs it read-only (no broadcast, no sequence advance), and only the result is recorded:
+
+```csharp
+int members = await GetIClanService(State.ClanId).GetMemberCountAsync();  // Mode = Query
+```
+
 ### Client Usage
 
 ```csharp

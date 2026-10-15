@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.45.0] - 2026-10-14
+
+Cross-entity calls to Query methods no longer broadcast to the target's subscribers.
+
+### Changed
+
+- `GetI{Service}(id)` calls to a `Mode = Query` method run read-only on the target: no sequence advance, no broadcast, no persistence. The result is still recorded into the caller's replay.
+
+### Added
+
+- `IServerRecordContext.QueryEntityAsync` and `IMetaProvider.HandleQueryFromEntityAsync`; default implementations fall back to a full cross-entity call.
+
 ## [0.44.2] - 2026-10-12
 
 A config publish while the server runs no longer breaks entities that stay active.

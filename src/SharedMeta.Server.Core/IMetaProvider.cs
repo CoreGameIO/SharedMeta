@@ -184,6 +184,15 @@ namespace SharedMeta.Server.Core
         ValueTask<QueryCallResponse> HandleQueryAsync(RpcCall call);
 
         /// <summary>
+        /// Handle a Query method called by another entity. Same read-only execution as
+        /// <see cref="HandleQueryAsync"/>, but server-internal: no client access policy or
+        /// permission check, configs resolved like a cross-entity call. Only query method ids
+        /// are accepted.
+        /// </summary>
+        ValueTask<QueryCallResponse> HandleQueryFromEntityAsync(RpcCall call)
+            => new(new QueryCallResponse { Error = "Cross-entity queries are not supported by this provider" });
+
+        /// <summary>
         /// Handle a signal call — fire-and-forget, void return, read-only state.
         /// Dispatches the method but skips replay recording, broadcast creation, random state,
         /// persistence, and response generation. No value flows back to the caller.

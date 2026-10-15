@@ -971,6 +971,12 @@ namespace SharedMeta.Server.Core.Session
             {
                 foreach (var crossCall in result.CrossEntityCalls)
                 {
+                    // Cross-entity queries and same-grain nested calls leave the target's
+                    // sequence untouched — no slot to account for, and no bucket to create
+                    // for an entity this session may never subscribe to.
+                    if (crossCall.EntitySequenceNumber <= 0)
+                        continue;
+
                     // Must land in the SAME (entityId, stateTypeName) bucket the target's own
                     // subscription uses. Keying this anywhere else silently strands the target:
                     // its grain sequence keeps advancing on every cross-call while the session's

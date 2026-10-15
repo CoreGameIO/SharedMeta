@@ -238,6 +238,13 @@ namespace SharedMeta.Server
         public EntityCallHandler? EntityCallHandler { get; set; }
 
         /// <summary>
+        /// Handler for read-only cross-entity calls to Query methods: the target dispatches
+        /// without sequence advance, broadcast or persistence. Null falls back to
+        /// <see cref="EntityCallHandler"/>.
+        /// </summary>
+        public EntityCallHandler? EntityQueryHandler { get; set; }
+
+        /// <summary>
         /// 0.22.0+: Handler for fire-and-forget cross-entity calls (Orleans <c>[OneWay]</c>).
         /// The returned Task completes on send-flush, not on receiver completion — callers may
         /// <c>await</c> to ensure the call left the local silo before continuing.
@@ -294,6 +301,25 @@ namespace SharedMeta.Server
 
             var info = await EntityCallHandler(targetEntityId, methodId, argsBytes, ServerTimeTicks);
 
+            _crossEntityCalls ??= new();
+            _crossEntityCalls.Add(info);
+
+            return info.ResultBytes.IsEmpty ? Array.Empty<byte>() : info.ResultBytes.ToArray();
+        }
+
+        /// <summary>
+        /// Implementation of IServerRecordContext.QueryEntityAsync.
+        /// </summary>
+        public async Task<byte[]> QueryEntityAsync(string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes)
+        {
+            if (EntityQueryHandler == null)
+                return await CallEntityAsync(targetEntityId, methodId, argsBytes);
+
+            var info = await EntityQueryHandler(targetEntityId, methodId, argsBytes, ServerTimeTicks);
+
+            // Listed alongside full calls even though the target's sequence did not move
+            // (EntitySequenceNumber = 0): CrossOptimistic clients pair server cross-entity
+            // results with their local ones by position, and every local call records one.
             _crossEntityCalls ??= new();
             _crossEntityCalls.Add(info);
 

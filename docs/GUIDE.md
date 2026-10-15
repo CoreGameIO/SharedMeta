@@ -1721,6 +1721,29 @@ Client uses `CrossOptimisticMetaContext<TState>` for local execution on cached t
 
 When Entity A calls Entity B, players subscribed to both A and B would see Entity B's operation twice (once in A's RPC response, once as B's broadcast). SessionManager prevents this by advancing `KnownEntitySequence` for Entity B when processing Entity A's cross-entity call.
 
+### Read-Only Method Calls (Query Targets)
+
+A cross-entity call to a `[MetaMethod(Mode = ExecutionMode.Query)]` method is a read: the target runs it without advancing its sequence, broadcasting to its subscribers or persisting. The call site is the same `GetI{Service}(id)` accessor:
+
+```csharp
+[MetaService(StateType = typeof(ClanState))]
+public interface IClanService : IMetaService
+{
+    [MetaMethod(Mode = ExecutionMode.Query)]
+    int GetMemberCount();
+}
+
+// In a service that declares IClanService as a dependency:
+int members = await GetIClanService(State.ClanId).GetMemberCountAsync();
+```
+
+**How it works:**
+- **Server:** the generated `EntityRecorder` calls `IServerRecordContext.QueryEntityAsync` → target grain `HandleQueryFromEntityAsync`. Only query method ids are accepted there. The result is recorded into the caller's replay payload, same as any cross-entity result.
+- **Client:** replay reads the recorded result; CrossOptimistic executes the query locally on the cached target state, as for any cross-entity call.
+- **Access:** like every cross-entity call, no client access policy or `[RequirePermission]` check runs on the target. What the query returns is recorded into the **caller's** replay and reaches every subscriber of the caller — return only what those subscribers may see.
+
+Prefer a Query method over `Context.GetState<T>` when a projection is enough: `GetState` records the whole target state into the caller's replay. Reads still queue behind the target's other calls (the grain is single-threaded) — for a value read on every call, have the target push it to the reader via `Notification` instead.
+
 ### Read-Only State Access (Context.GetState)
 
 Read another entity's state without calling a method on it. Available as a system method on `MetaContext` — no explicit dependency injection required.

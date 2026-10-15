@@ -161,6 +161,15 @@ namespace SharedMeta.Test.Meta1
             return otherState.Sum;
         }
 
+        public long PeekSum() => State.Sum;
+
+        public async Task<long> AddOtherSumViaQuery(string otherEntityId)
+        {
+            var otherSum = await GetICounterService(otherEntityId).PeekSumAsync();
+            State.Sum += otherSum;
+            return otherSum;
+        }
+
         public int DrawFromNamed(int which, int max)
         {
             // Generated Context props: CombatRandom → NamedRandoms[0], LootRandom → NamedRandoms[1]

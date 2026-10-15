@@ -180,6 +180,7 @@ namespace SharedMeta.Server.Core.Grains
                 providerBase.ExecutionModeProvider = _executionModeProvider;
                 _activeProviderBase = providerBase;
                 providerBase.EntityCallHandler = HandleCrossEntityCallAsync;
+                providerBase.EntityQueryHandler = HandleCrossEntityQueryAsync;
                 providerBase.EntityCallOneWayHandler = HandleCrossEntityOneWayAsync;
                 providerBase.EntityStateHandler = LoadCrossEntityStateAsync;
                 providerBase.SaveStateHandler = ForcePersistStateAsync;
@@ -1147,6 +1148,30 @@ namespace SharedMeta.Server.Core.Grains
             }
         }
 
+        // SECURITY INVARIANT: server-internal, like HandleCallFromEntityAsync — transports must
+        // never route client packets here; it skips the client access policy.
+        // Deliberately not [ReadOnly]/[AlwaysInterleave]: the provider's query path rewrites the
+        // shared MetaContext and resets scratch pools, which would corrupt an in-flight call.
+        public async ValueTask<QueryCallResponse> HandleQueryFromEntityAsync(RpcCall call)
+        {
+            if (_provider == null)
+                return new QueryCallResponse { Error = "Provider not initialized" };
+
+            // Same anchor as HandleCallFromEntityAsync for a hop that carries no client version.
+            if (_provider is MetaProviderBase<TState> mpbOwner)
+                mpbOwner.OwnerClientVersion = ResolveOwnerClientVersion();
+
+            try
+            {
+                return await _provider.HandleQueryFromEntityAsync(call);
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorHandlingCrossEntityCall(ex);
+                return new QueryCallResponse { Error = ex.Message };
+            }
+        }
+
         public async Task HandleSignalAsync(RpcCall call)
         {
             if (_provider == null)
@@ -1434,6 +1459,57 @@ namespace SharedMeta.Server.Core.Grains
             {
                 EntityId = targetEntityId,
                 EntitySequenceNumber = result.EntitySequenceNumber,
+                MethodId = methodId,
+                ResultBytes = result.ResultBytes,
+                StateTypeId = _serverSignature.StateTypeIdOfMethod(methodId),
+            };
+        }
+
+        // Read-only counterpart of HandleCrossEntityCallAsync for Query methods: the target runs
+        // the method through HandleQueryFromEntityAsync, so its sequence stays put and its
+        // subscribers get no broadcast. EntitySequenceNumber = 0 tells session/client sequence
+        // tracking there is nothing to advance.
+        private async Task<CrossEntityOperationInfo> HandleCrossEntityQueryAsync(
+            string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes, long serverTimeTicks)
+        {
+            var serviceName = _serverSignature.GetMethodEntry(methodId)?.ServiceName;
+            if (serviceName == null)
+                throw new InvalidOperationException(
+                    $"Cannot resolve entity grain service name for method {methodId}, entity {targetEntityId}");
+
+            // Self-target: a grain call to ourselves would deadlock (non-reentrant). The nested
+            // dispatch already reports no sequence advance.
+            if (targetEntityId == _entityId && _activeProviderBase != null)
+            {
+                var resolved = _entityGrainResolver.GetEntityGrainByService(
+                    GrainFactory, serviceName, targetEntityId);
+                if (resolved is IEntityGrain<TState>)
+                    return await _activeProviderBase.HandleNestedCallAsync(targetEntityId, methodId, argsBytes.ToArray());
+            }
+
+            var targetGrain = _entityGrainResolver.GetEntityGrainByService(
+                GrainFactory, serviceName, targetEntityId);
+            if (targetGrain == null)
+                throw new InvalidOperationException(
+                    $"Cannot resolve entity grain for service {serviceName}, entity {targetEntityId}");
+
+            var callerCtx = MetaContextAccessor.Current;
+            var result = await targetGrain.HandleQueryFromEntityAsync(new RpcCall
+            {
+                MethodId = methodId,
+                Payload = argsBytes,
+                ServerTimeTicks = serverTimeTicks,
+                CallerClientVersion = callerCtx?.CallerClientVersion ?? _configVersionResolver?.CurrentClientVersion,
+                CallerId = callerCtx?.CallerId,
+            });
+
+            if (!result.Success)
+                throw new InvalidOperationException($"Cross-entity query failed: {result.Error}");
+
+            return new CrossEntityOperationInfo
+            {
+                EntityId = targetEntityId,
+                EntitySequenceNumber = 0,
                 MethodId = methodId,
                 ResultBytes = result.ResultBytes,
                 StateTypeId = _serverSignature.StateTypeIdOfMethod(methodId),

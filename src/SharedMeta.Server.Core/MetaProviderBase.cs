@@ -141,6 +141,12 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// </summary>
     public EntityCallHandler? EntityCallHandler { get; set; }
 
+    /// <summary>
+    /// Handler for read-only cross-entity calls to Query methods. Null falls back to
+    /// <see cref="EntityCallHandler"/> (a full call).
+    /// </summary>
+    public EntityCallHandler? EntityQueryHandler { get; set; }
+
     // Fire-and-forget cross-entity dispatch for [MetaMethod(Mode = ExecutionMode.Notification)]
     // — routes through Orleans [OneWay] so the source doesn't wait for the receiver's reply,
     // but the returned Task DOES await send-flush so the source can sequence subsequent work.
@@ -237,6 +243,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             : NullMetaLogger.Instance;
         MetaContext.ServiceResolver = ServiceResolver;
         MetaContext.EntityCallHandler = EntityCallHandler;
+        MetaContext.EntityQueryHandler = EntityQueryHandler;
         MetaContext.EntityCallOneWayHandler = EntityCallOneWayHandler;
         MetaContext.EntityStateHandler = EntityStateHandler;
         MetaContext.SaveStateHandler = SaveStateHandler;
@@ -1330,7 +1337,17 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     // runs an inline switch before delegating to base. Generated only when the project has
     // at least one query method; base behaviour without an override rejects all calls since
     // there's nothing to dispatch.
-    public virtual async ValueTask<QueryCallResponse> HandleQueryAsync(RpcCall call)
+    public virtual ValueTask<QueryCallResponse> HandleQueryAsync(RpcCall call)
+        => RunQueryAsync(call, fromEntity: false);
+
+    // Server-internal: another entity's Query call. The generated override admits only query
+    // method ids — a mutating method run here would change state with no broadcast and no
+    // persistence. Client access policy and [RequirePermission] are not applied: the calling
+    // entity's own public method already authorized the client, same as cross-entity calls.
+    public virtual ValueTask<QueryCallResponse> HandleQueryFromEntityAsync(RpcCall call)
+        => new(new QueryCallResponse { Error = $"Method id {call.MethodId} is not a query method" });
+
+    protected async ValueTask<QueryCallResponse> RunQueryAsync(RpcCall call, bool fromEntity)
     {
         if (MetaContext == null || Context == null)
             return new QueryCallResponse { Error = "Provider not initialized" };
@@ -1380,14 +1397,22 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         }
         else
         {
-            await WarmConfigCachesAsync(call.CallerClientVersion);
-            var perCallConfig = GetCachedConfigForClient(call.CallerClientVersion);
+            // A cross-entity hop with no client version behind it resolves against the entity
+            // owner's, same as a cross-entity HandleCallAsync.
+            var callerVersion = fromEntity ? EffectiveCallerVersion(call) : call.CallerClientVersion;
+            if (fromEntity && string.IsNullOrEmpty(call.CallerClientVersion))
+            {
+                await InitializeConfigAsync(ResolveClientConfigVersion(callerVersion));
+                await InitializeConfigsAsync(callerVersion);
+            }
+            await WarmConfigCachesAsync(callerVersion);
+            var perCallConfig = GetCachedConfigForClient(callerVersion);
             if (perCallConfig != null)
             {
                 MetaContext.Config = perCallConfig;
-                MetaContext.ConfigVersion = ResolveClientConfigVersion(call.CallerClientVersion);
+                MetaContext.ConfigVersion = ResolveClientConfigVersion(callerVersion);
             }
-            MetaContext.Configs = GetCachedServiceConfigsForClient(call.CallerClientVersion);
+            MetaContext.Configs = GetCachedServiceConfigsForClient(callerVersion);
         }
 
         MetaContext.Version = CurrentStateSchemaVersion;
@@ -1396,9 +1421,10 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         {
             // Set up minimal context for the query (read-only)
             MetaContext.CallerId = call.CallerId;
-            MetaContext.CallerClientVersion = call.CallerClientVersion;
-            MetaContext.ServerTimeTicks = DateTime.UtcNow.Ticks;
-            MetaContext.IsClientCall = true; // queries always come from clients
+            MetaContext.CallerClientVersion = fromEntity ? EffectiveCallerVersion(call) : call.CallerClientVersion;
+            // A cross-entity query runs inside the caller's operation — share its clock.
+            MetaContext.ServerTimeTicks = fromEntity ? call.ServerTimeTicks : DateTime.UtcNow.Ticks;
+            MetaContext.IsClientCall = !fromEntity;
             MetaContextAccessor.Current = MetaContext;
 
             // Reclaim any pool buffers / outgoing tokens left over from the previous call.

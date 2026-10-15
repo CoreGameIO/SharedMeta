@@ -1591,6 +1591,22 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("            return await base.HandleQueryAsync(call);");
                 sb.AppendLine("        }");
                 sb.AppendLine();
+
+                // Cross-entity entry: only the is-query gate. Access policy and permissions are
+                // client-boundary checks; the calling entity already passed them.
+                sb.AppendLine("        public override System.Threading.Tasks.ValueTask<QueryCallResponse> HandleQueryFromEntityAsync(RpcCall call)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            bool isQuery = call.MethodId switch");
+                sb.AppendLine("            {");
+                foreach (var m in allQueryMethods)
+                    sb.AppendLine($"                global::{idsNs}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(m.ServiceName, m.MethodAlias, m.Version)} => true,");
+                sb.AppendLine("                _ => false");
+                sb.AppendLine("            };");
+                sb.AppendLine("            if (!isQuery)");
+                sb.AppendLine("                return new System.Threading.Tasks.ValueTask<QueryCallResponse>(new QueryCallResponse { Error = $\"Method id {call.MethodId} is not a query method\" });");
+                sb.AppendLine("            return RunQueryAsync(call, fromEntity: true);");
+                sb.AppendLine("        }");
+                sb.AppendLine();
             }
 
             // HandleSignalAsync override — emitted only when at least one signal method exists.

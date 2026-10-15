@@ -887,6 +887,17 @@ namespace SharedMeta.Generator.Generators
             return SharedMeta.Generator.Utilities.MetaMethodFacts.ModeName(attr) == "Notification";
         }
 
+        // Canonical Mode = Query or the legacy Query = true flag.
+        private static bool IsQueryMode(IMethodSymbol method)
+        {
+            var attr = method.GetAttributes().FirstOrDefault(a =>
+                a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaMethodAttribute");
+            if (attr == null) return false;
+            if (SharedMeta.Generator.Utilities.MetaMethodFacts.ModeName(attr) == "Query") return true;
+            var legacy = attr.NamedArguments.FirstOrDefault(a => a.Key == "Query");
+            return !legacy.Value.IsNull && legacy.Value.Value is true;
+        }
+
         /// <summary>
         /// Generate entity recorder class for cross-entity calls.
         /// Implements the EntityCaller interface and calls via IServerRecordContext.
@@ -1028,8 +1039,11 @@ namespace SharedMeta.Generator.Generators
             // ROM over the per-context ArrayBufferWriter) stay valid for the whole call. The
             // bytes end up in the target's RpcCall.Payload — RpcCall is class-level [Immutable]
             // so Orleans skips the defensive in-silo deep-copy of the whole DTO including the ROM.
+            // Query targets go through the read-only entry: same recorded result, but the
+            // target neither advances its sequence nor broadcasts to its subscribers.
+            var entityCallMethod = IsQueryMode(method) ? "QueryEntityAsync" : "CallEntityAsync";
             sb.AppendLine();
-            sb.AppendLine($"            var resultBytes = await _context.CallEntityAsync(");
+            sb.AppendLine($"            var resultBytes = await _context.{entityCallMethod}(");
             sb.AppendLine($"                _entityId, {methodIdConst}, (System.ReadOnlyMemory<byte>)argsBytes);");
 
             if (innerType != null)

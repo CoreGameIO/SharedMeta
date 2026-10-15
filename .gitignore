@@ -28,3 +28,4 @@ CLAUDE.md
 /docs/adr/
 /docs/reviews/
 /logs/
+.tmp/

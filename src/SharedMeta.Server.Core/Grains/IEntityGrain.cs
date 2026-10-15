@@ -82,6 +82,13 @@ namespace SharedMeta.Server.Core.Grains
         ValueTask<QueryCallResponse> HandleQueryAsync(RpcCall call);
 
         /// <summary>
+        /// Execute a Query method on behalf of another entity (cross-entity read).
+        /// Read-only: no broadcasts, no sequence number changes, no persistence. Server-internal —
+        /// same trust boundary as <see cref="HandleCallFromEntityAsync"/>, never routed from clients.
+        /// </summary>
+        ValueTask<QueryCallResponse> HandleQueryFromEntityAsync(RpcCall call);
+
+        /// <summary>
         /// Execute a signal call (fire-and-forget, void return).
         /// Read-only body: no state sync, no broadcasts, no replay, no sequence number changes,
         /// no persistence. Server-side errors are logged, not propagated — the caller never

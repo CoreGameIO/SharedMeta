@@ -392,6 +392,20 @@ namespace SharedMeta.Core
         Task<byte[]> CallEntityAsync(string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes);
 
         /// <summary>
+        /// Read-only cross-entity call, used by generated EntityCaller wrappers for
+        /// <c>[MetaMethod(Mode = ExecutionMode.Query)]</c> targets. The target runs the method
+        /// without advancing its entity sequence, broadcasting to its subscribers or persisting.
+        /// The result is recorded into the caller's replay exactly as with
+        /// <see cref="CallEntityAsync"/>, so client-side replay is unchanged.
+        /// <para>
+        /// Default implementation falls back to <see cref="CallEntityAsync"/>: a full call, which
+        /// returns the same result but costs the target a broadcast and a sequence advance.
+        /// </para>
+        /// </summary>
+        Task<byte[]> QueryEntityAsync(string targetEntityId, ushort methodId, ReadOnlyMemory<byte> argsBytes)
+            => CallEntityAsync(targetEntityId, methodId, argsBytes);
+
+        /// <summary>
         /// 0.22.0+: Fire-and-forget cross-entity call. Used by generated EntityCaller wrappers
         /// for methods marked <c>[MetaMethod(Mode = ExecutionMode.Notification)]</c>. Dispatches
         /// the target grain via an Orleans <c>[OneWay]</c> invocation; the returned Task completes

@@ -99,6 +99,18 @@ namespace SharedMeta.Test.Meta1
         [MetaMethod(Alias = "ReadOtherState", Mode = ExecutionMode.Server)]
         Task<long> ReadOtherEntityState(string targetEntityId);
 
+        /// <summary>Read-only Sum. Target of the cross-entity query tests.</summary>
+        [MetaMethod(Alias = "PeekSum", Mode = ExecutionMode.Query)]
+        long PeekSum();
+
+        /// <summary>
+        /// Reads another counter's Sum through its Query method and adds it to this one.
+        /// The target must not broadcast or advance its sequence; subscribers of this entity
+        /// replay the recorded query result.
+        /// </summary>
+        [MetaMethod(Alias = "AddOtherSumViaQuery", Mode = ExecutionMode.Server)]
+        Task<long> AddOtherSumViaQuery(string otherEntityId);
+
         /// <summary>
         /// Draw a random value from one of the named random streams.
         /// Optimistic: the client advances its local stream and sends the call to server

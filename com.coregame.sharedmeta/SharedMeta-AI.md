@@ -910,6 +910,8 @@ public partial class ExpeditionService : IExpeditionService
 
 **On server:** `MetaProviderBase.EntityCallHandler` resolves target grain, calls `HandleCallFromEntityAsync`. Target entity executes, broadcasts to ITS subscribers, returns result.
 
+**Query targets are read-only:** calling a `[MetaMethod(Mode = ExecutionMode.Query)]` method through `GetI{Service}(id)` routes to `HandleQueryFromEntityAsync` instead — the target does not advance its sequence, broadcast or persist. The result is recorded into the caller's replay as usual. No client access policy or `[RequirePermission]` check (server-internal call); whatever the query returns reaches every subscriber of the caller. Prefer this over `Context.GetState<T>` when a projection is enough — `GetState` records the whole target state into the caller's replay.
+
 **On client (CrossOptimistic):** Uses `CrossOptimisticMetaContext<TState>` for local execution on cached target state.
 
 **Broadcast Suppression:** When Entity A calls Entity B, SessionManager prevents duplicate broadcasts for players subscribed to both.
