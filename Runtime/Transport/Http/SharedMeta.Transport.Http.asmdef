@@ -1,0 +1,24 @@
+{
+    "name": "SharedMeta.Transport.Http",
+    "rootNamespace": "SharedMeta.Transport.Http",
+    "references": [
+        "SharedMeta.Runtime"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "HAS_NEWTONSOFT_JSON"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.nuget.newtonsoft-json",
+            "expression": "0.0.0",
+            "define": "HAS_NEWTONSOFT_JSON"
+        }
+    ],
+    "noEngineReferences": false
+}
