@@ -1,0 +1,18 @@
+using System;
+using MemoryPack;
+using MessagePack;
+using Orleans;
+
+namespace SharedMeta.Core.Transport
+{
+    /// <summary>
+    /// Response from a query call. Simple success/error with result bytes.
+    /// </summary>
+    [MemoryPackable, MessagePackObject, GenerateSerializer, Immutable]
+    public partial class QueryCallResponse
+    {
+        [Id(0), Key(0)] public bool Success { get; set; }
+        [Id(1), Key(1), MemoryPackAllowSerialize] public ReadOnlyMemory<byte> ResultBytes { get; set; }
+        [Id(2), Key(2)] public string? Error { get; set; }
+    }
+}

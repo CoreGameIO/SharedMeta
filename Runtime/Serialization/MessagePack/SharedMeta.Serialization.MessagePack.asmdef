@@ -1,0 +1,20 @@
+{
+    "name": "SharedMeta.Serialization.MessagePack",
+    "rootNamespace": "SharedMeta.Serialization.MessagePack",
+    "references": ["SharedMeta.Runtime"],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": ["HAS_MESSAGEPACK"],
+    "versionDefines": [
+        {
+            "name": "com.github.messagepack-csharp",
+            "expression": "0.0.0",
+            "define": "HAS_MESSAGEPACK"
+        }
+    ],
+    "noEngineReferences": true
+}
