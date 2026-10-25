@@ -1,4 +1,5 @@
 using System;
+using Microsoft.Extensions.Logging;
 
 namespace SharedMeta.Core.Logging
 {
@@ -21,6 +22,15 @@ namespace SharedMeta.Core.Logging
         public static void SetLogger(IMetaLogger logger)
         {
             _logger = logger ?? NullMetaLogger.Instance;
+        }
+
+        /// <summary>
+        /// Set the global logger from a Microsoft.Extensions.Logging logger (console, ZLogger, ...),
+        /// wrapped in a <see cref="LoggerAdapter"/>.
+        /// </summary>
+        public static void SetLogger(ILogger logger)
+        {
+            _logger = logger == null ? NullMetaLogger.Instance : new LoggerAdapter(logger);
         }
 
         public static void Debug(string message)
