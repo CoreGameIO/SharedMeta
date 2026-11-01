@@ -31,6 +31,10 @@ namespace SharedMeta.Client
     {
         private static SynchronizationContext? _mainThreadContext;
 
+#if UNITY_EDITOR
+        // Edit Mode (editor tools, EditMode tests): runs on the main thread after every domain reload.
+        [UnityEditor.InitializeOnLoadMethod]
+#endif
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void CaptureMainThreadContext()
         {
