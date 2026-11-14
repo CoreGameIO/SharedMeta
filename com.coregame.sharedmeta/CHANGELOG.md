@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.46.0] - 2026-11-14
+
+Logging moves to `Microsoft.Extensions.Logging.ILogger`; HTTP polling hosts get config download and a clean shutdown.
+
+### Changed
+
+- **Breaking:** `ILogger` replaces `IMetaLogger`; `IMetaLogger`, `MetaLogLevel`, `NullMetaLogger` and `ConsoleMetaLogger` are removed. Migration: pass an `ILogger` to `MetaLog.SetLogger` (.NET: `LoggerFactory.Create(b => b.AddSimpleConsole())`); Unity loggers implement `ILogger.Log<TState>`.
+- `Context.LogInfo` / `LogWarning` / `LogError` take message templates and stay structured on the server.
+- Unity: the UPM package ships a minimal M.E.L. shim under `#if !HAS_MEL`. Set `HAS_MEL` when M.E.L. comes through NuGetForUnity; `HAS_SIGNALR` requires it.
+- NuGet `SharedMeta.Core` depends on `Microsoft.Extensions.Logging.Abstractions` (8.0.3 or later on netstandard2.1).
+- `AddMetaConfigPublicUrl` / `MapMetaConfigDownload` moved from `Transport.SignalR` to `Server.Core`, same namespace, so HTTP polling hosts have them too.
+- `MetaClient.ConnectAsync` throws `MetaSessionConnectException` with `FailureReason` (still an `InvalidOperationException`); the `AccessTokenSource` retry no longer fires on `IdentityUnknown`.
+
+### Fixed
+
+- Server shutdown no longer calls grains after the silo stopped: HTTP polling connections and `BroadcastingConfigProvider` are released on `ApplicationStopping` / `StopAsync`.
+- `UnityConfigDownloader` and `UnityMetaAuthProvider` work in Edit Mode.
+- Wizard: the generated client used a removed `RegisterDownloadingConfigProvider` overload; SignalR setup also sets `HAS_MEL`; templates use `[ServiceConfig]`; the generated client logs in again when the server no longer knows the cached player.
+
 ## [0.45.1] - 2026-10-18
 
 Concurrent resolves of one entity no longer leave a dead API client in the cache.

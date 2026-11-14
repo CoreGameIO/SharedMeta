@@ -102,6 +102,15 @@ cause; do not diagnose the generator exceptions separately. The same missing def
 drops `SharedMeta.Serialization.MemoryPack` (it has `"defineConstraints": ["HAS_MEMORYPACK"]`), so
 `MemoryPackMetaSerializer` disappears with only a `CS0246` to show for it.
 
+**Logging is `Microsoft.Extensions.Logging.ILogger` (0.46.0+).** `MetaLog.SetLogger(ILogger)` on the
+client, `Context.Log` / `Context.LogInfo(template, args)` inside meta methods. `IMetaLogger`,
+`MetaLogLevel`, `NullMetaLogger`, `ConsoleMetaLogger` no longer exist — don't generate them. Unity
+without the real package compiles against `Runtime/LoggingShim.cs` (`#if !HAS_MEL`, same signatures).
+`HAS_MEL` behaves like `HAS_MEMORYPACK` (manual via NuGetForUnity). **`HAS_SIGNALR` needs `HAS_MEL`**
+— the SignalR client brings the real M.E.L., and without the define every `ILogger` is `CS0433`.
+In Unity scripts alias the name: `using ILogger = Microsoft.Extensions.Logging.ILogger;`
+(`UnityEngine.ILogger` collides).
+
 ### 2. Classes Must Be Partial
 
 All state classes, service implementations, and DTO types must be `partial` — the source generator extends them:
