@@ -27,6 +27,11 @@ namespace SharedMeta.Client.Auth
         private static SynchronizationContext _mainThreadContext;
         private static int _mainThreadId;
 
+#if UNITY_EDITOR
+        // Edit Mode (editor tools, EditMode tests) never enters SubsystemRegistration; this runs on
+        // the main thread after every domain reload.
+        [UnityEditor.InitializeOnLoadMethod]
+#endif
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void CaptureMainThread()
         {
