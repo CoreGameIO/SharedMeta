@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 using SharedMeta.Client;
 using SharedMeta.Core.Logging;
 using SharedMeta.IntegrationTests.Infrastructure;
@@ -54,14 +55,12 @@ public class ReplayTapeAlignmentTests
         return capture.Errors.ToList();
     }
 
-    private sealed class CapturingLogger : IMetaLogger
+    private sealed class CapturingLogger : MessageLogger
     {
         public ConcurrentQueue<string> Errors { get; } = new();
-        public bool IsEnabled(MetaLogLevel level) => true;
-        public void Log(MetaLogLevel level, string message)
+        protected override void Write(LogLevel level, string message, Exception? exception)
         {
-            if (level == MetaLogLevel.Error) Errors.Enqueue(message);
+            if (level == LogLevel.Error) Errors.Enqueue(message);
         }
-        public void Log(MetaLogLevel level, string message, Exception exception) => Log(level, message);
     }
 }

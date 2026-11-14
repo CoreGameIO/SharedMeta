@@ -41,9 +41,9 @@ public class GenericClusterFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        // Without this every framework-side Error write goes to NullMetaLogger, which is how a
+        // Without this every framework-side Error write goes to NullLogger, which is how a
         // dispatch failure turns into a bare wrong value instead of a diagnosable message.
-        MetaLog.SetLogger(new ConsoleMetaLogger(MetaLogLevel.Error));
+        MetaLog.SetLogger(LoggerFactory.CreateLogger("SharedMeta"));
 
         var builder = new TestClusterBuilder();
         builder.AddSiloBuilderConfigurator<SiloConfigurator>();

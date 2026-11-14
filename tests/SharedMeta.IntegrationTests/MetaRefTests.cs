@@ -274,7 +274,7 @@ public class MetaRefTests
         }
     }
 
-    private sealed class CapturingLogger : IMetaLogger
+    private sealed class CapturingLogger : MessageLogger
     {
         private readonly List<string> _errors = new();
 
@@ -289,15 +289,11 @@ public class MetaRefTests
             lock (_errors) _errors.Clear();
         }
 
-        public bool IsEnabled(MetaLogLevel level) => true;
-
-        public void Log(MetaLogLevel level, string message)
+        protected override void Write(Microsoft.Extensions.Logging.LogLevel level, string message, Exception? exception)
         {
-            if (level != MetaLogLevel.Error) return;
+            if (level != Microsoft.Extensions.Logging.LogLevel.Error) return;
             lock (_errors) _errors.Add(message);
         }
-
-        public void Log(MetaLogLevel level, string message, Exception exception) => Log(level, message);
     }
 
     /// <summary>

@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using SharedMeta.Core.Logging;
 using SharedMeta.Core.Random;
 
@@ -137,9 +139,10 @@ namespace SharedMeta.Core
         public IReadOnlyList<IMetaRandom>? NamedRandoms { get; set; }
 
         /// <summary>
-        /// Logger for meta methods. On server: bridges to ILogger. On client: uses MetaLog.
+        /// Logger for meta methods. On server: the grain's ILogger, prefixed with the entity id.
+        /// On client: <see cref="MetaLog.Logger"/>.
         /// </summary>
-        public IMetaLogger Log { get; set; } = NullMetaLogger.Instance;
+        public ILogger Log { get; set; } = NullLogger.Instance;
 
         /// <summary>
         /// Static game configuration for this entity.
@@ -222,56 +225,32 @@ namespace SharedMeta.Core
         // Logging Convenience Methods
         // ============================================
 
+        // Message templates ("{Name}" placeholders), structured on the server. The IsEnabled guard
+        // skips the args-state allocation the logger extensions would make for a disabled level.
+
         public void LogDebug(string template, params object?[] args)
         {
-            if (!Log.IsEnabled(MetaLogLevel.Debug)) return;
-            Log.Log(MetaLogLevel.Debug, FormatTemplate(template, args));
+            if (Log.IsEnabled(LogLevel.Debug)) Log.LogDebug(template, args);
         }
 
         public void LogInfo(string template, params object?[] args)
         {
-            if (!Log.IsEnabled(MetaLogLevel.Info)) return;
-            Log.Log(MetaLogLevel.Info, FormatTemplate(template, args));
+            if (Log.IsEnabled(LogLevel.Information)) Log.LogInformation(template, args);
         }
 
         public void LogWarning(string template, params object?[] args)
         {
-            if (!Log.IsEnabled(MetaLogLevel.Warning)) return;
-            Log.Log(MetaLogLevel.Warning, FormatTemplate(template, args));
+            if (Log.IsEnabled(LogLevel.Warning)) Log.LogWarning(template, args);
         }
 
         public void LogError(string template, params object?[] args)
         {
-            if (!Log.IsEnabled(MetaLogLevel.Error)) return;
-            Log.Log(MetaLogLevel.Error, FormatTemplate(template, args));
+            if (Log.IsEnabled(LogLevel.Error)) Log.LogError(template, args);
         }
 
         public void LogError(Exception exception, string template, params object?[] args)
         {
-            if (!Log.IsEnabled(MetaLogLevel.Error)) return;
-            Log.Log(MetaLogLevel.Error, FormatTemplate(template, args), exception);
-        }
-
-        private static string FormatTemplate(string template, object?[] args)
-        {
-            if (args.Length == 0) return template;
-            var sb = new System.Text.StringBuilder(template.Length);
-            int argIndex = 0;
-            for (int i = 0; i < template.Length; i++)
-            {
-                if (template[i] == '{')
-                {
-                    var end = template.IndexOf('}', i + 1);
-                    if (end > i && argIndex < args.Length)
-                    {
-                        sb.Append(args[argIndex++]?.ToString() ?? "null");
-                        i = end;
-                        continue;
-                    }
-                }
-                sb.Append(template[i]);
-            }
-            return sb.ToString();
+            if (Log.IsEnabled(LogLevel.Error)) Log.LogError(exception, template, args);
         }
 
         // ============================================

@@ -1,42 +1,33 @@
 ﻿using System;
-using SharedMeta.Core.Logging;
+using Microsoft.Extensions.Logging;
 using UnityEngine;
+using ILogger = Microsoft.Extensions.Logging.ILogger; // UnityEngine.ILogger also exists
 
 /// <summary>
-/// IMetaLogger implementation that routes SharedMeta logs to Unity console.
+/// ILogger that routes SharedMeta logs to the Unity console. Compiles against both the
+/// SharedMeta logging shim and the real Microsoft.Extensions.Logging (HAS_MEL).
 /// </summary>
-public class UnityMetaLogger : IMetaLogger
+public class UnityMetaLogger : ILogger
 {
-    public bool IsEnabled(MetaLogLevel level) => true;
+    public bool IsEnabled(LogLevel logLevel) => logLevel != LogLevel.None;
 
-    public void Log(MetaLogLevel level, string message)
+    public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
     {
-        switch (level)
+        var message = "[SharedMeta] " + formatter(state, exception);
+        if (exception != null) message += "\n" + exception;
+        switch (logLevel)
         {
-            case MetaLogLevel.Error:
-                Debug.LogError($"[SharedMeta] {message}");
+            case LogLevel.Critical:
+            case LogLevel.Error:
+                Debug.LogError(message);
                 break;
-            case MetaLogLevel.Warning:
-                Debug.LogWarning($"[SharedMeta] {message}");
+            case LogLevel.Warning:
+                Debug.LogWarning(message);
                 break;
             default:
-                Debug.Log($"[SharedMeta] {message}");
-                break;
-        }
-    }
-
-    public void Log(MetaLogLevel level, string message, Exception exception)
-    {
-        switch (level)
-        {
-            case MetaLogLevel.Error:
-                Debug.LogError($"[SharedMeta] {message}\n{exception}");
-                break;
-            case MetaLogLevel.Warning:
-                Debug.LogWarning($"[SharedMeta] {message}\n{exception}");
-                break;
-            default:
-                Debug.Log($"[SharedMeta] {message}\n{exception}");
+                Debug.Log(message);
                 break;
         }
     }

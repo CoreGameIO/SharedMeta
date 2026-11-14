@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using SharedMeta.Client;
 using SharedMeta.Core.Auth;
 using SharedMeta.Core.Logging;
@@ -21,7 +22,7 @@ namespace SharedMeta.IntegrationTests;
 [Collection(TestClusterCollection.Name)]
 public class MetaTokenManagerShapeTests : IDisposable
 {
-    private readonly IMetaLogger _previousLogger;
+    private readonly ILogger _previousLogger;
     private readonly CapturingLogger _logger = new();
 
     private MetaAuthClient Auth => new MetaAuthClient("https://h/meta/auth", new StubAuthProvider());
@@ -111,7 +112,7 @@ public class MetaTokenManagerShapeTests : IDisposable
         public void Clear() { _token = null; }
     }
 
-    private sealed class CapturingLogger : IMetaLogger
+    private sealed class CapturingLogger : MessageLogger
     {
         private readonly System.Collections.Generic.List<string> _warnings = new();
         private readonly System.Collections.Generic.List<string> _errors = new();
@@ -135,18 +136,14 @@ public class MetaTokenManagerShapeTests : IDisposable
             }
         }
 
-        public bool IsEnabled(MetaLogLevel level) => true;
-
-        public void Log(MetaLogLevel level, string message)
+        protected override void Write(LogLevel level, string message, Exception? exception)
         {
-            var sink = level == MetaLogLevel.Warning ? _warnings
-                : level == MetaLogLevel.Error ? _errors
+            var sink = level == LogLevel.Warning ? _warnings
+                : level == LogLevel.Error ? _errors
                 : null;
             if (sink == null) return;
             lock (sink) sink.Add(message);
         }
-
-        public void Log(MetaLogLevel level, string message, Exception exception) => Log(level, message);
     }
 
     private sealed class StubAuthProvider : IMetaAuthProvider

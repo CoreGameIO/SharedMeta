@@ -239,8 +239,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         MetaContext = new ServerMetaContext<TState>(state, context.Serializer);
         MetaContext.EntityId = context.EntityId;
         MetaContext.Log = context.Logger != null
-            ? new MetaLoggerAdapter(context.Logger, context.EntityId)
-            : NullMetaLogger.Instance;
+            ? new EntityLogger(context.Logger, context.EntityId)
+            : NullLogger.Instance;
         MetaContext.ServiceResolver = ServiceResolver;
         MetaContext.EntityCallHandler = EntityCallHandler;
         MetaContext.EntityQueryHandler = EntityQueryHandler;

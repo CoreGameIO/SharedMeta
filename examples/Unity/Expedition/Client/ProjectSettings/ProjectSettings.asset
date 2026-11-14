@@ -829,7 +829,7 @@ PlayerSettings:
   webWasm2023: 0
   webEnableSubmoduleStrippingCompatibility: 0
   scriptingDefineSymbols:
-    Standalone: HAS_MEMORYPACK;HAS_SIGNALR;HAS_NEWTONSOFT_JSON
+    Standalone: HAS_MEMORYPACK;HAS_SIGNALR;HAS_NEWTONSOFT_JSON;HAS_MEL
   additionalCompilerArguments: {}
   platformArchitecture: {}
   scriptingBackend:

@@ -2774,7 +2774,7 @@ So the same state source compiles in a Unity project that has no serializer inst
 
 The asmdef `versionDefines` meant to set those defines key on the **UPM package ids** `com.cysharp.memorypack` and `com.github.messagepack-csharp`. Neither serializer is published as a UPM package, so in practice both arrive through **NuGetForUnity** — a DLL under `Assets/Packages/`, which registers no package id. The `versionDefine` never fires and the stubs stay live alongside the real attributes.
 
-**Set the define by hand:** Project Settings → Player → Other Settings → Scripting Define Symbols → `HAS_MEMORYPACK`. Reference setup: `examples/Unity/Expedition/Client/ProjectSettings/ProjectSettings.asset` (`Standalone: HAS_MEMORYPACK;HAS_SIGNALR;HAS_NEWTONSOFT_JSON`).
+**Set the define by hand:** Project Settings → Player → Other Settings → Scripting Define Symbols → `HAS_MEMORYPACK`. Reference setup: `examples/Unity/Expedition/Client/ProjectSettings/ProjectSettings.asset` (`Standalone: HAS_MEMORYPACK;HAS_SIGNALR;HAS_NEWTONSOFT_JSON;HAS_MEL`).
 
 Two failures follow from omitting it, one loud and one silent.
 
@@ -2799,6 +2799,14 @@ The MemoryPack generator has not lost its own attribute — it found two and can
 **Silent** — `SharedMeta.Serialization.MemoryPack.asmdef` carries `"defineConstraints": ["HAS_MEMORYPACK"]`, so without the define that assembly is skipped rather than failed. `MemoryPackMetaSerializer` does not exist, and the only evidence is a `CS0246` on a type you know you installed.
 
 `HAS_SIGNALR` has no `versionDefine` at all and is always manual. `HAS_BESTHTTP` (`com.tivadar.besthttp`) and `HAS_NEWTONSOFT_JSON` (`com.unity.nuget.newtonsoft-json`) do resolve automatically, since those genuinely are UPM packages.
+
+### Unity: logging and `HAS_MEL`
+
+Framework and meta-method logging go through `Microsoft.Extensions.Logging.ILogger`: `MetaLog.SetLogger(ILogger)` on the client, `Context.Log` inside meta methods (on the server, the grain's `ILogger` prefixed with the entity id). The NuGet `SharedMeta.Core` references `Microsoft.Extensions.Logging.Abstractions`. The UPM package does not; under `#if !HAS_MEL` it ships `Runtime/LoggingShim.cs` — `ILogger`, `LogLevel`, `EventId`, `NullLogger` and the `Log*` extensions, every member with the real signature and nothing beyond it, so code written against the shim compiles unchanged against the real package.
+
+`HAS_MEL` follows the same rules as `HAS_MEMORYPACK`: the `versionDefine` keys on `org.nuget.microsoft.extensions.logging.abstractions` (UnityNuGet registry); through NuGetForUnity it is manual. The SignalR client depends on the real package, so **`HAS_SIGNALR` without `HAS_MEL` is a `CS0433` on `ILogger`**.
+
+`UnityEngine.ILogger` also exists — a Unity logger implementation aliases the name: `using ILogger = Microsoft.Extensions.Logging.ILogger;`. `MetaLog.*` messages are already rendered strings and reach the logger as plain state with an identity formatter, never as a message template, so braces in them (desync dumps) print as-is. `Context.LogInfo(template, args)` and the `Log*` extensions do use message templates.
 
 ### Version Tolerance Rules
 

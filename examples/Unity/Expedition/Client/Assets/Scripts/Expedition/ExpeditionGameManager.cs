@@ -700,27 +700,22 @@ internal class ExpeditionConnectionHealth : IConnectionHealthListener
     }
 }
 
-internal sealed class UnityConsoleMetaLogger : IMetaLogger
+internal sealed class UnityConsoleMetaLogger : Microsoft.Extensions.Logging.ILogger
 {
-    public bool IsEnabled(MetaLogLevel level) => true;
+    public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => logLevel != Microsoft.Extensions.Logging.LogLevel.None;
 
-    public void Log(MetaLogLevel level, string message)
-    {
-        switch (level)
-        {
-            case MetaLogLevel.Error:   Debug.LogError($"[SharedMeta] {message}");   break;
-            case MetaLogLevel.Warning: Debug.LogWarning($"[SharedMeta] {message}"); break;
-            default:                   Debug.Log($"[SharedMeta] {message}");        break;
-        }
-    }
+    public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
 
-    public void Log(MetaLogLevel level, string message, Exception exception)
+    public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
     {
-        switch (level)
+        var message = "[SharedMeta] " + formatter(state, exception);
+        if (exception != null) message += "\n" + exception;
+        switch (logLevel)
         {
-            case MetaLogLevel.Error:   Debug.LogError($"[SharedMeta] {message}\n{exception}");   break;
-            case MetaLogLevel.Warning: Debug.LogWarning($"[SharedMeta] {message}\n{exception}"); break;
-            default:                   Debug.Log($"[SharedMeta] {message}\n{exception}");        break;
+            case Microsoft.Extensions.Logging.LogLevel.Critical:
+            case Microsoft.Extensions.Logging.LogLevel.Error:   Debug.LogError(message);   break;
+            case Microsoft.Extensions.Logging.LogLevel.Warning: Debug.LogWarning(message); break;
+            default:                                             Debug.Log(message);        break;
         }
     }
 }

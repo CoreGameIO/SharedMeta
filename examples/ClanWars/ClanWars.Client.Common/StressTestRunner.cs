@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using SharedMeta.Core.Logging;
 using SharedMeta.Debug.Mux;
 using SharedMeta.Transport.SignalR;     // AddMetaMessagePackProtocol extension
@@ -32,7 +33,8 @@ namespace ClanWars.Client.Common
             // diagnostics (e.g. the per-desync `[Desync] ...` line emitted
             // by generated *ApiClient) surface during stress runs. Lower-level info / debug stays
             // suppressed — the metrics renderer at end-of-run is the primary signal.
-            MetaLog.SetLogger(new ConsoleMetaLogger(MetaLogLevel.Error));
+            MetaLog.SetLogger(LoggerFactory.Create(b => b.AddSimpleConsole(o => o.SingleLine = true).SetMinimumLevel(LogLevel.Error))
+                .CreateLogger("SharedMeta"));
 
             var transportNote = options.MuxChannels > 0
                 ? $"mux@{options.MuxServerUrl} (channels={options.MuxChannels}, ~{options.PlayerCount / Math.Max(1, options.MuxChannels)} players/socket)"

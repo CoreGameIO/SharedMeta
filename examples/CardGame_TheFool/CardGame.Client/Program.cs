@@ -5,12 +5,14 @@ using CardGame.Client;
 using CardGame.Shared;
 using CardGame.Shared.Client;
 using SharedMeta.Client;
+using Microsoft.Extensions.Logging;
 using SharedMeta.Core.Logging;
 using SharedMeta.Core.Transport;
 
 Console.OutputEncoding = Encoding.UTF8;
 
-MetaLog.SetLogger(new ConsoleMetaLogger(MetaLogLevel.Info));
+MetaLog.SetLogger(LoggerFactory.Create(b => b.AddSimpleConsole(o => o.SingleLine = true).SetMinimumLevel(LogLevel.Information))
+    .CreateLogger("SharedMeta"));
 
 // Connection state (shared across modes)
 string connectionStatusMessage = "";

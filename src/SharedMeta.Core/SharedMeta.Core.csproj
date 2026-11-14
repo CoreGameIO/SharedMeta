@@ -35,6 +35,7 @@
 
   <!-- Orleans + MessagePack: real packages for .NET, stubs for Unity/netstandard -->
   <ItemGroup Condition="'$(TargetFramework)' != 'netstandard2.1'">
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     <PackageReference Include="Microsoft.Orleans.Serialization.Abstractions" />
     <PackageReference Include="Microsoft.Orleans.Sdk" />
     <PackageReference Include="MessagePack" />
@@ -42,6 +43,9 @@
 
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
     <ProjectReference Include="..\Orleans.Stubs\Orleans.Stubs.csproj" PrivateAssets="all" />
+    <!-- Lowest version that has the API: a NuGet floor, so clients pinned to M.E.L. 8.x
+         (Unity via NuGetForUnity, Godot) restore without being forced up a major. -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" VersionOverride="8.0.3" />
   </ItemGroup>
 
   <!-- Bundle Orleans.Stubs into Core's netstandard2.1 NuGet output -->

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using SharedMeta.Core;
 using SharedMeta.Core.Network;
 using SharedMeta.Core.Diagnostics;
@@ -19,7 +20,8 @@ using SharedMeta.Transport.SignalR;
 GeneratedMetaMessagePackConfiguration.Configure();
 
 // Setup logging
-MetaLog.SetLogger(new ConsoleMetaLogger(MetaLogLevel.Info));
+MetaLog.SetLogger(LoggerFactory.Create(b => b.AddSimpleConsole(o => o.SingleLine = true).SetMinimumLevel(LogLevel.Information))
+    .CreateLogger("SharedMeta"));
 
 var useServerPatch = args.Contains("--server-patch");
 // Client app version drives [MetaConfigVersion] branch resolution on the server.

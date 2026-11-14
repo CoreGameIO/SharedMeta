@@ -168,7 +168,7 @@ public class MetaGameClient : IDisposable
 
         LocalServer = new LocalServer(Serializer, backend);
 
-        // Default is NullMetaLogger — without this, a save that cannot be written (bad path,
+        // Default is NullLogger — without this, a save that cannot be written (bad path,
         // sandbox denial, full disk) produces no output at all. LocalServer forwards this to
         // the backend, so the resolved save directory is logged on startup too.
         LocalServer.Logger = new UnityMetaLogger();

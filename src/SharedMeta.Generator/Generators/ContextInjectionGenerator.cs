@@ -1357,7 +1357,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"            var ctx = new CrossOptimisticMetaContext<{targetStateType}>(state);");
             sb.AppendLine("            ctx.CrossEntityResolver = _resolver;");
             sb.AppendLine("            ctx.ServerTimeTicks = prevCtx?.ServerTimeTicks ?? 0;");
-            sb.AppendLine("            ctx.Log = prevCtx?.Log ?? SharedMeta.Core.Logging.NullMetaLogger.Instance;");
+            sb.AppendLine("            ctx.Log = prevCtx?.Log ?? global::Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;");
             sb.AppendLine($"            ctx.Config = _resolver.GetEntityConfig(_entityId, typeof({targetStateType}).FullName!);");
             sb.AppendLine($"            ctx.Configs = _resolver.GetEntityConfigs(_entityId, typeof({targetStateType}).FullName!);");
             sb.AppendLine("            MetaContextAccessor.Current = ctx;");

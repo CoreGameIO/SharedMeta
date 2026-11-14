@@ -1,57 +1,50 @@
 using System;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace SharedMeta.Core.Logging
 {
     /// <summary>
-    /// Static accessor for the global MetaLogger.
+    /// Static accessor for the global framework logger.
     /// Call MetaLog.SetLogger() at application startup before any SharedMeta operations.
     /// </summary>
     public static class MetaLog
     {
-        private static volatile IMetaLogger _logger = NullMetaLogger.Instance;
+        private static volatile ILogger _logger = NullLogger.Instance;
+
+        // Messages here are already rendered (interpolated strings, desync dumps with braces), so
+        // they go through as plain state with an identity formatter — never as a message template,
+        // which would misparse "{" in the payload.
+        private static readonly Func<string, Exception?, string> PlainMessage = (message, _) => message;
 
         /// <summary>
         /// The current global logger instance.
         /// </summary>
-        public static IMetaLogger Logger => _logger;
+        public static ILogger Logger => _logger;
 
         /// <summary>
         /// Set the global logger. Call once at application startup.
         /// </summary>
-        public static void SetLogger(IMetaLogger logger)
+        public static void SetLogger(ILogger? logger)
         {
-            _logger = logger ?? NullMetaLogger.Instance;
+            _logger = logger ?? NullLogger.Instance;
         }
 
-        public static void Debug(string message)
+        public static void Debug(string message) => Write(LogLevel.Debug, message, null);
+
+        public static void Info(string message) => Write(LogLevel.Information, message, null);
+
+        public static void Warning(string message) => Write(LogLevel.Warning, message, null);
+
+        public static void Error(string message) => Write(LogLevel.Error, message, null);
+
+        public static void Error(string message, Exception exception) => Write(LogLevel.Error, message, exception);
+
+        private static void Write(LogLevel level, string message, Exception? exception)
         {
             var l = _logger;
-            if (l.IsEnabled(MetaLogLevel.Debug))
-                l.Log(MetaLogLevel.Debug, message);
-        }
-
-        public static void Info(string message)
-        {
-            var l = _logger;
-            if (l.IsEnabled(MetaLogLevel.Info))
-                l.Log(MetaLogLevel.Info, message);
-        }
-
-        public static void Warning(string message)
-        {
-            var l = _logger;
-            if (l.IsEnabled(MetaLogLevel.Warning))
-                l.Log(MetaLogLevel.Warning, message);
-        }
-
-        public static void Error(string message)
-        {
-            _logger.Log(MetaLogLevel.Error, message);
-        }
-
-        public static void Error(string message, Exception exception)
-        {
-            _logger.Log(MetaLogLevel.Error, message, exception);
+            if (l.IsEnabled(level))
+                l.Log(level, default, message, exception, PlainMessage);
         }
     }
 }

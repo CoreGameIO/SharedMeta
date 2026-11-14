@@ -23,7 +23,7 @@ namespace SharedMeta.IntegrationTests.Infrastructure;
 
 /// <summary>
 /// Wires the global client-side <see cref="MetaLog"/> to a console logger at Error level
-/// before any test runs. Default <c>NullMetaLogger</c> silently drops every Error write —
+/// before any test runs. Default <c>NullLogger</c> silently drops every Error write —
 /// in production that's fine (the host injects its own logger), but in tests it caused
 /// dispatcher/replay deserialization failures to disappear without trace until something
 /// asserted on the side-effect (e.g. <c>Sum == 0</c> while expecting 50). xUnit captures
@@ -35,7 +35,10 @@ internal static class GlobalTestLoggerInitializer
     [ModuleInitializer]
     public static void Initialize()
     {
-        MetaLog.SetLogger(new ConsoleMetaLogger(MetaLogLevel.Error));
+        MetaLog.SetLogger(LoggerFactory.Create(b => b
+                .AddSimpleConsole(o => o.SingleLine = true)
+                .SetMinimumLevel(LogLevel.Error))
+            .CreateLogger("SharedMeta"));
     }
 }
 

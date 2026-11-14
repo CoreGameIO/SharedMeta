@@ -194,31 +194,18 @@ public class ServiceErrorStateTests
         }
     }
 
-    private class TestMetaLogger : IMetaLogger
+    private class TestMetaLogger : MessageLogger
     {
         public int ErrorCount { get; private set; }
         public string? LastErrorMessage { get; private set; }
         public Exception? LastException { get; private set; }
 
-        public bool IsEnabled(MetaLogLevel level) => true;
-
-        public void Log(MetaLogLevel level, string message)
+        protected override void Write(Microsoft.Extensions.Logging.LogLevel level, string message, Exception? exception)
         {
-            if (level == MetaLogLevel.Error)
-            {
-                ErrorCount++;
-                LastErrorMessage = message;
-            }
-        }
-
-        public void Log(MetaLogLevel level, string message, Exception exception)
-        {
-            if (level == MetaLogLevel.Error)
-            {
-                ErrorCount++;
-                LastErrorMessage = message;
-                LastException = exception;
-            }
+            if (level != Microsoft.Extensions.Logging.LogLevel.Error) return;
+            ErrorCount++;
+            LastErrorMessage = message;
+            if (exception != null) LastException = exception;
         }
     }
 }

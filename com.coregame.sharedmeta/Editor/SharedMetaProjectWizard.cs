@@ -1933,7 +1933,7 @@ namespace SharedMeta.Editor
             AssetDatabase.Refresh();
 
             EditorUtility.DisplayDialog("Success",
-                $"Client scripts generated at:\n{outputDir}\n\n- {clientAsmdefName}.asmdef\n- MetaGameClient.cs (MonoBehaviour)\n- UnityMetaLogger.cs (IMetaLogger)\n\n" +
+                $"Client scripts generated at:\n{outputDir}\n\n- {clientAsmdefName}.asmdef\n- MetaGameClient.cs (MonoBehaviour)\n- UnityMetaLogger.cs (ILogger)\n\n" +
                 "Next: after Unity finishes compiling, use Setup Scene (Step 6) to create the MetaGameClient GameObject.",
                 "OK");
 
@@ -2214,44 +2214,35 @@ namespace SharedMeta.Editor
         {
             var sb = new StringBuilder();
             sb.AppendLine("using System;");
-            sb.AppendLine("using SharedMeta.Core.Logging;");
+            sb.AppendLine("using Microsoft.Extensions.Logging;");
             sb.AppendLine("using UnityEngine;");
+            sb.AppendLine("using ILogger = Microsoft.Extensions.Logging.ILogger; // UnityEngine.ILogger also exists");
             sb.AppendLine();
             sb.AppendLine("/// <summary>");
-            sb.AppendLine("/// IMetaLogger implementation that routes SharedMeta logs to Unity console.");
+            sb.AppendLine("/// ILogger that routes SharedMeta logs to the Unity console. Compiles against both the");
+            sb.AppendLine("/// SharedMeta logging shim and the real Microsoft.Extensions.Logging (HAS_MEL).");
             sb.AppendLine("/// </summary>");
-            sb.AppendLine("public class UnityMetaLogger : IMetaLogger");
+            sb.AppendLine("public class UnityMetaLogger : ILogger");
             sb.AppendLine("{");
-            sb.AppendLine("    public bool IsEnabled(MetaLogLevel level) => true;");
+            sb.AppendLine("    public bool IsEnabled(LogLevel logLevel) => logLevel != LogLevel.None;");
             sb.AppendLine();
-            sb.AppendLine("    public void Log(MetaLogLevel level, string message)");
+            sb.AppendLine("    public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;");
+            sb.AppendLine();
+            sb.AppendLine("    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)");
             sb.AppendLine("    {");
-            sb.AppendLine("        switch (level)");
+            sb.AppendLine("        var message = \"[SharedMeta] \" + formatter(state, exception);");
+            sb.AppendLine("        if (exception != null) message += \"\\n\" + exception;");
+            sb.AppendLine("        switch (logLevel)");
             sb.AppendLine("        {");
-            sb.AppendLine("            case MetaLogLevel.Error:");
-            sb.AppendLine("                Debug.LogError($\"[SharedMeta] {message}\");");
+            sb.AppendLine("            case LogLevel.Critical:");
+            sb.AppendLine("            case LogLevel.Error:");
+            sb.AppendLine("                Debug.LogError(message);");
             sb.AppendLine("                break;");
-            sb.AppendLine("            case MetaLogLevel.Warning:");
-            sb.AppendLine("                Debug.LogWarning($\"[SharedMeta] {message}\");");
+            sb.AppendLine("            case LogLevel.Warning:");
+            sb.AppendLine("                Debug.LogWarning(message);");
             sb.AppendLine("                break;");
             sb.AppendLine("            default:");
-            sb.AppendLine("                Debug.Log($\"[SharedMeta] {message}\");");
-            sb.AppendLine("                break;");
-            sb.AppendLine("        }");
-            sb.AppendLine("    }");
-            sb.AppendLine();
-            sb.AppendLine("    public void Log(MetaLogLevel level, string message, Exception exception)");
-            sb.AppendLine("    {");
-            sb.AppendLine("        switch (level)");
-            sb.AppendLine("        {");
-            sb.AppendLine("            case MetaLogLevel.Error:");
-            sb.AppendLine("                Debug.LogError($\"[SharedMeta] {message}\\n{exception}\");");
-            sb.AppendLine("                break;");
-            sb.AppendLine("            case MetaLogLevel.Warning:");
-            sb.AppendLine("                Debug.LogWarning($\"[SharedMeta] {message}\\n{exception}\");");
-            sb.AppendLine("                break;");
-            sb.AppendLine("            default:");
-            sb.AppendLine("                Debug.Log($\"[SharedMeta] {message}\\n{exception}\");");
+            sb.AppendLine("                Debug.Log(message);");
             sb.AppendLine("                break;");
             sb.AppendLine("        }");
             sb.AppendLine("    }");

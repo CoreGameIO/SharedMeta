@@ -56,6 +56,15 @@ attribute and an unbuildable project.**
 | `HAS_NEWTONSOFT_JSON` | `SharedMeta.Transport.Http` | UPM package `com.unity.nuget.newtonsoft-json` is present |
 | `HAS_BESTHTTP` | `SharedMeta.Transport.BestHttp` | UPM package `com.tivadar.besthttp` is present |
 | `HAS_SIGNALR` | `SharedMeta.Transport.SignalR.Client` | **never — always set it by hand** |
+| `HAS_MEL` | real `Microsoft.Extensions.Logging.Abstractions` instead of the bundled logging shim | UPM package `org.nuget.microsoft.extensions.logging.abstractions` is present |
+
+**Logging.** SharedMeta logs through `Microsoft.Extensions.Logging.ILogger` (`MetaLog.SetLogger(ILogger)`,
+`Context.Log`). Without the real package the UPM ships a minimal, source-compatible shim
+(`Runtime/LoggingShim.cs`: `ILogger`, `LogLevel`, `EventId`, `NullLogger`, `Log*` extensions), so a
+logger written against it keeps compiling once the real package arrives. The SignalR client pulls the
+real package in as a dependency — **with `HAS_SIGNALR`, set `HAS_MEL` too**, or `ILogger` exists twice
+(`CS0433`). In a file that also has `using UnityEngine;`, alias it: `using ILogger =
+Microsoft.Extensions.Logging.ILogger;` (`UnityEngine.ILogger` exists as well).
 
 Those "automatically" rows are `versionDefines` on the package's asmdefs, and a `versionDefine`
 matches **only UPM package ids**. If a dependency arrives any other way — most commonly MemoryPack
@@ -98,7 +107,7 @@ than failed** — `MemoryPackMetaSerializer` simply does not exist, and the only
 `CS0246` on a type you are certain you installed.
 
 A working reference project is `examples/Unity/Expedition/Client`, whose `ProjectSettings.asset`
-reads `Standalone: HAS_MEMORYPACK;HAS_SIGNALR;HAS_NEWTONSOFT_JSON`.
+reads `Standalone: HAS_MEMORYPACK;HAS_SIGNALR;HAS_NEWTONSOFT_JSON;HAS_MEL`.
 
 ---
 
