@@ -33,6 +33,11 @@
     <PackageReference Include="MessagePack" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Config download endpoint + URL resolver: transport-agnostic, shared by SignalR and HttpPolling hosts -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
   <!-- MemoryPack for FileGrainStorage serialization (opt-out: set DisableMemoryPack=true) -->
   <ItemGroup Condition="'$(DisableMemoryPack)' != 'true'">
     <PackageReference Include="MemoryPack" />

@@ -406,7 +406,8 @@ namespace SharedMeta.Editor
                 if (_transportIndex == 0)
                     EditorGUILayout.HelpBox(
                         "Install Microsoft.AspNetCore.SignalR.Client via NuGetForUnity or place DLLs in Assets/Plugins/.\n" +
-                        "The HAS_SIGNALR scripting define will be added automatically when detected.",
+                        "The HAS_SIGNALR scripting define will be added automatically when detected.\n" +
+                        "Manual install: add HAS_MEL yourself first — SignalR brings Microsoft.Extensions.Logging.",
                         MessageType.Info);
                 else if (_transportIndex >= 2)
                     EditorGUILayout.HelpBox(
@@ -700,7 +701,8 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine($"namespace {ns}");
             sb.AppendLine("{");
-            sb.AppendLine($"    [MetaService(StateType = typeof({stateName}State), AccessPolicy = EntityAccessPolicy.UserOwned, DefaultConfig = true)]");
+            sb.AppendLine($"    [MetaService(StateType = typeof({stateName}State), AccessPolicy = EntityAccessPolicy.UserOwned)]");
+            sb.AppendLine("    [ServiceConfig(typeof(GameConfig), \"Config\")]");
             sb.AppendLine($"    public interface I{stateName}Service : IMetaService");
             sb.AppendLine("    {");
             sb.AppendLine("        [MetaMethod(Alias = \"Init\", Mode = ExecutionMode.Server)]");
@@ -739,7 +741,7 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine("        public int AddExperience(int amount)");
             sb.AppendLine("        {");
-            sb.AppendLine("            State.Level += amount / ((GameConfig)Config!).ExperiencePerLevel;");
+            sb.AppendLine("            State.Level += amount / Config.ExperiencePerLevel;");
             sb.AppendLine("            return State.Level;");
             sb.AppendLine("        }");
             sb.AppendLine("    }");
@@ -794,8 +796,8 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine($"namespace {ns}");
             sb.AppendLine("{");
-            sb.AppendLine("    [MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned,");
-            sb.AppendLine("        DefaultConfig = true)]");
+            sb.AppendLine("    [MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned)]");
+            sb.AppendLine("    [ServiceConfig(typeof(GameConfig), \"Config\")]");
             sb.AppendLine("    // ILobbyListener is inherited here so dispatch and the generated APIs know the");
             sb.AppendLine("    // matchmaking callbacks; their [MetaMethod] sits on ProfileService.");
             sb.AppendLine("    public interface IProfileService : IMetaService, ILobbyListener");
@@ -919,7 +921,8 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine($"namespace {ns}");
             sb.AppendLine("{");
-            sb.AppendLine("    [MetaService(StateType = typeof(OthelloState), DefaultConfig = true)]");
+            sb.AppendLine("    [MetaService(StateType = typeof(OthelloState))]");
+            sb.AppendLine("    [ServiceConfig(typeof(GameConfig), \"Config\")]");
             sb.AppendLine("    public interface IOthelloService : IMetaService");
             sb.AppendLine("    {");
             sb.AppendLine("        [MetaMethod(Alias = \"RegisterPlayer\", Mode = ExecutionMode.Server, GenerateClientApi = false)]");
@@ -958,7 +961,7 @@ namespace SharedMeta.Editor
             sb.AppendLine("            // Initial 4 pieces in the center");
             sb.AppendLine("            State.Board[27] = 2; State.Board[28] = 1;");
             sb.AppendLine("            State.Board[35] = 1; State.Board[36] = 2;");
-            sb.AppendLine("            State.CurrentPlayer = ((GameConfig)Config!).StartingPlayer;");
+            sb.AppendLine("            State.CurrentPlayer = Config.StartingPlayer;");
             sb.AppendLine("            State.Phase = GamePhase.Playing;");
             sb.AppendLine("            State.WinnerId = null;");
             sb.AppendLine("            UpdateScore();");
@@ -1093,7 +1096,8 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine($"namespace {ns}");
             sb.AppendLine("{");
-            sb.AppendLine("    [MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned, DefaultConfig = true)]");
+            sb.AppendLine("    [MetaService(StateType = typeof(ProfileState), AccessPolicy = EntityAccessPolicy.UserOwned)]");
+            sb.AppendLine("    [ServiceConfig(typeof(GameConfig), \"Config\")]");
             sb.AppendLine("    public interface IProfileService : IMetaService");
             sb.AppendLine("    {");
             sb.AppendLine("        [MetaMethod(Alias = \"InitProfile\", Mode = ExecutionMode.Server)]");
@@ -1162,7 +1166,7 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine("        public async Task<string> StartExpedition()");
             sb.AppendLine("        {");
-            sb.AppendLine("            if (!SpendEnergy(((GameConfig)Config!).StartEnergyCost)) return \"\";");
+            sb.AppendLine("            if (!SpendEnergy(Config.StartEnergyCost)) return \"\";");
             sb.AppendLine("            var expeditionId = $\"expedition:{State.PlayerId}:{Context.ServerTimeTicks}\";");
             sb.AppendLine("            var expeditionService = GetIExpeditionService(expeditionId);");
             sb.AppendLine("            await expeditionService.InitAsync(State.PlayerId);");
@@ -1223,7 +1227,8 @@ namespace SharedMeta.Editor
             sb.AppendLine();
             sb.AppendLine($"namespace {ns}");
             sb.AppendLine("{");
-            sb.AppendLine("    [MetaService(StateType = typeof(ExpeditionState), AccessPolicy = EntityAccessPolicy.Authorized, DefaultConfig = true)]");
+            sb.AppendLine("    [MetaService(StateType = typeof(ExpeditionState), AccessPolicy = EntityAccessPolicy.Authorized)]");
+            sb.AppendLine("    [ServiceConfig(typeof(GameConfig), \"Config\")]");
             sb.AppendLine("    public interface IExpeditionService : IMetaService");
             sb.AppendLine("    {");
             sb.AppendLine("        [MetaMethod(Alias = \"Init\", Mode = ExecutionMode.Server, GenerateClientApi = false)]");
@@ -1350,9 +1355,7 @@ namespace SharedMeta.Editor
         /// <summary>
         /// Emit a minimal <c>[MetaConfig(Default = true)]</c> POCO with a single
         /// <paramref name="fieldType"/> <paramref name="fieldName"/> = <paramref name="defaultValue"/>
-        /// field. Generated under the template's namespace so the framework's
-        /// state→config map auto-binds it (Default-flagged means every state in the
-        /// assembly resolves to this class via <c>Context.Config</c>).
+        /// field. Services reference it via <c>[ServiceConfig(typeof(GameConfig), "Config")]</c>.
         ///
         /// <para>Why a partial class with serializer attrs: configs cross the wire via
         /// the chosen <c>IMetaSerializer</c>; the attrs let MemoryPack / MessagePack
@@ -1369,9 +1372,8 @@ namespace SharedMeta.Editor
             sb.AppendLine($"namespace {ns}");
             sb.AppendLine("{");
             sb.AppendLine("    /// <summary>");
-            sb.AppendLine("    /// Default config DTO — bound automatically to every state in this assembly via");
-            sb.AppendLine("    /// the [MetaConfig(Default = true)] flag. Access from service implementations");
-            sb.AppendLine("    /// with <c>((GameConfig)Config!).Field</c>.");
+            sb.AppendLine("    /// Game config DTO. Services declare it with <c>[ServiceConfig(typeof(GameConfig), \"Config\")]</c>");
+            sb.AppendLine("    /// and read it in implementations through the generated typed <c>Config</c> property.");
             sb.AppendLine("    /// </summary>");
             sb.AppendLine("    /// <remarks>");
             sb.AppendLine("    /// The server's project-side <c>ConfigBootstrapper</c> (sibling of <c>Program.cs</c>,");
@@ -1946,6 +1948,7 @@ namespace SharedMeta.Editor
         {
             var sb = new StringBuilder();
             sb.AppendLine("using System;");
+            sb.AppendLine("using System.Threading.Tasks;");
             sb.AppendLine("using UnityEngine;");
             sb.AppendLine("using SharedMeta.Client;");
             if (_enableAuth)
@@ -1996,6 +1999,10 @@ namespace SharedMeta.Editor
             sb.AppendLine("        try");
             sb.AppendLine("        {");
 
+            // Login + connection + client build go into ConnectClientAsync (emitted after Start), so
+            // Start can run it a second time after a forced re-login.
+            var body = new StringBuilder();
+
             // Authentication
             if (_enableAuth)
             {
@@ -2008,10 +2015,10 @@ namespace SharedMeta.Editor
                 sb.AppendLine("        var tokenStorage = new PlayerPrefsTokenStorage(deviceId);");
                 sb.AppendLine("        // One auth client per backend, with its own provider and its own storage scope.");
                 sb.AppendLine("        var auth = new MetaAuthClient(baseUrl.TrimEnd('/') + \"/meta/auth\", new UnityMetaAuthProvider());");
-                sb.AppendLine("        var login = await auth.EnsureAuthenticatedAsync(deviceId, tokenStorage);");
-                sb.AppendLine("        var accessToken = login.Token;");
-                sb.AppendLine("        var playerId = login.PlayerId;");
-                sb.AppendLine();
+                body.AppendLine("        var login = await auth.EnsureAuthenticatedAsync(deviceId, tokenStorage);");
+                body.AppendLine("        var accessToken = login.Token;");
+                body.AppendLine("        var playerId = login.PlayerId;");
+                body.AppendLine();
             }
 
             // Create connection
@@ -2019,106 +2026,106 @@ namespace SharedMeta.Editor
             {
                 case 0: // SignalR
                     if (_enableAuth)
-                        sb.AppendLine("        var connection = new SignalRConnection(serverUrl, accessToken);");
+                        body.AppendLine("        var connection = new SignalRConnection(serverUrl, accessToken);");
                     else
-                        sb.AppendLine("        var connection = new SignalRConnection(serverUrl);");
+                        body.AppendLine("        var connection = new SignalRConnection(serverUrl);");
                     break;
                 case 1: // HTTP Polling (UnityWebRequest)
-                    sb.AppendLine("        var connection = new UnityHttpConnection(new UnityHttpConnectionOptions");
-                    sb.AppendLine("        {");
+                    body.AppendLine("        var connection = new UnityHttpConnection(new UnityHttpConnectionOptions");
+                    body.AppendLine("        {");
                     if (_enableAuth)
-                        sb.AppendLine("            ServerUrl = serverUrl, AccessToken = accessToken");
+                        body.AppendLine("            ServerUrl = serverUrl, AccessToken = accessToken");
                     else
-                        sb.AppendLine("            ServerUrl = serverUrl");
-                    sb.AppendLine("        });");
+                        body.AppendLine("            ServerUrl = serverUrl");
+                    body.AppendLine("        });");
                     break;
                 case 2: // BestHttp SignalR
                     if (_serializerIndex == 1) // MessagePack — use binary SignalR protocol
                     {
-                        sb.AppendLine("        var connection = new BestHttpSignalRConnection(new BestHttpSignalRConnectionOptions");
-                        sb.AppendLine("        {");
+                        body.AppendLine("        var connection = new BestHttpSignalRConnection(new BestHttpSignalRConnectionOptions");
+                        body.AppendLine("        {");
                         if (_enableAuth)
                         {
-                            sb.AppendLine("            ServerUrl = serverUrl,");
-                            sb.AppendLine("            AccessToken = accessToken,");
+                            body.AppendLine("            ServerUrl = serverUrl,");
+                            body.AppendLine("            AccessToken = accessToken,");
                         }
                         else
                         {
-                            sb.AppendLine("            ServerUrl = serverUrl,");
+                            body.AppendLine("            ServerUrl = serverUrl,");
                         }
-                        sb.AppendLine("            Protocol = new MessagePackCSharpProtocol()");
-                        sb.AppendLine("        });");
+                        body.AppendLine("            Protocol = new MessagePackCSharpProtocol()");
+                        body.AppendLine("        });");
                     }
                     else
                     {
                         if (_enableAuth)
                         {
-                            sb.AppendLine("        var connection = new BestHttpSignalRConnection(new BestHttpSignalRConnectionOptions");
-                            sb.AppendLine("        {");
-                            sb.AppendLine("            ServerUrl = serverUrl, AccessToken = accessToken");
-                            sb.AppendLine("        });");
+                            body.AppendLine("        var connection = new BestHttpSignalRConnection(new BestHttpSignalRConnectionOptions");
+                            body.AppendLine("        {");
+                            body.AppendLine("            ServerUrl = serverUrl, AccessToken = accessToken");
+                            body.AppendLine("        });");
                         }
                         else
                         {
-                            sb.AppendLine("        var connection = new BestHttpSignalRConnection(serverUrl);");
+                            body.AppendLine("        var connection = new BestHttpSignalRConnection(serverUrl);");
                         }
                     }
                     break;
                 case 3: // BestHttp HTTP
-                    sb.AppendLine("        var connection = new BestHttpPollingConnection(new BestHttpPollingConnectionOptions");
-                    sb.AppendLine("        {");
+                    body.AppendLine("        var connection = new BestHttpPollingConnection(new BestHttpPollingConnectionOptions");
+                    body.AppendLine("        {");
                     if (_enableAuth)
-                        sb.AppendLine("            ServerUrl = serverUrl, AccessToken = accessToken");
+                        body.AppendLine("            ServerUrl = serverUrl, AccessToken = accessToken");
                     else
-                        sb.AppendLine("            ServerUrl = serverUrl");
-                    sb.AppendLine("        });");
+                        body.AppendLine("            ServerUrl = serverUrl");
+                    body.AppendLine("        });");
                     break;
             }
-            sb.AppendLine();
+            body.AppendLine();
 
             // Create serializer
             if (_serializerIndex == 1)
             {
-                sb.AppendLine("        // Configure MessagePack composite resolver (auto-generated)");
-                sb.AppendLine("        GeneratedMetaMessagePackConfiguration.Configure();");
+                body.AppendLine("        // Configure MessagePack composite resolver (auto-generated)");
+                body.AppendLine("        GeneratedMetaMessagePackConfiguration.Configure();");
                 if (IsBestHttpSignalRMessagePack)
                 {
-                    sb.AppendLine("        // BestHTTP MessagePackCSharpProtocol uses MessagePackSerializer.DefaultOptions");
-                    sb.AppendLine("        MessagePackSerializer.DefaultOptions = MetaMessagePackOptions.Instance;");
+                    body.AppendLine("        // BestHTTP MessagePackCSharpProtocol uses MessagePackSerializer.DefaultOptions");
+                    body.AppendLine("        MessagePackSerializer.DefaultOptions = MetaMessagePackOptions.Instance;");
                 }
             }
             if (_serializerIndex == 0)
-                sb.AppendLine("        var serializer = new MemoryPackMetaSerializer();");
+                body.AppendLine("        var serializer = new MemoryPackMetaSerializer();");
             else
-                sb.AppendLine("        var serializer = new MessagePackMetaSerializer();");
-            sb.AppendLine();
+                body.AppendLine("        var serializer = new MessagePackMetaSerializer();");
+            body.AppendLine();
 
             // Create MetaClient
-            sb.AppendLine("        Client = new MetaClient(connection, serializer, new MetaClientOptions");
-            sb.AppendLine("        {");
+            body.AppendLine("        Client = new MetaClient(connection, serializer, new MetaClientOptions");
+            body.AppendLine("        {");
             if (_enableAuth)
-                sb.AppendLine("            PlayerId = playerId,");
+                body.AppendLine("            PlayerId = playerId,");
             else
-                sb.AppendLine("            PlayerId = SystemInfo.deviceUniqueIdentifier,");
-            sb.AppendLine("            // Stamped on every SessionConnect / RPC as CallerClientVersion. Must match a config");
-            sb.AppendLine("            // version the server has published (or a branch covered by [MetaConfigVersion] rules) —");
-            sb.AppendLine("            // the server's DefaultInstanceConfigBootstrapper publishes 0.1.0 on first run, so 0.1.0");
-            sb.AppendLine("            // is the matching default. Update this when you ship a new client build with a bumped config.");
-            sb.AppendLine("            ClientAppVersion = \"0.1.0\",");
-            sb.AppendLine("            // 0.24.0+ Explicitly pin this assembly's MetaClientSignature so SessionConnect can");
-            sb.AppendLine("            // negotiate the per-signature method-id map before the first RPC dispatches.");
-            sb.AppendLine("            // RegisterAllServices() below also publishes ClientSignatureDefault.Value as a");
-            sb.AppendLine("            // fallback, but the explicit pin removes ordering surprises (and the need to rely");
-            sb.AppendLine("            // on the module-initializer path that doesn't run on Unity / IL2CPP).");
-            sb.AppendLine($"            ClientSignature = global::{_sharedProjectName}.GameServiceDiscoveryBase.ClientSignature,");
-            sb.AppendLine("            // Optional hooks — implement and uncomment when needed:");
-            sb.AppendLine("            // Diagnostics     = new MyDesyncDiagnostics(),     // IDesyncDiagnostics: OnRandomDesync/OnPatchDesync/OnResultMismatch callbacks");
-            sb.AppendLine("            // ConnectionHealth = new MyConnectionHealth(),     // IConnectionHealth: Healthy ↔ Slow ↔ Unresponsive transitions for UI overlays");
-            sb.AppendLine("        });");
-            sb.AppendLine();
-            sb.AppendLine("        // For deep request-lifecycle tracing, assign Client.Dispatcher.DiagnosticsLog");
-            sb.AppendLine("        // to a file writer — it emits SEND/RECV/BATCH/CONFIRMED per request.");
-            sb.AppendLine();
+                body.AppendLine("            PlayerId = SystemInfo.deviceUniqueIdentifier,");
+            body.AppendLine("            // Stamped on every SessionConnect / RPC as CallerClientVersion. Must match a config");
+            body.AppendLine("            // version the server has published (or a branch covered by [MetaConfigVersion] rules) —");
+            body.AppendLine("            // the server's DefaultInstanceConfigBootstrapper publishes 0.1.0 on first run, so 0.1.0");
+            body.AppendLine("            // is the matching default. Update this when you ship a new client build with a bumped config.");
+            body.AppendLine("            ClientAppVersion = \"0.1.0\",");
+            body.AppendLine("            // 0.24.0+ Explicitly pin this assembly's MetaClientSignature so SessionConnect can");
+            body.AppendLine("            // negotiate the per-signature method-id map before the first RPC dispatches.");
+            body.AppendLine("            // RegisterAllServices() below also publishes ClientSignatureDefault.Value as a");
+            body.AppendLine("            // fallback, but the explicit pin removes ordering surprises (and the need to rely");
+            body.AppendLine("            // on the module-initializer path that doesn't run on Unity / IL2CPP).");
+            body.AppendLine($"            ClientSignature = global::{_sharedProjectName}.GameServiceDiscoveryBase.ClientSignature,");
+            body.AppendLine("            // Optional hooks — implement and uncomment when needed:");
+            body.AppendLine("            // Diagnostics     = new MyDesyncDiagnostics(),     // IDesyncDiagnostics: OnRandomDesync/OnPatchDesync/OnResultMismatch callbacks");
+            body.AppendLine("            // ConnectionHealth = new MyConnectionHealth(),     // IConnectionHealth: Healthy ↔ Slow ↔ Unresponsive transitions for UI overlays");
+            body.AppendLine("        });");
+            body.AppendLine();
+            body.AppendLine("        // For deep request-lifecycle tracing, assign Client.Dispatcher.DiagnosticsLog");
+            body.AppendLine("        // to a file writer — it emits SEND/RECV/BATCH/CONFIRMED per request.");
+            body.AppendLine();
             // Real downloading provider — pair with app.MapMetaConfigDownload() +
             // AddMetaConfigPublicUrl() on the server. URL resolved per <TConfig, TState>:
             // server stamps absolute /meta/config/{stateName}/{version} into SubscribeResponse,
@@ -2132,15 +2139,38 @@ namespace SharedMeta.Editor
                 2 => "ProfileState",
                 _ => $"{_sharedStateName}State"
             };
-            sb.AppendLine($"        // Server-driven config. Bytes fetched from /meta/config/{configOwnerState}/{{version}}");
-            sb.AppendLine($"        // — the version is whatever the server pinned for this client (see server's");
-            sb.AppendLine($"        // ConfigBootstrapper + [MetaConfigVersion] rules on GameConfig).");
-            sb.AppendLine($"        Client.RegisterDownloadingConfigProvider<GameConfig, {configOwnerState}>();");
-            sb.AppendLine();
-            sb.AppendLine("        Client.Resolver.RegisterAllServices();");
-            sb.AppendLine();
-            sb.AppendLine("        Debug.Log(\"[SharedMeta] Connecting...\");");
-            sb.AppendLine("        await Client.ConnectAsync();");
+            body.AppendLine($"        // Server-driven config. Bytes fetched from /meta/config/{configOwnerState}/{{version}}");
+            body.AppendLine($"        // — the version is whatever the server pinned for this client (see server's");
+            body.AppendLine($"        // ConfigBootstrapper + [MetaConfigVersion] rules on GameConfig).");
+            body.AppendLine("        Client.UnityRegisterDownloadingConfigProvider<GameConfig>();");
+            body.AppendLine();
+            body.AppendLine("        Client.Resolver.RegisterAllServices();");
+            body.AppendLine();
+            body.AppendLine("        Debug.Log(\"[SharedMeta] Connecting...\");");
+            body.AppendLine("        await Client.ConnectAsync();");
+
+            if (_enableAuth)
+            {
+                sb.AppendLine("        try");
+                sb.AppendLine("        {");
+                sb.AppendLine("            await ConnectClientAsync(auth, deviceId, tokenStorage);");
+                sb.AppendLine("        }");
+                sb.AppendLine("        catch (MetaSessionConnectException ex) when (ex.FailureReason == SessionConnectFailureReason.IdentityUnknown)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            // The cached token is still within its lifetime, but the server no longer knows its");
+                sb.AppendLine("            // player (server data wiped, account deleted). Reconnecting with it loops forever —");
+                sb.AppendLine("            // drop it and log in again, which creates a new player.");
+                sb.AppendLine("            Debug.LogWarning($\"[SharedMeta] Cached account is unknown to the server — logging in again. ({ex.ServerError})\");");
+                sb.AppendLine("            MetaAuthClient.ClearToken(tokenStorage);");
+                sb.AppendLine("            Client?.Dispose();");
+                sb.AppendLine("            Client = null;");
+                sb.AppendLine("            await ConnectClientAsync(auth, deviceId, tokenStorage);");
+                sb.AppendLine("        }");
+            }
+            else
+            {
+                sb.AppendLine("        await ConnectClientAsync();");
+            }
             sb.AppendLine("        Debug.Log($\"[SharedMeta] Connected! PlayerId: {Client.PlayerId}\");");
             sb.AppendLine();
             // Per-template usage example
@@ -2182,7 +2212,7 @@ namespace SharedMeta.Editor
                     sb.AppendLine("        //   expApi.PingSignal(System.DateTime.UtcNow.ToString(\"O\"));");
                     sb.AppendLine();
                     sb.AppendLine("        // Query (read-only, no subscription — useful to check state before subscribing):");
-                    sb.AppendLine("        //   var query = new ExpeditionServiceQueryApi(connection, serializer).EntityApi(entityId);");
+                    sb.AppendLine("        //   var query = new ExpeditionServiceQueryApi(Client.Connection, Client.Serializer).EntityApi(entityId);");
                     sb.AppendLine("        //   bool isActive = await query.IsActiveAsync();");
                     break;
             }
@@ -2195,6 +2225,14 @@ namespace SharedMeta.Editor
             sb.AppendLine("            // (or a dedicated Reconnect() method) after the player confirms. The");
             sb.AppendLine("            // Expedition sample under examples/Unity/Expedition demonstrates this pattern.");
             sb.AppendLine("        }");
+            sb.AppendLine("    }");
+            sb.AppendLine();
+            if (_enableAuth)
+                sb.AppendLine("    private async Task ConnectClientAsync(MetaAuthClient auth, string deviceId, ITokenStorage tokenStorage)");
+            else
+                sb.AppendLine("    private async Task ConnectClientAsync()");
+            sb.AppendLine("    {");
+            sb.Append(body);
             sb.AppendLine("    }");
             sb.AppendLine();
             sb.AppendLine("    private void Update()");
@@ -2754,6 +2792,9 @@ namespace SharedMeta.Editor
                 return;
             }
             _transportPkgStatus = PackageStatus.Installing;
+            // Set before the DLLs land: once the real M.E.L. arrives, the logging shim collides with it
+            // (CS0433), compilation fails, and no domain reload comes back to add the define later.
+            EnsureScriptingDefine("HAS_MEL");
             Debug.Log("[SharedMeta] SignalR installation initiated via NuGetForUnity");
             // After NuGetForUnity installs, domain reload will trigger OnEnable → CheckTransportDependency
         }
@@ -2770,6 +2811,8 @@ namespace SharedMeta.Editor
         private void EnsureSignalRDefine()
         {
             EnsureScriptingDefine("HAS_SIGNALR");
+            // The SignalR client depends on Microsoft.Extensions.Logging.Abstractions.
+            EnsureScriptingDefine("HAS_MEL");
         }
 
         /// <summary>

@@ -73,7 +73,10 @@ namespace SharedMeta.Orleans.Config.Admin
             }
         }
 
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        // Unsubscribe here, not on container disposal: this service starts after the silo (it calls
+        // grains in StartAsync), so it stops before it — disposal comes after the silo is gone.
+        public Task StopAsync(CancellationToken cancellationToken)
+            => _catalog.ForEachAsync(new ShutdownHandler(_sp), cancellationToken);
 
         /// <summary>
         /// Typed seed visitor — one <c>HandleAsync&lt;TConfig&gt;</c> call per catalog entry.
@@ -157,6 +160,20 @@ namespace SharedMeta.Orleans.Config.Admin
                 var provider = _sp.GetService<BroadcastingConfigProvider<TConfig>>();
                 if (provider == null) return;
                 await provider.InitializeAsync(ct).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>Unsubscribes every <c>BroadcastingConfigProvider&lt;TConfig&gt;</c> from its directory grain.</summary>
+        private sealed class ShutdownHandler : IConfigCatalogHandler
+        {
+            private readonly IServiceProvider _sp;
+            public ShutdownHandler(IServiceProvider sp) => _sp = sp;
+
+            public async Task HandleAsync<TConfig>(string fullName, string displayName, CancellationToken ct) where TConfig : class
+            {
+                var provider = _sp.GetService<BroadcastingConfigProvider<TConfig>>();
+                if (provider == null) return;
+                await provider.DisposeAsync().ConfigureAwait(false);
             }
         }
 

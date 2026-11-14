@@ -587,9 +587,17 @@ public partial class GameConfig
 }
 ```
 
-Link to service: `[MetaService(StateType = typeof(GameState), DefaultConfig = true)]` or `ConfigType = typeof(GameConfig)`.
+Link to service with `[ServiceConfig]` on the interface — the name becomes the typed accessor:
 
-Access in service code via the auto-injected `Config` property (also available during `[MetaInit]`).
+```csharp
+[MetaService(StateType = typeof(GameState))]
+[ServiceConfig(typeof(GameConfig), "Config")]
+public interface IGameService : IMetaService { ... }
+
+// in the impl: Config.MaxEnergy — typed, no cast (also available during [MetaInit])
+```
+
+`[MetaService(ConfigType = ...)]` / `DefaultConfig = true` are `[Obsolete]` — still work, but don't write them in new code. See [Multiple Configs](#multiple-configs-serviceconfig--0330).
 
 Server provides config via `IMetaConfigProvider<TConfig>`:
 - `GetConfig(MetaConfigVersion version)` — return config for a specific version (called repeatedly during migration steps; cache it). An async-backed provider may serve only already-materialized versions here and throw on a miss
@@ -606,7 +614,15 @@ Client access: `client.GetEntityConfig<GameConfig>(entityId)` — returns resolv
 
 #### Client config provider — required setup (0.17.0+)
 
-The client materializes config via an `IClientMetaConfigProvider<TConfig>` registered on the resolver. **Failing to register one for any service that declares `ConfigType = typeof(X)` (without `DefaultConfig = true`) throws `InvalidOperationException` at the first subscribe.** Pre-0.17.0 the generator silently auto-registered `StaticConfigProvider<T>(new T())` for everyone — that hid wiring bugs and was removed; auto-register is now opt-in via `[MetaService(..., DefaultConfig = true)]`.
+The client materializes config via an `IClientMetaConfigProvider<TConfig>` registered on the resolver. **Every config type a service declares via `[ServiceConfig]` needs a registered provider — a missing one throws `InvalidOperationException` at the first subscribe.** The generator never auto-registers one for `[ServiceConfig]`. (Legacy only: obsolete `DefaultConfig = true` still opts into an auto `StaticConfigProvider<T>(new T())` fallback.)
+
+Unity shortcut for (B) below — `UnityConfigDownloader` + `FileConfigCache` under `Application.persistentDataPath` (asmdef `SharedMeta.Client.Config`):
+
+```csharp
+client.UnityRegisterDownloadingConfigProvider<GameConfig>();
+```
+
+On .NET clients: `client.RegisterDownloadingConfigProvider<GameConfig>(downloader)`.
 
 > **Critical mental model.** The server reports the `MetaConfigVersion` it pinned for the entity; the client provider then materialises that version. `StaticConfigProvider` **ignores the requested version and always returns the instance passed at construction** — it does NOT consult the server. Picking (A) freezes the client to build-time values; server-side config changes do NOT reach a (A)-only client without a new build. For live-ops, use (B) or (C).
 >
@@ -640,7 +656,7 @@ client.Resolver.RegisterConfigProvider<GameConfig>(new CompositeConfigProvider<G
 
 #### Server-side download endpoint (0.26.2+)
 
-`DownloadingConfigProvider` on the client asks the server for a URL per version via `GetConfigDownloadUrl`; the host must answer **and** serve bytes at that URL. Two paired helpers in `SharedMeta.Server` (from `CoreGame.SharedMeta.Transport.SignalR`) drop ~25 lines of boilerplate:
+`DownloadingConfigProvider` on the client asks the server for a URL per version via `GetConfigDownloadUrl`; the host must answer **and** serve bytes at that URL. Two paired helpers in `SharedMeta.Server` (from `CoreGame.SharedMeta.Server.Core`, so they work with any transport — SignalR or HttpPolling) drop ~25 lines of boilerplate:
 
 ```csharp
 // ASP.NET DI — NOT inside siloBuilder.ConfigureServices(...)
@@ -656,7 +672,7 @@ app.MapMetaConfigDownload();   // non-generic — recommended; serves every [Met
 
 **0.26.2 unblocks host-overrides for free.** Generator-emitted `GeneratedConfigDownloadUrlResolver` is now registered with `TryAddSingleton`, so a host-side `AddSingleton<IConfigDownloadUrlResolver>(...)` wins without `RemoveAll`/ordering tricks. Pre-0.26.2 hosts that customized the resolver had to `services.RemoveAll<IConfigDownloadUrlResolver>()` first.
 
-Set `DefaultConfig = true` on `[MetaService]` only when `new TConfig()` produces gameplay-correct fallback values; for typical configs (item registries, balance numbers, level data) leave it off and register an explicit provider.
+Register `StaticConfigProvider<T>(new T())` explicitly only when `new TConfig()` produces gameplay-correct values; for typical configs (item registries, balance numbers, level data) use a downloading or composite provider.
 
 ### Multiple Configs (`[ServiceConfig]`) — 0.33.0+
 
@@ -686,8 +702,9 @@ public partial class ShopServiceImpl : IShopService
 ```
 
 Positional: declaration order = wire/storage index — same deliberate-reseed-on-reorder contract
-`[NamedRandom]` already has. Generator emits one named typed accessor per entry:
-`protected {TConfig} {Name} => ({TConfig})Context.Configs![i]!;`.
+`[NamedRandom]` already has. Generator emits one named typed accessor per entry,
+`protected {TConfig} {Name}`, resolved by type (`Context.GetServiceConfig<TConfig>()`) — not by
+index, since `Context.Configs` is the union of every service on the state.
 
 **Legacy `[MetaService(ConfigType=...)]` / `Context.Config`:** `[Obsolete]` (compiler warning)
 but fully functional — existing services keep working unchanged, no forced migration. When a
@@ -862,8 +879,8 @@ Inside `[MetaServiceImpl]` classes, the source generator injects:
 public MetaContext<TState> Context { get; set; }  // Full context
 public TState State => Context.State;              // Shortcut to state
 public string CallerId => Context.CallerId;        // Who called this method
-// If config is configured:
-protected GameConfig Config => (GameConfig)Context.Config!;
+// Per [ServiceConfig(typeof(GameConfig), "Config")] on the interface:
+protected GameConfig Config { get; }
 ```
 
 Available via Context:
@@ -873,7 +890,7 @@ Available via Context:
 - `Context.IsServer` / `Context.IsClient` — execution side
 - `Context.ExecutionMode` — current execution mode
 - `Context.EntityId` — current entity ID
-- `Context.Config` — static game config (if configured via `[MetaConfig]`)
+- `Context.Config` — legacy single config (obsolete `ConfigType`/`DefaultConfig`); use the `[ServiceConfig]` accessors instead
 - `Context.Version` — current state schema version (during a migration step, the source version of the step) — 0.19.0+
 - `Context.ConfigVersion` — `MetaConfigVersion` matching `Context.Config` — 0.19.0+
 - `Context.CallerClientVersion` — originating client app version; propagated across cross-entity boundaries — 0.19.0+
@@ -1511,7 +1528,7 @@ Custom `IMetaAuthProvider` must implement `RefreshAsync`; custom `ITokenStorage`
 
 **Enforcing auth:** `MetaTransportOptions.RequireAuthentication = true` rejects anonymous connections at SessionConnect. Additionally, you can add `[Authorize]` on a hub subclass or `.RequireAuthorization()` on endpoint mapping for middleware-level protection.
 
-**Identity validation (0.37.1+):** a JWT is stateless, so wiping the auth store leaves valid tokens in client hands — the transport trusts `sub` and entity grains lazily create empty state for a PlayerId that can never be logged into again. `AddMetaAuth` registers an `IPlayerIdentityValidator` (`SharedMeta.Server.Core.Transport`) backed by `IAuthIndexGrain.HasKeysAsync()`; `SessionConnect` consults it before touching any grain and rejects with `SessionConnectFailureReason.IdentityUnknown` + an `"Authentication rejected: ..."` message, which routes the client through its auth-failure path (`OnConnectAuthFailedAsync` → drop cached token → full login → real PlayerId). Gate requires all of: a validator in DI (`TryAdd` — a host registration before `AddMetaAuth` wins), `RequireAuthentication = true` (otherwise PlayerId is client-supplied, not claim-derived), and `MetaTransportOptions.ValidatePlayerIdentity` (default `true`; set `false` for service accounts / externally minted tokens). Custom validators must already answer true for a just-created player — `AuthGrain.LoginAsync` writes the index entry before the token is minted.
+**Identity validation (0.37.1+):** a JWT is stateless, so wiping the auth store leaves valid tokens in client hands — the transport trusts `sub` and entity grains lazily create empty state for a PlayerId that can never be logged into again. `AddMetaAuth` registers an `IPlayerIdentityValidator` (`SharedMeta.Server.Core.Transport`) backed by `IAuthIndexGrain.HasKeysAsync()`; `SessionConnect` consults it before touching any grain and rejects with `SessionConnectFailureReason.IdentityUnknown` + an `"Authentication rejected: ..."` message, On cold connect the client throws `MetaSessionConnectException` (`SharedMeta.Client`, derives from `InvalidOperationException`) with `FailureReason == IdentityUnknown`; the built-in `AccessTokenSource` retry skips it (new login = new PlayerId, client built for the old one). Caller: `MetaAuthClient.ClearToken(storage)` → dispose `MetaClient` → full login → new connection + client → connect. The wizard's Unity `MetaGameClient` does this in its `ConnectClientAsync` retry. Gate requires all of: a validator in DI (`TryAdd` — a host registration before `AddMetaAuth` wins), `RequireAuthentication = true` (otherwise PlayerId is client-supplied, not claim-derived), and `MetaTransportOptions.ValidatePlayerIdentity` (default `true`; set `false` for service accounts / externally minted tokens). Custom validators must already answer true for a just-created player — `AuthGrain.LoginAsync` writes the index entry before the token is minted.
 
 **Client version enforcement (0.13.0+):** `MetaTransportOptions.ServerVersion` and `MinClientVersion` enforce version compatibility at connect time. Major version mismatch → always rejected. Minor/patch mismatch → rejected if client is below `MinClientVersion`. `MinClientVersion` can be overridden cluster-wide at runtime via `IVersionPolicyGrain` (Orleans grain singleton, key `"global"`) — cached per silo with a 60-second TTL. Clients pass `Application.version` via `SignalRConnection(url, token, clientVersion: Application.version)` or `HttpPollingConnectionOptions.ClientVersion`. On rejection, the `SessionConnectResponse` carries `ServerVersion` and `MinClientVersion` so the client can surface an actionable upgrade prompt.
 
@@ -1658,8 +1675,8 @@ bool PlayCardV2(Card card, bool autoDefend);
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `StateType` | Type | required | State class type |
-| `ConfigType` | Type | null | Explicit config type for this service |
-| `DefaultConfig` | bool | false | Use config class with `[MetaConfig(Default = true)]`. Also opts the service into the generator's auto-`StaticConfigProvider<T>(new T())` fallback on the client (0.17.0+); without this flag, an explicit `RegisterConfigProvider<T>` is required and a missing one throws at first subscribe |
+| `ConfigType` | Type | null | **Obsolete** — use `[ServiceConfig(typeof(T), "Name")]` |
+| `DefaultConfig` | bool | false | **Obsolete** — use `[ServiceConfig]`. Uses the `[MetaConfig(Default = true)]` class and opts into an auto `StaticConfigProvider<T>(new T())` on the client |
 | `AccessPolicy` | EntityAccessPolicy | Open | Subscribe access control |
 | `PatchTracking` | bool | true | (0.24.2+) Allow the auto-generated `{Impl}_PatchTracked` copy for force-patch. `false` = opt out: no copy, force-patch clients rejected at negotiation/subscribe instead of served an empty patch. Set false only when the body can't be copy-compatible. See *ServerPatch → Patch-tracking copy* |
 

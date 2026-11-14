@@ -3,6 +3,9 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using SharedMeta.Core.Transport;
 using SharedMeta.Server.Core;
 using SharedMeta.Server.Core.Transport;
@@ -45,8 +48,29 @@ namespace SharedMeta.Transport.HttpPolling
             group.MapPost("/disconnect", HandleDisconnect);
             group.MapPost("/graceful-disconnect", HandleGracefulDisconnect);
 
+            DisconnectAllOnStopping(endpoints.ServiceProvider);
+
             return endpoints;
         }
+
+        // SignalR closes its sockets when the web server stops, which is before the silo stops.
+        // Polling connections are only state in the manager — without this they would be torn
+        // down at container disposal, after the silo is gone, and every session-grain notify fails.
+        private static void DisconnectAllOnStopping(IServiceProvider services)
+        {
+            var mgr = services.GetService<HttpPollingConnectionManager>();
+            var lifetime = services.GetService<IHostApplicationLifetime>();
+            if (mgr == null || lifetime == null) return;
+
+            lifetime.ApplicationStopping.Register(() =>
+            {
+                if (!mgr.DisconnectAllAsync().Wait(ShutdownDrainTimeout))
+                    services.GetService<ILoggerFactory>()?.CreateLogger(typeof(HttpPollingEndpoints))
+                        .LogWarning("HTTP polling: disconnecting connections did not finish within {Timeout}", ShutdownDrainTimeout);
+            });
+        }
+
+        private static readonly TimeSpan ShutdownDrainTimeout = TimeSpan.FromSeconds(10);
 
         private static async Task<IResult> HandleSessionConnect(
             HttpContext ctx,

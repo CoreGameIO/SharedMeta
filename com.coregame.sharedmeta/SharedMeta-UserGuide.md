@@ -587,7 +587,19 @@ app.MapMetaAuthEndpoints(); // POST /meta/auth/login
 
 `AddMetaAuth` also registers an `IPlayerIdentityValidator`, and `SessionConnect` uses it to reject a token whose player no longer exists. This matters after any auth-store wipe (fresh environment, dropped volume, deleted account): a JWT carries only a signature, an expiry and a `sub` claim, so it keeps authenticating until it expires. Without the check the server trusts the claim and creates empty entity state for a PlayerId nobody can log in as again.
 
-The rejection reads "Authentication rejected" and carries `SessionConnectFailureReason.IdentityUnknown`, so the client's auth-failure path (`MetaClientOptions.OnConnectAuthFailedAsync`) drops the cached token and re-logins into a real PlayerId.
+On the client, `ConnectAsync` throws `MetaSessionConnectException` with `FailureReason == SessionConnectFailureReason.IdentityUnknown`. Nothing retries it automatically — a fresh login yields a new PlayerId, and the client was built for the old one. Drop the token and rebuild:
+
+```csharp
+try { await ConnectClientAsync(auth, deviceId, tokenStorage); }   // login + connection + MetaClient + ConnectAsync
+catch (MetaSessionConnectException ex) when (ex.FailureReason == SessionConnectFailureReason.IdentityUnknown)
+{
+    MetaAuthClient.ClearToken(tokenStorage);
+    Client?.Dispose();
+    await ConnectClientAsync(auth, deviceId, tokenStorage);       // full login → new player
+}
+```
+
+The wizard-generated `MetaGameClient` does exactly this.
 
 The gate needs `RequireAuthentication = true` — without it the PlayerId is client-supplied, not claim-derived. Turn it off with `ValidatePlayerIdentity = false` if authenticated connections may legitimately carry identities your auth store doesn't hold (service accounts, externally minted tokens). Custom identity sources implement `IPlayerIdentityValidator` and register before `AddMetaAuth`.
 

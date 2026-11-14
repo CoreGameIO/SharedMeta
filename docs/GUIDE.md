@@ -338,31 +338,30 @@ public partial class GameConfig
 }
 ```
 
-- `Default = true` — this config is automatically used by services with `DefaultConfig = true`
-- Only one config class should be marked as `Default` per assembly
+- `Default = true` — marks the assembly's default config (read by the obsolete `DefaultConfig = true`); only one per assembly
 
 ### Linking Config to a Service
 
-```csharp
-// Option 1: Use the default config (marked with [MetaConfig(Default = true)])
-[MetaService(StateType = typeof(GameState), DefaultConfig = true)]
-public interface IGameService : IMetaService { ... }
+Declare it on the interface with `[ServiceConfig]`; the name becomes the generated accessor:
 
-// Option 2: Explicit config type
-[MetaService(StateType = typeof(GameState), ConfigType = typeof(GameConfig))]
+```csharp
+[MetaService(StateType = typeof(GameState))]
+[ServiceConfig(typeof(GameConfig), "Config")]
 public interface IGameService : IMetaService { ... }
 ```
 
+`[MetaService(DefaultConfig = true)]` / `[MetaService(ConfigType = typeof(...))]` are `[Obsolete]` — still functional, not for new code. A service can declare several configs — see [Multiple Configs](#multiple-configs-serviceconfig--0330).
+
 ### Accessing Config in Service Code
 
-The source generator injects a typed `Config` property:
+The source generator injects a typed property named after the `[ServiceConfig]` entry:
 
 ```csharp
 [MetaServiceImpl(typeof(IGameService), typeof(GameState))]
 public partial class GameServiceImpl : IGameService
 {
     // Auto-injected by generator:
-    //   protected GameConfig Config => (GameConfig)Context.Config!;
+    //   protected GameConfig Config { get; }   // from [ServiceConfig(typeof(GameConfig), "Config")]
 
     public bool RegenerateEnergy()
     {
@@ -749,7 +748,7 @@ The pin is *runtime grain state*, not persisted on `EntityGrainState`. It dies w
 
 ### Server-Side Config Download Endpoint (0.26.2+)
 
-When the client's `DownloadingConfigProvider<TConfig>` fetches bytes, it asks the server "what URL do I hit for this version?" via the SignalR call `GetConfigDownloadUrl`. The host has to (a) answer that question with an `IConfigDownloadUrlResolver` and (b) actually serve the bytes at the URL it advertised. Two paired helpers (in the `SharedMeta.Server` namespace, shipped from `CoreGame.SharedMeta.Transport.SignalR`) eliminate the boilerplate:
+When the client's `DownloadingConfigProvider<TConfig>` fetches bytes, it asks the server "what URL do I hit for this version?" via the SignalR call `GetConfigDownloadUrl`. The host has to (a) answer that question with an `IConfigDownloadUrlResolver` and (b) actually serve the bytes at the URL it advertised. Two paired helpers (in the `SharedMeta.Server` namespace, shipped from `CoreGame.SharedMeta.Server.Core` — available with any transport) eliminate the boilerplate:
 
 ```csharp
 // (1) Register the URL resolver. Builds URLs in the form
@@ -788,7 +787,9 @@ Prior to 0.26.2 the framework registered the generated `GeneratedConfigDownloadU
 3. The provider materializes the config for that version — caching, downloading, fallback are all internal to the provider.
 4. The resolved instance is cached on the entity's `EntityConnection` and surfaced to all API clients on the entity (`Context.Config`, `client.GetEntityConfig<TConfig>(entityId)`).
 
-#### Registering a provider (required for `ConfigType`, optional for `DefaultConfig`)
+#### Registering a provider (required for every `[ServiceConfig]` type)
+
+The generator never auto-registers a provider for `[ServiceConfig]` types — register one per config type before subscribing, or the first subscribe throws `InvalidOperationException`. Unity shortcut for (B): `client.UnityRegisterDownloadingConfigProvider<GameConfig>()`; .NET: `client.RegisterDownloadingConfigProvider<GameConfig>(downloader)`.
 
 > **Breaking in 0.17.0** — services that declare `ConfigType = typeof(X)` without `DefaultConfig = true` MUST register a provider before subscribing. The previous "auto-emit `StaticConfigProvider<T>(new T())` for everyone" behavior silently substituted an empty config and is gone. A missing provider now throws `InvalidOperationException` with the actionable recipe at first subscribe.
 >
@@ -835,9 +836,9 @@ resolver.RegisterAllServices();
 
 In Unity, replace `http.GetByteArrayAsync` with `UnityConfigDownloader.DownloadAsync` for IL2CPP/WebGL compatibility.
 
-#### When `DefaultConfig = true` is appropriate
+#### When `StaticConfigProvider<T>(new T())` is appropriate
 
-Set it only when `new TConfig()` is genuinely a usable fallback — e.g. configs whose default-constructed values match the gameplay defaults the design assumes when nothing is loaded. For most game configs (item registries, balance numbers, level data), the default ctor produces zeroed nonsense — leave the flag off and register an explicit provider.
+Only when `new TConfig()` is genuinely a usable fallback — e.g. configs whose default-constructed values match the gameplay defaults the design assumes when nothing is loaded. For most game configs (item registries, balance numbers, level data), the default ctor produces zeroed nonsense — use a downloading or composite provider. (The obsolete `DefaultConfig = true` registered exactly this fallback automatically.)
 
 ### Accessing Config from Client Code
 
@@ -3328,7 +3329,19 @@ builder.Services.AddSingleton(new MetaTransportOptions
 });
 ```
 
-The rejection message starts with "Authentication rejected", so client-side auth-failure handling — including `MetaClientOptions.OnConnectAuthFailedAsync` — treats it as a credential problem: clear the cached token, log in again, get a real PlayerId. Retrying the connect with the same token would loop forever.
+On a cold connect the client throws `MetaSessionConnectException` (an `InvalidOperationException`) whose `FailureReason` is `IdentityUnknown`. Retrying with the same token loops forever, and the built-in `AccessTokenSource` policy deliberately skips it: a fresh login yields a new PlayerId, while the `MetaClient` and a token-string connection were built for the old one. The caller clears the cached token, logs in again and rebuilds both:
+
+```csharp
+try { await ConnectClientAsync(auth, deviceId, tokenStorage); }   // login + connection + MetaClient + ConnectAsync
+catch (MetaSessionConnectException ex) when (ex.FailureReason == SessionConnectFailureReason.IdentityUnknown)
+{
+    MetaAuthClient.ClearToken(tokenStorage);
+    Client?.Dispose();
+    await ConnectClientAsync(auth, deviceId, tokenStorage);       // full login → new player
+}
+```
+
+The wizard-generated Unity `MetaGameClient` follows this pattern.
 
 Gate conditions, all required:
 
@@ -5260,7 +5273,8 @@ Balance parameters are served by `IMetaConfigProvider<ExpeditionConfig>` on the 
 ### Service Interfaces
 
 ```csharp
-[MetaService(StateType = typeof(ExpeditionState), AccessPolicy = EntityAccessPolicy.Authorized, DefaultConfig = true)]
+[MetaService(StateType = typeof(ExpeditionState), AccessPolicy = EntityAccessPolicy.Authorized)]
+[ServiceConfig(typeof(ExpeditionConfig), "Config")]
 public interface IExpeditionService : IMetaService
 {
     // Called cross-entity from ProfileService to set ownership

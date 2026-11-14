@@ -243,4 +243,70 @@ public class ReconnectAuthRecoveryTests
         Assert.Equal(callsBefore + 1, conn.SessionConnectCalls);
         Assert.Equal(ConnectionStatus.Failed, lastStatus);
     }
+
+    private sealed class CountingTokenSource : SharedMeta.Core.Auth.IAccessTokenSource
+    {
+        public int Invalidations { get; private set; }
+        public string? PlayerId { get; init; }
+        public Task<string?> GetTokenAsync(CancellationToken cancellation = default) => Task.FromResult<string?>("token");
+        public void Invalidate() => Invalidations++;
+    }
+
+    private (MetaClient Client, ScriptedAuthConnection Conn) CreateUnconnected(
+        string playerId, SharedMeta.Core.Auth.IAccessTokenSource? tokenSource = null)
+    {
+        var server = new InProcessServer(_fixture.CreateHandlerFactory());
+        var conn = new ScriptedAuthConnection(server.CreateConnection());
+        var client = new MetaClient(conn, new MemoryPackMetaSerializer(), new MetaClientOptions
+        {
+            PlayerId = playerId,
+            ClientAppVersion = "1.0.0",
+            ClientSignature = SharedMeta.Test.Meta1.GameServiceDiscoveryBase.ClientSignature,
+            AccessTokenSource = tokenSource,
+        });
+        return (client, conn);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ColdConnect_Rejection_CarriesFailureReason()
+    {
+        // The game routes "account gone → clear token, log in again" on this reason; before it was
+        // only in the message text of a plain InvalidOperationException.
+        var (client, conn) = CreateUnconnected("cold-ghost-" + Guid.NewGuid().ToString("N")[..8]);
+        conn.FailNextWith(SessionConnectFailureReason.IdentityUnknown);
+
+        var ex = await Assert.ThrowsAsync<MetaSessionConnectException>(() => client.ConnectAsync());
+
+        Assert.Equal(SessionConnectFailureReason.IdentityUnknown, ex.FailureReason);
+        Assert.IsAssignableFrom<InvalidOperationException>(ex);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ColdConnect_IdentityUnknown_DefaultRecoveryDoesNotRetry()
+    {
+        // Re-acquiring for the same PlayerId can't revive a deleted account, and a fresh login would
+        // change the PlayerId under a client built for the old one — the caller must rebuild instead.
+        var tokens = new CountingTokenSource { PlayerId = "p" };
+        var (client, conn) = CreateUnconnected("cold-noretry-" + Guid.NewGuid().ToString("N")[..8], tokens);
+        conn.FailNextWith(SessionConnectFailureReason.IdentityUnknown);
+
+        await Assert.ThrowsAsync<MetaSessionConnectException>(() => client.ConnectAsync());
+
+        Assert.Equal(0, tokens.Invalidations);
+        Assert.Equal(1, conn.SessionConnectCalls);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task ColdConnect_AuthenticationRequired_DefaultRecoveryRetriesOnce()
+    {
+        var tokens = new CountingTokenSource { PlayerId = "p" };
+        var (client, conn) = CreateUnconnected("cold-retry-" + Guid.NewGuid().ToString("N")[..8], tokens);
+        conn.FailNextWith(SessionConnectFailureReason.AuthenticationRequired);
+
+        await client.ConnectAsync();
+
+        Assert.Equal(1, tokens.Invalidations);
+        Assert.Equal(2, conn.SessionConnectCalls);
+        Assert.True(client.IsSessionConnected);
+    }
 }

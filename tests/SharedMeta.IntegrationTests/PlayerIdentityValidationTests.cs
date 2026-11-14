@@ -1,5 +1,6 @@
 using Orleans;
 using SharedMeta.Auth;
+using SharedMeta.Client;
 using SharedMeta.Core.Transport;
 using SharedMeta.Debug.InProcess;
 using SharedMeta.IntegrationTests.Infrastructure;
@@ -157,7 +158,8 @@ public class PlayerIdentityValidationTests
 
         await using var client = new TestClientSetup(server, ghost);
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => client.ConnectAsync());
+        var ex = await Assert.ThrowsAsync<MetaSessionConnectException>(() => client.ConnectAsync());
+        Assert.Equal(SessionConnectFailureReason.IdentityUnknown, ex.FailureReason);
         Assert.Contains("Authentication", ex.Message);
     }
 

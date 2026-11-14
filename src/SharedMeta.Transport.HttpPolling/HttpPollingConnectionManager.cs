@@ -110,10 +110,26 @@ namespace SharedMeta.Transport.HttpPolling
             }
         }
 
+        /// <summary>
+        /// Disconnect every open connection, notifying the session grains.
+        /// Must run while the silo is still up — on host shutdown that means from
+        /// <c>ApplicationStopping</c>, not from <see cref="Dispose"/>: the container is disposed
+        /// after the silo has stopped, and grain calls then fail.
+        /// </summary>
+        public Task DisconnectAllAsync()
+        {
+            var removals = new List<Task>();
+            foreach (var connectionId in _connections.Keys)
+                removals.Add(RemoveConnectionAsync(connectionId));
+            return Task.WhenAll(removals);
+        }
+
         public void Dispose()
         {
             _cleanupTimer.Dispose();
 
+            // Normally empty: DisconnectAllAsync drained it on ApplicationStopping. Whatever is
+            // left (manager used without MapMetaHttpPolling) gets a last-chance notify.
             foreach (var kvp in _connections)
             {
                 kvp.Value.Handler.OnDisconnectedAsync().Wait();

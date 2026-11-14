@@ -359,7 +359,7 @@ namespace SharedMeta.Client
                         new KeyValuePair<string, object?>("from", "connecting"),
                         new KeyValuePair<string, object?>("to", "failed"));
 #endif
-                    throw new InvalidOperationException($"Failed to establish session: {sessionResult.Error}");
+                    throw new MetaSessionConnectException(sessionResult.FailureReason, sessionResult.Error);
                 }
 #if SHAREDMETA_CLIENT_TELEMETRY
                 SharedMeta.Client.Telemetry.SharedMetaClientMeters.ConnectionStateTransition.Add(1,
@@ -382,8 +382,15 @@ namespace SharedMeta.Client
         // Gates the built-in auto-reauth so a transient outage doesn't trigger a relogin. Reached on
         // the cold-connect path, where the rejection arrives as a thrown exception rather than the
         // structured SessionConnectFailureReason the reconnect path can read.
+        // IdentityUnknown is excluded: reacquiring for the same PlayerId can't help (the account is
+        // gone), and a full re-login yields a new PlayerId this client was built with the old one of —
+        // the caller has to rebuild the connection and client.
         private static bool IsAuthFailure(Exception ex)
-            => SharedMeta.Core.Auth.AuthFailureHeuristic.LooksLikeAuthFailure(ex);
+        {
+            if (ex is MetaSessionConnectException sce)
+                return sce.FailureReason == SessionConnectFailureReason.AuthenticationRequired;
+            return SharedMeta.Core.Auth.AuthFailureHeuristic.LooksLikeAuthFailure(ex);
+        }
 
         /// <summary>
         /// Attempt to resume the current session after a connection issue.
