@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.46.1] - 2026-11-15
+
+Dependency bumps for MessagePack and SignalR security advisories.
+
+### Security
+
+- `MessagePack` 3.1.7 → 3.1.12 (GHSA-qhrr-8q5h-9q3h, memory-exhaustion DoS).
+- `Microsoft.AspNetCore.SignalR.Client` / `SignalR.Protocols.MessagePack` and `Microsoft.Extensions.*` 10.0.9 → 10.0.15 (GHSA-334f-vvp4-7g6p, GHSA-86xp-94pg-8r6r).
+- Wizard: generated projects get `MessagePack` 3.1.12 and Unity SignalR 8.0.34 (was 3.1.4 / 8.0.24, both vulnerable).
+
+### Changed
+
+- `MemoryPack` 1.21.4 → 1.22.0 in the NuGet packages and Wizard templates.
+- Expedition example: Unity 6000.3.24, SignalR 8.0.34 and MemoryPack 1.22.0 on client and server.
+
 ## [0.46.0] - 2026-11-14
 
 Logging moves to `Microsoft.Extensions.Logging.ILogger`; HTTP polling hosts get config download and a clean shutdown.

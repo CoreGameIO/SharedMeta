@@ -2783,7 +2783,7 @@ Two failures follow from omitting it, one loud and one silent.
 
 ```
 error CS0433: The type 'MemoryPackableAttribute' exists in both
-  'MemoryPack.Core, Version=1.21.4.0' and 'SharedMeta.Runtime'
+  'MemoryPack.Core, Version=1.22.0.0' and 'SharedMeta.Runtime'
 ```
 
 Two warnings above the wall name the cause more usefully than the wall does:

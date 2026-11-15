@@ -84,7 +84,7 @@ way to install them and the manual define is the normal case, not an edge case.*
 
 ```
 error CS0433: The type 'MemoryPackableAttribute' exists in both
-  'MemoryPack.Core, Version=1.21.4.0' and 'SharedMeta.Runtime'
+  'MemoryPack.Core, Version=1.22.0.0' and 'SharedMeta.Runtime'
 ```
 
 — once per attribute usage in the project, so a mid-sized state layer produces well over a thousand

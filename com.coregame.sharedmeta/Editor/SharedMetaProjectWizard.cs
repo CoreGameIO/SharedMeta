@@ -20,6 +20,11 @@ namespace SharedMeta.Editor
     /// </summary>
     public class SharedMetaProjectWizard : EditorWindow
     {
+        // Third-party versions written into generated projects; keep at or above patched releases.
+        private const string MemoryPackVersion = "1.22.0";
+        private const string MessagePackVersion = "3.1.12";
+        private const string UnitySignalRVersion = "8.0.34";
+
         // Common settings
         private string _sharedMetaVersion = "";
         private string _sharedProjectName = "Meta.Shared";
@@ -2784,7 +2789,7 @@ namespace SharedMeta.Editor
 
         private void InstallSignalRViaNuGetForUnity()
         {
-            if (!TryInvokeNuGetForUnityInstall("Microsoft.AspNetCore.SignalR.Client", out var error, "8.0.24"))
+            if (!TryInvokeNuGetForUnityInstall("Microsoft.AspNetCore.SignalR.Client", out var error, UnitySignalRVersion))
             {
                 Debug.LogError($"[SharedMeta] NuGetForUnity install failed: {error}");
                 _transportPkgStatus = PackageStatus.Error;
@@ -3507,9 +3512,9 @@ For full documentation see: https://github.com/CoreGameIO/SharedMeta
             }
 
             if (_serializerIndex == 0)
-                sb.AppendLine("    <PackageVersion Include=\"MemoryPack\" Version=\"1.21.4\" />");
+                sb.AppendLine($"    <PackageVersion Include=\"MemoryPack\" Version=\"{MemoryPackVersion}\" />");
             else
-                sb.AppendLine("    <PackageVersion Include=\"MessagePack\" Version=\"3.1.4\" />");
+                sb.AppendLine($"    <PackageVersion Include=\"MessagePack\" Version=\"{MessagePackVersion}\" />");
 
             sb.AppendLine("  </ItemGroup>");
             sb.AppendLine("</Project>");
@@ -3581,7 +3586,7 @@ For full documentation see: https://github.com/CoreGameIO/SharedMeta
 
             // Also ensure the raw serializer NuGet package is present
             var serializerPkg = _serializerIndex == 0 ? "MemoryPack" : "MessagePack";
-            var serializerVer = _serializerIndex == 0 ? "1.21.4" : "3.1.4";
+            var serializerVer = _serializerIndex == 0 ? MemoryPackVersion : MessagePackVersion;
 
             var linesToAdd = new StringBuilder();
             foreach (var pkg in packages)
