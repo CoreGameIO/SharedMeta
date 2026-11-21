@@ -40,12 +40,17 @@ public class MetaGameClient : IDisposable
 
     private readonly IDesyncDiagnostics _diagnostics;
     private readonly IConnectionHealthListener _connectionHealth;
+    private readonly IMetaClientCallObserver _callObserver;
     private StreamWriter _diagLogWriter;
 
-    public MetaGameClient(IDesyncDiagnostics diagnostics = null, IConnectionHealthListener connectionHealth = null)
+    public MetaGameClient(
+        IDesyncDiagnostics diagnostics = null,
+        IConnectionHealthListener connectionHealth = null,
+        IMetaClientCallObserver callObserver = null)
     {
         _diagnostics = diagnostics;
         _connectionHealth = connectionHealth;
+        _callObserver = callObserver ?? new UnityDebugCallObserver();
     }
 
     public async Task ConnectAsync(
@@ -134,7 +139,8 @@ public class MetaGameClient : IDisposable
             Diagnostics = _diagnostics,
             ConnectionHealth = _connectionHealth,
             ClientSignature = GameServiceDiscoveryBase.ClientSignature,
-            AccessTokenSource = tokens
+            AccessTokenSource = tokens,
+            Telemetry = { CallObserver = _callObserver }
         });
 
         var writerCapture = _diagLogWriter;
@@ -241,6 +247,20 @@ public class MetaGameClient : IDisposable
             // Diagnostics-only signal — never fail Connect because of it.
             Debug.LogWarning($"[Expedition] Diagnostics log unavailable: {ex.Message}");
             _diagLogWriter = null;
+        }
+    }
+
+    /// <summary>
+    /// Logs every completed RPC/Signal with its RTT and W3C CallId — works on Unity without
+    /// DiagnosticSource and lets you match any Unity Console call straight to the server log.
+    /// </summary>
+    private sealed class UnityDebugCallObserver : IMetaClientCallObserver
+    {
+        public void OnCallCompleted(in MetaCallInfo call)
+        {
+            var target = string.IsNullOrEmpty(call.Service) ? call.Op : $"{call.Service}.{call.Method}";
+            var error = string.IsNullOrEmpty(call.ErrorKind) ? "" : $" error={call.ErrorKind}";
+            Debug.Log($"[MetaCall] {target} {call.DurationMs:F1}ms {call.Result}{error} call={call.CallId}");
         }
     }
 }

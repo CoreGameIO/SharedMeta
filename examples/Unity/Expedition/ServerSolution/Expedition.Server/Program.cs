@@ -10,6 +10,7 @@ using Orleans.Hosting;
 using SharedMeta.Core;
 using SharedMeta.Server.Core;
 using SharedMeta.Server.Core.Grains;
+using SharedMeta.Server.Core.Telemetry;
 using SharedMeta.Server.Core.Transport;
 using SharedMeta.Server.Core.Storage;
 using SharedMeta.Core.Framework;
@@ -25,7 +26,11 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using Serilog;
+using Serilog.Events;
 
 // Port configuration: pass as first arg, e.g. `dotnet run -- 5000`
 var port = args.Length > 0 && int.TryParse(args[0], out var p) ? p : 5000;
@@ -36,12 +41,17 @@ var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseUrls($"http://localhost:{port}");
 
 builder.Host.UseSerilog((ctx, config) => config
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.AspNetCore.Hosting", LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.AspNetCore.Routing", LogEventLevel.Warning)
     // Let SharedMeta log at Debug — needed to see [Desync] reports surfaced by
     // MetaConnectionHandler.LogDesync (which writes at Information level when the server is
-    // configured with DesyncLogLevel.Debug). Serilog's implicit minimum is Information, so
-    // without this override the Desync reports are dropped before reaching the sink.
-    .MinimumLevel.Override("SharedMeta", Serilog.Events.LogEventLevel.Debug)
-    .WriteTo.Console()
+    // configured with DesyncLogLevel.Debug) and per-hop CallId/PlayerId/EntityId scopes.
+    .MinimumLevel.Override("SharedMeta", LogEventLevel.Debug)
+    .Enrich.FromLogContext()
+    .WriteTo.Console(
+        outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext} {Message:lj} {Properties:j}{NewLine}{Exception}")
     // File sink: rolling daily file under ./logs. Each process run appends to the same day's file
     // so multiple server sessions in one day are captured in one place — exactly what we need
     // to diagnose cross-restart session-resume bugs by reading both pre-/stop and post-restart
@@ -50,9 +60,21 @@ builder.Host.UseSerilog((ctx, config) => config
         path: "logs/expedition-.log",
         rollingInterval: Serilog.RollingInterval.Day,
         shared: true,
-        outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}",
+        outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {SourceContext} {Message:lj} {Properties:j}{NewLine}{Exception}",
         retainedFileCountLimit: 7)
 );
+
+// Observability settings — shared by the web host (handler, transport filters) and silo (grains).
+// MethodMetrics = All gives every Expedition method its own Prometheus series.
+// Set SHAREDMETA_ANALYTICS_LOG=1 to log every call/session to SharedMeta.Analytics.
+void ConfigureTelemetry(MetaTelemetryOptions o)
+{
+    o.MethodMetrics = MethodMetricsMode.All;
+    o.TransportMetrics = true;
+    o.LogScopes = Environment.GetEnvironmentVariable("SHAREDMETA_LOG_SCOPES") != "0";
+    o.AnalyticsLog = Environment.GetEnvironmentVariable("SHAREDMETA_ANALYTICS_LOG") == "1";
+}
+builder.Services.AddSharedMetaTelemetry(ConfigureTelemetry);
 
 var serializer = new MemoryPackMetaSerializer();
 builder.Services.AddSingleton<IMetaSerializer>(serializer);
@@ -92,6 +114,8 @@ builder.Host.UseOrleans(siloBuilder =>
                 o.PersistencePolicy = PersistencePolicy.EveryNRequests(15);
             });
 
+            services.AddSharedMetaTelemetry(ConfigureTelemetry);
+
             services.ConfigureMeta(svc =>
             {
                 svc.AddTransient<ILobbyRequester>(sp => new OrleansLobbyRequester(sp.GetRequiredService<IGrainFactory>()));
@@ -108,7 +132,8 @@ builder.Services.AddSignalR(hubOptions =>
     hubOptions.EnableDetailedErrors = true;
     hubOptions.ClientTimeoutInterval = TimeSpan.FromMinutes(30);
     hubOptions.KeepAliveInterval = TimeSpan.FromMinutes(15);
-}).AddMetaMessagePackProtocol();
+}).AddMetaMessagePackProtocol()
+  .AddMetaSignalRTelemetry();
 
 // MetaConnectionHandlerFactory is registered by the generated ConfigureMeta()
 // (passes MetaTransportOptions + IMetaSerializer for desync reporting)
@@ -150,12 +175,23 @@ builder.Services.AddCors(options =>
     });
 });
 
+// OpenTelemetry: expose SharedMeta + .NET runtime metrics at /metrics for Prometheus/Grafana.
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService(serviceName: "Unity.Expedition.Server"))
+    .WithMetrics(m => m
+        .AddMeter(SharedMetaMeters.MeterName)
+        .AddRuntimeInstrumentation()
+        .AddPrometheusExporter())
+    .WithTracing(t => t
+        .AddSource(SharedMetaActivities.SourceName));
+
 var app = builder.Build();
 
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapMetaAuth("/meta/auth");
+app.MapPrometheusScrapingEndpoint();
 
 app.MapHub<MetaHub>("/meta");
 app.MapMetaHttpPolling("/meta-http");
@@ -166,7 +202,7 @@ app.MapGet("/meta/config/{major:int}/{minor:int}", (int major, int minor, IMetaS
 {
     var config = provider.GetConfig(new MetaConfigVersion(major, minor));
     return Results.Bytes(ser.Pack(config), "application/octet-stream");
-});
+}).WithMetaTransportTelemetry(app.Services, TransportTelemetry.Http);
 
 app.MapGet("/stop", (
     [FromServices] IServer server,
@@ -195,6 +231,7 @@ app.MapGet("/stop", (
 
 app.Logger.LogInformation("=== Expedition.Server ===");
 app.Logger.LogInformation("Listening on http://localhost:{Port}", port);
+app.Logger.LogInformation("Metrics: http://localhost:{Port}/metrics", port);
 app.Logger.LogInformation("Debug API enabled — clients can toggle deep desync detection at runtime");
 
 await app.RunAsync();

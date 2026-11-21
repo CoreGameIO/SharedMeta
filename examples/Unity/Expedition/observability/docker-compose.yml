@@ -1,0 +1,53 @@
+# SharedMeta / Unity Expedition observability stack — Prometheus + Grafana via Docker.
+#
+# Scrapes examples/Unity/Expedition/ServerSolution/Expedition.Server on http://localhost:5000/metrics.
+#
+# Quick start:
+#   .\up.ps1 -Open                # or: docker compose up -d
+#   .\down.ps1                    # or: docker compose down
+#
+# Optional port overrides:
+#   $env:GRAFANA_PORT=3001; $env:PROM_PORT=9091; docker compose up -d
+
+name: unity-expedition-observability
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: unity-expedition-prom
+    ports:
+      - "${PROM_PORT:-9091}:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=24h"
+      - "--web.enable-lifecycle"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    container_name: unity-expedition-grafana
+    ports:
+      - "${GRAFANA_PORT:-3100}:3000"
+    depends_on:
+      - prometheus
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_DEFAULT_THEME=dark
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  prom-data:
+  grafana-data:
