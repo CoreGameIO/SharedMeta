@@ -1,53 +1,217 @@
 <p align="center">
-  <img src="docs/images/banner.jpg" alt="SharedMeta Banner" width="800"/>
+  <img src="docs/images/banner.gif" alt="SharedMeta Banner" width="800"/>
 </p>
 
+<h1 align="center">SharedMeta</h1>
+
 <p align="center">
-  <strong>Unified Game Logic Engine — write once, run on client and server with deterministic replay</strong>
+  Shared C# game meta-logic framework for Unity and .NET clients with an Orleans backend and deterministic replay.
 </p>
 
 <p align="center">
   <a href="https://github.com/CoreGameIO/SharedMeta/releases"><img src="https://img.shields.io/github/v/release/CoreGameIO/SharedMeta?style=flat-square" alt="Release"></a>
+  <a href="https://www.nuget.org/packages/CoreGame.SharedMeta.Core"><img src="https://img.shields.io/nuget/v/CoreGame.SharedMeta.Core?style=flat-square&label=NuGet" alt="NuGet"></a>
   <a href="https://github.com/CoreGameIO/SharedMeta/blob/main/LICENSE"><img src="https://img.shields.io/github/license/CoreGameIO/SharedMeta?style=flat-square" alt="License"></a>
-  <a href="https://unity.com"><img src="https://img.shields.io/badge/Unity-6+-black?style=flat-square&logo=unity" alt="Unity 6+"></a>
-  <a href="https://dotnet.microsoft.com"><img src="https://img.shields.io/badge/.NET-8%20%7C%2010-512BD4?style=flat-square&logo=dotnet" alt=".NET"></a>
-  <a href="https://learn.microsoft.com/dotnet/orleans/"><img src="https://img.shields.io/badge/Orleans-9-orange?style=flat-square" alt="Orleans"></a>
+  <a href="https://unity.com"><img src="https://img.shields.io/badge/Unity-6000.0%2B-black?style=flat-square&logo=unity" alt="Unity 6000.0+"></a>
+  <a href="https://dotnet.microsoft.com"><img src="https://img.shields.io/badge/.NET-8%20%7C%2010%20%7C%2011-512BD4?style=flat-square&logo=dotnet" alt=".NET 8 | 10 | 11"></a>
+  <a href="https://learn.microsoft.com/dotnet/orleans/"><img src="https://img.shields.io/badge/Orleans-10-orange?style=flat-square" alt="Orleans 10"></a>
 </p>
 
 <p align="center">
-  <a href="#quick-start-unity">Quick Start</a> &bull;
-  <a href="#what-you-can-build">Features</a> &bull;
-  <a href="#architecture">Architecture</a> &bull;
-  <a href="#key-concepts">Key Concepts</a> &bull;
+  <a href="#how-it-works">How It Works</a> &bull;
+  <a href="#minimal-example">Quick Example</a> &bull;
+  <a href="#execution-modes">Execution Modes</a> &bull;
+  <a href="#installation">Installation</a> &bull;
   <a href="#examples">Examples</a> &bull;
   <a href="docs/GUIDE.md">Documentation</a>
 </p>
 
 ---
 
-Write game logic **once** in C# — it runs on the server (Orleans grains) and replays on the client (Unity / .NET) with optimistic execution, automatic rollback, and desync detection.
+SharedMeta lets you write game meta-logic (profiles, economies, inventories, turn-based matches, clans, lobbies) **once** in C# and run it on both client and server without duplicating rules or shipping full state snapshots on every action.
 
-## What You Can Build
+On the server, each entity runs inside a Microsoft Orleans grain (`EntityGrain<TState>`); the client runs on Unity 6+ or any `.NET 8+` runtime. For both sides, a Roslyn incremental source generator emits typed API clients, server dispatchers and providers, context injection, change trackers, and binary state-patch wrappers at compile time — with zero runtime reflection and full AOT / IL2CPP compatibility.
 
-**Player profiles and progression** — experience, levels, inventory, currencies. State is persisted per-player, changes are optimistic (instant on client, validated on server).
+## How It Works
 
-**Turn-based and card games** — shared game rules execute identically on both sides. Matchmaking, lobbies, multi-entity game sessions with deterministic random for shuffles and draws.
+Instead of treating the client as a dumb view that waits for full-state snapshots, SharedMeta executes the **same service method body** on both sides:
 
-**Cooperative and async multiplayer** — one player's action modifies another player's state via cross-entity calls. Energy systems, trading, expeditions that span multiple entities.
+1. **Authoritative server execution & recording** — when a method runs on the server, non-deterministic inputs (`Context.ServerRandom`, `Context.ServerTimeTicks`, cross-entity call results, server-only services) are recorded into a compact replay payload.
+2. **Client execution & replay** — depending on the method's `ExecutionMode`, the client either executes immediately before the network round-trip (`Optimistic` / `CrossOptimistic`) and validates against the server response, or waits for the server and replays the recorded payload locally (`Server`).
+3. **State diffs when logic diverges** — for server-only resets or mixed-version client rollouts, methods can ship generated field-level binary diffs (`ServerPatch`) or full snapshots (`ServerReplace`) instead of replaying the method body on the client.
 
-**Economy and resource systems** — crafting, shops, timers, regeneration. Server-only random for loot drops and rewards (client can't predict or cheat). ServerPatch mode for bandwidth-efficient state diffs.
+<p align="center">
+  <img src="docs/images/optimistic-replay.gif" alt="Optimistic Execution & Deterministic Replay" width="760"/>
+</p>
 
-**Reactive UI with change tracking** — mark state fields with `[Tracked]`, subscribe to typed change notifications. Push-based — no polling or snapshot diffs. Client-only, zero server overhead.
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Meta Layer (SharedMeta.Core, YourGame.Shared)                          │
+│  [SharedState], [MetaService], [MetaServiceImpl], [ServiceConfig]       │
+│  Compile-time Roslyn generator: clients, dispatchers, patch wrappers    │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ↕
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Middleware Layer (SharedMeta.Client, SharedMeta.Server)                │
+│  MetaContext, replay recording/playback, execution modes, desync checks │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ↕
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Serialization Layer (SharedMeta.Serialization.*)                       │
+│  IMetaSerializer: MemoryPack (default, VersionTolerant) / MessagePack   │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ↕
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Transport Layer (SharedMeta.Transport.*)                               │
+│  IConnection: SignalR (WebSocket), HTTP Long-Polling, BestHTTP, InProc  │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ↕
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Server Backend (SharedMeta.Server.Core, SharedMeta.Orleans)            │
+│  EntityGrain<TState>, SessionManagerGrain, persistence, cross-entity    │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
-**Live-ops and admin tools** — server-side triggers push events to clients. Subscribers react to state changes. Hot-swappable transport (WebSocket or HTTP polling) and serializer (MemoryPack or MessagePack).
+## Minimal Example
 
-**Query and inspection** — check any entity's status without subscribing. Get brief info about other players, check if a game session is active, preview inventory — all via lightweight read-only calls with optional open access.
+### 1. Shared State & Service Contract
 
-## Quick Start (Unity)
+```csharp
+using MemoryPack;
+using MessagePack;
+using SharedMeta.Core;
 
-### 1. Install the Package
+[SharedState]
+[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject]
+public partial class PlayerState : ISharedState
+{
+    [Key(0), MemoryPackOrder(0)] public int Gold { get; set; }
+    [Key(1), MemoryPackOrder(1)] public List<string> Items { get; set; } = new();
+}
 
-Add to `Packages/manifest.json`:
+[MetaService(StateType = typeof(PlayerState), AccessPolicy = EntityAccessPolicy.UserOwned)]
+public interface IPlayerService : IMetaService
+{
+    [MetaMethod(Mode = ExecutionMode.Optimistic)]
+    void AddItem(string itemId);
+
+    [MetaMethod(Mode = ExecutionMode.Server)]
+    int OpenChest(int cost);
+
+    [MetaMethod(Mode = ExecutionMode.LocalQuery)]
+    bool HasItem(string itemId);
+}
+```
+
+### 2. Service Implementation
+
+```csharp
+[MetaServiceImpl(typeof(IPlayerService), typeof(PlayerState))]
+public partial class PlayerService : IPlayerService
+{
+    public void AddItem(string itemId)
+    {
+        State.Items.Add(itemId);
+    }
+
+    public int OpenChest(int cost)
+    {
+        if (State.Gold < cost) return 0;
+        State.Gold -= cost;
+
+        // Generated on server, recorded into replay payload, replayed identically on client
+        int reward = Context.ServerRandom!.Next(50, 200);
+        State.Gold += reward;
+        return reward;
+    }
+
+    public bool HasItem(string itemId) => State.Items.Contains(itemId);
+}
+```
+
+### 3. Server (`Program.cs`)
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Host.UseOrleans(silo =>
+{
+    silo.UseLocalhostClustering();
+    silo.AddFileGrainStorage("Default", o => o.RootDirectory = "./data");
+    silo.ConfigureServices(services =>
+    {
+        services.AddSingleton<IMetaSerializer>(new MemoryPackMetaSerializer());
+        services.ConfigureMeta(); // Generated from shared assemblies
+    });
+});
+
+builder.Services.AddSignalR();
+
+var app = builder.Build();
+app.MapHub<MetaHub>("/meta");
+app.Run();
+```
+
+### 4. Client
+
+```csharp
+var client = new MetaClient(
+    new SignalRConnection("http://localhost:5000/meta"),
+    new MemoryPackMetaSerializer()
+);
+client.Resolver.RegisterAllServices(); // Generated
+await client.ConnectAsync();
+
+var api = await client.GetPlayerServiceAsync(); // Generated UserOwned helper
+await api.AddItemAsync("sword_01");             // Runs locally immediately, confirmed on server
+int reward = await api.OpenChestAsync(25);      // Runs on server, replays recorded RNG on client
+bool owned = api.HasItemSync("sword_01");       // Synchronous read over local state, zero RPC
+```
+
+## Execution Modes
+
+`[MetaMethod(Mode = ExecutionMode.*)]` controls where a method runs and how state updates reach subscribers:
+
+| Mode | Client Execution | Server Execution | Typical Use |
+|---|---|---|---|
+| `Optimistic` *(default)* | Executes immediately, validates on server reply | Authoritative execution + broadcast | Responsive player actions (moves, card plays, inventory) |
+| `Server` | Waits for reply, then replays recorded inputs | Executes with `ServerRandom` / server-only services | Loot rolls, matchmaking, hidden state |
+| `CrossOptimistic` | Executes locally across caller-owned states | Routes cross-entity calls to target grains | Split-profile mutations (`Profile` + `Inventory` + `Quests`) |
+| `ServerPatch` | Applies generated binary field diff | Executes via `PatchWrapper` and sends diff | Bandwidth-heavy updates or forced backward compatibility |
+| `ServerReplace` | Replaces state snapshot directly | Executes and sends serialized state | Procedural map generation, full state resets |
+| `Query` | One-off RPC without subscribing (or local if subscribed) | Read-only execution, no sequence/persistence | Inspecting other players, clan previews (`OpenAccess = true`) |
+| `LocalQuery` | Synchronous read over replicated local state, no RPC | Does not run on server | Derived UI getters (`HasItemSync()`, `CardsInHandSync()`) |
+| `Signal` | Fire-and-forget (`{Method}Signal()`), no response wait | Read-only execution, errors logged | Telemetry pings, lightweight client notifications |
+| `Notification` | Not client-callable | Fire-and-forget cross-entity `[OneWay]` grain call | Async cross-entity updates (`Profile` → `Clan.AddPower`) |
+
+## Key Features
+
+- **Compile-time code generation** — `SharedMeta.Generator` produces service dispatchers, typed `*ApiClient` / `*QueryApi` / `*ServerApi` proxies, DI registration (`ConfigureMeta`, `MetaRefs`), `PatchWrapper` / `PatchApplier`, and reactive state trackers. No reflection or runtime IL emit.
+- **Deterministic PRNG & synced clock** — `Context.Random` (xoshiro128** shared stream) and `[NamedRandom("Combat")]` (isolated per-mechanic streams) advance identically on client and server with scroll-delta validation; `Context.ServerRandom` records server rolls for replay; `Context.ServerTimeTicks` provides synchronized UTC ticks.
+- **Three-layer desync detection** — checks return values, PRNG scroll deltas, and optional field-level **Patch CRC** (`[MetaServiceImpl(..., DeepDesync = true)]`) with `PatchSchema` JSON diff formatting.
+- **Push-based reactive UI** — mark private backing fields with `[Tracked]` to generate public tracking properties and `Tracked{State}.OnChanged` notifications on the client with zero server overhead.
+- **Cross-entity calls, triggers & contracts** — call other entities from shared code via declared dependencies, attach automatic post-call `[Trigger(On = ..., Condition = ...)]` hooks, and receive server-pushed callbacks via `[MetaServiceContract]`.
+- **Config versioning & schema migration** — bind one or multiple independently-versioned configs via `[ServiceConfig(typeof(TConfig), "Name")]`, declare `[MetaConfigStructureBoundary]` to auto-downgrade legacy clients to `ServerPatch`, and migrate persisted state lazily with `[MetaStateVersion]` + `[MetaInit]` or `IStateLoadedHook`.
+- **Pluggable transport & serialization** — SignalR (WebSocket, JSON or native MessagePack protocol), HTTP Long-Polling, BestHTTP / BestHTTP SignalR (Unity incl. WebGL), In-Process (tests), and Mux (multi-player socket multiplexing for load tests). Serializers: MemoryPack and MessagePack.
+- **Session resilience & auth** — session resume with missed-packet replay, request idempotency, single-session supersede, optional server RPC reordering, JWT authentication with device/Google/Apple/Steam validators, and `Open` / `Authorized` / `OwnerOnly` / `UserOwned` entity access policies.
+- **Observability** — built-in `System.Diagnostics.Metrics.Meter` and `ActivitySource` instrumentation on both server and client for OpenTelemetry / Prometheus.
+
+<p align="center">
+  <img src="docs/images/deterministic-prng.gif" alt="Deterministic PRNG & State Sync" width="760"/>
+</p>
+
+## Installation
+
+### Unity (UPM)
+
+Requires **Unity 6000.0+**. Add via **Window > Package Manager > Add package from git URL**:
+
+```text
+https://github.com/CoreGameIO/SharedMeta.git#upm
+```
+
+Or add to `Packages/manifest.json`:
+
 ```json
 {
   "dependencies": {
@@ -56,312 +220,99 @@ Add to `Packages/manifest.json`:
 }
 ```
 
-### 2. Open the Project Wizard
+The UPM package includes `Orleans.Stubs` (so shared code compiles in Unity without Orleans dependencies) and two Editor windows:
+- **Tools > SharedMeta > Project Wizard** — scaffolds the Shared project, ASP.NET Core / Orleans Server project, and Unity client bootstrap scripts, and configures serializer/transport dependencies.
+- **Tools > SharedMeta > Server Runner** — starts/stops the local `.csproj` server from Unity, tails colored console logs, and re-attaches across Unity domain reloads.
 
-**Tools > SharedMeta > Project Wizard** in Unity menu.
+### .NET (NuGet)
 
-Configure:
-- **Project name** — your shared namespace (default `Meta.Shared`, e.g. `MyGame.Shared`)
-- **State name** — entity state class (e.g. `PlayerProfile`)
-- **Transport** — SignalR (WebSocket, real-time) or HTTP Polling (universal, no extra DLLs)
-- **Serializer** — MemoryPack (default) or MessagePack
-
-The **Dependencies** section auto-detects and installs required packages (serializer, transport).
-
-### 3. Generate Projects
-
-Use the three generation tabs:
-
-| Tab | Generates | Output |
-|-----|-----------|--------|
-| **Shared Project** | State class, service interface, implementation, .csproj | Unity folder + .NET mirror with linked sources |
-| **Server Project** | ASP.NET Core server with Orleans, transport, auth | Standalone .NET project |
-| **Client Scripts** | `MetaGameClient.cs` MonoBehaviour + logger | Unity Assets folder |
-
-### 4. Run
-
-Start the server from Unity: **Tools > SharedMeta > Server Runner** — click **Start**.
-
-Or from terminal:
-```bash
-cd Meta.Server
-dotnet run
-```
-
-Press Play in Unity — `MetaGameClient` connects automatically.
-
-### Quick Start (.NET Client — Godot, Console, etc.)
-
-Add NuGet packages to your `.csproj`:
-```xml
-<ItemGroup>
-  <PackageReference Include="CoreGame.SharedMeta.Core" Version="0.12.3" />
-  <PackageReference Include="CoreGame.SharedMeta.Client" Version="0.12.3" />
-  <PackageReference Include="CoreGame.SharedMeta.Serialization.MemoryPack" Version="0.12.3" />
-  <PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.Client" Version="0.12.3" />
-  <PackageReference Include="CoreGame.SharedMeta.Generator" Version="0.12.3"
-                    PrivateAssets="all" OutputItemType="analyzer" />
-</ItemGroup>
-```
-
-Client transport packages have no server dependencies (no Orleans, no ASP.NET). Works with Godot (`Godot.NET.Sdk`), console apps, or any `net8.0+` project.
-
-For MessagePack SignalR protocol (optional, better performance):
-```xml
-<PackageReference Include="CoreGame.SharedMeta.Transport.SignalR.MessagePack" Version="0.12.3" />
-```
-
-### Quick Start (examples)
+Client packages have no Orleans or ASP.NET Core dependencies (works with Godot `Godot.NET.Sdk`, console apps, tests, etc.). `Core`, `Client`, and `Serialization.MemoryPack` target `netstandard2.1` / `net8.0` / `net10.0` / `net11.0`; transports and `Serialization.MessagePack` target `net8.0` / `net10.0` / `net11.0`:
 
 ```bash
-dotnet run --project examples/CardGame_TheFool/CardGame.Server
-dotnet run --project examples/CardGame_TheFool/CardGame.Client
+# Shared & Client
+dotnet add package CoreGame.SharedMeta.Core
+dotnet add package CoreGame.SharedMeta.Client
+dotnet add package CoreGame.SharedMeta.Serialization.MemoryPack
+dotnet add package CoreGame.SharedMeta.Transport.SignalR.Client
+dotnet add package CoreGame.SharedMeta.Generator
 ```
 
-## Architecture
+Optional client packages:
+- `CoreGame.SharedMeta.Serialization.MessagePack`
+- `CoreGame.SharedMeta.Transport.SignalR.MessagePack`
+- `CoreGame.SharedMeta.Transport.HttpPolling.Client`
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Meta Layer (SharedMeta.Core, YourGame.Shared)                  │
-│  Business logic: services, state, [MetaService] / [MetaMethod]  │
-│  Code generation: dispatchers, API clients, context injection   │
-└─────────────────────────────────────────────────────────────────┘
-                              ↕
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  Middleware Layer (SharedMeta.Client, SharedMeta.Server)                     │
-│  MetaContext, replay mechanism, execution modes                              │
-│  Optimistic / Server / Local / CrossOptimistic / ServerPatch / ServerReplace │
-└──────────────────────────────────────────────────────────────────────────────┘
-                              ↕
-┌─────────────────────────────────────────────────────────────────┐
-│  Serialization Layer (SharedMeta.Serialization.*)               │
-│  IMetaSerializer, MemoryPack / MessagePack implementations      │
-└─────────────────────────────────────────────────────────────────┘
-                              ↕
-┌─────────────────────────────────────────────────────────────────┐
-│  Transport Layer (SharedMeta.Transport.*)                       │
-│  IConnection: SignalR WebSocket, HTTP long-polling, InProcess   │
-└─────────────────────────────────────────────────────────────────┘
-                              ↕
-┌─────────────────────────────────────────────────────────────────┐
-│  Server Backend (SharedMeta.Server.Core, Orleans)               │
-│  IMetaProvider<TState>, EntityGrain, SessionManager             │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-Each layer depends only on the layers above it. Swap serializers, transports, or backends without changing game logic.
-
-## Key Concepts
-
-### Define Shared State
-
-```csharp
-[MemoryPackable(GenerateType.VersionTolerant), MessagePackObject]  // pick one or both
-public partial class GameState : ISharedState
-{
-    [Key(0), MemoryPackOrder(0)] public int Score { get; set; }
-    [Key(1), MemoryPackOrder(1)] public List<string> Items { get; set; } = new();
-}
-```
-
-- `[MemoryPackable(GenerateType.VersionTolerant)]` + `[MemoryPackOrder(n)]` — MemoryPack (default, zero-copy, safe field evolution)
-- `[MessagePackObject]` + `[Key(n)]` — MessagePack (cross-platform, schema-flexible)
-
-Choose one serializer or use both. Orleans `[GenerateSerializer]`/`[Id(n)]` are **not needed** on game state — they're only used internally by the framework. The wizard configures this automatically.
-
-### Define a Service
-
-```csharp
-[MetaService("IGameService")]
-public interface IGameService
-{
-    [MetaMethod(ExecutionMode.Optimistic)]
-    void AddItem(string itemId);
-
-    [MetaMethod(ExecutionMode.Server)]
-    void GrantReward(int amount);
-}
-```
-
-### Implement the Service
-
-```csharp
-[MetaServiceImpl(typeof(IGameService))]
-public partial class GameServiceImpl : IGameService
-{
-    // Context is injected by source generator
-    public void AddItem(string itemId)
-    {
-        State.Items.Add(itemId);
-    }
-
-    public void GrantReward(int amount)
-    {
-        // ServerRandom only generates on server; client replays from payload
-        int bonus = Context.ServerRandom!.Next(10);
-        State.Score += amount + bonus;
-    }
-}
-```
-
-### Execution Modes
-
-| Mode | Client | Server | Use Case |
-|------|--------|--------|----------|
-| **Optimistic** | Executes immediately, rolls back on mismatch | Authoritative execution | UI-responsive actions (move, play card) |
-| **Server** | Waits for server response | Executes with ServerRandom | Loot drops, matchmaking, secrets |
-| **Local** | Local-only, no RPC | — | UI state, client-side filtering |
-| **CrossOptimistic** | Executes on own state | Routes to target entity's grain | Cross-entity interactions |
-| **ServerPatch** | Receives state diff from server | Sends patch instead of full state | Large state, bandwidth optimization |
-| **ServerReplace** | Receives full state from server | Executes and sends complete state | Map generation, full reset, bulk state changes |
-
-### Deterministic Random
-
-```csharp
-// Optimistic random — same algorithm & seed on both sides
-int roll = Context.Random!.Next(6) + 1;
-
-// Server random — generated on server, replayed on client
-int loot = Context.ServerRandom!.Next(100);
-```
-
-### Query Calls
-
-Read-only calls to any entity without subscribing — useful for checking status, fetching brief info in multiplayer.
-
-```csharp
-[MetaService(StateType = typeof(GameState))]
-public interface IGameService : IMetaService
-{
-    [MetaMethod(Mode = ExecutionMode.Query)]              // queryable, respects access policy
-    bool IsActive();
-
-    [MetaMethod(Mode = ExecutionMode.Query, OpenAccess = true)]  // queryable, anyone can call
-    string GetPublicInfo();
-}
-```
-
-Client usage:
-```csharp
-// No subscription — one-off network call
-var queryApi = new GameServiceQueryApi(connection, serializer);
-var info = await queryApi.EntityApi("entity-123").GetPublicInfoAsync();
-
-// Already subscribed — executes locally, no network call
-var gameApi = client.GetService<GameServiceApiClient>();
-bool active = gameApi.IsActive();  // synchronous, reads local state
-```
-
-### Cross-Entity State Access
-
-Read another entity's state from shared code — no explicit dependency injection needed:
-
-```csharp
-var otherState = Context.GetState<PlayerProfile>("other-player-id");
-if (otherState != null)
-    // use otherState.Level, otherState.Name, etc.
-```
-
-Recorded to replay payload for deterministic client replay.
-
-When a projection is enough, call the target's Query method through a declared dependency instead — the target runs it read-only (no broadcast, no sequence advance), and only the result is recorded:
-
-```csharp
-int members = await GetIClanService(State.ClanId).GetMemberCountAsync();  // Mode = Query
-```
-
-### Client Usage
-
-```csharp
-var client = new MetaClient(connection, serializer);
-await client.ConnectAsync("player-123", "entity-456");
-
-// Generated typed API client
-var gameApi = client.GetService<IGameServiceApiClient>();
-gameApi.AddItem("sword_01");
-
-// Subscribe to state changes
-client.OnStateChanged += state => UpdateUI((GameState)state);
-```
-
-## Running the Server
-
-### From Unity (recommended)
-
-Open **Tools > SharedMeta > Server Runner** in the Unity menu. This opens an Editor window where you can:
-
-- **Select your server .csproj** — auto-detected from Wizard settings, or pick manually
-- **Start / Stop** the server with one click
-- **View console output** with search, filtering, and color-coded log levels (errors in red, warnings in yellow)
-- **Open in IDE** or **Reveal** in file explorer
-- **Pass extra arguments** via the "Extra Args" field (e.g. `-- 5001` for a different port)
-
-The server process survives Unity domain reloads (script compilation) and is automatically stopped when the Editor quits. The Runner tracks the process PID across reloads so it can re-attach to a running server.
-
-### From Terminal
+Server packages (`net8.0` / `net10.0` / `net11.0`):
 
 ```bash
-cd YourGame.Server
-dotnet run
+dotnet add package CoreGame.SharedMeta.Server
+dotnet add package CoreGame.SharedMeta.Orleans
+dotnet add package CoreGame.SharedMeta.Transport.SignalR
+dotnet add package CoreGame.SharedMeta.Serialization.MemoryPack
+# Optional: CoreGame.SharedMeta.Transport.HttpPolling, CoreGame.SharedMeta.Auth(.Google|.Apple|.Steam)
 ```
-
-By default the server listens on `http://localhost:5000`. Pass a port as argument: `dotnet run -- 5001`.
-
-### Multiple Clients
-
-To test multiplayer locally (e.g. matchmaking), you need two Unity clients connecting to the same server:
-
-- **Editor + Build**: Press Play in the editor, then Build & Run a standalone player
-- **Two builds**: build twice and run both executables
-- **ParrelSync**: clone the project for a second editor instance
-
-All clients connect to the same server URL. The server handles session management and entity routing via Orleans grains.
-
-## Tooling
-
-### Rider plugin — Find Usages across generated code
-
-[`SharedLibs/RiderPlugin`](https://github.com/CoreGameIO/SharedLibs/tree/main/RiderPlugin) at the [CoreGameIO/SharedLibs](https://github.com/CoreGameIO/SharedLibs) repo is a Rider plugin that bridges `[MetaService]` interface methods with every method generated for them by `SharedMeta.Generator`:
-
-* **Find Usages** on a `[MetaMethod]` walks both the interface itself **and** the generated `*ApiClient`, `*EntityQueryApi`, `{I}EntityCaller`, `*EntityRecorder`, `*EntityReplayer`, `*LocalEntityCaller` counterparts in one pass — call sites that go through any generated layer end up in the same results window.
-* **Ctrl+Click / Go to Declaration** on a generated method (or on a call site of one) offers the originating `[MetaMethod]` as an additional jump target alongside the standard one.
-
-The plugin matches by reading `[GeneratedFromMetaMethod(typeof(IFoo), "Bar")]` — emitted on every generated mirror by SharedMeta ≥ 0.16.0 — so there is no naming-convention guesswork. Older generated code is invisible to the plugin; regenerate against the new SharedMeta version.
-
-Install: grab the pre-built zip from [`SharedLibs/RiderPlugin/dist/`](https://github.com/CoreGameIO/SharedLibs/tree/main/RiderPlugin/dist) (or build it yourself with `./gradlew buildPlugin`), then **Settings → Plugins → ⚙ → Install Plugin from Disk…** in Rider.
 
 ## Examples
 
-### CardGame "The Fool"
+<p align="center">
+  <img src="docs/images/state-unison.gif" alt="One Action, Synchronized State" width="760"/>
+</p>
 
-Multiplayer turn-based card game with matchmaking lobby. Two players, attack/defend mechanics, trump suit. Demonstrates: `Optimistic` execution for card plays, `Server` mode for deck shuffle, lobby system with triggers, multi-entity game state.
+Example projects multi-target `net8.0;net10.0;net11.0` (specify `-f net10.0` or your installed SDK when using `dotnet run`):
 
-### Expedition
+| Example | Path | What It Demonstrates |
+|---|---|---|
+| **CardGame "The Fool"** | [`examples/CardGame_TheFool`](examples/CardGame_TheFool) | Multiplayer turn-based card game with matchmaking lobby, `Optimistic` card plays, `Server` deck shuffle, `[Trigger]` auto-end turn, `[Transformer]` argument boxing, and a Spectre.Console client. |
+| **Expedition** | [`examples/Expedition`](examples/Expedition) & [`examples/Unity/Expedition`](examples/Unity/Expedition) | Procedural dungeon exploration with `CrossOptimistic` cross-entity economy (`Profile` + `Expedition`), `[MetaInit]`, `[ServiceConfig]`, `[Tracked]` reactive UI, `Query` calls, `DeepDesync`, and a Unity 6 client. |
+| **ClanWars** | [`examples/ClanWars`](examples/ClanWars) | Mobile-RPG profile and clan backend showcasing `EntityScope`, `Notification` cross-entity calls, `[MetaConfigStructureBoundary]` mixed-version clients (`V1`/`V2`), OpenTelemetry observability, and a multi-process Mux stress runner. |
 
-Single-player dungeon exploration with procedural map generation. Two entities (Profile + Expedition) connected via cross-entity calls for energy/money economy. Demonstrates: `CrossOptimistic` for responsive movement, cross-entity `SpendEnergy`/`AddMoney` calls, `[MetaInit]` for procedural map generation with `Context.Random`, `[Tracked]` fields for push-based UI updates, `[MetaConfig]` for game balance, **Query Calls** to check expedition status without subscribing, **generation mode choice** (ServerReplace vs Optimistic) showing the difference between server-authoritative and client-predicted state. Full Unity client with runtime-generated UI.
+Quick run for **CardGame "The Fool"**:
 
-## Project Structure
+```bash
+# Terminal 1 — server
+dotnet run --project examples/CardGame_TheFool/CardGame.Server -f net10.0
 
-| Directory | Description |
-|-----------|-------------|
-| `Runtime/Core/` | Core framework: attributes, interfaces, meta context, random |
-| `Runtime/Client/` | Client-side dispatcher, message buffer, MetaClient |
-| `Runtime/Transport/` | Conditional transport assemblies: HTTP Polling, SignalR client |
-| `Runtime/Serialization/` | MemoryPack serialization |
-| `Runtime/Orleans.Stubs/` | Stub attributes for Unity (no Orleans dependency) |
-| `Editor/` | Project Wizard, Server Runner, pre-built source generator DLL |
-| `src/SharedMeta.Generator/` | Source generator: dispatchers, API clients, context injection |
-| `src/SharedMeta.Server/` | Server-side meta context and cross-entity calls |
-| `src/SharedMeta.Server.Core/` | EntityGrain, MetaProvider, file storage, session management |
-| `src/SharedMeta.Orleans/` | Orleans grain integration |
-| `src/SharedMeta.Transport.SignalR/` | SignalR transport — server (MetaHub) + MessagePack protocol |
-| `src/SharedMeta.Transport.SignalR.Client/` | SignalR client-only (JSON default, no server deps) |
-| `src/SharedMeta.Transport.SignalR.MessagePack/` | MessagePack protocol extension for SignalR |
-| `src/SharedMeta.Transport.HttpPolling/` | HTTP polling transport — server endpoints |
-| `src/SharedMeta.Transport.HttpPolling.Client/` | HTTP polling client-only (HttpClient, no server deps) |
-| `src/SharedMeta.Auth/` | JWT authentication middleware |
-| `examples/` | CardGame_TheFool, Expedition — full working examples |
-| `tests/` | Integration and unit tests |
+# Terminal 2 & 3 — two clients
+dotnet run --project examples/CardGame_TheFool/CardGame.Client -f net10.0
+dotnet run --project examples/CardGame_TheFool/CardGame.Client -f net10.0
+```
+
+## Tooling
+
+### JetBrains Rider Plugin
+
+[`SharedLibs/RiderPlugin`](https://github.com/CoreGameIO/SharedLibs/tree/main/RiderPlugin) connects `[MetaService]` interface methods to all code generated by `SharedMeta.Generator` via `[GeneratedFromMetaMethod]`:
+
+- **Find Usages** on a `[MetaMethod]` includes call sites on generated `*ApiClient`, `*QueryApi`, `*ServerApi`, `*EntityCaller`, `*EntityRecorder`, and `*EntityReplayer` types.
+- **Ctrl+Click / Go to Declaration** on a generated method offers the originating `[MetaMethod]` declaration as a navigation target.
+
+Download the pre-built archive from [`SharedLibs/RiderPlugin/dist/`](https://github.com/CoreGameIO/SharedLibs/tree/main/RiderPlugin/dist) and install via **Settings > Plugins > ⚙ > Install Plugin from Disk…**.
+
+## Repository Layout
+
+| Path | Contents |
+|---|---|
+| `com.coregame.sharedmeta/` | Unity UPM package (`Runtime/` core/client/transports/serializers/stubs + `Editor/` Project Wizard & Server Runner) |
+| `src/SharedMeta.Core/` | Attributes, `MetaContext`, deterministic PRNG, patch runtime, transport/serialization contracts |
+| `src/SharedMeta.Client/` | `MetaClient`, `ClientDispatcher`, `MetaServiceResolver`, config caching, token management |
+| `src/SharedMeta.Generator/` | Roslyn incremental source generator |
+| `src/SharedMeta.Server/` | Server-side `MetaContext` and cross-entity recording |
+| `src/SharedMeta.Server.Core/` | `IMetaProvider<TState>`, `MetaProviderBase`, `FileGrainStorage`, config providers, session management |
+| `src/SharedMeta.Orleans/` | `EntityGrain<TState>`, `SessionManagerGrain`, `LobbyGrain`, Orleans clustering/DI integration |
+| `src/SharedMeta.Transport.*` | `SignalR`, `SignalR.Client`, `SignalR.MessagePack`, `HttpPolling`, `HttpPolling.Client` |
+| `src/SharedMeta.Serialization.*` | `MemoryPack` and `MessagePack` `IMetaSerializer` implementations |
+| `src/SharedMeta.Auth*` | JWT auth grains/endpoints + `Google`, `Apple`, and `Steam` external validators |
+| `src/SharedMeta.Debug/` | `InProcess` test transport and `Mux` load-testing transport |
+| `src/Orleans.Stubs/` | No-op Orleans/serialization attributes for client-only builds |
+| `examples/` | `CardGame_TheFool`, `Expedition`, `Unity/Expedition`, `ClanWars` |
+| `tests/` | Unit, integration, serializer, and patch fuzz tests |
+| `docs/` | [Framework Guide](docs/GUIDE.md) and [Architecture Decisions](docs/ARCHITECTURE.md) |
+
+## Documentation & Changelog
+
+- [Framework Guide (`docs/GUIDE.md`)](docs/GUIDE.md) — complete reference covering all execution modes, configs, triggers, transformers, reactive tracking, persistence, auth, telemetry, and testing.
+- [Architecture (`docs/ARCHITECTURE.md`)](docs/ARCHITECTURE.md) — layer design and core technical decisions.
+- [Changelog (`CHANGELOG.md`)](CHANGELOG.md) — release history and migration notes.
 
 ## License
 
