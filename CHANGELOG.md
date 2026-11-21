@@ -15,6 +15,10 @@ Dependency bumps for MessagePack and SignalR security advisories.
 - `MemoryPack` 1.21.4 → 1.22.0 in the NuGet packages and Wizard templates.
 - Expedition example: Unity 6000.3.24, SignalR 8.0.34 and MemoryPack 1.22.0 on client and server.
 
+### Fixed
+
+- `ConfigVersionInfo.PublishedAtUtcTicks` (`long`) replaces `PublishedAt`, now `[Obsolete]`: MemoryPack wrote `DateTimeOffset` in a runtime-specific layout. Existing records migrate on `ConfigMetadataGrain` activation.
+
 ## [0.46.0] - 2026-11-14
 
 Logging moves to `Microsoft.Extensions.Logging.ILogger`; HTTP polling hosts get config download and a clean shutdown.

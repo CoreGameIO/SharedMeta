@@ -27,7 +27,7 @@ namespace SharedMeta.Server.Core.Config.Admin
         /// <summary>Drop the audit entry for a specific version. Pairs with <see cref="IConfigRegistry.UnpublishAsync"/>.</summary>
         Task RemoveAsync(string version);
 
-        /// <summary>List every audited version, newest <see cref="ConfigVersionInfo.PublishedAt"/> first.</summary>
+        /// <summary>List every audited version, newest <see cref="ConfigVersionInfo.PublishedAtUtcTicks"/> first.</summary>
         Task<ConfigVersionInfo[]> ListAsync();
 
         /// <summary>Fetch a single version's audit record, or <c>null</c> if not recorded.</summary>

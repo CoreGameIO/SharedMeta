@@ -25,8 +25,16 @@ namespace SharedMeta.Server.Core.Config.Admin
         /// <summary>Length of the serialized config bytes at publish time. Diagnostic only.</summary>
         [Id(1), Key(1), MemoryPackOrder(1)] public int SizeBytes { get; set; }
 
-        /// <summary>Wall-clock timestamp when <see cref="IConfigMetadataGrain.RecordPublishAsync"/> ran.</summary>
+        /// <summary>
+        /// Legacy timestamp, kept only so old records can be read; <see cref="MigrateLegacyPublishedAt"/> moves it
+        /// into <see cref="PublishedAtUtcTicks"/> and resets it to <c>default</c>.
+        /// </summary>
+        // MemoryPack copies DateTimeOffset as the runtime's raw struct, whose layout differs between .NET 9-,
+        // .NET 10+ and Unity (MEMPACK043). The slot stays for positional compatibility; new data never fills it.
+#pragma warning disable MEMPACK043
+        [Obsolete("Use PublishedAtUtcTicks.")]
         [Id(2), Key(2), MemoryPackOrder(2)] public DateTimeOffset PublishedAt { get; set; }
+#pragma warning restore MEMPACK043
 
         /// <summary>Who triggered the publish — project-supplied (admin email, "bootstrap", "ci", …).</summary>
         [Id(3), Key(3), MemoryPackOrder(3)] public string PublishedBy { get; set; } = "";
@@ -36,6 +44,26 @@ namespace SharedMeta.Server.Core.Config.Admin
 
         /// <summary>Free-form origin label (see type doc).</summary>
         [Id(5), Key(5), MemoryPackOrder(5)] public string Origin { get; set; } = "";
+
+        /// <summary>
+        /// UTC ticks of the moment <see cref="IConfigMetadataGrain.RecordPublishAsync"/> ran; <c>0</c> = unknown.
+        /// </summary>
+        [Id(6), Key(6), MemoryPackOrder(6)] public long PublishedAtUtcTicks { get; set; }
+
+        /// <summary>
+        /// When <see cref="PublishedAtUtcTicks"/> is unset, takes the value from the legacy
+        /// <see cref="PublishedAt"/> and clears it. Returns <c>true</c> when the record changed.
+        /// </summary>
+        public bool MigrateLegacyPublishedAt()
+        {
+#pragma warning disable CS0618
+            if (PublishedAtUtcTicks != 0 || PublishedAt == default)
+                return false;
+            PublishedAtUtcTicks = PublishedAt.UtcTicks;
+            PublishedAt = default;
+#pragma warning restore CS0618
+            return true;
+        }
     }
 
     /// <summary>

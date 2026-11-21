@@ -291,7 +291,6 @@ namespace SharedMeta.Orleans.Config.Admin
                     {
                         Version = versionStr,
                         SizeBytes = 0,
-                        PublishedAt = DateTimeOffset.MinValue,
                         PublishedBy = "(unknown)",
                         Origin = "",
                     };

@@ -47,7 +47,25 @@ namespace SharedMeta.Orleans.Config.Admin
         public override Task OnActivateAsync(CancellationToken cancellationToken)
         {
             _state.State.HeldBranches ??= [];
+
+            var migrated = 0;
+            foreach (var record in _state.State.Records.Values)
+                if (record.MigrateLegacyPublishedAt()) migrated++;
+            if (migrated > 0)
+            {
+                _logger.LogInformation(
+                    "ConfigMetadata[{Name}]: migrated {Count} legacy PublishedAt value(s) to PublishedAtUtcTicks",
+                    this.GetPrimaryKeyString(), migrated);
+                return WriteThenActivateAsync(cancellationToken);
+            }
+
             return base.OnActivateAsync(cancellationToken);
+        }
+
+        private async Task WriteThenActivateAsync(CancellationToken cancellationToken)
+        {
+            await _state.WriteStateAsync();
+            await base.OnActivateAsync(cancellationToken);
         }
 
         public async Task RecordPublishAsync(string version, int sizeBytes, string origin, string publishedBy, string? notes)
@@ -59,7 +77,7 @@ namespace SharedMeta.Orleans.Config.Admin
             {
                 Version = version,
                 SizeBytes = sizeBytes,
-                PublishedAt = DateTimeOffset.UtcNow,
+                PublishedAtUtcTicks = DateTime.UtcNow.Ticks,
                 PublishedBy = publishedBy ?? "",
                 Notes = notes,
                 Origin = origin ?? "",
@@ -84,7 +102,7 @@ namespace SharedMeta.Orleans.Config.Admin
         public Task<ConfigVersionInfo[]> ListAsync()
         {
             var arr = _state.State.Records.Values
-                .OrderByDescending(r => r.PublishedAt)
+                .OrderByDescending(r => r.PublishedAtUtcTicks)
                 .ToArray();
             return Task.FromResult(arr);
         }
