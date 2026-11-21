@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/banner.gif" alt="SharedMeta Banner" width="800"/>
+  <img src="docs/images/sharedmeta-overview.gif" alt="SharedMeta Overview" width="800"/>
 </p>
 
 <h1 align="center">SharedMeta</h1>
