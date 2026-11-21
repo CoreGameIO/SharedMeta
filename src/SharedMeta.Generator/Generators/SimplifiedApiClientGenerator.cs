@@ -784,6 +784,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"            ThrowIfConnectionGone(\"{methodName}\");");
                 EmitPermissionGate(sb, method, compilation, methodAlias);
                 GenerateTransformNormalization(sb, transforms);
+                EmitCallScope(sb, methodAlias);
                 if (capabilitiesEnabled)
                 {
                     // 0.24.0 capabilities gate. Two layers checked:
@@ -836,6 +837,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"            ThrowIfConnectionGone(\"{methodName}\");");
                 EmitPermissionGate(sb, method, compilation, methodAlias);
                 GenerateTransformNormalization(sb, transforms);
+                EmitCallScope(sb, methodAlias);
                 if (capabilitiesEnabled)
                 {
                     // 0.24.0 capabilities gate — same contract as the async overload (session + per-entity).
@@ -1172,6 +1174,17 @@ namespace SharedMeta.Generator.Generators
         /// executing the same method against different objects — every transformer that is not a
         /// perfect identity would surface as a desync on the very first call.
         /// </summary>
+        /// <summary>
+        /// Opens the call's identity (call id = W3C trace id) before the local body runs, so
+        /// client logs of the body, the wire request and the desync report all carry the id the
+        /// server logs under. The per-mode body runs synchronously up to its first await inside
+        /// this scope; its continuations keep the context through the captured execution context.
+        /// </summary>
+        private static void EmitCallScope(StringBuilder sb, string methodAlias, string op = "Rpc")
+        {
+            sb.AppendLine($"            using var __call = global::SharedMeta.Core.Diagnostics.MetaCallScope.Begin(ServiceName, \"{methodAlias}\", global::SharedMeta.Core.Diagnostics.MetaCallOps.{op}, _network.EntityId);");
+        }
+
         private static void GenerateTransformNormalization(StringBuilder sb, List<ParameterTransform> transforms)
         {
             foreach (var t in transforms.Where(t => t.Transformed))
@@ -2545,6 +2558,7 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"{indent}                ArgsBytes = broadcast.ArgsBytes,");
                 sb.AppendLine($"{indent}                ClientPatchBytes = _ddLocalPatchBytes,");
                 sb.AppendLine($"{indent}                MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Patch,");
+                sb.AppendLine($"{indent}                TraceParent = global::SharedMeta.Core.Diagnostics.MetaCallScope.CurrentTraceParent(),");
                 sb.AppendLine($"{indent}            }});");
                 sb.AppendLine($"{indent}        }}");
                 sb.AppendLine($"{indent}    }}");
@@ -2764,6 +2778,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            if (_errorException != null) throw new ServiceErrorStateException(ServiceName, _errorException);");
             sb.AppendLine($"            ThrowIfConnectionGone(\"{methodName}\");");
             EmitPermissionGate(sb, method, compilation, methodAlias);
+            EmitCallScope(sb, methodAlias, "Signal");
 
             // Serialize arguments using the detected serializer (same pattern as Optimistic).
             GenerateArgumentSerialization(sb, method, transforms, paramCount, serializer);
@@ -2960,6 +2975,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}        ArgsBytes = argsBytes,");
             sb.AppendLine($"{indent}        ClientPatchBytes = _ddLocalPatchBytes,");
             sb.AppendLine($"{indent}        MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Patch,");
+            sb.AppendLine($"{indent}        TraceParent = global::SharedMeta.Core.Diagnostics.MetaCallScope.CurrentTraceParent(),");
             sb.AppendLine($"{indent}    }});");
             sb.AppendLine($"{indent}}}");
         }
@@ -2980,6 +2996,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}    ServerResultBytes = {serverBytesExpr} ?? System.Array.Empty<byte>(),");
             sb.AppendLine($"{indent}    LocalResultBytes = {localBytesExpr} ?? System.Array.Empty<byte>(),");
             sb.AppendLine($"{indent}    MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Result,");
+            sb.AppendLine($"{indent}    TraceParent = global::SharedMeta.Core.Diagnostics.MetaCallScope.CurrentTraceParent(),");
             sb.AppendLine($"{indent}}});");
         }
 
@@ -2997,6 +3014,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"{indent}    ServerRandomDelta = {serverDeltaExpr},");
             sb.AppendLine($"{indent}    LocalRandomDelta = {localDeltaExpr},");
             sb.AppendLine($"{indent}    MismatchKind = (int)SharedMeta.Core.Transport.DesyncMismatchKind.Random,");
+            sb.AppendLine($"{indent}    TraceParent = global::SharedMeta.Core.Diagnostics.MetaCallScope.CurrentTraceParent(),");
             sb.AppendLine($"{indent}}});");
         }
 

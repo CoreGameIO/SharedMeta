@@ -1,4 +1,4 @@
-// 0.26.1+: Telemetry types live in the System.Diagnostics.DiagnosticSource NuGet, which
+// Telemetry types live in the System.Diagnostics.DiagnosticSource NuGet, which
 // isn't part of Unity's bundled netstandard reference assemblies. Hosts that need client
 // telemetry (typically .NET-side wrappers feeding OpenTelemetry) opt in by defining
 // SHAREDMETA_CLIENT_TELEMETRY *and* providing the NuGet (e.g. via NuGetForUnity). Unity
@@ -11,7 +11,7 @@ using System.Diagnostics.Metrics;
 namespace SharedMeta.Client.Telemetry
 {
     /// <summary>
-    /// 0.23.0+: Client-side <see cref="Meter"/> exposing latency and error counters as seen from
+    /// Client-side <see cref="Meter"/> exposing latency and error counters as seen from
     /// the client (wire RTT, replay cost, desync detection). Symmetric to the server-side
     /// <c>SharedMeta.Server.Core.Telemetry.SharedMetaMeters</c>:
     /// <list type="bullet">
@@ -37,7 +37,7 @@ namespace SharedMeta.Client.Telemetry
     public static class SharedMetaClientMeters
     {
         public const string MeterName = "SharedMeta.Client";
-        public const string MeterVersion = "0.23.0";
+        public const string MeterVersion = "0.47.0";
 
         public static readonly Meter Meter = new(MeterName, MeterVersion);
 
@@ -73,7 +73,7 @@ namespace SharedMeta.Client.Telemetry
     }
 
     /// <summary>
-    /// 0.23.0+: Client-side <see cref="ActivitySource"/>. Client spans are independent from
+    /// Client-side <see cref="ActivitySource"/>. Client spans are independent from
     /// server spans for now (no wire-level W3C trace propagation yet — planned follow-up). Use
     /// alongside the server-side trace source <c>"SharedMeta"</c> in your OpenTelemetry pipeline:
     /// <code>
@@ -83,13 +83,25 @@ namespace SharedMeta.Client.Telemetry
     public static class SharedMetaClientActivities
     {
         public const string SourceName = "SharedMeta.Client";
-        public const string SourceVersion = "0.23.0";
+        public const string SourceVersion = "0.47.0";
 
         public static readonly ActivitySource Source = new(SourceName, SourceVersion);
 
         public const string SpanClientRpc       = "sharedmeta.client.rpc";
         public const string SpanClientReplay    = "sharedmeta.client.replay";
         public const string SpanClientConnect   = "sharedmeta.client.connect";
+
+        /// <summary>
+        /// <c>Activity.Current</c> as a <see cref="SharedMeta.Core.Diagnostics.MetaTraceContext"/> —
+        /// installed as <c>MetaCallScope.AmbientTrace</c> so a call started inside a host span
+        /// continues that trace on the server.
+        /// </summary>
+        public static SharedMeta.Core.Diagnostics.MetaTraceContext? AmbientTrace()
+        {
+            var activity = Activity.Current;
+            if (activity == null || activity.IdFormat != ActivityIdFormat.W3C) return null;
+            return SharedMeta.Core.Diagnostics.MetaTraceContext.TryParse(activity.Id, out var trace) ? trace : null;
+        }
     }
 }
 #endif

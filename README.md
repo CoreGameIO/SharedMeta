@@ -194,7 +194,7 @@ bool owned = api.HasItemSync("sword_01");       // Synchronous read over local s
 - **Config versioning & schema migration** — bind one or multiple independently-versioned configs via `[ServiceConfig(typeof(TConfig), "Name")]`, declare `[MetaConfigStructureBoundary]` to auto-downgrade legacy clients to `ServerPatch`, and migrate persisted state lazily with `[MetaStateVersion]` + `[MetaInit]` or `IStateLoadedHook`.
 - **Pluggable transport & serialization** — SignalR (WebSocket, JSON or native MessagePack protocol), HTTP Long-Polling, BestHTTP / BestHTTP SignalR (Unity incl. WebGL), In-Process (tests), and Mux (multi-player socket multiplexing for load tests). Serializers: MemoryPack and MessagePack.
 - **Session resilience & auth** — session resume with missed-packet replay, request idempotency, single-session supersede, optional server RPC reordering, JWT authentication with device/Google/Apple/Steam validators, and `Open` / `Authorized` / `OwnerOnly` / `UserOwned` entity access policies.
-- **Observability** — built-in `System.Diagnostics.Metrics.Meter` and `ActivitySource` instrumentation on both server and client for OpenTelemetry / Prometheus.
+- **Observability** — built-in `System.Diagnostics.Metrics.Meter` and `ActivitySource` instrumentation on both server and client for OpenTelemetry / Prometheus; one call id (W3C trace id) in client and server logs of every call, opt-in per-method and hub/endpoint metrics, and observer hooks for analytics.
 
 <p align="center">
   <img src="docs/images/deterministic-prng.gif" alt="Deterministic PRNG & State Sync" width="760"/>

@@ -231,5 +231,18 @@ namespace SharedMeta.Core.Transport
         /// </para>
         /// </remarks>
         public string[] RequiredPermissions { get; init; } = System.Array.Empty<string>();
+
+        /// <summary>
+        /// Declared <c>[MetaMethod(Mode = …)]</c>. Telemetry tag only — dispatch never reads it.
+        /// Not folded into the server signature hash (the mode is already part of the client's
+        /// compiled surface; telemetry must not invalidate cached annotations).
+        /// </summary>
+        public SharedMeta.Core.ExecutionMode Mode { get; init; }
+
+        /// <summary>
+        /// Resolved <c>[MetaMethod(Metrics)]</c>, falling back to <c>[MetaService(Metrics)]</c>.
+        /// Read by the server's method telemetry table; not folded into the signature hash.
+        /// </summary>
+        public SharedMeta.Core.MetaMetrics Metrics { get; init; }
     }
 }

@@ -2664,7 +2664,14 @@ namespace SharedMeta.Generator.Generators
             // registered and written by admin tooling but never read — the connect answer carries no
             // permissions, so the client's set stays unknown and every gated call is refused with
             // nothing to show for the grant.
-            sb.AppendLine("                    sp.GetService<SharedMeta.Server.Permissions.IPlayerEntitlements>()));");
+            sb.AppendLine("                    sp.GetService<SharedMeta.Server.Permissions.IPlayerEntitlements>(),");
+            // Telemetry options + observers. Hand-built factory again: omitted, the handler would
+            // run on default telemetry options whatever the host configured.
+            sb.AppendLine("                    sp.GetService<SharedMeta.Server.Core.Telemetry.SharedMetaTelemetry>()));");
+            sb.AppendLine();
+            sb.AppendLine("            // Observability: options (MetaTelemetryOptions) + SharedMetaTelemetry singleton. Idempotent;");
+            sb.AppendLine("            // hosts configure through services.AddSharedMetaTelemetry(o => ...) or Configure<MetaTelemetryOptions>.");
+            sb.AppendLine("            SharedMeta.Server.Core.Telemetry.TelemetryServiceCollectionExtensions.AddSharedMetaTelemetry(services);");
             sb.AppendLine();
 
             sb.AppendLine("            return services;");

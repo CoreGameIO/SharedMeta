@@ -250,6 +250,13 @@ namespace SharedMeta.Core.Transport
         public bool DeepDesyncActive { get; set; }
 
         /// <summary>
+        /// Mirror of <c>SessionConnectResponse.SupportsTraceContext</c>: the server reads
+        /// <c>TraceParent</c> on call requests, so the client may send its call id. A transport
+        /// that forgets to map it only loses client↔server log correlation, never a call.
+        /// </summary>
+        public bool SupportsTraceContext { get; set; }
+
+        /// <summary>
         /// Permissions the server reported for this player, or null when it reported none — the
         /// client then treats its set as unknown and lets the server refuse. Carried through the
         /// transport untouched, like <see cref="DeepDesyncActive"/>.

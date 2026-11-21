@@ -187,9 +187,46 @@ namespace SharedMeta.Client.Network
                 ExecutedConfigVersions = op.ExecutedConfigVersions
             };
 
+#if SHAREDMETA_CLIENT_TELEMETRY
+            long replayStart = System.Diagnostics.Stopwatch.GetTimestamp();
+#endif
             pre?.Invoke(nb);
             post?.Invoke(nb);
+#if SHAREDMETA_CLIENT_TELEMETRY
+            if (SharedMeta.Client.Telemetry.SharedMetaClientMeters.ReplayDuration.Enabled)
+            {
+                var (service, method) = MethodNameOf(clientMethodId);
+                SharedMeta.Client.Telemetry.SharedMetaClientMeters.ReplayDuration.Record(
+                    (System.Diagnostics.Stopwatch.GetTimestamp() - replayStart) * 1000.0 / System.Diagnostics.Stopwatch.Frequency,
+                    new System.Collections.Generic.KeyValuePair<string, object?>("service", service),
+                    new System.Collections.Generic.KeyValuePair<string, object?>("method", Telemetry?.MethodMetrics == false ? "_other" : method));
+            }
+#endif
         }
+
+#if SHAREDMETA_CLIENT_TELEMETRY
+        private KnownMethodEntry?[]? _methodsById;
+
+        // Client-local method id → names, from the signature this client negotiated with.
+        private (string Service, string Method) MethodNameOf(ushort clientMethodId)
+        {
+            var byId = _methodsById;
+            if (byId == null)
+            {
+                var signature = _dispatcher.ClientSignature ?? ClientSignatureDefault.Value;
+                var methods = signature?.KnownMethods;
+                int max = -1;
+                if (methods != null)
+                    foreach (var m in methods) if (m.GlobalIndex > max) max = m.GlobalIndex;
+                byId = new KnownMethodEntry?[max + 1];
+                if (methods != null)
+                    foreach (var m in methods) byId[m.GlobalIndex] = m;
+                _methodsById = byId;
+            }
+            var entry = clientMethodId < byId.Length ? byId[clientMethodId] : null;
+            return entry != null ? (entry.ServiceName, entry.Alias) : ("_unknown", "_unknown");
+        }
+#endif
 
         private void HandleDisconnected(TransportDisconnectReason reason)
         {
@@ -217,6 +254,81 @@ namespace SharedMeta.Client.Network
                 "captured before the disconnect never reconnects.");
         }
 
+        /// <summary>Observer / per-method metric settings from <c>MetaClientOptions.Telemetry</c>.</summary>
+        public SharedMeta.Client.Telemetry.MetaClientTelemetryOptions? Telemetry { get; set; }
+
+        // Wire round trip of one call, reported once it settles. The call context was set by the
+        // generated API client on this flow before the call reached the adapter.
+        private async Task<SessionOp> SendTrackedAsync(RpcCall call)
+        {
+            var context = SharedMeta.Core.Diagnostics.MetaCallContext.Current;
+            long start = System.Diagnostics.Stopwatch.GetTimestamp();
+            SessionOp sessionOp;
+            try
+            {
+                sessionOp = await _dispatcher.SendAsync(_entityId, call, _stateTypeName);
+            }
+            catch
+            {
+                ReportCall(context, SharedMeta.Core.Diagnostics.MetaCallOps.Rpc, start,
+                    SharedMeta.Core.Diagnostics.MetaCallErrorKinds.Exception);
+                throw;
+            }
+            ReportCall(context, SharedMeta.Core.Diagnostics.MetaCallOps.Rpc, start,
+                sessionOp.HasError ? SharedMeta.Core.Diagnostics.MetaCallErrorKinds.ProviderError : null);
+            return sessionOp;
+        }
+
+        private static string CallFailedMessage(SessionOp sessionOp)
+        {
+            var callId = SharedMeta.Core.Diagnostics.MetaCallContext.Current?.CallId;
+            return string.IsNullOrEmpty(callId)
+                ? $"RPC call failed: {sessionOp.ErrorMessage}"
+                : $"RPC call failed: {sessionOp.ErrorMessage} (call={callId})";
+        }
+
+        private void ReportCall(SharedMeta.Core.Diagnostics.MetaCallContext? context, string op, long startTimestamp, string? errorKind)
+        {
+            double elapsedMs = (System.Diagnostics.Stopwatch.GetTimestamp() - startTimestamp) * 1000.0
+                               / System.Diagnostics.Stopwatch.Frequency;
+            var result = errorKind == null
+                ? SharedMeta.Core.Diagnostics.MetaCallResults.Success
+                : SharedMeta.Core.Diagnostics.MetaCallResults.Error;
+#if SHAREDMETA_CLIENT_TELEMETRY
+            // Round-trip histogram is for calls that have a round trip — a signal's "duration"
+            // is only the hand-off to the transport.
+            if (op == SharedMeta.Core.Diagnostics.MetaCallOps.Rpc)
+            {
+                var methodTag = Telemetry?.MethodMetrics == false ? "_other" : context?.Method ?? "_unknown";
+                SharedMeta.Client.Telemetry.SharedMetaClientMeters.RpcDuration.Record(elapsedMs,
+                    new System.Collections.Generic.KeyValuePair<string, object?>("service", context?.Service ?? "_unknown"),
+                    new System.Collections.Generic.KeyValuePair<string, object?>("method", methodTag),
+                    new System.Collections.Generic.KeyValuePair<string, object?>("result", result));
+            }
+#endif
+            var observer = Telemetry?.CallObserver;
+            if (observer == null) return;
+            try
+            {
+                observer.OnCallCompleted(new SharedMeta.Core.Diagnostics.MetaCallInfo
+                {
+                    CallId = context?.CallId ?? "",
+                    Op = op,
+                    Service = context?.Service,
+                    Method = context?.Method,
+                    EntityId = _entityId,
+                    StateType = _stateTypeName,
+                    Result = result,
+                    ErrorKind = errorKind,
+                    DurationMs = elapsedMs,
+                });
+            }
+            catch (Exception ex)
+            {
+                SharedMeta.Core.Logging.MetaLog.Warning($"[Telemetry] Call observer failed: {ex.Message}");
+            }
+        }
+
         public async Task<CallResponse<T>> CallAsync<T>(ushort methodId, ReadOnlyMemory<byte> args, bool isCrossOptimistic = false, long serverTimeTicks = 0, PayloadDebug? debug = null)
         {
             ThrowIfDisposed(methodId);
@@ -236,12 +348,12 @@ namespace SharedMeta.Client.Network
                 Debug = debug
             };
 
-            var sessionOp = await _dispatcher.SendAsync(_entityId, call, _stateTypeName);
+            var sessionOp = await SendTrackedAsync(call);
 
             if (sessionOp.HasError)
             {
                 RaiseStateResyncFromFailedCall(sessionOp);
-                throw new InvalidOperationException($"RPC call failed: {sessionOp.ErrorMessage}");
+                throw new InvalidOperationException(CallFailedMessage(sessionOp));
             }
 
             var op = UnpackOp(sessionOp);
@@ -284,12 +396,12 @@ namespace SharedMeta.Client.Network
                 Debug = debug
             };
 
-            var sessionOp = await _dispatcher.SendAsync(_entityId, call, _stateTypeName);
+            var sessionOp = await SendTrackedAsync(call);
 
             if (sessionOp.HasError)
             {
                 RaiseStateResyncFromFailedCall(sessionOp);
-                throw new InvalidOperationException($"RPC call failed: {sessionOp.ErrorMessage}");
+                throw new InvalidOperationException(CallFailedMessage(sessionOp));
             }
 
             var op = UnpackOp(sessionOp);
@@ -324,12 +436,12 @@ namespace SharedMeta.Client.Network
                 Debug = debug
             };
 
-            var sessionOp = await _dispatcher.SendAsync(_entityId, call, _stateTypeName);
+            var sessionOp = await SendTrackedAsync(call);
 
             if (sessionOp.HasError)
             {
                 RaiseStateResyncFromFailedCall(sessionOp);
-                throw new InvalidOperationException($"RPC call failed: {sessionOp.ErrorMessage}");
+                throw new InvalidOperationException(CallFailedMessage(sessionOp));
             }
 
             var op = UnpackOp(sessionOp);
@@ -360,26 +472,43 @@ namespace SharedMeta.Client.Network
         {
             ThrowIfDisposed(methodId);
 
+            var context = SharedMeta.Core.Diagnostics.MetaCallContext.Current;
             var request = new SignalCallRequest
             {
                 EntityId = _entityId,
                 MethodId = methodId,
-                Payload = args
+                Payload = args,
+                TraceParent = _dispatcher.SupportsTraceContext ? context?.Trace.ToTraceParent() : null,
             };
 
             // Fire-and-forget at the dispatcher level too — we do NOT await the Task here.
             // Returning a completed ValueTask mirrors the "signal leaves immediately" contract;
             // the actual wire-send runs on the continuation scheduled by SignalCallAsync.
             // Errors from the transport layer are logged by IConnection implementations if at all.
+            long start = System.Diagnostics.Stopwatch.GetTimestamp();
             _ = _dispatcher.Connection.SignalCallAsync(request);
+            if (Telemetry?.CallObserver != null)
+                ReportCall(context, SharedMeta.Core.Diagnostics.MetaCallOps.Signal, start, null);
             return default;
         }
 
         public async Task<DesyncReportResponse?> SendDesyncReportAsync(DesyncReportRequest request)
         {
+#if SHAREDMETA_CLIENT_TELEMETRY
+            var kind = (DesyncMismatchKind)request.MismatchKind;
+            var methodTag = Telemetry?.MethodMetrics == false ? "_other" : request.MethodName;
+            void Count(string k) => SharedMeta.Client.Telemetry.SharedMetaClientMeters.DesyncDetected.Add(1,
+                new System.Collections.Generic.KeyValuePair<string, object?>("service", request.ServiceName),
+                new System.Collections.Generic.KeyValuePair<string, object?>("method", methodTag),
+                new System.Collections.Generic.KeyValuePair<string, object?>("kind", k));
+            if ((kind & DesyncMismatchKind.Patch) != 0 || kind == DesyncMismatchKind.None) Count("patch_crc");
+            if ((kind & DesyncMismatchKind.Result) != 0) Count("result");
+            if ((kind & DesyncMismatchKind.Random) != 0) Count("optimistic_random");
+#endif
             try
             {
-                SharedMeta.Core.Logging.MetaLog.Debug($"[Desync] Sending report: {request.ServiceName}.{request.MethodName} entity={request.EntityId} clientPatch={request.ClientPatchBytes?.Length ?? 0}B");
+                SharedMeta.Core.Logging.MetaLog.Debug($"[Desync] Sending report: {request.ServiceName}.{request.MethodName} entity={request.EntityId} clientPatch={request.ClientPatchBytes?.Length ?? 0}B" +
+                    (request.TraceParent != null && SharedMeta.Core.Diagnostics.MetaTraceContext.TryParse(request.TraceParent, out var t) ? $" call={t.TraceIdHex}" : ""));
                 var response = await _dispatcher.Connection.SendDesyncReportAsync(request);
                 SharedMeta.Core.Logging.MetaLog.Debug($"[Desync] Server response: status={response?.Status} error={response?.Error}");
                 return response;
@@ -431,9 +560,12 @@ namespace SharedMeta.Client.Network
             var ex = sendTask.Exception?.GetBaseException();
             if (ex == null) return;
 
+            // The continuation runs on the call's captured execution context, so the call id is still current.
+            var callId = SharedMeta.Core.Diagnostics.MetaCallContext.Current?.CallId;
             SharedMeta.Core.Logging.MetaLog.Error(
                 $"[Optimistic] {serviceName}.{methodAlias} applied locally but the send failed — " +
-                $"this client now diverges from the server until the entity is re-subscribed: {ex.Message}",
+                $"this client now diverges from the server until the entity is re-subscribed: {ex.Message}" +
+                (string.IsNullOrEmpty(callId) ? "" : $" (call={callId})"),
                 ex);
         }
     }

@@ -27,5 +27,8 @@ namespace SharedMeta.Core.Transport
         /// version is encoded into the index, (service, method) resolved server-side.
         /// </summary>
         [Id(5), Key(5)] public ushort MethodId { get; set; }
+
+        /// <summary>W3C <c>traceparent</c> of the call; see <see cref="RpcCallRequest.TraceParent"/>.</summary>
+        [Id(6), Key(6)] public string? TraceParent { get; set; }
     }
 }

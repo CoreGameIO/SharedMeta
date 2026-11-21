@@ -37,8 +37,10 @@ namespace SharedMeta.Server.Core.Session
 
         /// <summary>
         /// Called when the session is being terminated (e.g., superseded by another session).
+        /// <paramref name="reason"/> is the bounded code for metrics and observers;
+        /// <paramref name="message"/> is the human-readable text sent to the client.
         /// </summary>
         [OneWay]
-        Task OnSessionTerminated(string reason);
+        Task OnSessionTerminated(SharedMeta.Core.Diagnostics.MetaSessionEndReason reason, string message);
     }
 }

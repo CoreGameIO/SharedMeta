@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using SharedMeta.Core;
 using SharedMeta.Server.Core;
+using SharedMeta.Server.Core.Telemetry;
 
 namespace SharedMeta.Server
 {
@@ -109,7 +110,7 @@ namespace SharedMeta.Server
                 }
 
                 return Results.Bytes(bytes, "application/octet-stream");
-            });
+            }).WithMetaTransportTelemetry(endpoints.ServiceProvider, SharedMeta.Server.Core.Telemetry.TransportTelemetry.Http);
         }
 
         /// <summary>
@@ -166,7 +167,7 @@ namespace SharedMeta.Server
                 // boundary, as they do here on the HTTP response stream.
                 var bytes = serializer.PackForExternalUsage(config);
                 return Results.Bytes(bytes, "application/octet-stream");
-            });
+            }).WithMetaTransportTelemetry(endpoints.ServiceProvider, SharedMeta.Server.Core.Telemetry.TransportTelemetry.Http);
         }
 
         private static string NormalizeRoute(string routePrefix)

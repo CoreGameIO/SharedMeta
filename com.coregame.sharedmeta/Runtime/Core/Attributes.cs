@@ -269,6 +269,29 @@ namespace SharedMeta.Core
         /// </para>
         /// </summary>
         public bool PatchTracking { get; set; } = true;
+
+        /// <summary>
+        /// Default for per-method metric series of this service's methods; a method's own
+        /// <see cref="MetaMethodAttribute.Metrics"/> wins. See <see cref="MetaMetrics"/>.
+        /// </summary>
+        public MetaMetrics Metrics { get; set; } = MetaMetrics.Default;
+    }
+
+    /// <summary>
+    /// Whether a method gets its own metric series (<c>service</c> + <c>method</c> tags). Disabled
+    /// methods still count, folded into <c>method="_other"</c> of their service, so totals and
+    /// error rates stay complete while series cardinality stays bounded. The host's
+    /// <c>MetaTelemetryOptions</c> decides what <see cref="Default"/> means and can override
+    /// both values by name pattern.
+    /// </summary>
+    public enum MetaMetrics
+    {
+        /// <summary>Inherit: method → service → host option.</summary>
+        Default = 0,
+        /// <summary>Own series whenever the host collects annotated methods.</summary>
+        On = 1,
+        /// <summary>Folded into <c>_other</c> unless the host explicitly includes it.</summary>
+        Off = 2,
     }
 
     /// <summary>
@@ -675,6 +698,13 @@ namespace SharedMeta.Core
         /// </code>
         /// </summary>
         public ReplayEvents ReplayEvents { get; set; } = ReplayEvents.None;
+
+        /// <summary>
+        /// Per-method metric series opt-in / opt-out; <see cref="MetaMetrics.Default"/> inherits
+        /// <see cref="MetaServiceAttribute.Metrics"/>. Not part of any signature hash —
+        /// changing it never invalidates client compatibility.
+        /// </summary>
+        public MetaMetrics Metrics { get; set; } = MetaMetrics.Default;
     }
 
     /// <summary>

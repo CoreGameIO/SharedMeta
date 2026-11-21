@@ -206,7 +206,7 @@ public class SessionOrderingTests
 
         public Task OnEntityDeactivating(string entityId) => Task.CompletedTask;
 
-        public Task OnSessionTerminated(string reason)
+        public Task OnSessionTerminated(SharedMeta.Core.Diagnostics.MetaSessionEndReason code, string reason)
         {
             _terminated.TrySetResult(reason);
             return Task.CompletedTask;

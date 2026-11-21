@@ -126,6 +126,12 @@ namespace SharedMeta.Core.Transport
         Task<SessionOp> SendAsync(string entityId, RpcCall call, string? stateTypeName = null);
 
         /// <summary>
+        /// The connected server reads <c>TraceParent</c> on call requests (announced at
+        /// SessionConnect); the client then sends the current call id with every call.
+        /// </summary>
+        bool SupportsTraceContext => false;
+
+        /// <summary>
         /// Register a handler for broadcasts from a specific entity.
         /// </summary>
         /// <param name="entityId">Entity to listen to</param>

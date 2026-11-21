@@ -9,6 +9,9 @@
     <IsPackable>true</IsPackable>
     <Description>Client-side runtime: MetaClient, ClientDispatcher, optimistic execution, broadcast replay. Targets netstandard2.1 (Unity) and net10.0.</Description>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- The NuGet client always has DiagnosticSource (BCL on net8+, package below on
+         netstandard2.1), so its client meters are compiled in. Unity defines it per project. -->
+    <DefineConstants>$(DefineConstants);SHAREDMETA_CLIENT_TELEMETRY</DefineConstants>
   </PropertyGroup>
 
   <!-- Source files live in the UPM package directory -->

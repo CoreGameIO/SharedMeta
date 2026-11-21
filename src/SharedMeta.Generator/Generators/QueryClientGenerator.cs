@@ -93,17 +93,20 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("    {");
             sb.AppendLine("        private readonly IConnection _connection;");
             sb.AppendLine("        private readonly IMetaSerializer _serializer;");
+            sb.AppendLine("        private readonly global::SharedMeta.Core.Diagnostics.IMetaClientCallObserver? _callObserver;");
             sb.AppendLine();
-            sb.AppendLine($"        public {baseName}QueryApi(IConnection connection, IMetaSerializer serializer)");
+            sb.AppendLine("        /// <param name=\"callObserver\">Told about every finished query (pass <c>MetaClientOptions.Telemetry.CallObserver</c>).</param>");
+            sb.AppendLine($"        public {baseName}QueryApi(IConnection connection, IMetaSerializer serializer, global::SharedMeta.Core.Diagnostics.IMetaClientCallObserver? callObserver = null)");
             sb.AppendLine("        {");
             sb.AppendLine("            _connection = connection;");
             sb.AppendLine("            _serializer = serializer;");
+            sb.AppendLine("            _callObserver = callObserver;");
             sb.AppendLine("        }");
             sb.AppendLine();
             sb.AppendLine($"        /// <summary>Get a query proxy bound to a specific entity.</summary>");
             sb.AppendLine($"        public {baseName}EntityQueryApi EntityApi(string entityId)");
             sb.AppendLine("        {");
-            sb.AppendLine($"            return new {baseName}EntityQueryApi(_connection, _serializer, entityId);");
+            sb.AppendLine($"            return new {baseName}EntityQueryApi(_connection, _serializer, entityId, _callObserver);");
             sb.AppendLine("        }");
             sb.AppendLine("    }");
             sb.AppendLine();
@@ -117,13 +120,15 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("        private readonly IConnection _connection;");
             sb.AppendLine("        private readonly IMetaSerializer _serializer;");
             sb.AppendLine("        private readonly string _entityId;");
+            sb.AppendLine("        private readonly global::SharedMeta.Core.Diagnostics.IMetaClientCallObserver? _callObserver;");
             sb.AppendLine($"        private const string ServiceName = \"{interfaceName}\";");
             sb.AppendLine();
-            sb.AppendLine($"        public {baseName}EntityQueryApi(IConnection connection, IMetaSerializer serializer, string entityId)");
+            sb.AppendLine($"        public {baseName}EntityQueryApi(IConnection connection, IMetaSerializer serializer, string entityId, global::SharedMeta.Core.Diagnostics.IMetaClientCallObserver? callObserver = null)");
             sb.AppendLine("        {");
             sb.AppendLine("            _connection = connection;");
             sb.AppendLine("            _serializer = serializer;");
             sb.AppendLine("            _entityId = entityId;");
+            sb.AppendLine("            _callObserver = callObserver;");
             sb.AppendLine("        }");
 
             foreach (var method in queryMethods)
@@ -161,6 +166,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine($"        [global::SharedMeta.Core.GeneratedFromMetaMethod(typeof(global::{namespaceName}.{interfaceName}), \"{method.Name}\")]");
             sb.AppendLine($"        public async {asyncReturnType} {method.Name}Async({paramList})");
             sb.AppendLine("        {");
+            sb.AppendLine($"            using var __call = global::SharedMeta.Core.Diagnostics.MetaCallScope.Begin(ServiceName, \"{method.Alias}\", global::SharedMeta.Core.Diagnostics.MetaCallOps.Query, _entityId);");
 
             // Query arguments go through the same dispatcher as any other RPC, so they must be
             // framed the way that dispatcher reads them — which is serializer-dependent. Under
@@ -203,15 +209,30 @@ namespace SharedMeta.Generator.Generators
             }
 
             sb.AppendLine();
-            sb.AppendLine("            var response = await _connection.QueryCallAsync(new QueryCallRequest");
+            sb.AppendLine("            long __start = global::System.Diagnostics.Stopwatch.GetTimestamp();");
+            sb.AppendLine("            QueryCallResponse response;");
+            sb.AppendLine("            try");
             sb.AppendLine("            {");
-            sb.AppendLine("                EntityId = _entityId,");
-            sb.AppendLine($"                MethodId = global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, method.Alias, method.Version)},");
-            sb.AppendLine("                Payload = argsBytes");
-            sb.AppendLine("            });");
+            sb.AppendLine("                response = await _connection.QueryCallAsync(new QueryCallRequest");
+            sb.AppendLine("                {");
+            sb.AppendLine("                    EntityId = _entityId,");
+            sb.AppendLine($"                    MethodId = global::{namespaceName}.Generated.GameMethodIds.{SignatureHashGenerator.MakeMethodIdConstName(interfaceName, method.Alias, method.Version)},");
+            sb.AppendLine("                    Payload = argsBytes,");
+            // Sent unconditionally: the query API holds only the connection, which does not know
+            // the server's capability; JSON and MessagePack readers skip a field they don't know.
+            sb.AppendLine("                    TraceParent = __call.Context.Trace.ToTraceParent()");
+            sb.AppendLine("                });");
+            sb.AppendLine("            }");
+            sb.AppendLine("            catch");
+            sb.AppendLine("            {");
+            sb.AppendLine("                global::SharedMeta.Core.Diagnostics.MetaCallScope.Report(_callObserver, __call.Context, global::SharedMeta.Core.Diagnostics.MetaCallOps.Query, __start, global::SharedMeta.Core.Diagnostics.MetaCallErrorKinds.Exception);");
+            sb.AppendLine("                throw;");
+            sb.AppendLine("            }");
+            sb.AppendLine("            global::SharedMeta.Core.Diagnostics.MetaCallScope.Report(_callObserver, __call.Context, global::SharedMeta.Core.Diagnostics.MetaCallOps.Query, __start,");
+            sb.AppendLine("                response.Success ? null : global::SharedMeta.Core.Diagnostics.MetaCallErrorKinds.ProviderError);");
             sb.AppendLine();
             sb.AppendLine("            if (!response.Success)");
-            sb.AppendLine("                throw new InvalidOperationException($\"Query failed: {response.Error}\");");
+            sb.AppendLine("                throw new InvalidOperationException($\"Query failed: {response.Error} (call={__call.Context.CallId})\");");
 
             if (!isVoidReturn)
             {

@@ -84,6 +84,12 @@ namespace SharedMeta.Generator.Generators
         /// Stored as int (matches enum byte value) for codegen purposes; emitted onto
         /// <c>ServerMethodEntry.DeepStateCheck</c> as the typed enum.</summary>
         public int DeepStateCheck { get; set; }
+
+        /// <summary>
+        /// Resolved <c>MetaMetrics</c> value (method attribute, else service attribute) as int.
+        /// Telemetry only — never folded into a signature hash.
+        /// </summary>
+        public int Metrics { get; set; }
     }
 
     /// <summary>
@@ -189,6 +195,9 @@ namespace SharedMeta.Generator.Generators
             // whether a ForceServerPatch verdict is serveable or must degrade to Reject.
             info.PatchTrackingAvailable = PatchTrackingPolicy.PatchTrackingAvailable(symbol);
 
+            var serviceMetricsArg = attr.NamedArguments.FirstOrDefault(a => a.Key == "Metrics");
+            int serviceMetrics = !serviceMetricsArg.Value.IsNull && serviceMetricsArg.Value.Value is int sm ? sm : 0;
+
             // Collect method signatures for hash validation. Methods whose contract is inherited
             // from a base interface are declared on the implementing class instead — they must be
             // in this list or they would get no method id, and every other generator switches on
@@ -210,6 +219,8 @@ namespace SharedMeta.Generator.Generators
                 int minCompatibleVersion = 0;
                 bool generateClientApi = true;
                 int deepStateCheck = 0; // SnapshotTiming.None
+                int metrics = serviceMetrics;
+                string? declaredMode = null;
                 if (metaMethodAttr != null)
                 {
                     var aliasArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Alias");
@@ -228,6 +239,18 @@ namespace SharedMeta.Generator.Generators
                     // 0.26.6+: SnapshotTiming enum value comes through as int from attribute args.
                     var deepCheckArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "DeepStateCheck");
                     if (!deepCheckArg.Value.IsNull && deepCheckArg.Value.Value is int dsc) deepStateCheck = dsc;
+                    var metricsArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Metrics");
+                    if (!metricsArg.Value.IsNull && metricsArg.Value.Value is int mm && mm != 0) metrics = mm;
+
+                    declaredMode = MetaMethodFacts.ModeName(metaMethodAttr);
+                    if (declaredMode == null)
+                    {
+                        // Legacy bool forms of Query / Signal.
+                        var queryArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Query");
+                        var signalArg = metaMethodAttr.NamedArguments.FirstOrDefault(a => a.Key == "Signal");
+                        if (!queryArg.Value.IsNull && queryArg.Value.Value is true) declaredMode = "Query";
+                        else if (!signalArg.Value.IsNull && signalArg.Value.Value is true) declaredMode = "Signal";
+                    }
                 }
 
                 var signatureString = SignatureHashGenerator.BuildSignatureString(info.InterfaceName, methodAlias, member);
@@ -254,6 +277,8 @@ namespace SharedMeta.Generator.Generators
                     PatchTrackingAvailable = info.PatchTrackingAvailable,
                     DeepStateCheck = deepStateCheck,
                     RequiredPermissions = MetaMethodFacts.ReadRequiredPermissions(member, symbol).Names,
+                    DeclaredMode = declaredMode,
+                    Metrics = metrics,
                 });
             }
 
@@ -634,6 +659,10 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine($"                        ConfigTypeFullName = \"{s.ConfigTypeFullName}\",");
                 sb.AppendLine($"                        PatchTrackingAvailable = {(s.PatchTrackingAvailable ? "true" : "false")},");
                 sb.AppendLine($"                        DeepStateCheck = (global::SharedMeta.Core.SnapshotTiming){s.DeepStateCheck},");
+                // Mode and Metrics are telemetry-only: deliberately absent from serverCanonicalSb.
+                sb.AppendLine($"                        Mode = global::SharedMeta.Core.ExecutionMode.{s.DeclaredMode ?? "Optimistic"},");
+                if (s.Metrics != 0)
+                    sb.AppendLine($"                        Metrics = (global::SharedMeta.Core.MetaMetrics){s.Metrics},");
                 if (s.RequiredPermissions.Length > 0)
                 {
                     var permNames = string.Join(", ", s.RequiredPermissions.Select(p => "\"" + p + "\""));

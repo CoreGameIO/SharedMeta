@@ -133,7 +133,7 @@ public class ReclaimRegistrationTests
 
         public Task OnNotice(SessionNotice notice) => Task.CompletedTask;
         public Task OnEntityDeactivating(string entityId) => Task.CompletedTask;
-        public Task OnSessionTerminated(string reason) => Task.CompletedTask;
+        public Task OnSessionTerminated(SharedMeta.Core.Diagnostics.MetaSessionEndReason reason, string message) => Task.CompletedTask;
 
         public async Task<SessionOp> WaitForOpAsync(TimeSpan timeout)
         {

@@ -30,8 +30,9 @@ namespace SharedMeta.Server.Core.Telemetry
         /// <summary>OpenTelemetry meter name. Host opt-in via <c>AddMeter(MeterName)</c>.</summary>
         public const string MeterName = "SharedMeta";
 
-        /// <summary>Meter version — drives the version dimension on exported metrics.</summary>
-        public const string MeterVersion = "0.23.0";
+        /// <summary>Meter version (the SharedMeta assembly version) — drives the version dimension on exported metrics.</summary>
+        public static readonly string MeterVersion =
+            typeof(SharedMetaMeters).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
 
         /// <summary>Shared <see cref="Meter"/> instance — single allocation per process.</summary>
         public static readonly Meter Meter = new(MeterName, MeterVersion);
@@ -219,6 +220,32 @@ namespace SharedMeta.Server.Core.Telemetry
         public static readonly UpDownCounter<long> GrainsActive =
             Meter.CreateUpDownCounter<long>("sharedmeta.grain.active", "{grain}",
                 "Currently active EntityGrains across this silo");
+
+        // ── Transport (opt-in: MetaTelemetryOptions.TransportMetrics) ───────────────
+
+        /// <summary>Hub-method / HTTP-endpoint duration. Tags: <c>transport</c>
+        /// (<c>signalr|http_polling|mux|http</c>), <c>endpoint</c> (hub method or route),
+        /// <c>result</c> (<c>success|error|unauthorized|bad_request</c>). Long-poll requests are
+        /// counted in <see cref="TransportRequests"/> only.</summary>
+        public static readonly Histogram<double> TransportRequestDuration =
+            Meter.CreateHistogram<double>("sharedmeta.transport.request.duration", "ms",
+                "Server time per hub invocation / HTTP endpoint request");
+
+        /// <summary>Hub invocations / HTTP endpoint requests. Same tags as <see cref="TransportRequestDuration"/>.</summary>
+        public static readonly Counter<long> TransportRequests =
+            Meter.CreateCounter<long>("sharedmeta.transport.requests", "{request}",
+                "Hub invocations and HTTP endpoint requests");
+
+        /// <summary>Items per batched hub invocation (mux <c>BatchRpcCall</c>). Tag: <c>endpoint</c>.</summary>
+        public static readonly Histogram<long> TransportBatchSize =
+            Meter.CreateHistogram<long>("sharedmeta.transport.batch_size", "{item}",
+                "Calls carried by one batched hub invocation");
+
+        /// <summary>Auth endpoint requests. Tags: <c>endpoint</c>, <c>provider</c>
+        /// (<c>device|google|apple|steam|…</c>, <c>none</c> where not applicable), <c>result</c>.</summary>
+        public static readonly Counter<long> AuthRequests =
+            Meter.CreateCounter<long>("sharedmeta.auth.requests", "{request}",
+                "Auth endpoint requests by provider and outcome");
 
     }
 }

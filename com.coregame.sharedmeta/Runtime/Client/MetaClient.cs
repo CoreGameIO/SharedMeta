@@ -11,6 +11,7 @@ using SharedMeta.Core.Diagnostics;
 using SharedMeta.Core.Network;
 using SharedMeta.Core.Transport;
 using SharedMeta.Client.Network;
+using SharedMeta.Client.Telemetry;
 
 namespace SharedMeta.Client
 {
@@ -19,6 +20,12 @@ namespace SharedMeta.Client
     /// </summary>
     public class MetaClientOptions
     {
+        /// <summary>
+        /// Client-side observability: call observer for analytics, per-method metric series.
+        /// Call ids (W3C trace ids shared with the server's logs) are always on.
+        /// </summary>
+        public MetaClientTelemetryOptions Telemetry { get; set; } = new();
+
         /// <summary>Execution mode provider. Default: ExecutionModeProvider (all Server mode).</summary>
         public IExecutionModeProvider? ModeProvider { get; set; }
 
@@ -218,6 +225,10 @@ namespace SharedMeta.Client
 
             var modeProvider = options.ModeProvider ?? new ExecutionModeProvider();
             var diagnostics = options.Diagnostics;
+#if SHAREDMETA_CLIENT_TELEMETRY
+            // Client calls join the host's ambient trace (e.g. an OpenTelemetry-instrumented .NET client).
+            SharedMeta.Core.Diagnostics.MetaCallScope.AmbientTrace ??= SharedMeta.Client.Telemetry.SharedMetaClientActivities.AmbientTrace;
+#endif
 
             _dispatcher = new ClientDispatcher(connection)
             {
@@ -272,6 +283,7 @@ namespace SharedMeta.Client
                     var network = new DispatcherNetworkAdapter(_dispatcher, Serializer, entityId, () => _dispatcher.ServerTimeTicks, stateTypeName)
                     {
                         PlayerId = PlayerId,
+                        Telemetry = options.Telemetry,
                         // 0.22.0 Per-entity capability overlay from SubscribeResponse →
                         // ConnectResponse.AugmentedCapabilities. CapabilitiesGate consults this
                         // alongside session-level Capabilities at the generated *ApiClient gate.

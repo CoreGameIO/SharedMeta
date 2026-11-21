@@ -97,6 +97,7 @@ namespace SharedMeta.Debug.Mux
                 Annotated = resp.Annotated,
                 FailureReason = resp.FailureReason,
                 DeepDesyncActive = resp.DeepDesyncActive,
+                SupportsTraceContext = resp.SupportsTraceContext,
                 Permissions = resp.Permissions,
             };
         }

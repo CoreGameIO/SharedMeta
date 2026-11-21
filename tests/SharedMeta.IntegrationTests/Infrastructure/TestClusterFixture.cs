@@ -57,7 +57,10 @@ public class TestClusterFixture : IAsyncLifetime
     // signature negotiation failures) surface in the test console alongside grain-side errors.
     public ILoggerFactory LoggerFactory { get; } = Microsoft.Extensions.Logging.LoggerFactory.Create(
         b => b.AddSimpleConsole(opt => { opt.SingleLine = true; opt.IncludeScopes = false; })
-              .SetMinimumLevel(LogLevel.Error));
+              .SetMinimumLevel(LogLevel.Error)
+              // Records nothing until a telemetry test arms it; Trace so it sees every hop.
+              .AddProvider(TelemetryLogCapture.Instance)
+              .AddFilter<TelemetryLogCapture>(null, LogLevel.Trace));
 
     /// <summary>
     /// Shared ExecutionModeProvider registered in the silo.
@@ -94,7 +97,8 @@ public class TestClusterFixture : IAsyncLifetime
     public IMetaConnectionHandlerFactory CreateHandlerFactory(
         MetaTransportOptions? transportOptions = null,
         IPlayerIdentityValidator? identityValidator = null,
-        DeepDesyncMode deepDesyncMode = DeepDesyncMode.Forced)
+        DeepDesyncMode deepDesyncMode = DeepDesyncMode.Forced,
+        SharedMeta.Server.Core.Telemetry.SharedMetaTelemetry? telemetry = null)
     {
         // 0.24.0+ Construct IClientSignatureRegistry + MetaServerSignature outside the silo
         // DI graph so MetaConnectionHandler can translate client→server MethodId on every RPC.
@@ -119,7 +123,8 @@ public class TestClusterFixture : IAsyncLifetime
                 new EntityGrainOptions { DeepDesyncMode = deepDesyncMode }),
             // Same store the silo's gate reads, so the connect-time set a client receives and the
             // set the server enforces against cannot disagree.
-            entitlements: new SharedMeta.Server.Core.Permissions.GrainPlayerEntitlements(GrainFactory));
+            entitlements: new SharedMeta.Server.Core.Permissions.GrainPlayerEntitlements(GrainFactory),
+            telemetry: telemetry);
     }
 
     /// <summary>
@@ -145,7 +150,9 @@ public class TestClusterFixture : IAsyncLifetime
                 .ConfigureLogging(logging => logging
                     .ClearProviders()
                     .AddSimpleConsole(opt => { opt.SingleLine = true; opt.IncludeScopes = false; })
-                    .SetMinimumLevel(LogLevel.Error))
+                    .SetMinimumLevel(LogLevel.Error)
+                    .AddProvider(TelemetryLogCapture.Instance)
+                    .AddFilter<TelemetryLogCapture>(null, LogLevel.Trace))
                 .ConfigureServices(services =>
                 {
                     // Register serializer

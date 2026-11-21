@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.47.0] - 2026-11-21
+
+Call ids across client and server logs, opt-in per-method and per-endpoint metrics, analytics hooks.
+
+### Added
+
+- Every call carries a call id (W3C trace id) from the generated client to the server: `TraceParent` on call requests and `RpcCall`; `Context.Call` exposes it to service code.
+- `ILogger` scope on every server hop (`CallId`, `SpanId`, `PlayerId`, `EntityId`, `Service`, `Method`, `ClientRequestId`); `Context.Log` inherits it.
+- `services.AddSharedMetaTelemetry(o => …)` with `MetaTelemetryOptions`: `MethodMetrics`, `Include/ExcludeMethods`, `TransportMetrics`, `LogScopes`, `AcceptClientTraceContext`, `AnalyticsLog`.
+- `[MetaMethod(Metrics = …)]` / `[MetaService(Metrics = …)]` opt a method into its own metric series.
+- Hub and HTTP endpoint metrics (`sharedmeta.transport.*`, `sharedmeta.auth.requests`): `AddMetaSignalRTelemetry()`, `AddMetaMuxTelemetry()`; polling, auth and config download add theirs when `TransportMetrics` is on.
+- Query and Signal metrics and spans; transport-handler span `sharedmeta.server.*`; `RpcResponseBytes`, `DesyncDetected`, `MethodRejected`, out-of-order stash metrics.
+- `IMetaServerObserver` and `IMetaClientCallObserver` (`MetaClientOptions.Telemetry.CallObserver`, generated `QueryApi` constructor) for analytics; `SharedMeta.Analytics` log category via `AnalyticsLog`.
+- Stable `EventId` / `EventName` on framework log messages.
+- Client meters wired: RPC round trip, replay duration, desync, config cache; on by default in the NuGet client.
+
+### Changed
+
+- **Breaking:** methods without their own series are tagged `method="_other"`. Migration: `MethodMetrics = MethodMetricsMode.All` keeps the per-method breakdown.
+- **Breaking:** `sharedmeta.server.rpc.total_duration` is tagged `service` / `method` instead of `method_id`.
+- **Breaking:** `ISessionObserver.OnSessionTerminated(MetaSessionEndReason, string)`; `session.terminated.count{reason}` reports the real reason.
+- Unity: client meters need `SHAREDMETA_CLIENT_TELEMETRY` (set from the DiagnosticSource package, or by hand under NuGetForUnity).
+
+### Fixed
+
+- Failed methods were recorded as `result=success` in RPC metrics.
+- A second SessionConnect on one connection no longer inflates `sharedmeta.session.active`.
+
 ## [0.46.1] - 2026-11-15
 
 Dependency bumps for MessagePack and SignalR security advisories.

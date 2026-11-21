@@ -13,6 +13,7 @@ using SharedMeta.Server.Core;
 using SharedMeta.Server.Core.Grains;
 using SharedMeta.Server.Core.Session;
 using SharedMeta.Server.Core.Storage;
+using SharedMeta.Server.Core.Telemetry;
 using SharedMeta.Server.Core.Transport;
 using SharedMeta.Serialization.MemoryPack;
 using SharedMeta.Transport.SignalR;
@@ -41,6 +42,10 @@ builder.Host.UseSerilog((ctx, config) => config
     .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
     .MinimumLevel.Override("Microsoft.AspNetCore.Hosting", LogEventLevel.Warning)
     .MinimumLevel.Override("Microsoft.AspNetCore.Routing", LogEventLevel.Warning)
+    // SHAREDMETA_DEBUG_LOGS=1: framework Debug logs (session connect, subscribe, …) — shows the
+    // CallId / PlayerId / EntityId scope on real traffic. Too chatty for stress runs.
+    .MinimumLevel.Override("SharedMeta", Environment.GetEnvironmentVariable("SHAREDMETA_DEBUG_LOGS") == "1"
+        ? LogEventLevel.Debug : LogEventLevel.Information)
     .Enrich.FromLogContext()
     .WriteTo.Console()
     .WriteTo.File(
@@ -48,7 +53,20 @@ builder.Host.UseSerilog((ctx, config) => config
         rollingInterval: RollingInterval.Day,
         retainedFileCountLimit: 7,
         shared: true,
-        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}"));
+        // {Properties:j} carries the SharedMeta call scope (CallId, PlayerId, EntityId, Service,
+        // Method, …) that Enrich.FromLogContext() lifts from ILogger.BeginScope.
+        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {SourceContext} {Message:lj} {Properties:j}{NewLine}{Exception}"));
+
+// Observability settings, shared by the web host (handler, hub filters) and the silo (grains).
+// Per-method series for every method: the stress dashboard breaks RPS/latency down by method.
+void ConfigureTelemetry(MetaTelemetryOptions o)
+{
+    o.MethodMetrics = MethodMetricsMode.All;
+    o.TransportMetrics = true;
+    // A/B switch for stress runs: SHAREDMETA_LOG_SCOPES=0 measures the cost of per-hop log scopes.
+    o.LogScopes = Environment.GetEnvironmentVariable("SHAREDMETA_LOG_SCOPES") != "0";
+}
+builder.Services.AddSharedMetaTelemetry(ConfigureTelemetry);
 
 var serializer = new MemoryPackMetaSerializer();
 builder.Services.AddSingleton<IMetaSerializer>(serializer);
@@ -121,6 +139,7 @@ builder.Host.UseOrleans(siloBuilder =>
             // can pick it up via DI when constructing per-connection handlers).
             services.AddSharedMetaClientSignatureRegistry();
             services.AddSingleton(global::ClanWars.Shared.GameServiceDiscoveryBase.ServerSignature);
+            services.AddSharedMetaTelemetry(ConfigureTelemetry);
 
             // ConfigureMeta wires the generated provider factories.
             services.ConfigureMeta(svc =>
@@ -146,7 +165,10 @@ builder.Services.AddSignalR(o =>
     // against server-side processing of 5 ms (400× queue-time gap). 100 here corresponds
     // to the realistic mux fan-out width — increase further if a single socket carries more.
     o.MaximumParallelInvocationsPerClient = 100;
-}).AddMetaMessagePackProtocol();
+}).AddMetaMessagePackProtocol()
+  // Per-hub-method transport metrics for /meta and /meta-mux (TransportMetrics above).
+  .AddMetaSignalRTelemetry()
+  .AddMetaMuxTelemetry();
 
 // Web-host (top-level) ClientVersionPolicy: SignalR's MetaHub resolves IMetaConnectionHandlerFactory
 // from web-host DI, NOT from silo DI — the policy that ConfigureMeta() emits lives in the silo's
@@ -181,7 +203,9 @@ builder.Services.AddSingleton<IMetaConnectionHandlerFactory>(sp =>
         serverSignature: serverSignature,
         // Hand-built factory: the deep desync mode has to be passed explicitly, or the handler
         // resolves every session against the default mode instead of the configured one.
-        entityGrainOptions: sp.GetService<Microsoft.Extensions.Options.IOptions<EntityGrainOptions>>());
+        entityGrainOptions: sp.GetService<Microsoft.Extensions.Options.IOptions<EntityGrainOptions>>(),
+        // Same trap for telemetry: omitted, the handler runs on default telemetry options.
+        telemetry: sp.GetService<SharedMetaTelemetry>());
 });
 
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));

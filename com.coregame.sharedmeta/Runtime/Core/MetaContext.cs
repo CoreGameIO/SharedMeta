@@ -145,6 +145,13 @@ namespace SharedMeta.Core
         public ILogger Log { get; set; } = NullLogger.Instance;
 
         /// <summary>
+        /// Identity of the call being executed — call id (W3C trace id), caller, entity, method —
+        /// for attaching to business / analytics events. The same call id is in the log scope of
+        /// <see cref="Log"/>. Null outside a call.
+        /// </summary>
+        public Diagnostics.MetaCallContext? Call => Diagnostics.MetaCallContext.Current;
+
+        /// <summary>
         /// Static game configuration for this entity.
         /// Provided by IMetaConfigProvider on server, sent to client on subscribe.
         /// Access the typed config via generated Context.Config property in service implementations.

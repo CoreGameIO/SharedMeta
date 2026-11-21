@@ -109,6 +109,8 @@ namespace SharedMeta.Debug.Mux
             // processes them concurrently (subject to grain-level serialization per
             // SessionManagerGrain), and one server→client frame carries all N responses.
             var entries = request.Entries;
+            // The hub filter counts this as one invocation; the batch size says how many calls it carried.
+            SharedMeta.Server.Core.Telemetry.TransportTelemetry.RecordBatch(nameof(BatchRpcCall), entries.Count);
             var tasks = new Task<SessionResponse>[entries.Count];
             for (int i = 0; i < entries.Count; i++)
             {

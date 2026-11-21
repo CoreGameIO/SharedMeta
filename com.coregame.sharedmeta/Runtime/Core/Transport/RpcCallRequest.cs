@@ -71,5 +71,12 @@ namespace SharedMeta.Core.Transport
         /// entityId alone does not pick the subscription when state types share an entityId.
         /// </summary>
         [Id(11), Key(11)] public ushort StateTypeId { get; set; }
+
+        /// <summary>
+        /// W3C <c>traceparent</c> of the call, so client and server logs/spans share one call id.
+        /// Sent only when the server announced <see cref="SessionConnectResponse.SupportsTraceContext"/>;
+        /// untrusted — the server parses it strictly and may ignore it by policy.
+        /// </summary>
+        [Id(12), Key(12)] public string? TraceParent { get; set; }
     }
 }

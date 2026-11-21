@@ -40,6 +40,7 @@ namespace SharedMeta.Client
             if (!File.Exists(path))
             {
                 MetaLog.Debug($"[FileConfigCache<{typeof(TConfig).Name}>] MISS v{version.Major}.{version.Minor}.{version.Patch}");
+                CountLookup("miss");
                 return null;
             }
             try
@@ -47,13 +48,24 @@ namespace SharedMeta.Client
                 var bytes = File.ReadAllBytes(path);
                 var config = _serializer.Unpack<TConfig>(bytes);
                 MetaLog.Debug($"[FileConfigCache<{typeof(TConfig).Name}>] HIT v{version.Major}.{version.Minor}.{version.Patch} ({bytes.Length} bytes)");
+                CountLookup("hit");
                 return config;
             }
             catch (Exception ex)
             {
                 MetaLog.Warning($"[FileConfigCache<{typeof(TConfig).Name}>] Read error: {ex.Message}");
+                CountLookup("miss");
                 return null;
             }
+        }
+
+        private static void CountLookup(string result)
+        {
+#if SHAREDMETA_CLIENT_TELEMETRY
+            SharedMeta.Client.Telemetry.SharedMetaClientMeters.ConfigCacheLookup.Add(1,
+                new System.Collections.Generic.KeyValuePair<string, object?>("config_type", typeof(TConfig).Name),
+                new System.Collections.Generic.KeyValuePair<string, object?>("result", result));
+#endif
         }
 
         public void Put(MetaConfigVersion version, TConfig config)

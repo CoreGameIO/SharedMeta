@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using SharedMeta.Core.Diagnostics;
+using SharedMeta.Core.Transport;
 
 namespace SharedMeta.Server.Core.Telemetry
 {
@@ -50,24 +52,68 @@ namespace SharedMeta.Server.Core.Telemetry
 
             /// <summary>
             /// Decrements active-session gauge AND increments the terminated counter tagged
-            /// by <paramref name="reason"/>: <c>graceful | transport_drop | superseded |
-            /// server_close | version_rejected</c>.
+            /// by <paramref name="reason"/> — a bounded enum, never free text.
             /// </summary>
-            public static void Terminated(string reason)
+            public static void Terminated(MetaSessionEndReason reason)
             {
                 SharedMetaMeters.SessionsActive.Add(-1);
                 SharedMetaMeters.SessionTerminated.Add(1,
-                    new KeyValuePair<string, object?>("reason", reason));
+                    new KeyValuePair<string, object?>("reason", ReasonTag(reason)));
             }
+
+            public static string ReasonTag(MetaSessionEndReason reason) => reason switch
+            {
+                MetaSessionEndReason.Graceful => "graceful",
+                MetaSessionEndReason.TransportDrop => "transport_drop",
+                MetaSessionEndReason.Superseded => "superseded",
+                MetaSessionEndReason.StashOverflow => "stash_overflow",
+                MetaSessionEndReason.Stall => "stall",
+                MetaSessionEndReason.InactivityTimeout => "inactivity_timeout",
+                MetaSessionEndReason.ServerClose => "server_close",
+                MetaSessionEndReason.VersionRejected => "version_rejected",
+                _ => "other",
+            };
         }
 
         public static class Compat
         {
-            public static void ForcePatchApplied(string service, string method, string kind)
-                => SharedMetaMeters.ForcePatchApplied.Add(1,
-                    new KeyValuePair<string, object?>("service", service),
-                    new KeyValuePair<string, object?>("method", method),
+            public static void ForcePatchApplied(MethodTags tags, string kind)
+                => SharedMetaMeters.ForcePatchApplied.Add(1, tags.ServiceTag, tags.MethodTag,
                     new KeyValuePair<string, object?>("kind", kind));
+
+            /// <summary>
+            /// RPC refused by the handler's capability gate. <paramref name="reason"/>:
+            /// <c>out_of_range | not_callable | rejected | not_negotiated</c>.
+            /// </summary>
+            public static void MethodRejected(MethodTags tags, string reason)
+                => SharedMetaMeters.MethodRejected.Add(1, tags.ServiceTag, tags.MethodTag,
+                    new KeyValuePair<string, object?>("reason", reason));
+        }
+
+        public static class Desync
+        {
+            /// <summary>
+            /// One client desync report per set mismatch bit. Names come from the server table,
+            /// never from the client's strings.
+            /// </summary>
+            public static void Reported(MethodTags tags, DesyncMismatchKind kind)
+            {
+                if (kind == DesyncMismatchKind.None) kind = DesyncMismatchKind.Patch;
+                if ((kind & DesyncMismatchKind.Patch) != 0) Add(tags, "patch_crc");
+                if ((kind & DesyncMismatchKind.Result) != 0) Add(tags, "result");
+                if ((kind & DesyncMismatchKind.Random) != 0) Add(tags, "optimistic_random");
+            }
+
+            private static void Add(MethodTags tags, string kind)
+                => SharedMetaMeters.DesyncDetected.Add(1, tags.ServiceTag, tags.MethodTag,
+                    new KeyValuePair<string, object?>("kind", kind));
+        }
+
+        public static class RpcOrder
+        {
+            public static void Stashed() => SharedMetaMeters.RpcOutOfOrderStashed.Add(1);
+
+            public static void Drained(double waitedMs) => SharedMetaMeters.RpcOutOfOrderDrainWait.Record(waitedMs);
         }
 
         public static class CrossEntity

@@ -1,15 +1,18 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Orleans;
 using SharedMeta.Core;
+using SharedMeta.Core.Diagnostics;
 using SharedMeta.Core.Packets;
 using SharedMeta.Core.Transport;
 using SharedMeta.Server.Core.Grains;
 using SharedMeta.Server.Core.Session;
+using SharedMeta.Server.Core.Telemetry;
 
 namespace SharedMeta.Server.Core.Transport
 {
@@ -125,8 +128,10 @@ namespace SharedMeta.Server.Core.Transport
             SharedMeta.Core.Transport.MetaServerSignature? serverSignature = null,
             IPlayerIdentityValidator? identityValidator = null,
             Microsoft.Extensions.Options.IOptions<Grains.EntityGrainOptions>? entityGrainOptions = null,
-            SharedMeta.Server.Permissions.IPlayerEntitlements? entitlements = null)
+            SharedMeta.Server.Permissions.IPlayerEntitlements? entitlements = null,
+            SharedMetaTelemetry? telemetry = null)
         {
+            _telemetry = telemetry ?? SharedMetaTelemetry.Default;
             _connectionId = connectionId ?? throw new ArgumentNullException(nameof(connectionId));
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
@@ -142,6 +147,101 @@ namespace SharedMeta.Server.Core.Transport
             _deepDesyncMode = entityGrainOptions?.Value.DeepDesyncMode ?? Grains.DeepDesyncMode.PerPlayer;
             _entitlements = entitlements;
         }
+
+        private readonly SharedMetaTelemetry _telemetry;
+
+        // ── Session lifecycle telemetry ─────────────────────────────────────────
+        // The active-session gauge moves once per handler: +1 when the first session binds,
+        // -1 when the transport closes. The end reason is whatever explained the end first
+        // (graceful / grain termination), so the transport close that always follows does not
+        // overwrite it with transport_drop.
+        private string _sessionIdText = "";
+        private string _sessionPlayerId = "";
+        private long _sessionStartTimestamp;
+        private int _sessionGaugeHeld;
+        private int _endReason = -1;
+        // Set while a StartNew on this handler supersedes its own previous session: the grain's
+        // Superseded notice for the old session is then about this handler's own restart.
+        private bool _expectSelfSupersede;
+
+        private void RecordEndReason(MetaSessionEndReason reason)
+            => Interlocked.CompareExchange(ref _endReason, (int)reason, -1);
+
+        /// <summary>
+        /// Opens the transport hop. The client's trace is continued when policy allows; otherwise
+        /// (or when it sent none / garbage) the scope starts a new one.
+        /// </summary>
+        private TelemetryScope StartScope(string spanName, string op, string? traceParent, string? entityId, long requestId,
+            MethodTags? tags = null, string? stateType = null, bool propagate = false, string? playerId = null)
+        {
+            var options = _telemetry.Options;
+            MetaTraceContext parent = default;
+            if (options.AcceptClientTraceContext)
+                MetaTraceContext.TryParse(traceParent, out parent);
+            return TelemetryScope.Start(spanName, ActivityKind.Server, parent, _logger, options.LogScopes,
+                op,
+                playerId: playerId ?? (PlayerId.Length > 0 ? PlayerId : null),
+                entityId: entityId,
+                stateType: stateType ?? tags?.StateType,
+                service: tags?.ServiceName,
+                method: tags?.MethodName,
+                sessionId: _sessionIdText.Length > 0 ? _sessionIdText : null,
+                requestId: requestId,
+                propagate: propagate);
+        }
+
+        private void ReportCall(MetaCallContext? c, string op, MethodTags tags, string result, string? errorKind, double durationMs)
+        {
+            if (c == null || !_telemetry.HasObservers) return;
+            _telemetry.CallCompleted(new MetaCallInfo
+            {
+                CallId = c.CallId,
+                Op = op,
+                Service = tags.ServiceName,
+                Method = tags.MethodName,
+                Mode = tags.Mode,
+                EntityId = c.EntityId,
+                StateType = c.StateType,
+                PlayerId = c.PlayerId,
+                SessionId = c.SessionId,
+                ClientVersion = _clientVersion,
+                Result = result,
+                ErrorKind = errorKind,
+                DurationMs = durationMs,
+            });
+        }
+
+        private static bool OwnOpFailed(SessionResponse response, long requestId)
+        {
+            var ops = response.Operations;
+            if (ops == null) return false;
+            for (int i = 0; i < ops.Count; i++)
+                if (ops[i].RequestId == requestId && ops[i].HasError) return true;
+            return false;
+        }
+
+        /// <summary>
+        /// Analytics record for a call refused before its scope opened (session / signature /
+        /// capability gates) — built only when someone observes.
+        /// </summary>
+        private void ReportRejected(string op, string? traceParent, string? entityId, long requestId, MethodTags tags,
+            in ServerRpcTotalMeasurement measurement)
+        {
+            if (!_telemetry.HasObservers) return;
+            MetaTraceContext trace = default;
+            if (_telemetry.Options.AcceptClientTraceContext) MetaTraceContext.TryParse(traceParent, out trace);
+            if (!trace.IsValid) trace = MetaTraceContext.CreateRandom();
+            var context = new MetaCallContext(trace, op, PlayerId.Length > 0 ? PlayerId : null, entityId,
+                tags.StateType, tags.ServiceName, tags.MethodName, _sessionIdText.Length > 0 ? _sessionIdText : null, requestId);
+            ReportCall(context, op, tags, measurement.Result, measurement.ErrorKind, measurement.ElapsedMs);
+        }
+
+        private static string ErrorKindOf(SessionErrorKind kind) => kind switch
+        {
+            SessionErrorKind.SessionNotConnected => MetaCallErrorKinds.SessionNotConnected,
+            SessionErrorKind.SessionSuperseded => MetaCallErrorKinds.SessionSuperseded,
+            _ => MetaCallErrorKinds.ProviderError,
+        };
 
         // Same store the server's own gate reads. Resolving the client's copy from the grain
         // directly would be one line shorter and would quietly ignore a host that registered its
@@ -271,7 +371,9 @@ namespace SharedMeta.Server.Core.Transport
             // The measurement struct records duration + result tag + active-session gauge bump
             // on Dispose; result defaults to "rejected" so an early-return path is tagged
             // correctly without an explicit MarkResult call.
-            using var __sc = SharedMeta.Server.Core.Telemetry.SessionConnectMeasurement.Start(request.PlayerId ?? "<null>");
+            using var __t = StartScope(SharedMetaActivities.SpanSessionConnect, MetaCallOps.SessionConnect, null, null, 0,
+                playerId: string.IsNullOrEmpty(request.PlayerId) ? null : request.PlayerId);
+            using var __sc = SessionConnectMeasurement.Start(__t.Activity);
             SessionConnectResponse? __scResponse = null;
             try
             {
@@ -394,6 +496,10 @@ namespace SharedMeta.Server.Core.Transport
                 Guid effectiveSessionId = request.Mode == SessionConnectMode.StartNew
                     ? Guid.NewGuid()
                     : request.SessionId ?? Guid.Empty;
+                var previousSessionText = _sessionIdText;
+                var previousSessionStart = _sessionStartTimestamp;
+                if (request.Mode == SessionConnectMode.StartNew && SessionId != Guid.Empty && SessionId != effectiveSessionId)
+                    _expectSelfSupersede = true;
                 var result = await grain.ConnectAsync(
                     effectiveSessionId,
                     request.LastAcknowledgedSequence,
@@ -405,7 +511,23 @@ namespace SharedMeta.Server.Core.Transport
 
                 if (result.Success)
                 {
+                    var restarted = previousSessionText.Length > 0 && result.SessionId != SessionId;
+                    if (restarted)
+                        _telemetry.SessionEnded(request.PlayerId, previousSessionText, MetaSessionEndReason.Superseded,
+                            Stopwatch.GetElapsedTime(previousSessionStart).TotalMilliseconds);
+
                     SessionId = result.SessionId;
+                    _sessionIdText = result.SessionId.ToString();
+                    // Kept apart from PlayerId: a failed reconnect on this connection clears
+                    // PlayerId, but the session that later ends still belongs to this player.
+                    _sessionPlayerId = request.PlayerId;
+                    if (restarted || previousSessionText.Length == 0)
+                    {
+                        Volatile.Write(ref _endReason, -1); // a reason recorded for the previous session is not this one's
+                        _sessionStartTimestamp = Stopwatch.GetTimestamp();
+                        _telemetry.SessionStarted(request.PlayerId, _sessionIdText, request.ClientVersion,
+                            resumed: !result.IsNewSession);
+                    }
 
                     // Clear queued data from previous session
                     _broadcastSender.Reset();
@@ -432,6 +554,7 @@ namespace SharedMeta.Server.Core.Transport
                     PlayerId = string.Empty; // Clear on failure
                     DeepDesyncActive = false;
                     AdoptPermissions(null);
+                    _expectSelfSupersede = false;
                 }
 
                 _logger.HandlerSessionConnect(request.PlayerId, result.Success, result.IsNewSession);
@@ -483,6 +606,7 @@ namespace SharedMeta.Server.Core.Transport
                     DeepDesyncActive = DeepDesyncActive,
                     Permissions = Permissions,
                     Subscriptions = ToWireVerdicts(result.Subscriptions),
+                    SupportsTraceContext = true,
                 };
                 return __scResponse;
             }
@@ -494,9 +618,15 @@ namespace SharedMeta.Server.Core.Transport
             }
             finally
             {
-                __sc.MarkResult(__scResponse?.Success == true ? "success"
-                    : __scResponse?.NeedsSignatureRegistration == true ? "needs_signature_registration"
-                    : "rejected");
+                var success = __scResponse?.Success == true;
+                // The gauge counts handlers with a bound session, not handshakes: a second
+                // SessionConnect on the same connection must not add another +1.
+                if (success && Interlocked.Exchange(ref _sessionGaugeHeld, 1) == 1)
+                    __sc.MarkResult("success_rebind");
+                else
+                    __sc.MarkResult(success ? "success"
+                        : __scResponse?.NeedsSignatureRegistration == true ? "needs_signature_registration"
+                        : "rejected");
             }
         }
 
@@ -576,7 +706,11 @@ namespace SharedMeta.Server.Core.Transport
                 }
 
                 var grain = SessionManagerGrainOrThrow;
+                // Subscribe has no RpcCall to carry the trace — the request context does (rare op).
+                using var __t = StartScope(SharedMetaActivities.SpanServerSubscribe, MetaCallOps.Subscribe,
+                    null, request.EntityId, 0, stateType: stateTypeName, propagate: true);
                 var result = await grain.SubscribeToEntityAsync(request.EntityId, stateTypeName, _clientVersion, _clientSignatureHash);
+                __t.Activity?.SetTag(SharedMetaActivities.TagResult, result.Success ? MetaCallResults.Success : MetaCallResults.Error);
 
                 _logger.HandlerSubscribe(PlayerId!, request.EntityId, result.Success);
 
@@ -616,6 +750,8 @@ namespace SharedMeta.Server.Core.Transport
                     if (stateTypeName == null)
                         return new UnsubscribeResponse { Success = false, Error = $"State type id {request.StateTypeId} is unknown to this server for the client's signature" };
                     var grain = SessionManagerGrainOrThrow;
+                    using var __t = StartScope(SharedMetaActivities.SpanServerUnsubscribe, MetaCallOps.Unsubscribe,
+                        null, request.EntityId, 0, stateType: stateTypeName, propagate: true);
                     await grain.UnsubscribeFromEntityAsync(request.EntityId, stateTypeName);
                 }
 
@@ -632,16 +768,16 @@ namespace SharedMeta.Server.Core.Transport
 
         public async Task<SessionResponse> RpcCallAsync(RpcCallRequest request)
         {
-            // 0.24.0+ End-to-end server-side timing wrapped in a using-disposable that
-            // records the histogram on scope exit. Tagged by ushort MethodId only — no
-            // name resolution on the hot path. MarkRejected / MarkError set the result tag.
-            // Diff against RpcDuration still surfaces queue / hop overhead.
-            using var __m = SharedMeta.Server.Core.Telemetry.ServerRpcTotalMeasurement.Start(request.MethodId);
+            // End-to-end server-side timing, tagged by the server-resolved method once the
+            // client id is translated. Diff against RpcDuration surfaces queue / hop overhead.
+            using var __m = ServerRpcTotalMeasurement.Start();
+            MethodTags tags = MethodTags.UnknownMethod;
+            MetaCallContext? __ctx = null;
             try
             {
                 if (!TryEnsureSessionConnected("RpcCall"))
                 {
-                    __m.MarkRejected();
+                    __m.MarkRejected(MetaCallErrorKinds.SessionNotConnected);
                     return SessionResponse.ForError("Session not connected — please re-handshake.", SessionErrorKind.SessionNotConnected);
                 }
 
@@ -663,6 +799,7 @@ namespace SharedMeta.Server.Core.Transport
                 if (_clientSignatureHash == 0 || _signatureRegistry == null)
                 {
                     __m.MarkRejected();
+                    MetricEvents.Compat.MethodRejected(tags, "not_negotiated");
                     return SessionResponse.ForError(
                         "Cannot dispatch RPC: client signature not negotiated. Call RegisterClientSignatureAsync first.");
                 }
@@ -671,6 +808,7 @@ namespace SharedMeta.Server.Core.Transport
                     if (c2s == null || request.MethodId >= c2s.Length)
                     {
                         __m.MarkRejected();
+                        MetricEvents.Compat.MethodRejected(tags, "out_of_range");
                         return SessionResponse.ForError(
                             $"Method id {request.MethodId} is out of range for client signature.");
                     }
@@ -678,15 +816,18 @@ namespace SharedMeta.Server.Core.Transport
                     if (mapped == ushort.MaxValue)
                     {
                         __m.MarkRejected();
+                        MetricEvents.Compat.MethodRejected(tags, "not_callable");
                         return SessionResponse.ForError(
                             $"Method id {request.MethodId} is not callable by this client.");
                     }
                     serverMethodId = mapped;
                 }
 
+                tags = _telemetry.GetTags(_serverSignature, serverMethodId);
+                __m.SetMethod(tags);
+
                 // Resolve once for capabilities back-stop + patch cache key. Returns (null,
-                // null, 0) when signature isn't wired. Not used as a telemetry tag anymore —
-                // ServerRpcTotalMeasurement is methodId-only.
+                // null, 0) when signature isn't wired.
                 var (resolvedService, resolvedMethod, resolvedVersion) = ResolveServerMethodEntry(serverMethodId);
 
                 // Server-side back-stop: even if the client bypassed its local CapabilitiesGate,
@@ -698,6 +839,7 @@ namespace SharedMeta.Server.Core.Transport
                 if (SharedMeta.Core.Transport.CapabilitiesGate.IsRejected(_clientAnnotated, request.MethodId))
                 {
                     __m.MarkRejected();
+                    MetricEvents.Compat.MethodRejected(tags, "rejected");
                     return SessionResponse.ForError(
                         $"Method '{resolvedService}.{resolvedMethod}' (v{resolvedVersion}) is rejected for this client signature.");
                 }
@@ -725,6 +867,11 @@ namespace SharedMeta.Server.Core.Transport
 
                 var grain = SessionManagerGrainOrThrow;
 
+                using var __t = StartScope(SharedMetaActivities.SpanServerRpc, MetaCallOps.Rpc,
+                    request.TraceParent, request.EntityId, request.RequestId, tags);
+                __ctx = __t.Context;
+                call.TraceParent = __ctx.Trace.ToTraceParent();
+
                 var response = await grain.SendToEntityAsync(
                     request.EntityId,
                     stateTypeName,
@@ -732,6 +879,21 @@ namespace SharedMeta.Server.Core.Transport
                     call,
                     request.LastAcknowledgedSequence,
                     SessionId).ConfigureAwait(false);
+
+                if (response.Error != null)
+                {
+                    __m.MarkError(ErrorKindOf(response.ErrorKind));
+                    __t.Activity?.SetStatus(ActivityStatusCode.Error);
+                }
+                else if (OwnOpFailed(response, request.RequestId))
+                {
+                    // A method that threw / was refused comes back as an error op inside a
+                    // successful session response, not as SessionResponse.Error.
+                    __m.MarkError(MetaCallErrorKinds.ProviderError);
+                    __t.Activity?.SetStatus(ActivityStatusCode.Error);
+                }
+                __t.Activity?.SetTag(SharedMetaActivities.TagResult, __m.Result);
+                ReportCall(__ctx, MetaCallOps.Rpc, tags, __m.Result, __m.ErrorKind, __m.ElapsedMs);
 
                 // Cache server patch for desync reporting (if enabled). OpBytes is the
                 // pre-serialized MetaOperation; we deserialize lazily only for this
@@ -759,12 +921,23 @@ namespace SharedMeta.Server.Core.Transport
             {
                 __m.MarkError();
                 _logger.HandlerRpcCallError(ex);
+                ReportCall(__ctx, MetaCallOps.Rpc, tags, __m.Result, __m.ErrorKind, __m.ElapsedMs);
                 return SessionResponse.ForError(ex.Message);
+            }
+            finally
+            {
+                // Refused before the scope opened (session / signature / capability gates):
+                // observers still see the call, so rejection rates show up in analytics.
+                if (__ctx == null && __m.Result != MetaCallResults.Success)
+                    ReportRejected(MetaCallOps.Rpc, request.TraceParent, request.EntityId, request.RequestId, tags, __m);
             }
         }
 
         public async Task<QueryCallResponse> QueryCallAsync(QueryCallRequest request)
         {
+            MetaCallContext? __ctx = null;
+            var tags = MethodTags.UnknownMethod;
+            var start = Stopwatch.GetTimestamp();
             try
             {
                 if (!TryEnsureSessionConnected("QueryCall"))
@@ -803,12 +976,26 @@ namespace SharedMeta.Server.Core.Transport
                     CallerPermissions = _permissionNames
                 };
 
+                tags = _telemetry.GetTags(_serverSignature, serverMethodId);
+                using var __t = StartScope(SharedMetaActivities.SpanServerQuery, MetaCallOps.Query,
+                    request.TraceParent, request.EntityId, 0, tags);
+                __ctx = __t.Context;
+                call.TraceParent = __t.Context.Trace.ToTraceParent();
                 var grain = SessionManagerGrainOrThrow;
-                return await grain.QueryEntityAsync(request.EntityId, resolvedService, call);
+                var response = await grain.QueryEntityAsync(request.EntityId, resolvedService, call);
+                var failed = response.Error != null;
+                if (failed) __t.Activity?.SetStatus(ActivityStatusCode.Error);
+                ReportCall(__t.Context, MetaCallOps.Query, tags,
+                    failed ? MetaCallResults.Error : MetaCallResults.Success,
+                    failed ? MetaCallErrorKinds.ProviderError : null,
+                    Stopwatch.GetElapsedTime(start).TotalMilliseconds);
+                return response;
             }
             catch (Exception ex)
             {
                 _logger.HandlerRpcCallError(ex);
+                ReportCall(__ctx, MetaCallOps.Query, tags, MetaCallResults.Error, MetaCallErrorKinds.Exception,
+                    Stopwatch.GetElapsedTime(start).TotalMilliseconds);
                 return new QueryCallResponse { Error = ex.Message };
             }
         }
@@ -816,6 +1003,9 @@ namespace SharedMeta.Server.Core.Transport
         public async Task SignalCallAsync(SignalCallRequest request)
         {
             // Signal is fire-and-forget: validation errors are logged, never surfaced to caller.
+            MetaCallContext? __ctx = null;
+            var tags = MethodTags.UnknownMethod;
+            var start = Stopwatch.GetTimestamp();
             try
             {
                 if (!TryEnsureSessionConnected("SignalCall")) return;
@@ -868,12 +1058,21 @@ namespace SharedMeta.Server.Core.Transport
                     CallerPermissions = _permissionNames
                 };
 
+                tags = _telemetry.GetTags(_serverSignature, serverMethodId);
+                using var __t = StartScope(SharedMetaActivities.SpanServerSignal, MetaCallOps.Signal,
+                    request.TraceParent, request.EntityId, 0, tags);
+                __ctx = __t.Context;
+                call.TraceParent = __t.Context.Trace.ToTraceParent();
                 var grain = SessionManagerGrainOrThrow;
                 await grain.SignalEntityAsync(request.EntityId, resolvedService, call);
+                ReportCall(__t.Context, MetaCallOps.Signal, tags, MetaCallResults.Success, null,
+                    Stopwatch.GetElapsedTime(start).TotalMilliseconds);
             }
             catch (Exception ex)
             {
                 _logger.HandlerRpcCallError(ex);
+                ReportCall(__ctx, MetaCallOps.Signal, tags, MetaCallResults.Error, MetaCallErrorKinds.Exception,
+                    Stopwatch.GetElapsedTime(start).TotalMilliseconds);
                 // No error propagation — fire-and-forget contract.
             }
         }
@@ -948,6 +1147,15 @@ namespace SharedMeta.Server.Core.Transport
 
         public async Task<DesyncReportResponse> SendDesyncReportAsync(DesyncReportRequest request)
         {
+            // Counted before the reporting switch: production runs with DesyncReportingEnabled
+            // off, and the desync rate is exactly what it needs to see. Tags come from the
+            // server table — the client's service/method strings never reach a metric.
+            var desyncTags = _telemetry.GetTable(_serverSignature).Find(request.ServiceName, request.MethodName);
+            if (IsSessionConnected)
+                MetricEvents.Desync.Reported(desyncTags, (DesyncMismatchKind)request.MismatchKind);
+
+            using var __t = StartScope(SharedMetaActivities.SpanServerDesyncReport, MetaCallOps.Desync,
+                request.TraceParent, request.EntityId, 0, desyncTags);
             _logger.LogDebug("[Handler] SendDesyncReport kind={Kind} entity={Entity} {Service}.{Method} from {Player}",
                 (DesyncMismatchKind)request.MismatchKind, request.EntityId, request.ServiceName, request.MethodName, PlayerId);
             try
@@ -971,7 +1179,10 @@ namespace SharedMeta.Server.Core.Transport
                     MethodName = request.MethodName,
                     Timestamp = DateTime.UtcNow,
                     ArgsBytes = request.ArgsBytes,
-                    MismatchKind = (int)kind
+                    MismatchKind = (int)kind,
+                    // The client's trace id when it sent one, so the stored report points at the
+                    // original call's logs; a server-generated id otherwise.
+                    CallId = __t.Context.CallId,
                 };
                 int diffCount = 0;
                 var textParts = new List<string>();
@@ -1148,6 +1359,8 @@ namespace SharedMeta.Server.Core.Transport
             _observerRenewalTimer?.Dispose();
             _observerRenewalTimer = null;
 
+            if (IsSessionConnected) RecordEndReason(MetaSessionEndReason.Graceful);
+
             if (PlayerId != null)
             {
                 _logger.HandlerGracefulDisconnect(_connectionId, PlayerId);
@@ -1172,13 +1385,22 @@ namespace SharedMeta.Server.Core.Transport
             _observerRenewalTimer?.Dispose();
             _observerRenewalTimer = null;
 
+            // Symmetric to the single +1 taken when this handler first bound a session — also
+            // when a later reconnect on this connection failed and cleared PlayerId.
+            if (Interlocked.Exchange(ref _sessionGaugeHeld, 0) == 1)
+            {
+                var recorded = Volatile.Read(ref _endReason);
+                var reason = recorded >= 0 ? (MetaSessionEndReason)recorded : MetaSessionEndReason.TransportDrop;
+                MetricEvents.Session.Terminated(reason);
+                if (_sessionIdText.Length > 0)
+                    _telemetry.SessionEnded(_sessionPlayerId, _sessionIdText, reason,
+                        Stopwatch.GetElapsedTime(_sessionStartTimestamp).TotalMilliseconds);
+            }
+
             // PlayerId is initialised to string.Empty — a transport-level disconnect that
             // happens before SessionConnect (e.g. handshake failure, immediate close) leaves
             // it empty and there's nothing to clean up at the grain level.
             if (!IsSessionConnected) return;
-
-            // Session was active and is closing — symmetric to the +1 in SessionConnect success.
-            SharedMeta.Server.Core.Telemetry.MetricEvents.Session.Terminated("transport_drop");
 
             _logger.HandlerDisconnected(_connectionId, PlayerId);
 
@@ -1236,9 +1458,15 @@ namespace SharedMeta.Server.Core.Transport
             return Task.CompletedTask;
         }
 
-        public Task OnSessionTerminated(string reason)
+        public Task OnSessionTerminated(MetaSessionEndReason reason, string message)
         {
-            _broadcastSender.SendSessionTerminated(reason);
+            // This handler's own StartNew superseded its previous session: the notice is about
+            // the old session, and the new one on this connection carries on.
+            if (reason == MetaSessionEndReason.Superseded && _expectSelfSupersede)
+                _expectSelfSupersede = false;
+            else
+                RecordEndReason(reason);
+            _broadcastSender.SendSessionTerminated(message);
             return Task.CompletedTask;
         }
 
@@ -1335,6 +1563,7 @@ namespace SharedMeta.Server.Core.Transport
         private readonly IPlayerIdentityValidator? _identityValidator;
         private readonly Microsoft.Extensions.Options.IOptions<Grains.EntityGrainOptions>? _entityGrainOptions;
         private readonly SharedMeta.Server.Permissions.IPlayerEntitlements? _entitlements;
+        private readonly SharedMetaTelemetry? _telemetry;
 
         public MetaConnectionHandlerFactory(
             IGrainFactory grainFactory,
@@ -1348,8 +1577,10 @@ namespace SharedMeta.Server.Core.Transport
             SharedMeta.Core.Transport.MetaServerSignature? serverSignature = null,
             IPlayerIdentityValidator? identityValidator = null,
             Microsoft.Extensions.Options.IOptions<Grains.EntityGrainOptions>? entityGrainOptions = null,
-            SharedMeta.Server.Permissions.IPlayerEntitlements? entitlements = null)
+            SharedMeta.Server.Permissions.IPlayerEntitlements? entitlements = null,
+            SharedMetaTelemetry? telemetry = null)
         {
+            _telemetry = telemetry;
             _grainFactory = grainFactory ?? throw new ArgumentNullException(nameof(grainFactory));
             _entityGrainResolver = entityGrainResolver ?? throw new ArgumentNullException(nameof(entityGrainResolver));
             _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
@@ -1369,7 +1600,7 @@ namespace SharedMeta.Server.Core.Transport
             var logger = _loggerFactory.CreateLogger<MetaConnectionHandler>();
             return new MetaConnectionHandler(connectionId, _grainFactory, _entityGrainResolver, broadcastSender, logger,
                 _transportOptions, _serializer, _schemaRegistry, _versionPolicy, _signatureRegistry, _serverSignature,
-                _identityValidator, _entityGrainOptions, _entitlements);
+                _identityValidator, _entityGrainOptions, _entitlements, _telemetry);
         }
     }
 }

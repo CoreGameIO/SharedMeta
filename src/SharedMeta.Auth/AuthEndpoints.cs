@@ -6,7 +6,10 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Orleans;
+using SharedMeta.Server.Core.Telemetry;
 
 namespace SharedMeta.Auth
 {
@@ -23,33 +26,67 @@ namespace SharedMeta.Auth
             this IEndpointRouteBuilder endpoints,
             string prefix = "/meta/auth")
         {
-            endpoints.MapPost($"{prefix}/login", HandleLogin)
+            var group = endpoints.MapGroup(prefix);
+
+            group.MapPost("/login", HandleLogin)
                 .AllowAnonymous();
 
-            endpoints.MapPost($"{prefix}/login-platform", HandlePlatformLogin)
+            group.MapPost("/login-platform", HandlePlatformLogin)
                 .AllowAnonymous();
 
             // Anonymous: the refresh token itself is the credential.
-            endpoints.MapPost($"{prefix}/refresh", HandleRefresh)
+            group.MapPost("/refresh", HandleRefresh)
                 .AllowAnonymous();
 
             // Anonymous: presenting a valid refresh token proves ownership of that session.
-            endpoints.MapPost($"{prefix}/logout", HandleLogout)
+            group.MapPost("/logout", HandleLogout)
                 .AllowAnonymous();
 
-            endpoints.MapPost($"{prefix}/link", HandleLink)
+            group.MapPost("/link", HandleLink)
                 .RequireAuthorization();
 
-            endpoints.MapPost($"{prefix}/unlink", HandleUnlink)
+            group.MapPost("/unlink", HandleUnlink)
                 .RequireAuthorization();
 
-            endpoints.MapPost($"{prefix}/reset-device", HandleResetDevice)
+            group.MapPost("/reset-device", HandleResetDevice)
                 .RequireAuthorization();
 
-            endpoints.MapGet($"{prefix}/keys", HandleGetKeys)
+            group.MapGet("/keys", HandleGetKeys)
                 .RequireAuthorization();
+
+            group.WithMetaTransportTelemetry(endpoints.ServiceProvider, TransportTelemetry.Http);
+            if (endpoints.ServiceProvider.GetService<IOptions<MetaTelemetryOptions>>()?.Value.TransportMetrics == true)
+                group.AddEndpointFilter(new AuthTelemetryFilter());
 
             return endpoints;
+        }
+
+        // Handlers name the provider once they resolved it to a registered validator (or to the
+        // stored auth key) — never the raw request value, so the metric tag stays bounded.
+        internal const string ProviderItemKey = "sm.auth.provider";
+
+        private static void SetProvider(HttpContext ctx, string provider) => ctx.Items[ProviderItemKey] = provider;
+
+        /// <summary><c>sharedmeta.auth.requests{endpoint, provider, result}</c> for every auth endpoint.</summary>
+        private sealed class AuthTelemetryFilter : IEndpointFilter
+        {
+            public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
+            {
+                var http = context.HttpContext;
+                var endpoint = (http.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText ?? "unknown";
+                try
+                {
+                    var result = await next(context);
+                    var status = result is IStatusCodeHttpResult { StatusCode: { } code } ? code : http.Response.StatusCode;
+                    TransportTelemetry.RecordAuth(endpoint, http.Items[ProviderItemKey] as string, TransportTelemetry.ResultOf(status));
+                    return result;
+                }
+                catch
+                {
+                    TransportTelemetry.RecordAuth(endpoint, http.Items[ProviderItemKey] as string, TransportTelemetry.Error);
+                    throw;
+                }
+            }
         }
 
         /// <summary>
@@ -60,6 +97,7 @@ namespace SharedMeta.Auth
             IGrainFactory grainFactory,
             JwtTokenService jwtService)
         {
+            SetProvider(ctx, "device");
             var request = await ctx.Request.ReadFromJsonAsync<LoginRequest>();
             if (request == null || string.IsNullOrEmpty(request.DeviceId))
                 return Results.BadRequest(new { error = "DeviceId is required" });
@@ -99,6 +137,7 @@ namespace SharedMeta.Auth
                 v.Platform.Equals(request.Platform, StringComparison.OrdinalIgnoreCase));
             if (validator == null)
                 return Results.BadRequest(new { error = $"Unsupported platform: {request.Platform}" });
+            SetProvider(ctx, validator.Platform);
 
             ExternalAuthResult authResult;
             try
@@ -153,7 +192,9 @@ namespace SharedMeta.Auth
             if (rotation.Outcome != RefreshOutcome.Valid)
                 return Results.Unauthorized();
 
-            var accessToken = jwtService.GenerateToken(playerId, AuthTypeOf(rotation.AuthKey));
+            var authType = AuthTypeOf(rotation.AuthKey);
+            SetProvider(ctx, authType);
+            var accessToken = jwtService.GenerateToken(playerId, authType);
 
             return Results.Ok(new LoginResponse
             {
@@ -217,6 +258,7 @@ namespace SharedMeta.Auth
                 v.Platform.Equals(request.Platform, StringComparison.OrdinalIgnoreCase));
             if (validator == null)
                 return Results.BadRequest(new { error = $"Unsupported platform: {request.Platform}" });
+            SetProvider(ctx, validator.Platform);
 
             ExternalAuthResult authResult;
             try

@@ -1,27 +1,27 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using SharedMeta.Core.Diagnostics;
 
 namespace SharedMeta.Server.Core.Telemetry
 {
     /// <summary>
-    /// Disposable measurement helpers that bundle Activity span + duration histogram +
-    /// outcome counter recording into a single <c>using</c>-friendly value type.
+    /// Disposable measurement helpers that bundle duration histogram + outcome counter
+    /// recording into a single <c>using</c>-friendly value type.
     /// <para>
     /// Pattern:
     /// <code>
-    /// using var __m = SubscribeMeasurement.Start(typeof(TState).Name, _entityId, playerId);
+    /// using var __t = TelemetryScope.Start(...);           // span + log scope + call context
+    /// using var __m = RpcMeasurement.Start(tags, len, __t.Activity);
     /// try { /* business logic */ }
-    /// catch { __m.MarkError(); throw; }
+    /// catch { __m.MarkError(MetaCallErrorKinds.Exception); throw; }
     /// </code>
-    /// On <see cref="IDisposable.Dispose"/>: records duration into the matching histogram,
-    /// increments the count/active-gauge counters with the resolved outcome tag, and stamps
-    /// the activity's result tag before disposing the activity.
+    /// The span belongs to <see cref="TelemetryScope"/>; a measurement only stamps the result on it.
+    /// Per-method tags come from <see cref="MethodTags"/>, so a method disabled for its own series
+    /// is recorded as <c>method="_other"</c> everywhere.
     /// </para>
     /// <para>
-    /// Mutable struct used only on the stack inside one method scope. Do NOT capture across
-    /// async boundaries — the wrapping method body is always synchronous-prologue → single
-    /// await chain → return, so scope is stable.
+    /// Mutable struct used only on the stack inside one method scope — never copied or passed.
     /// </para>
     /// </summary>
     public struct SubscribeMeasurement : IDisposable
@@ -36,199 +36,234 @@ namespace SharedMeta.Server.Core.Telemetry
             _activity = activity;
             _startTimestamp = startTimestamp;
             _stateType = stateType;
-            _result = "success";
+            _result = MetaCallResults.Success;
         }
 
-        public static SubscribeMeasurement Start(string stateType, string entityId, string playerId)
-        {
-            var activity = SharedMetaActivities.Source.StartActivity(SharedMetaActivities.SpanEntitySubscribe);
-            if (activity != null)
-            {
-                activity.SetTag(SharedMetaActivities.TagStateType, stateType);
-                activity.SetTag(SharedMetaActivities.TagEntityId, entityId);
-                activity.SetTag(SharedMetaActivities.TagPlayerId, playerId);
-            }
-            return new SubscribeMeasurement(activity, Stopwatch.GetTimestamp(), stateType);
-        }
+        public static SubscribeMeasurement Start(string stateType, Activity? activity)
+            => new SubscribeMeasurement(activity, Stopwatch.GetTimestamp(), stateType);
 
-        public void MarkError() => _result = "error";
+        public void MarkError() => _result = MetaCallResults.Error;
 
         public void Dispose()
         {
             var elapsed = Stopwatch.GetElapsedTime(_startTimestamp).TotalMilliseconds;
-            SharedMetaMeters.SubscribeDuration.Record(elapsed,
-                new KeyValuePair<string, object?>("state_type", _stateType),
+            var st = new KeyValuePair<string, object?>("state_type", _stateType);
+            SharedMetaMeters.SubscribeDuration.Record(elapsed, st,
                 new KeyValuePair<string, object?>("result", _result));
-            SharedMetaMeters.SubscribeCount.Add(1,
-                new KeyValuePair<string, object?>("state_type", _stateType));
-            if (_result == "success")
-            {
-                SharedMetaMeters.SubscribersActive.Add(1,
-                    new KeyValuePair<string, object?>("state_type", _stateType));
-            }
+            SharedMetaMeters.SubscribeCount.Add(1, st);
+            if (_result == MetaCallResults.Success)
+                SharedMetaMeters.SubscribersActive.Add(1, st);
             _activity?.SetTag(SharedMetaActivities.TagResult, _result);
-            _activity?.Dispose();
         }
     }
 
     /// <summary>
-    /// Measurement wrapper for <c>EntityGrain.HandleCallAsync</c> — entity-rpc span, RPC
-    /// duration histogram (service/method/result), and request-bytes histogram (service/method).
+    /// Entity-grain method body measurement for RPC (<c>RpcDuration</c>, <c>RpcRequestBytes</c>,
+    /// <c>RpcResponseBytes</c>), Query (<c>QueryDuration</c>) and Signal (<c>SignalCount</c>).
     /// </summary>
     public struct RpcMeasurement : IDisposable
     {
         private readonly Activity? _activity;
         private readonly long _startTimestamp;
-        private readonly string _serviceName;
-        private readonly string _methodName;
+        private readonly MethodTags _tags;
+        private readonly Kind _kind;
         private readonly int _payloadLength;
+        private int _responseLength;
         private string _result;
+        private string? _errorKind;
 
-        private RpcMeasurement(Activity? activity, long startTimestamp, string serviceName, string methodName, int payloadLength)
+        private enum Kind : byte { Rpc, Query, Signal }
+
+        private RpcMeasurement(Activity? activity, MethodTags tags, Kind kind, int payloadLength)
         {
             _activity = activity;
-            _startTimestamp = startTimestamp;
-            _serviceName = serviceName;
-            _methodName = methodName;
+            _startTimestamp = Stopwatch.GetTimestamp();
+            _tags = tags;
+            _kind = kind;
             _payloadLength = payloadLength;
-            _result = "success";
+            _responseLength = 0;
+            _result = MetaCallResults.Success;
+            _errorKind = null;
         }
 
-        public static RpcMeasurement Start(string spanName, string serviceName, string methodName, string entityId, string? callerId, int payloadLength)
+        public static RpcMeasurement Start(MethodTags tags, int payloadLength, Activity? activity)
+            => new RpcMeasurement(activity, tags, Kind.Rpc, payloadLength);
+
+        public static RpcMeasurement StartQuery(MethodTags tags, Activity? activity)
+            => new RpcMeasurement(activity, tags, Kind.Query, 0);
+
+        public static RpcMeasurement StartSignal(MethodTags tags, Activity? activity)
+            => new RpcMeasurement(activity, tags, Kind.Signal, 0);
+
+        /// <summary>Flip the result to error; <paramref name="errorKind"/> is a <see cref="MetaCallErrorKinds"/> value.</summary>
+        public void MarkError(string errorKind = MetaCallErrorKinds.Exception)
         {
-            var activity = SharedMetaActivities.Source.StartActivity(spanName);
-            if (activity != null)
-            {
-                activity.SetTag(SharedMetaActivities.TagService, serviceName);
-                activity.SetTag(SharedMetaActivities.TagMethod, methodName);
-                activity.SetTag(SharedMetaActivities.TagEntityId, entityId);
-                if (callerId != null)
-                    activity.SetTag(SharedMetaActivities.TagPlayerId, callerId);
-            }
-            return new RpcMeasurement(activity, Stopwatch.GetTimestamp(), serviceName, methodName, payloadLength);
+            _result = MetaCallResults.Error;
+            _errorKind = errorKind;
         }
 
-        public void MarkError() => _result = "error";
+        /// <summary>Response payload size, recorded into <c>RpcResponseBytes</c> on dispose (RPC only).</summary>
+        public void SetResponseBytes(int length) => _responseLength = length;
 
         public void Dispose()
         {
             var elapsed = Stopwatch.GetElapsedTime(_startTimestamp).TotalMilliseconds;
-            SharedMetaMeters.RpcDuration.Record(elapsed,
-                new KeyValuePair<string, object?>("service", _serviceName),
-                new KeyValuePair<string, object?>("method", _methodName),
-                new KeyValuePair<string, object?>("result", _result));
-            if (_payloadLength > 0)
+            var tags = new TagList { _tags.ServiceTag, _tags.MethodTag };
+
+            switch (_kind)
             {
-                SharedMetaMeters.RpcRequestBytes.Record(_payloadLength,
-                    new KeyValuePair<string, object?>("service", _serviceName),
-                    new KeyValuePair<string, object?>("method", _methodName));
+                case Kind.Rpc:
+                {
+                    var outcome = tags;
+                    outcome.Add(_tags.ModeTag);
+                    outcome.Add("result", _result);
+                    if (_errorKind != null) outcome.Add("error_kind", _errorKind);
+                    SharedMetaMeters.RpcDuration.Record(elapsed, outcome);
+                    if (_payloadLength > 0) SharedMetaMeters.RpcRequestBytes.Record(_payloadLength, tags);
+                    if (_responseLength > 0) SharedMetaMeters.RpcResponseBytes.Record(_responseLength, tags);
+                    break;
+                }
+                case Kind.Query:
+                {
+                    var outcome = tags;
+                    outcome.Add("result", _result);
+                    if (_errorKind != null) outcome.Add("error_kind", _errorKind);
+                    SharedMetaMeters.QueryDuration.Record(elapsed, outcome);
+                    break;
+                }
+                case Kind.Signal:
+                {
+                    var outcome = tags;
+                    outcome.Add("result", _result);
+                    SharedMetaMeters.SignalCount.Add(1, outcome);
+                    break;
+                }
             }
-            _activity?.SetTag(SharedMetaActivities.TagResult, _result);
-            _activity?.Dispose();
+
+            if (_activity != null)
+            {
+                _activity.SetTag(SharedMetaActivities.TagResult, _result);
+                if (_errorKind != null)
+                {
+                    _activity.SetTag(SharedMetaActivities.TagErrorKind, _errorKind);
+                    _activity.SetStatus(ActivityStatusCode.Error);
+                }
+            }
         }
     }
 
     /// <summary>
-    /// Measurement wrapper for cross-entity dispatch (both awaited and OneWay paths). Lands
-    /// in <c>CrossEntityCallDuration</c> / <c>CrossEntityCallCount</c> with a "kind" tag
+    /// Measurement wrapper for cross-entity dispatch on the target grain. Lands in
+    /// <c>CrossEntityCallDuration</c> / <c>CrossEntityCallCount</c> with a "kind" tag
     /// ("normal" vs "notification") for the dual-mode breakdown.
     /// </summary>
     public struct CrossEntityCallMeasurement : IDisposable
     {
         private readonly Activity? _activity;
         private readonly long _startTimestamp;
-        private readonly string _serviceName;
+        private readonly MethodTags _tags;
         private readonly string _kind;
         private string _result;
 
-        private CrossEntityCallMeasurement(Activity? activity, long startTimestamp, string serviceName, string kind)
+        private CrossEntityCallMeasurement(Activity? activity, MethodTags tags, string kind)
         {
             _activity = activity;
-            _startTimestamp = startTimestamp;
-            _serviceName = serviceName;
+            _startTimestamp = Stopwatch.GetTimestamp();
+            _tags = tags;
             _kind = kind;
-            _result = "success";
+            _result = MetaCallResults.Success;
         }
 
-        public static CrossEntityCallMeasurement Start(string serviceName, string methodName, string entityId, string kind)
+        public static CrossEntityCallMeasurement Start(MethodTags tags, string kind, Activity? activity)
         {
-            var activity = SharedMetaActivities.Source.StartActivity(SharedMetaActivities.SpanCrossEntityCall);
-            if (activity != null)
-            {
-                activity.SetTag(SharedMetaActivities.TagService, serviceName);
-                activity.SetTag(SharedMetaActivities.TagMethod, methodName);
-                activity.SetTag(SharedMetaActivities.TagKind, kind);
-                activity.SetTag(SharedMetaActivities.TagEntityId, entityId);
-            }
-            return new CrossEntityCallMeasurement(activity, Stopwatch.GetTimestamp(), serviceName, kind);
+            activity?.SetTag(SharedMetaActivities.TagKind, kind);
+            return new CrossEntityCallMeasurement(activity, tags, kind);
         }
 
-        public void MarkError() => _result = "error";
+        public void MarkError() => _result = MetaCallResults.Error;
 
         public void Dispose()
         {
             var elapsed = Stopwatch.GetElapsedTime(_startTimestamp).TotalMilliseconds;
-            SharedMetaMeters.CrossEntityCallDuration.Record(elapsed,
-                new KeyValuePair<string, object?>("to_service", _serviceName),
-                new KeyValuePair<string, object?>("kind", _kind),
+            var toService = new KeyValuePair<string, object?>("to_service", _tags.ServiceName);
+            var kind = new KeyValuePair<string, object?>("kind", _kind);
+            SharedMetaMeters.CrossEntityCallDuration.Record(elapsed, toService, kind,
                 new KeyValuePair<string, object?>("result", _result));
-            SharedMetaMeters.CrossEntityCallCount.Add(1,
-                new KeyValuePair<string, object?>("to_service", _serviceName),
-                new KeyValuePair<string, object?>("kind", _kind));
-            _activity?.SetTag(SharedMetaActivities.TagResult, _result);
-            _activity?.Dispose();
+            SharedMetaMeters.CrossEntityCallCount.Add(1, toService, kind);
+            if (_activity != null)
+            {
+                _activity.SetTag(SharedMetaActivities.TagResult, _result);
+                if (_result != MetaCallResults.Success) _activity.SetStatus(ActivityStatusCode.Error);
+            }
         }
     }
 
     /// <summary>
-    /// Measurement wrapper for <c>MetaConnectionHandler.RpcCallAsync</c> — end-to-end
-    /// server-side RPC duration histogram (transport entry → SessionManager → grain →
-    /// response). Diff against <c>RpcDuration</c> surfaces queue / hop overhead.
-    /// <para>
-    /// 0.24.0+ Keyed by client-local <c>ushort MethodId</c> only — no service/method name
-    /// resolution on the hot path. Result tag is set via <see cref="MarkRejected"/> /
-    /// <see cref="MarkError"/>; defaults to "success".
-    /// </para>
+    /// End-to-end server-side RPC duration at the transport handler (transport entry →
+    /// SessionManager → grain → response). Diff against <c>RpcDuration</c> surfaces queue /
+    /// hop overhead. Tagged by server-resolved <c>service</c> / <c>method</c> (stable across
+    /// client builds); set via <see cref="SetMethod"/> once the client id is translated —
+    /// a call rejected before that is tagged <c>_unknown</c>.
     /// </summary>
     public struct ServerRpcTotalMeasurement : IDisposable
     {
         private readonly long _startTimestamp;
-        private readonly ushort _methodId;
+        private MethodTags _tags;
         private string _result;
+        private string? _errorKind;
 
-        private ServerRpcTotalMeasurement(long startTimestamp, ushort methodId)
+        private ServerRpcTotalMeasurement(long startTimestamp)
         {
             _startTimestamp = startTimestamp;
-            _methodId = methodId;
-            _result = "success";
+            _tags = MethodTags.UnknownMethod;
+            _result = MetaCallResults.Success;
+            _errorKind = null;
         }
 
-        public static ServerRpcTotalMeasurement Start(ushort methodId)
-            => new ServerRpcTotalMeasurement(Stopwatch.GetTimestamp(), methodId);
+        public static ServerRpcTotalMeasurement Start()
+            => new ServerRpcTotalMeasurement(Stopwatch.GetTimestamp());
 
-        public void MarkError() => _result = "error";
-        public void MarkRejected() => _result = "rejected";
-        public void MarkBadRequest() => _result = "bad_request";
+        public void SetMethod(MethodTags tags) => _tags = tags;
+
+        public string Result => _result;
+        public string? ErrorKind => _errorKind;
+        public double ElapsedMs => Stopwatch.GetElapsedTime(_startTimestamp).TotalMilliseconds;
+
+        public void MarkError(string errorKind = MetaCallErrorKinds.Exception)
+        {
+            _result = MetaCallResults.Error;
+            _errorKind = errorKind;
+        }
+
+        public void MarkRejected(string errorKind = MetaCallErrorKinds.Rejected)
+        {
+            _result = MetaCallResults.Rejected;
+            _errorKind = errorKind;
+        }
+
+        public void MarkBadRequest()
+        {
+            _result = MetaCallResults.BadRequest;
+            _errorKind = MetaCallErrorKinds.BadRequest;
+        }
 
         public void Dispose()
         {
-            var elapsed = Stopwatch.GetElapsedTime(_startTimestamp).TotalMilliseconds;
-            SharedMetaMeters.ServerRpcTotalDuration.Record(elapsed,
-                new KeyValuePair<string, object?>("method_id", _methodId),
-                new KeyValuePair<string, object?>("result", _result));
+            var tags = new TagList { _tags.ServiceTag, _tags.MethodTag, { "result", _result } };
+            if (_errorKind != null) tags.Add("error_kind", _errorKind);
+            SharedMetaMeters.ServerRpcTotalDuration.Record(ElapsedMs, tags);
         }
     }
 
     /// <summary>
-    /// Measurement wrapper for <c>MetaConnectionHandler.SessionConnectAsync</c>: starts the
-    /// <c>SpanSessionConnect</c> activity, records the connect-handshake duration histogram,
-    /// and bumps the active-session gauge when the outcome is success.
+    /// Measurement wrapper for <c>MetaConnectionHandler.SessionConnectAsync</c>: records the
+    /// connect-handshake duration histogram and bumps the active-session gauge when the outcome
+    /// is success.
     /// <para>
     /// Outcome tag is set via <see cref="MarkResult"/> with one of
     /// <c>success | needs_signature_registration | rejected | error</c>; defaults to
     /// <c>rejected</c> so an early-return without an explicit mark surfaces as a rejected
-    /// session (which is what the original inline tracking inferred from a null/Success=false
-    /// response).
+    /// session.
     /// </para>
     /// </summary>
     public struct SessionConnectMeasurement : IDisposable
@@ -244,12 +279,8 @@ namespace SharedMeta.Server.Core.Telemetry
             _result = "rejected";
         }
 
-        public static SessionConnectMeasurement Start(string playerId)
-        {
-            var activity = SharedMetaActivities.Source.StartActivity(SharedMetaActivities.SpanSessionConnect);
-            activity?.SetTag(SharedMetaActivities.TagPlayerId, playerId);
-            return new SessionConnectMeasurement(activity, Stopwatch.GetTimestamp());
-        }
+        public static SessionConnectMeasurement Start(Activity? activity)
+            => new SessionConnectMeasurement(activity, Stopwatch.GetTimestamp());
 
         /// <summary>Set the outcome tag — one of <c>success | needs_signature_registration | rejected | error</c>.</summary>
         public void MarkResult(string result) => _result = result;
@@ -262,16 +293,13 @@ namespace SharedMeta.Server.Core.Telemetry
             if (_result == "success")
                 MetricEvents.Session.Started();
             _activity?.SetTag(SharedMetaActivities.TagResult, _result);
-            _activity?.Dispose();
         }
     }
 
     /// <summary>
     /// Measurement wrapper for <c>EntityGrain.PersistIfNeededImpl</c> — duration histogram
     /// keyed by state-type plus the span. No success/error split since write failures
-    /// already escalate via the IPersistentState
-    /// pipeline. Single-tag, single-sink, but bundled into a disposable for consistency
-    /// with the other grain measurements.
+    /// already escalate via the IPersistentState pipeline.
     /// </summary>
     public struct PersistenceWriteMeasurement : IDisposable
     {

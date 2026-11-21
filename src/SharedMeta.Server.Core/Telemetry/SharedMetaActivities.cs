@@ -12,16 +12,12 @@ namespace SharedMeta.Server.Core.Telemetry
     ///         .AddJaegerExporter());
     /// </code>
     /// <para>
-    /// Activities form a parent/child tree through in-process <c>Activity.Current</c>
-    /// propagation: a top-level <c>rpc</c> span on <see cref="MetaConnectionHandler"/>
-    /// nests <c>entity.rpc</c> on the grain, which nests <c>cross_entity.call</c> spans
-    /// for each <c>GetIService(id).Method(...)</c> hop. Trace context survives cross-grain
-    /// hops automatically because Orleans preserves <see cref="System.Threading.ExecutionContext"/>.
-    /// </para>
-    /// <para>
-    /// Wire-level trace propagation from client to server (W3C <c>traceparent</c>) is NOT yet
-    /// implemented — adding it requires extending the RPC envelope shape, planned as a separate
-    /// follow-up. Client-side and server-side traces are independent for now.
+    /// Span tree of one client call: <c>server.*</c> on the transport handler (parent = the
+    /// client's <c>traceparent</c> when it sent one) → <c>entity.*</c> on the entity grain →
+    /// <c>cross_entity.call</c> per cross-entity hop. The session grain in between logs under the
+    /// handler's span without one of its own. Parents travel in <c>RpcCall.TraceParent</c>
+    /// (subscribe: <see cref="MetaCallContextPropagation"/>), so no Orleans activity propagation
+    /// is needed. The trace id is also the <c>CallId</c> in every log scope of the call.
     /// </para>
     /// </summary>
     public static class SharedMetaActivities
@@ -29,13 +25,21 @@ namespace SharedMeta.Server.Core.Telemetry
         /// <summary>OpenTelemetry source name. Host opt-in via <c>AddSource(SourceName)</c>.</summary>
         public const string SourceName = "SharedMeta";
 
-        /// <summary>Source version — drives the version dimension on exported spans.</summary>
-        public const string SourceVersion = "0.23.0";
+        /// <summary>Source version (the SharedMeta assembly version) — drives the version dimension on exported spans.</summary>
+        public static readonly string SourceVersion = SharedMetaMeters.MeterVersion;
 
         /// <summary>Shared <see cref="ActivitySource"/> instance — single allocation per process.</summary>
         public static readonly ActivitySource Source = new(SourceName, SourceVersion);
 
         // ── Span names (constants — used as Activity name argument) ─────────────────
+
+        public const string SpanServerRpc            = "sharedmeta.server.rpc";
+        public const string SpanServerQuery          = "sharedmeta.server.query";
+        public const string SpanServerSignal         = "sharedmeta.server.signal";
+        public const string SpanServerSubscribe      = "sharedmeta.server.subscribe";
+        public const string SpanServerUnsubscribe    = "sharedmeta.server.unsubscribe";
+        public const string SpanServerDesyncReport   = "sharedmeta.server.desync_report";
+        public const string SpanSessionCall          = "sharedmeta.session.call";
 
         public const string SpanSessionConnect       = "sharedmeta.session.connect";
         public const string SpanEntitySubscribe      = "sharedmeta.entity.subscribe";
@@ -61,5 +65,8 @@ namespace SharedMeta.Server.Core.Telemetry
         public const string TagFanOutSize            = "sharedmeta.fan_out_size";
         public const string TagPayloadBytes          = "sharedmeta.payload_bytes";
         public const string TagForcePatchServices    = "sharedmeta.force_patch_services_count";
+        public const string TagOp                    = "sharedmeta.op";
+        public const string TagRequestId             = "sharedmeta.request_id";
+        public const string TagErrorKind             = "sharedmeta.error_kind";
     }
 }

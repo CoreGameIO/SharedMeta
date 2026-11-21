@@ -33,8 +33,9 @@ public class TestClientSetup : IAsyncDisposable
         IDesyncDiagnostics? diagnostics = null,
         IExecutionModeProvider? modeProvider = null,
         string? clientAppVersion = null,
-        MetaClientSignature? clientSignature = null)
-        : this(server.CreateConnection(), playerId, diagnostics, modeProvider, clientAppVersion, clientSignature)
+        MetaClientSignature? clientSignature = null,
+        SharedMeta.Client.Telemetry.MetaClientTelemetryOptions? telemetry = null)
+        : this(server.CreateConnection(), playerId, diagnostics, modeProvider, clientAppVersion, clientSignature, telemetry)
     {
     }
 
@@ -43,7 +44,8 @@ public class TestClientSetup : IAsyncDisposable
         IDesyncDiagnostics? diagnostics = null,
         IExecutionModeProvider? modeProvider = null,
         string? clientAppVersion = null,
-        MetaClientSignature? clientSignature = null)
+        MetaClientSignature? clientSignature = null,
+        SharedMeta.Client.Telemetry.MetaClientTelemetryOptions? telemetry = null)
     {
         diagnostics ??= new TestDesyncDiagnostics(_issues);
 
@@ -63,7 +65,8 @@ public class TestClientSetup : IAsyncDisposable
                 // 0.24.0+ Wire the generated client signature so the session handshake
                 // exercises the same negotiation path production clients use, and so the
                 // server can produce per-method MethodId translation maps.
-                ClientSignature = clientSignature ?? SharedMeta.Test.Meta1.GameServiceDiscoveryBase.ClientSignature
+                ClientSignature = clientSignature ?? SharedMeta.Test.Meta1.GameServiceDiscoveryBase.ClientSignature,
+                Telemetry = telemetry ?? new SharedMeta.Client.Telemetry.MetaClientTelemetryOptions(),
             }
         );
 

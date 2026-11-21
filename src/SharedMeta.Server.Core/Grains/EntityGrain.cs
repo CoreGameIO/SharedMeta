@@ -119,8 +119,10 @@ namespace SharedMeta.Server.Core.Grains
             MetaServerSignature serverSignature,
             IExecutionModeProvider? executionModeProvider = null,
             IConfigVersionResolver? configVersionResolver = null,
-            IClientSignatureRegistry? signatureRegistry = null)
+            IClientSignatureRegistry? signatureRegistry = null,
+            SharedMeta.Server.Core.Telemetry.SharedMetaTelemetry? telemetry = null)
         {
+            _telemetry = telemetry ?? SharedMeta.Server.Core.Telemetry.SharedMetaTelemetry.Default;
             _persistentState = persistentState ?? throw new ArgumentNullException(nameof(persistentState));
             _subscribersState = subscribersState ?? throw new ArgumentNullException(nameof(subscribersState));
             _providerFactory = providerFactory ?? throw new ArgumentNullException(nameof(providerFactory));
@@ -137,6 +139,31 @@ namespace SharedMeta.Server.Core.Grains
         // ConfigBoundaries + service-to-config bindings. Null = host hasn't wired
         // MetaServerSignature in DI; Subscribe emits no per-entity capability overlay.
         private readonly MetaServerSignature _serverSignature;
+
+        private readonly SharedMeta.Server.Core.Telemetry.SharedMetaTelemetry _telemetry;
+
+        private SharedMeta.Server.Core.Telemetry.MethodTags TagsOf(ushort methodId)
+            => _telemetry.GetTags(_serverSignature, methodId);
+
+        /// <summary>
+        /// Opens this grain hop's telemetry: span child of the incoming trace (the call's
+        /// TraceParent; the request context on the subscribe path; a fresh trace for calls with
+        /// none — ServerApi, timers), call context, log scope. Cross-entity calls made inside read
+        /// the hop's trace from <c>MetaCallContext.Current</c> into their own RpcCall.
+        /// </summary>
+        private SharedMeta.Server.Core.Telemetry.TelemetryScope StartHop(
+            string spanName, string op, SharedMeta.Server.Core.Telemetry.MethodTags? tags, string? callerId,
+            string? traceParent)
+            => SharedMeta.Server.Core.Telemetry.TelemetryScope.Start(
+                spanName, System.Diagnostics.ActivityKind.Internal,
+                SharedMeta.Server.Core.Telemetry.TelemetryScope.ResolveIncoming(traceParent),
+                _logger, _telemetry.Options.LogScopes,
+                op,
+                playerId: callerId,
+                entityId: _entityId,
+                stateType: typeof(TState).Name,
+                service: tags?.ServiceName,
+                method: tags?.MethodName);
 
         public override async Task OnActivateAsync(CancellationToken cancellationToken)
         {
@@ -280,7 +307,9 @@ namespace SharedMeta.Server.Core.Grains
 
         public async Task<EntitySnapshot> SubscribeAsync(string playerId, ISessionManagerReference sessionManager, string? clientVersion = null, ulong clientSignatureHash = 0)
         {
-            using var __m = SharedMeta.Server.Core.Telemetry.SubscribeMeasurement.Start(typeof(TState).Name, _entityId, playerId);
+            using var __t = StartHop(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanEntitySubscribe,
+                SharedMeta.Core.Diagnostics.MetaCallOps.Subscribe, null, playerId, null);
+            using var __m = SharedMeta.Server.Core.Telemetry.SubscribeMeasurement.Start(typeof(TState).Name, __t.Activity);
             try
             {
             // Access policy check
@@ -825,9 +854,10 @@ namespace SharedMeta.Server.Core.Grains
             var callServiceName = sigEntry?.ServiceName ?? string.Empty;
             var callMethodName = sigEntry?.Alias ?? string.Empty;
 
-            using var __m = SharedMeta.Server.Core.Telemetry.RpcMeasurement.Start(
-                SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanEntityRpc,
-                callServiceName, callMethodName, _entityId, call.CallerId, call.Payload.Length);
+            var tags = TagsOf(call.MethodId);
+            using var __t = StartHop(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanEntityRpc,
+                SharedMeta.Core.Diagnostics.MetaCallOps.Rpc, tags, call.CallerId, call.TraceParent);
+            using var __m = SharedMeta.Server.Core.Telemetry.RpcMeasurement.Start(tags, call.Payload.Length, __t.Activity);
 
             var state = _persistentState.State;
             var operationSequence = ++state.EntitySequenceNumber;
@@ -878,6 +908,9 @@ namespace SharedMeta.Server.Core.Grains
                 if (providerResult.Error != null)
                 {
                     failed = true;
+                    __m.MarkError(providerResult.Rejected
+                        ? SharedMeta.Core.Diagnostics.MetaCallErrorKinds.Rejected
+                        : SharedMeta.Core.Diagnostics.MetaCallErrorKinds.ProviderError);
                     // The caller takes the resync from its response, not from the fan-out.
                     var (sequence, opBytes) = await SettleFailedCallAsync(
                         call, providerResult.Error, providerResult.Rejected, operationSequence, responsePayload,
@@ -899,6 +932,7 @@ namespace SharedMeta.Server.Core.Grains
                     callServiceName, callMethodName, call.MethodId,
                     operationSequence, excludePlayerId: call.CallerId);
 
+                __m.SetResponseBytes(responsePayload.Length);
                 return new EntityCallResult
                 {
                     EntitySequenceNumber = operationSequence,
@@ -910,7 +944,9 @@ namespace SharedMeta.Server.Core.Grains
             }
             catch (Exception ex)
             {
-                __m.MarkError();
+                __m.MarkError(MetaProviderBase<TState>.IsRejection(ex)
+                    ? SharedMeta.Core.Diagnostics.MetaCallErrorKinds.Rejected
+                    : SharedMeta.Core.Diagnostics.MetaCallErrorKinds.Exception);
                 _logger.ErrorHandlingCall(ex);
                 failed = true;
                 // Reaches here only from outside the provider's own catch — a permission gate in
@@ -1005,8 +1041,10 @@ namespace SharedMeta.Server.Core.Grains
 
             // kind="normal" splits the awaited cross-entity path from the [OneWay] notification
             // path (kind="notification") in the same histogram.
-            using var __m = SharedMeta.Server.Core.Telemetry.CrossEntityCallMeasurement.Start(
-                callServiceName, callMethodName, _entityId, "normal");
+            var tags = TagsOf(call.MethodId);
+            using var __t = StartHop(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanCrossEntityCall,
+                SharedMeta.Core.Diagnostics.MetaCallOps.CrossEntity, tags, call.CallerId, call.TraceParent);
+            using var __m = SharedMeta.Server.Core.Telemetry.CrossEntityCallMeasurement.Start(tags, "normal", __t.Activity);
 
             var state = _persistentState.State;
             var operationSequence = ++state.EntitySequenceNumber;
@@ -1047,6 +1085,7 @@ namespace SharedMeta.Server.Core.Grains
                 if (providerResult.Error != null)
                 {
                     failed = true;
+                    __m.MarkError();
                     // No exclusion: a CrossOptimistic originator inlined this call as a success,
                     // and no client response carries the resync here.
                     var (sequence, _) = await SettleFailedCallAsync(
@@ -1137,12 +1176,19 @@ namespace SharedMeta.Server.Core.Grains
             // MetaProviderBase.HandleQueryAsync. EntityGrain just routes. 0.24.0+ RpcCall
             // carries only MethodId; the MetaConnectionHandler already translated client→server
             // and rejected unknown ids before reaching the grain.
+            var tags = TagsOf(call.MethodId);
+            using var __t = StartHop(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanEntityQuery,
+                SharedMeta.Core.Diagnostics.MetaCallOps.Query, tags, call.CallerId, call.TraceParent);
+            using var __m = SharedMeta.Server.Core.Telemetry.RpcMeasurement.StartQuery(tags, __t.Activity);
             try
             {
-                return await _provider.HandleQueryAsync(call);
+                var response = await _provider.HandleQueryAsync(call);
+                if (response.Error != null) __m.MarkError(SharedMeta.Core.Diagnostics.MetaCallErrorKinds.ProviderError);
+                return response;
             }
             catch (Exception ex)
             {
+                __m.MarkError();
                 _logger.ErrorHandlingCall(ex);
                 return new QueryCallResponse { Error = ex.Message };
             }
@@ -1161,12 +1207,19 @@ namespace SharedMeta.Server.Core.Grains
             if (_provider is MetaProviderBase<TState> mpbOwner)
                 mpbOwner.OwnerClientVersion = ResolveOwnerClientVersion();
 
+            var tags = TagsOf(call.MethodId);
+            using var __t = StartHop(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanEntityQuery,
+                SharedMeta.Core.Diagnostics.MetaCallOps.CrossEntity, tags, call.CallerId, call.TraceParent);
+            using var __m = SharedMeta.Server.Core.Telemetry.CrossEntityCallMeasurement.Start(tags, "query", __t.Activity);
             try
             {
-                return await _provider.HandleQueryFromEntityAsync(call);
+                var response = await _provider.HandleQueryFromEntityAsync(call);
+                if (response.Error != null) __m.MarkError();
+                return response;
             }
             catch (Exception ex)
             {
+                __m.MarkError();
                 _logger.ErrorHandlingCrossEntityCall(ex);
                 return new QueryCallResponse { Error = ex.Message };
             }
@@ -1184,7 +1237,19 @@ namespace SharedMeta.Server.Core.Grains
             // CheckAccessAsync) validation lives inside MetaProviderBase.HandleSignalAsync.
             // Fire-and-forget by contract: provider errors are logged and swallowed there.
             // 0.24.0+ RpcCall carries only MethodId; MetaConnectionHandler resolved the wire id.
-            await _provider.HandleSignalAsync(call);
+            var tags = TagsOf(call.MethodId);
+            using var __t = StartHop(SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanEntitySignal,
+                SharedMeta.Core.Diagnostics.MetaCallOps.Signal, tags, call.CallerId, call.TraceParent);
+            using var __m = SharedMeta.Server.Core.Telemetry.RpcMeasurement.StartSignal(tags, __t.Activity);
+            try
+            {
+                await _provider.HandleSignalAsync(call);
+            }
+            catch
+            {
+                __m.MarkError();
+                throw;
+            }
         }
 
         public Task<byte[]?> GetEntityStateAsync()
@@ -1329,7 +1394,7 @@ namespace SharedMeta.Server.Core.Grains
             if (!byMethod && !byService) return false;
 
             SharedMeta.Server.Core.Telemetry.MetricEvents.Compat.ForcePatchApplied(
-                serviceName, methodName, byService ? "service" : "method");
+                TagsOf(methodId), byService ? "service" : "method");
             return true;
         }
 
@@ -1446,6 +1511,7 @@ namespace SharedMeta.Server.Core.Grains
                 CallerClientVersion = callerClientVersion,
                 CallerId = callerId,
                 IsCrossOptimistic = isCrossOptimistic,
+                TraceParent = SharedMeta.Core.Diagnostics.MetaCallContext.Current?.Trace.ToTraceParent(),
             });
 
             if (result.HasError)
@@ -1501,6 +1567,7 @@ namespace SharedMeta.Server.Core.Grains
                 ServerTimeTicks = serverTimeTicks,
                 CallerClientVersion = callerCtx?.CallerClientVersion ?? _configVersionResolver?.CurrentClientVersion,
                 CallerId = callerCtx?.CallerId,
+                TraceParent = SharedMeta.Core.Diagnostics.MetaCallContext.Current?.Trace.ToTraceParent(),
             });
 
             if (!result.Success)
@@ -1557,6 +1624,7 @@ namespace SharedMeta.Server.Core.Grains
                 CallerClientVersion = callerClientVersion,
                 CallerId = callerId,
                 IsCrossOptimistic = isCrossOptimistic,
+                TraceParent = SharedMeta.Core.Diagnostics.MetaCallContext.Current?.Trace.ToTraceParent(),
             });
         }
 

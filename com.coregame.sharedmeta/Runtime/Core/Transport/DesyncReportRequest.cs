@@ -43,6 +43,11 @@ namespace SharedMeta.Core.Transport
         [Id(8), Key(8)] public long ServerRandomDelta { get; set; }
         /// <summary>Local random scroll delta (Random mismatch only).</summary>
         [Id(9), Key(9)] public long LocalRandomDelta { get; set; }
+        /// <summary>
+        /// <c>traceparent</c> of the RPC that desynced, so the report lands in the same call as
+        /// the original request's server logs.
+        /// </summary>
+        [Id(10), Key(10)] public string? TraceParent { get; set; }
     }
 
     /// <summary>

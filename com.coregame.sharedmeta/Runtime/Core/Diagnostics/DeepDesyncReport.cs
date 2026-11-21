@@ -39,6 +39,8 @@ namespace SharedMeta.Core.Diagnostics
         [Id(15), Key(15)] public long ServerRandomDelta { get; set; }
         /// <summary>Local random scroll delta (Random mismatch only).</summary>
         [Id(16), Key(16)] public long LocalRandomDelta { get; set; }
+        /// <summary>Call id (W3C trace id) of the RPC that desynced; empty when the client sent none.</summary>
+        [Id(17), Key(17)] public string CallId { get; set; } = "";
     }
 
     /// <summary>

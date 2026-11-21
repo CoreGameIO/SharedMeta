@@ -15,6 +15,7 @@ Framework for shared game meta-logic between Client and Server with deterministi
 - **Resilient sync** — subscriptions survive entity deactivation, reconnect and session loss re-install server state, and a method failing on the server resyncs every client instead of stalling them
 - **Pluggable transport** — SignalR, HTTP polling, in-process (testing)
 - **Pluggable serialization** — MemoryPack, MessagePack
+- **Observability** — call id shared by client and server logs, OpenTelemetry metrics and traces, opt-in per-method metrics, call observers for analytics
 
 ## Installation
 

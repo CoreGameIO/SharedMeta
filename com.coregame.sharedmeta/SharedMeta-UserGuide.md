@@ -57,6 +57,12 @@ attribute and an unbuildable project.**
 | `HAS_BESTHTTP` | `SharedMeta.Transport.BestHttp` | UPM package `com.tivadar.besthttp` is present |
 | `HAS_SIGNALR` | `SharedMeta.Transport.SignalR.Client` | **never — always set it by hand** |
 | `HAS_MEL` | real `Microsoft.Extensions.Logging.Abstractions` instead of the bundled logging shim | UPM package `org.nuget.microsoft.extensions.logging.abstractions` is present |
+| `SHAREDMETA_CLIENT_TELEMETRY` | client `Meter` / `ActivitySource` (`SharedMeta.Client`), joining `Activity.Current` traces | UPM package `org.nuget.system.diagnostics.diagnosticsource` is present |
+
+**Call ids.** Every API call gets a call id (W3C trace id) that the server logs under too — client
+errors, desync reports and failed optimistic sends print `call=<id>`; search the server logs for the
+same id. For analytics without DiagnosticSource set `MetaClientOptions.Telemetry.CallObserver`
+(`IMetaClientCallObserver`: wire time, result and call id per call).
 
 **Logging.** SharedMeta logs through `Microsoft.Extensions.Logging.ILogger` (`MetaLog.SetLogger(ILogger)`,
 `Context.Log`). Without the real package the UPM ships a minimal, source-compatible shim

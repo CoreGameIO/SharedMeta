@@ -30,6 +30,8 @@ namespace SharedMeta.Client
         // 0.26.6+ piggybacked debug-channel data (PayloadDebug); carries deep-state CRCs
         // for methods annotated [MetaMethod(DeepStateCheck = SnapshotTiming.X)].
         public SharedMeta.Core.PayloadDebug? Debug { get; init; }
+        // Captured when the call is issued — resends after a reconnect keep the original call id.
+        public string? TraceParent { get; init; }
         public TaskCompletionSource<SessionOp> Tcs { get; } = new();
         public DateTime CreatedAt { get; } = DateTime.UtcNow;
     }
@@ -362,7 +364,10 @@ namespace SharedMeta.Client
                     Payload = payloadBytes,
                     IsCrossOptimistic = call.IsCrossOptimistic,
                     ServerTimeTicks = call.ServerTimeTicks,
-                    Debug = call.Debug
+                    Debug = call.Debug,
+                    // Read synchronously: the generated API client set the call context on
+                    // this flow just before handing the call over.
+                    TraceParent = SupportsTraceContext ? SharedMeta.Core.Diagnostics.MetaCallScope.CurrentTraceParent() : null,
                 };
                 _pendingRequests[requestId] = pending;
             }
@@ -490,6 +495,9 @@ namespace SharedMeta.Client
         /// exactly the calls the server will also have hashed.
         /// </summary>
         public bool DeepDesyncActive { get; private set; }
+
+        /// <inheritdoc />
+        public bool SupportsTraceContext { get; private set; }
 
         /// <summary>
         /// Permissions the server reported for this player, or null while unknown (no store wired,
@@ -619,6 +627,7 @@ namespace SharedMeta.Client
             // consumer wired a ClientSignature — opted-out clients stay annotation-less.
             Annotated = result.Annotated;
             DeepDesyncActive = result.DeepDesyncActive;
+            SupportsTraceContext = result.SupportsTraceContext;
             // Assigned rather than routed through ApplyPermissions: a reconnect can legitimately
             // hand back a lower generation (different silo, restored state), and the connect answer
             // is authoritative for the session it opens.
@@ -1486,6 +1495,7 @@ namespace SharedMeta.Client
             // Session-scoped like the annotation: the next connect re-resolves it, and until then
             // there is no session whose verdict this could be.
             DeepDesyncActive = false;
+            SupportsTraceContext = false;
 
             // Drop pending RPCs — they were bound to the old session and cannot be retried
             // there. Game logic catches SessionLostException on the call sites that care.
@@ -1692,7 +1702,8 @@ namespace SharedMeta.Client
             LastAcknowledgedSequence = _lastAcknowledgedSequence,
             IsCrossOptimistic = pending.IsCrossOptimistic,
             ServerTimeTicks = pending.ServerTimeTicks,
-            Debug = pending.Debug
+            Debug = pending.Debug,
+            TraceParent = pending.TraceParent,
         };
 
         /// <summary>

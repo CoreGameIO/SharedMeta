@@ -4756,6 +4756,7 @@ The runtime ignores the attribute. It is purely a marker for downstream tooling.
 | `[Tracked]` | Field | Push-based change tracking property for UI binding (client-only) |
 | `[Trigger]` | Method | Auto-execute after condition on another method |
 | `[MetaMethod(ReplayEvents = ...)]` | Method | Client-side UI events around an incoming broadcast: `On{Method}_Replaying` (before local state changes) / `On{Method}_Replayed` (after). Opt-in; default `None`. (0.41.0+) |
+| `[MetaMethod(Metrics = ...)]` / `[MetaService(Metrics = ...)]` | Method / Interface | Own metric series for the method (`MetaMetrics.On` / `Off`); others fold into `method="_other"`. Host `MetaTelemetryOptions` decides the default. Not in any signature hash. (0.47.0+) |
 | `[RequirePermission]` | Method / Interface | Account-level entitlement required to call (server-enforced). (0.42.0+) |
 | `[DeclaredPermissions]` | Assembly | Permission names this game recognizes; validates `[RequirePermission]`. (0.42.0+) |
 | `[ServerMetaService]` | Interface | Server-only service (generates replayer) |
@@ -4968,8 +4969,16 @@ On Unity hosts the same `Meter` / `ActivitySource` is reachable via `MeterListen
 | `sharedmeta.entity.subscribe.duration` | Histogram (ms) | `state_type`, `result` | Includes grain activation when cold |
 | `sharedmeta.entity.subscribe.count` | Counter | `state_type` | Subscribe events |
 | `sharedmeta.entity.subscribers.active` | UpDownCounter | `state_type` | Currently subscribed player-entity pairs |
-| `sharedmeta.entity.rpc.duration` | Histogram (ms) | `service`, `method`, `result` | Per-method server processing |
-| `sharedmeta.entity.rpc.request_bytes` | Histogram (bytes) | `service`, `method` | Incoming payload size |
+| `sharedmeta.entity.rpc.duration` | Histogram (ms) | `service`, `method`, `mode`, `result`, `error_kind` | Per-method server processing |
+| `sharedmeta.entity.rpc.request_bytes` / `response_bytes` | Histogram (bytes) | `service`, `method` | Payload sizes |
+| `sharedmeta.entity.query.duration` | Histogram (ms) | `service`, `method`, `result` | Query methods |
+| `sharedmeta.entity.signal.count` | Counter | `service`, `method`, `result` | Signal methods |
+| `sharedmeta.server.rpc.total_duration` | Histogram (ms) | `service`, `method`, `result`, `error_kind` | Transport entry → response; diff with `entity.rpc.duration` = queue + hops |
+| `sharedmeta.compat.method_rejected.count` | Counter | `service`, `method`, `reason` | Capability gate refusals |
+| `sharedmeta.desync.detected` | Counter | `service`, `method`, `kind` | Client desync reports — counted even with `DesyncReportingEnabled` off |
+| `sharedmeta.rpc.out_of_order.stashed` / `.drain_wait` | Counter / Histogram (ms) | — | Server RPC ordering buffer |
+| `sharedmeta.transport.requests` / `.request.duration` | Counter / Histogram (ms) | `transport`, `endpoint`, `result` | Opt-in (`TransportMetrics`): hub methods and HTTP endpoints |
+| `sharedmeta.auth.requests` | Counter | `endpoint`, `provider`, `result` | Opt-in (`TransportMetrics`) |
 | `sharedmeta.cross_entity.call.duration` | Histogram (ms) | `to_service`, `kind`, `result` | Cross-entity hops |
 | `sharedmeta.cross_entity.call.count` | Counter | `to_service`, `kind` | `kind = normal | notification` |
 | `sharedmeta.broadcast.fan_out_size` | Histogram | `state_type` | Subscribers per broadcast |
@@ -4986,19 +4995,74 @@ Plus the standard runtime instrumentation (GC, ThreadPool, JIT) provided by `Ope
 
 `service`, `method`, `state_type`, `kind`, `result`, `reason` are all schema-bounded. Typical project: 5–20 services × 5–30 methods + a handful of state types = 100–600 unique series total. Entity IDs are NOT used as metric tags — they go on `Activity` tags instead (no aggregation cost there).
 
+Per-method series are opt-in (0.47.0+): a method without its own series is recorded under `method="_other"` of its service, so totals and error rates stay complete. See [Per-method metrics](#per-method-metrics-0470).
+
 #### Distributed tracing
 
-Server-side spans nest naturally via in-process `Activity.Current` propagation through Orleans grain calls:
+The span tree of one client call (0.47.0+) — the trace crosses grain calls inside `RpcCall.TraceParent` (subscribe: Orleans `RequestContext`), no Orleans activity propagation needed. The session grain is a pass-through hop with a log scope but no span:
 
 ```
-sharedmeta.session.connect
-sharedmeta.entity.subscribe   [state_type=ProfileState, player=p1]
-sharedmeta.entity.rpc         [service=IProfileService, method=GainPoints]
-└─ sharedmeta.cross_entity.call [to=IClanService, kind=normal]
+sharedmeta.server.rpc            [ActivityKind.Server, parent = client traceparent]
+└─ sharedmeta.entity.rpc         [service=IProfileService, method=GainPoints]
+   └─ sharedmeta.cross_entity.call [service=IClanService, kind=normal]
 sharedmeta.persistence.write
 ```
 
-Client → server wire-level W3C trace propagation (i.e., `traceparent` on `RpcCallRequest`) is **not yet implemented** — client and server traces are independent for now. Planned follow-up.
+#### Call context and log correlation (0.47.0+)
+
+Every call carries a **call id — the W3C trace id**. The generated API client starts it before the local (optimistic) body runs and sends it as `TraceParent` on Rpc / Query / Signal / DesyncReport requests (Rpc and Signal only once the server announced `SupportsTraceContext`). On the server every hop — transport handler, session grain (stashed out-of-order calls keep their own id), entity grain, cross-entity hops — opens an `ILogger` scope:
+
+| Field | Value |
+|---|---|
+| `CallId` | trace id (32 hex), same on client and server |
+| `SpanId` | this hop's span |
+| `PlayerId`, `SessionId`, `ClientRequestId` | caller identity (`ClientRequestId` = per-session request number; ASP.NET already uses `RequestId`) |
+| `EntityId`, `StateType`, `Service`, `Method`, `Op` | target |
+
+`Context.Log` in service code and every framework log inherit the scope. Service code reads it as `Context.Call` (tag business events with `Context.Call?.CallId`). Calls with no client behind them (`*ServerApi`, timers) get a fresh id, or the host's `Activity.Current`.
+
+Sinks must render scopes: Serilog — `Enrich.FromLogContext()` plus `{Properties:j}` (or a JSON formatter); `Microsoft.Extensions.Logging.Console` — `IncludeScopes = true` / JSON console. Disable per-hop scopes with `MetaTelemetryOptions.LogScopes = false`.
+
+Client logs: errors, desync reports and failed optimistic sends carry `call=<CallId>`; a .NET client with real M.E.L. also gets the scope on `MetaLog.Logger`. With OpenTelemetry on a .NET client, calls join `Activity.Current`.
+
+Framework `[LoggerMessage]` events have stable `EventId` / `EventName` (1xxx session, 2xxx entity, 3xxx persistence, 4xxx transport, 5xxx Orleans, 6xxx debug, 9xxx analytics).
+
+#### Per-method metrics (0.47.0+)
+
+```csharp
+// Web host AND silo container (when they are separate DI graphs).
+services.AddSharedMetaTelemetry(o =>
+{
+    o.MethodMetrics = MethodMetricsMode.Annotated;    // Off | Annotated (default) | All
+    o.IncludeMethods.Add("IShopService.*");           // "Svc.Method" | "Svc.*" | "*"
+    o.ExcludeMethods.Add("IChatService.Typing");      // wins over Include
+    o.TransportMetrics = true;                        // hub + HTTP endpoint metrics (startup-only)
+    o.AcceptClientTraceContext = true;                // false: server starts its own traces
+    o.LogScopes = true;
+    o.AnalyticsLog = false;                           // see Analytics hooks
+});
+```
+
+```csharp
+[MetaService(StateType = typeof(ShopState), Metrics = MetaMetrics.On)]   // default for the service
+public interface IShopService : IMetaService
+{
+    [MetaMethod(Mode = ExecutionMode.Server)] Task Buy(int itemId);      // inherits On
+    [MetaMethod(Metrics = MetaMetrics.Off)] void Ping();                 // folded into _other
+}
+```
+
+`Metrics` is not part of any signature hash — changing it never invalidates client compatibility. `generated ConfigureMeta()` calls `AddSharedMetaTelemetry()` itself; a hand-built `MetaConnectionHandlerFactory` must pass `telemetry: sp.GetService<SharedMetaTelemetry>()`.
+
+Transport metrics: `builder.Services.AddSignalR().AddMetaSignalRTelemetry()` (MetaHub; `.AddMetaMuxTelemetry()` for the debug mux hub — one record per hub invocation plus `transport.batch_size`). HTTP polling, `MapMetaAuth` and `MapMetaConfigDownload` add their endpoint filters themselves when the flag is on. Long-poll requests are counted, not timed. For transport-level cross-checks also enable ASP.NET Core's own meters (`Microsoft.AspNetCore.Hosting`, `Microsoft.AspNetCore.Server.Kestrel`, `Microsoft.AspNetCore.Http.Connections`) and `Microsoft.Orleans`.
+
+#### Analytics hooks (0.47.0+)
+
+- `IMetaServerObserver` (register in the web host DI): `OnCallCompleted(in MetaCallInfo)` after every client call (call id, player, session, client version, entity, service, method, mode, result, error kind, duration), `OnSessionStarted`, `OnSessionEnded(MetaSessionEndReason)`. Runs outside grain turns; exceptions are logged and swallowed.
+- `AnalyticsLog = true`: built-in observer writing `call_completed` / `session_started` / `session_ended` to the `SharedMeta.Analytics` category (Information). One record per client call — size the sink for your RPS.
+- Client: `MetaClientOptions.Telemetry.CallObserver` (`IMetaClientCallObserver`) — wire time and result per RPC and Signal; works on Unity without DiagnosticSource. Query proxies are built by hand, so pass the same observer: `new XServiceQueryApi(connection, serializer, options.Telemetry.CallObserver)`.
+
+Unity: client meters compile with `SHAREDMETA_CLIENT_TELEMETRY`, set automatically when `System.Diagnostics.DiagnosticSource` comes as a UPM package; through NuGetForUnity add the scripting define by hand (same as `HAS_MEMORYPACK`). The NuGet `SharedMeta.Client` always has it.
 
 ---
 

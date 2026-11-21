@@ -114,6 +114,47 @@ namespace SharedMeta.Server.Core.Session
             public string StateTypeName;
             public RpcCall Call;
             public long LastAcknowledgedSequence;
+            // The call keeps its own TraceParent: a stashed call runs later inside another
+            // request's turn and must log under its own call id, not the predecessor's.
+            public long StashedTimestamp;
+        }
+
+        private readonly SharedMeta.Server.Core.Telemetry.SharedMetaTelemetry _telemetry;
+        private Guid _sessionTextFor;
+        private string? _sessionText;
+
+        private string SessionText(Guid sessionId)
+        {
+            if (_sessionText == null || _sessionTextFor != sessionId)
+            {
+                _sessionTextFor = sessionId;
+                _sessionText = sessionId.ToString();
+            }
+            return _sessionText;
+        }
+
+        /// <summary>
+        /// Log scope for one call this grain forwards to an entity. No span of its own: the hop is
+        /// a pass-through between the handler's span and the entity's, and the call keeps its
+        /// TraceParent, so the entity span parents straight to the handler's.
+        /// </summary>
+        private SharedMeta.Server.Core.Telemetry.TelemetryScope StartCallHop(RpcCall call, string entityId, long requestId, Guid sessionId)
+        {
+            var tags = _telemetry.GetTags(_serverSignature, call.MethodId);
+            return SharedMeta.Server.Core.Telemetry.TelemetryScope.Start(
+                SharedMeta.Server.Core.Telemetry.SharedMetaActivities.SpanSessionCall,
+                System.Diagnostics.ActivityKind.Internal,
+                SharedMeta.Server.Core.Telemetry.TelemetryScope.ResolveIncoming(call.TraceParent),
+                _logger, _telemetry.Options.LogScopes,
+                SharedMeta.Core.Diagnostics.MetaCallOps.Rpc,
+                playerId: _playerId,
+                entityId: entityId,
+                stateType: tags.StateType,
+                service: tags.ServiceName,
+                method: tags.MethodName,
+                sessionId: SessionText(sessionId),
+                requestId: requestId,
+                startSpan: false);
         }
 
         #region Nested Types
@@ -245,8 +286,10 @@ namespace SharedMeta.Server.Core.Session
             IEntityGrainResolver entityGrainResolver,
             [PersistentState(SessionStorage.StateName, SessionStorage.ProviderName)] IPersistentState<SessionManagerGrainState> persistentState,
             IOptions<SessionManagerOptions>? options = null,
-            MetaServerSignature? serverSignature = null)
+            MetaServerSignature? serverSignature = null,
+            SharedMeta.Server.Core.Telemetry.SharedMetaTelemetry? telemetry = null)
         {
+            _telemetry = telemetry ?? SharedMeta.Server.Core.Telemetry.SharedMetaTelemetry.Default;
             _serverSignature = serverSignature;
             _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -490,7 +533,8 @@ namespace SharedMeta.Server.Core.Session
             if (_currentSessionId != Guid.Empty && sessionId != _currentSessionId)
             {
                 // Notify old observers BEFORE clearing
-                await _observerManager.Notify(o => o.OnSessionTerminated("Session superseded by new connection"));
+                await _observerManager.Notify(o => o.OnSessionTerminated(
+                    SharedMeta.Core.Diagnostics.MetaSessionEndReason.Superseded, "Session superseded by new connection"));
                 _observerManager.Clear();
 
                 foreach (var sub in AllSubscriptions())
@@ -804,6 +848,7 @@ namespace SharedMeta.Server.Core.Session
                         StateTypeName = stateTypeName,
                         Call = call,
                         LastAcknowledgedSequence = lastAcknowledgedSequence,
+                        StashedTimestamp = System.Diagnostics.Stopwatch.GetTimestamp(),
                     };
                     var stashResult = _orderingBuffer.TryStash(requestId, stashedCall);
                     switch (stashResult)
@@ -816,6 +861,7 @@ namespace SharedMeta.Server.Core.Session
                             LogDuplicateStash(requestId);
                             break;
                         case StashResult.Stashed:
+                            SharedMeta.Server.Core.Telemetry.MetricEvents.RpcOrder.Stashed();
                             if (_stallStartTicks == 0)
                                 _stallStartTicks = Environment.TickCount64;
                             break;
@@ -865,8 +911,6 @@ namespace SharedMeta.Server.Core.Session
             if (!TryGetSubscription(entityId, stateTypeName, out var sub) || sub.GrainRef == null)
                 return SessionResponse.ForError($"Not subscribed to entity {entityId}");
 
-            _logger.SendToEntity(_playerId, entityId, requestId, "", "");
-
             // Accumulator across the in-order call AND any consecutive stashed calls
             // we drain after it.
             var allOps = new List<SessionOp>();
@@ -874,7 +918,12 @@ namespace SharedMeta.Server.Core.Session
 
             try
             {
-                anyDeferred |= await ExecuteOneCallAsync(entityId, stateTypeName, requestId, call, sub.GrainRef, allOps);
+                using (StartCallHop(call, entityId, requestId, sessionId))
+                {
+                    var entry = _serverSignature?.GetMethodEntry(call.MethodId);
+                    _logger.SendToEntity(_playerId, entityId, requestId, entry?.ServiceName ?? "?", entry?.Alias ?? "?");
+                    anyDeferred |= await ExecuteOneCallAsync(entityId, stateTypeName, requestId, call, sub.GrainRef, allOps);
+                }
                 if (_options.EnforceRpcOrder && requestId > 0)
                 {
                     // The slot for this RequestId in the ring was conceptually the head;
@@ -907,7 +956,12 @@ namespace SharedMeta.Server.Core.Session
                             continue;
                         }
 
-                        anyDeferred |= await ExecuteOneCallAsync(stashed.EntityId, stashed.StateTypeName, stashed.RequestId, stashed.Call, stashedSub.GrainRef, allOps);
+                        SharedMeta.Server.Core.Telemetry.MetricEvents.RpcOrder.Drained(
+                            System.Diagnostics.Stopwatch.GetElapsedTime(stashed.StashedTimestamp).TotalMilliseconds);
+                        using (StartCallHop(stashed.Call, stashed.EntityId, stashed.RequestId, sessionId))
+                        {
+                            anyDeferred |= await ExecuteOneCallAsync(stashed.EntityId, stashed.StateTypeName, stashed.RequestId, stashed.Call, stashedSub.GrainRef, allOps);
+                        }
                     }
                 }
             }
@@ -1177,21 +1231,21 @@ namespace SharedMeta.Server.Core.Session
 
         private async Task TerminateSessionForStashOverflow(long requestId)
         {
-            await TerminateSessionWithReason(
+            await TerminateSessionWithReason(SharedMeta.Core.Diagnostics.MetaSessionEndReason.StashOverflow,
                 $"Request order stash overflow at requestId={requestId} (stashed={_orderingBuffer.Count}, capacity={_orderingBuffer.Capacity})");
         }
 
         private async Task TerminateSessionForStall(TimeSpan elapsed)
         {
-            await TerminateSessionWithReason(
+            await TerminateSessionWithReason(SharedMeta.Core.Diagnostics.MetaSessionEndReason.Stall,
                 $"RPC ordering stall exceeded {elapsed.TotalSeconds:F0}s (oldestMissing={_orderingBuffer.NextExpectedRequestId}, stashed={_orderingBuffer.Count})");
         }
 
-        private async Task TerminateSessionWithReason(string reason)
+        private async Task TerminateSessionWithReason(SharedMeta.Core.Diagnostics.MetaSessionEndReason code, string reason)
         {
             try
             {
-                await _observerManager.Notify(o => o.OnSessionTerminated(reason));
+                await _observerManager.Notify(o => o.OnSessionTerminated(code, reason));
             }
             catch { /* best effort */ }
             _observerManager.Clear();
@@ -1591,9 +1645,11 @@ namespace SharedMeta.Server.Core.Session
 
             if (entityGrain == null)
             {
-                _logger.LogWarning(
-                    "[SessionManager] Signal on unresolved entity '{ServiceName}/{EntityId}' — dropped",
-                    serviceName, entityId);
+                // Scope only on this (rare) path — the happy path logs nothing here.
+                using (StartCallHop(call, entityId, 0, _currentSessionId))
+                    _logger.LogWarning(
+                        "[SessionManager] Signal on unresolved entity '{ServiceName}/{EntityId}' — dropped",
+                        serviceName, entityId);
                 return Task.CompletedTask;
             }
 

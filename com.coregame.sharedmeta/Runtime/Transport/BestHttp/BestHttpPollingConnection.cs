@@ -188,6 +188,7 @@ namespace SharedMeta.Transport.BestHttp
                 Annotated = response.Annotated,
                 FailureReason = response.FailureReason,
                 DeepDesyncActive = response.DeepDesyncActive,
+                SupportsTraceContext = response.SupportsTraceContext,
                 Permissions = response.Permissions,
             };
         }

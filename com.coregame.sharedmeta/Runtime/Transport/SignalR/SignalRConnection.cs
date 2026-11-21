@@ -159,6 +159,7 @@ namespace SharedMeta.Client.Network
                 Annotated = response.Annotated,
                 FailureReason = response.FailureReason,
                 DeepDesyncActive = response.DeepDesyncActive,
+                SupportsTraceContext = response.SupportsTraceContext,
                 Permissions = response.Permissions,
             };
         }

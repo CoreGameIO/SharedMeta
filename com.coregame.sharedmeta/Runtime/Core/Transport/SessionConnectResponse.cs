@@ -129,6 +129,12 @@ namespace SharedMeta.Core.Transport
         [Id(18), Key(18)] public SharedMeta.Core.PlayerPermissions? Permissions { get; set; }
 
         /// <summary>
+        /// The server reads <c>TraceParent</c> on call requests. The client fills that field only
+        /// when this is true, so an older server is never sent bytes it does not use.
+        /// </summary>
+        [Id(19), Key(19)] public bool SupportsTraceContext { get; set; }
+
+        /// <summary>
         /// The canonical shape of an authentication rejection. Both server transports answer with
         /// this, and clients synthesize it when a 401 arrives with no body (an ASP.NET
         /// authorization-middleware rejection carries none) — so the dispatcher sees one shape

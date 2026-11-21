@@ -81,5 +81,13 @@ namespace SharedMeta.Core
         /// </para>
         /// </remarks>
         [Id(9), Key(9)] public string[]? CallerPermissions { get; set; }
+
+        /// <summary>
+        /// W3C <c>traceparent</c> of the hop that sent this call — the call id travels inside the
+        /// message the call already is, instead of in Orleans <c>RequestContext</c> (which copies a
+        /// dictionary per set and rides on every grain message). Server-set by the transport
+        /// handler and by cross-entity dispatch; null for calls with no trace (the receiver starts one).
+        /// </summary>
+        [Id(10), Key(10)] public string? TraceParent { get; set; }
     }
 }

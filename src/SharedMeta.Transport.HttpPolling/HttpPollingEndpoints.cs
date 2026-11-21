@@ -8,6 +8,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using SharedMeta.Core.Transport;
 using SharedMeta.Server.Core;
+using SharedMeta.Server.Core.Telemetry;
 using SharedMeta.Server.Core.Transport;
 
 namespace SharedMeta.Transport.HttpPolling
@@ -47,6 +48,11 @@ namespace SharedMeta.Transport.HttpPolling
             group.MapPost("/config-version-resolve", HandleResolveStatelessConfigVersion);
             group.MapPost("/disconnect", HandleDisconnect);
             group.MapPost("/graceful-disconnect", HandleGracefulDisconnect);
+
+            // Long-poll duration is the poll timeout, not server work — counted, not timed.
+            group.WithMetaTransportTelemetry(endpoints.ServiceProvider,
+                SharedMeta.Server.Core.Telemetry.TransportTelemetry.HttpPolling,
+                skipDuration: route => route.EndsWith("/poll", StringComparison.Ordinal));
 
             DisconnectAllOnStopping(endpoints.ServiceProvider);
 

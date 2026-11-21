@@ -3,7 +3,10 @@
     "list": [
       {
         "builtIn": 1,
-        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
@@ -23,457 +26,2088 @@
     {
       "type": "row",
       "title": "Live overview",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "id": 100,
       "panels": [],
       "collapsed": false
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "stat",
       "title": "Active sessions",
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
       "id": 1,
       "fieldConfig": {
-        "defaults": { "unit": "none", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } },
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
         "overrides": []
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "values": false }, "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" },
-      "targets": [{ "expr": "sum(sharedmeta_session_active)", "refId": "A" }]
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "sum(sharedmeta_session_active)",
+          "refId": "A"
+        }
+      ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "stat",
       "title": "Active grains",
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
       "id": 2,
       "fieldConfig": {
-        "defaults": { "unit": "none", "color": { "mode": "palette-classic" } },
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
         "overrides": []
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "values": false }, "textMode": "value_and_name", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" },
-      "targets": [{ "expr": "sharedmeta_grain_active", "legendFormat": "{{state_type}}", "refId": "A" }]
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "sharedmeta_grain_active",
+          "legendFormat": "{{state_type}}",
+          "refId": "A"
+        }
+      ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "stat",
       "title": "RPC rate (req/sec)",
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
       "id": 3,
       "fieldConfig": {
-        "defaults": { "unit": "reqps", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1000 }, { "color": "red", "value": 5000 }] } },
+        "defaults": {
+          "unit": "reqps",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1000
+              },
+              {
+                "color": "red",
+                "value": 5000
+              }
+            ]
+          }
+        },
         "overrides": []
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "values": false }, "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" },
-      "targets": [{ "expr": "sum(rate(sharedmeta_entity_rpc_duration_milliseconds_count[$__rate_interval]))", "refId": "A" }]
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(sharedmeta_entity_rpc_duration_milliseconds_count[$__rate_interval]))",
+          "refId": "A"
+        }
+      ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "stat",
       "title": "Cross-entity calls/sec",
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
       "id": 4,
       "fieldConfig": {
-        "defaults": { "unit": "reqps", "color": { "mode": "palette-classic" } },
+        "defaults": {
+          "unit": "reqps",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
         "overrides": []
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "values": false }, "textMode": "value_and_name", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" },
-      "targets": [{ "expr": "sum by (kind) (rate(sharedmeta_cross_entity_call_count_total[$__rate_interval]))", "legendFormat": "{{kind}}", "refId": "A" }]
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "sum by (kind) (rate(sharedmeta_cross_entity_call_count_total[$__rate_interval]))",
+          "legendFormat": "{{kind}}",
+          "refId": "A"
+        }
+      ]
     },
-
     {
       "type": "row",
       "title": "RPC latency & throughput",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
       "id": 101,
       "collapsed": false
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "Server RPC p95 by method (ms) — method body only",
-      "description": "Time spent INSIDE EntityGrain.HandleCallAsync — provider dispatch, method body, broadcasts, persistence. Does NOT include SignalR hub dispatch or SessionManagerGrain queueing. Compare with the 'Server-side total' panel: large diff = queue/grain-hop overhead (often caused by SignalR MaximumParallelInvocationsPerClient = 1 default).",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 6 },
+      "description": "Per-method series follow MetaTelemetryOptions.MethodMetrics; methods without their own series appear as <service>._other.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 6
+      },
       "id": 10,
       "fieldConfig": {
-        "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5, "showPoints": "never" } },
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true } },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
       "targets": [
-        { "expr": "histogram_quantile(0.95, sum by (le, service, method) (rate(sharedmeta_entity_rpc_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "{{service}}.{{method}}", "refId": "A" }
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, service, method) (rate(sharedmeta_entity_rpc_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{service}}.{{method}}",
+          "refId": "A"
+        }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
-      "title": "Server-side total p50/p95/p99 (ms) — hub-entry to response",
+      "title": "Server-side total p50/p95/p99 (ms) — transport entry to response",
       "description": "End-to-end at MetaConnectionHandler.RpcCallAsync: SessionManagerGrain queue + grain-hop + method body + response build. Gap vs the 'method body only' panel reveals queue / hop overhead. Reproduces client-perceived server latency without the network leg.",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 6 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 6
+      },
       "id": 12,
       "fieldConfig": {
-        "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5, "showPoints": "never" } },
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true } },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
       "targets": [
-        { "expr": "histogram_quantile(0.50, sum by (le) (rate(sharedmeta_server_rpc_total_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "p50", "refId": "A" },
-        { "expr": "histogram_quantile(0.95, sum by (le) (rate(sharedmeta_server_rpc_total_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "p95", "refId": "B" },
-        { "expr": "histogram_quantile(0.99, sum by (le) (rate(sharedmeta_server_rpc_total_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "p99", "refId": "C" }
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(sharedmeta_server_rpc_total_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(sharedmeta_server_rpc_total_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(sharedmeta_server_rpc_total_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "Server RPC rate by method (req/sec)",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 6 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 6
+      },
       "id": 11,
       "fieldConfig": {
-        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 20, "showPoints": "never", "stacking": { "mode": "normal" } } },
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
         "overrides": []
       },
-      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "calcs": ["mean"], "displayMode": "table", "placement": "bottom", "showLegend": true } },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
       "targets": [
-        { "expr": "sum by (service, method) (rate(sharedmeta_entity_rpc_duration_milliseconds_count[$__rate_interval]))", "legendFormat": "{{service}}.{{method}}", "refId": "A" }
+        {
+          "expr": "sum by (service, method) (rate(sharedmeta_entity_rpc_duration_milliseconds_count[$__rate_interval]))",
+          "legendFormat": "{{service}}.{{method}}",
+          "refId": "A"
+        }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
-      "title": "RPC request bytes p95 by method",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
-      "id": 12,
+      "title": "RPC request / response bytes p95 by method",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "id": 14,
       "fieldConfig": {
-        "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5, "showPoints": "never" } },
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true } },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
       "targets": [
-        { "expr": "histogram_quantile(0.95, sum by (le, service, method) (rate(sharedmeta_entity_rpc_request_bytes_bucket[$__rate_interval])))", "legendFormat": "{{service}}.{{method}}", "refId": "A" }
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, service, method) (rate(sharedmeta_entity_rpc_request_bytes_bucket[$__rate_interval])))",
+          "legendFormat": "req {{service}}.{{method}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, service, method) (rate(sharedmeta_entity_rpc_response_bytes_bucket[$__rate_interval])))",
+          "legendFormat": "resp {{service}}.{{method}}",
+          "refId": "B"
+        }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "Session connect duration p50/p95/p99",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
       "id": 13,
       "fieldConfig": {
-        "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5, "showPoints": "never" } },
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean"] } },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean"
+          ]
+        }
+      },
       "targets": [
-        { "expr": "histogram_quantile(0.50, sum by (le) (rate(sharedmeta_session_connect_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "p50", "refId": "A" },
-        { "expr": "histogram_quantile(0.95, sum by (le) (rate(sharedmeta_session_connect_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "p95", "refId": "B" },
-        { "expr": "histogram_quantile(0.99, sum by (le) (rate(sharedmeta_session_connect_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "p99", "refId": "C" }
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(sharedmeta_session_connect_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(sharedmeta_session_connect_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(sharedmeta_session_connect_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
       ]
     },
-
+    {
+      "type": "row",
+      "title": "Errors, Query / Signal, desync (0.47.0+)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "id": 110,
+      "collapsed": false
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
+      "type": "timeseries",
+      "title": "RPC errors/sec by method and error_kind",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 23
+      },
+      "id": 111,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (service, method, error_kind) (rate(sharedmeta_entity_rpc_duration_milliseconds_count{result=\"error\"}[$__rate_interval]))",
+          "legendFormat": "{{service}}.{{method}} {{error_kind}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
+      "type": "timeseries",
+      "title": "Server total p95 by method (ms)",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 23
+      },
+      "id": 112,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, service, method) (rate(sharedmeta_server_rpc_total_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{service}}.{{method}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
+      "type": "timeseries",
+      "title": "Handler outcomes and capability rejections (req/sec)",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 23
+      },
+      "id": 113,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (result, error_kind) (rate(sharedmeta_server_rpc_total_duration_milliseconds_count{result!=\"success\"}[$__rate_interval]))",
+          "legendFormat": "{{result}} {{error_kind}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (reason) (rate(sharedmeta_compat_method_rejected_count_total[$__rate_interval]))",
+          "legendFormat": "rejected: {{reason}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
+      "type": "timeseries",
+      "title": "Query rate and p95 by method",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 31
+      },
+      "id": 114,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (service, method) (rate(sharedmeta_entity_query_duration_milliseconds_count[$__rate_interval]))",
+          "legendFormat": "{{service}}.{{method}} /s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
+      "type": "timeseries",
+      "title": "Signals/sec by method",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 31
+      },
+      "id": 115,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (service, method) (rate(sharedmeta_entity_signal_count_total[$__rate_interval]))",
+          "legendFormat": "{{service}}.{{method}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
+      "type": "timeseries",
+      "title": "Desyncs reported by kind",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 31
+      },
+      "id": 116,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (service, method, kind) (increase(sharedmeta_desync_detected_total[$__rate_interval]))",
+          "legendFormat": "{{service}}.{{method}} {{kind}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Client desync reports; counted even when DesyncReportingEnabled is off. Any value > 0 deserves a look."
+    },
+    {
+      "type": "row",
+      "title": "RPC ordering & sessions",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      },
+      "id": 120,
+      "collapsed": false
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
+      "type": "timeseries",
+      "title": "Out-of-order RPCs: stashed/sec and drain wait p95",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 40
+      },
+      "id": 121,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(sharedmeta_rpc_out_of_order_stashed_total[$__rate_interval]))",
+          "legendFormat": "stashed/sec",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(sharedmeta_rpc_out_of_order_drain_wait_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "drain wait p95 (ms)",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
+      "type": "timeseries",
+      "title": "Session terminations/sec by reason",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 40
+      },
+      "id": 122,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(sharedmeta_session_terminated_count_total[$__rate_interval]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "description": "A transport_drop spike with flat graceful = network incident; stash_overflow / stall = ordering problems."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
+      "type": "timeseries",
+      "title": "Session connects/sec by result",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 40
+      },
+      "id": 123,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (result) (rate(sharedmeta_session_connect_duration_milliseconds_count[$__rate_interval]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Transport — hub methods & HTTP endpoints (TransportMetrics)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 48
+      },
+      "id": 130,
+      "collapsed": false
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
+      "type": "timeseries",
+      "title": "Requests/sec by transport and endpoint",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 49
+      },
+      "id": 131,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (transport, endpoint) (rate(sharedmeta_transport_requests_total[$__rate_interval]))",
+          "legendFormat": "{{transport}} {{endpoint}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Canonical client RPS at the transport edge: every hub invocation / HTTP request, including Query, Signal, Subscribe, Ack, Poll."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
+      "type": "timeseries",
+      "title": "Endpoint p95 (ms)",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 49
+      },
+      "id": 132,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, transport, endpoint) (rate(sharedmeta_transport_request_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{transport}} {{endpoint}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Long-poll endpoints are counted, not timed."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
+      "type": "timeseries",
+      "title": "Non-success requests/sec by result",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 49
+      },
+      "id": 133,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (transport, endpoint, result) (rate(sharedmeta_transport_requests_total{result!=\"success\"}[$__rate_interval]))",
+          "legendFormat": "{{transport}} {{endpoint}} {{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
+      "type": "timeseries",
+      "title": "Auth requests/sec by provider and result",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 57
+      },
+      "id": 134,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (endpoint, provider, result) (rate(sharedmeta_auth_requests_total[$__rate_interval]))",
+          "legendFormat": "{{endpoint}} {{provider}} {{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
+      "type": "timeseries",
+      "title": "Mux batch size p50/p95 (calls per hub invocation)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 57
+      },
+      "id": 135,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le, endpoint) (rate(sharedmeta_transport_batch_size_bucket[$__rate_interval])))",
+          "legendFormat": "p50 {{endpoint}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(sharedmeta_transport_batch_size_bucket[$__rate_interval])))",
+          "legendFormat": "p95 {{endpoint}}",
+          "refId": "B"
+        }
+      ]
+    },
     {
       "type": "row",
       "title": "Cross-entity & Notification mode",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 65
+      },
       "id": 102,
       "collapsed": false
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "Cross-entity call rate by kind (Notification = OneWay)",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 66
+      },
       "id": 20,
       "fieldConfig": {
-        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 25, "showPoints": "never", "stacking": { "mode": "normal" } } },
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "notification" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "purple" } }] },
-          { "matcher": { "id": "byName", "options": "normal" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }] }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "notification"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "normal"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          }
         ]
       },
-      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean"] } },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean"
+          ]
+        }
+      },
       "targets": [
-        { "expr": "sum by (kind) (rate(sharedmeta_cross_entity_call_count_total[$__rate_interval]))", "legendFormat": "{{kind}}", "refId": "A" }
+        {
+          "expr": "sum by (kind) (rate(sharedmeta_cross_entity_call_count_total[$__rate_interval]))",
+          "legendFormat": "{{kind}}",
+          "refId": "A"
+        }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "Cross-entity duration p95 by kind",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 66
+      },
       "id": 21,
       "fieldConfig": {
-        "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5, "showPoints": "never" } },
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true } },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
       "targets": [
-        { "expr": "histogram_quantile(0.95, sum by (le, kind, to_service) (rate(sharedmeta_cross_entity_call_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "{{kind}} → {{to_service}}", "refId": "A" }
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, kind, to_service) (rate(sharedmeta_cross_entity_call_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{kind}} → {{to_service}}",
+          "refId": "A"
+        }
       ]
     },
-
     {
       "type": "row",
       "title": "Broadcast machinery",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 74
+      },
       "id": 103,
       "collapsed": false
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "Broadcast fan-out size (subscribers per broadcast)",
-      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 32 },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 75
+      },
       "id": 30,
       "fieldConfig": {
-        "defaults": { "unit": "none", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5, "showPoints": "never" } },
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true } },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
       "targets": [
-        { "expr": "histogram_quantile(0.50, sum by (le, state_type) (rate(sharedmeta_broadcast_fan_out_size_bucket[$__rate_interval])))", "legendFormat": "{{state_type}} p50", "refId": "A" },
-        { "expr": "histogram_quantile(0.95, sum by (le, state_type) (rate(sharedmeta_broadcast_fan_out_size_bucket[$__rate_interval])))", "legendFormat": "{{state_type}} p95", "refId": "B" }
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, state_type) (rate(sharedmeta_broadcast_fan_out_size_bucket[$__rate_interval])))",
+          "legendFormat": "{{state_type}} p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, state_type) (rate(sharedmeta_broadcast_fan_out_size_bucket[$__rate_interval])))",
+          "legendFormat": "{{state_type}} p95",
+          "refId": "B"
+        }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "Broadcast payload bytes/sec by kind",
-      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 32 },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 75
+      },
       "id": 31,
       "fieldConfig": {
-        "defaults": { "unit": "Bps", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 25, "showPoints": "never", "stacking": { "mode": "normal" } } },
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
         "overrides": [
-          { "matcher": { "id": "byRegexp", "options": ".*replay.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
-          { "matcher": { "id": "byRegexp", "options": ".*patch.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] },
-          { "matcher": { "id": "byRegexp", "options": ".*state.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*replay.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*patch.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*state.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
         ]
       },
-      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean"] } },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean"
+          ]
+        }
+      },
       "targets": [
-        { "expr": "sum by (kind, state_type) (rate(sharedmeta_broadcast_payload_bytes_sum[$__rate_interval]))", "legendFormat": "{{kind}} {{state_type}}", "refId": "A" }
+        {
+          "expr": "sum by (kind, state_type) (rate(sharedmeta_broadcast_payload_bytes_sum[$__rate_interval]))",
+          "legendFormat": "{{kind}} {{state_type}}",
+          "refId": "A"
+        }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "Per-subscriber tailoring (path = patch reveals force-patch fires)",
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 32 },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 75
+      },
       "id": 32,
       "fieldConfig": {
-        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 25, "showPoints": "never", "stacking": { "mode": "normal" } } },
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
         "overrides": [
-          { "matcher": { "id": "byRegexp", "options": ".*replay.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
-          { "matcher": { "id": "byRegexp", "options": ".*patch.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] }
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*replay.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*patch.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
         ]
       },
-      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean"] } },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean"
+          ]
+        }
+      },
       "targets": [
-        { "expr": "sum by (path, state_type) (rate(sharedmeta_broadcast_tailored_count_total[$__rate_interval]))", "legendFormat": "{{path}} {{state_type}}", "refId": "A" }
+        {
+          "expr": "sum by (path, state_type) (rate(sharedmeta_broadcast_tailored_count_total[$__rate_interval]))",
+          "legendFormat": "{{path}} {{state_type}}",
+          "refId": "A"
+        }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "Avg subscribers per broadcast (sum / count)",
       "description": "Mean fan-out per broadcast event, computed as histogram sum / count over the rate window. Complements the p50/p95 panel by showing the arithmetic mean — useful when a few popular entities (e.g. one huge clan) skew the distribution. Tagged by state_type.",
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 32 },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 75
+      },
       "id": 33,
       "fieldConfig": {
-        "defaults": { "unit": "none", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5, "showPoints": "never" } },
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean"] } },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean"
+          ]
+        }
+      },
       "targets": [
-        { "expr": "sum by (state_type) (rate(sharedmeta_broadcast_fan_out_size_sum[$__rate_interval])) / sum by (state_type) (rate(sharedmeta_broadcast_fan_out_size_count[$__rate_interval]))", "legendFormat": "{{state_type}} avg", "refId": "A" }
+        {
+          "expr": "sum by (state_type) (rate(sharedmeta_broadcast_fan_out_size_sum[$__rate_interval])) / sum by (state_type) (rate(sharedmeta_broadcast_fan_out_size_count[$__rate_interval]))",
+          "legendFormat": "{{state_type}} avg",
+          "refId": "A"
+        }
       ]
     },
-
     {
       "type": "row",
       "title": "Persistence, subscribe, grain lifecycle",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 83
+      },
       "id": 104,
       "collapsed": false
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "Persistence WriteStateAsync p50/p95/p99",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 41 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 84
+      },
       "id": 40,
       "fieldConfig": {
-        "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5, "showPoints": "never" } },
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean"] } },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean"
+          ]
+        }
+      },
       "targets": [
-        { "expr": "histogram_quantile(0.50, sum by (le, state_type) (rate(sharedmeta_persistence_write_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "{{state_type}} p50", "refId": "A" },
-        { "expr": "histogram_quantile(0.95, sum by (le, state_type) (rate(sharedmeta_persistence_write_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "{{state_type}} p95", "refId": "B" },
-        { "expr": "histogram_quantile(0.99, sum by (le, state_type) (rate(sharedmeta_persistence_write_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "{{state_type}} p99", "refId": "C" }
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, state_type) (rate(sharedmeta_persistence_write_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{state_type}} p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, state_type) (rate(sharedmeta_persistence_write_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{state_type}} p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, state_type) (rate(sharedmeta_persistence_write_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{state_type}} p99",
+          "refId": "C"
+        }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "Subscribe duration p50/p95/p99 (cold-start cost)",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 41 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 84
+      },
       "id": 41,
       "fieldConfig": {
-        "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 5, "showPoints": "never" } },
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean"] } },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean"
+          ]
+        }
+      },
       "targets": [
-        { "expr": "histogram_quantile(0.50, sum by (le, state_type) (rate(sharedmeta_entity_subscribe_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "{{state_type}} p50", "refId": "A" },
-        { "expr": "histogram_quantile(0.95, sum by (le, state_type) (rate(sharedmeta_entity_subscribe_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "{{state_type}} p95", "refId": "B" },
-        { "expr": "histogram_quantile(0.99, sum by (le, state_type) (rate(sharedmeta_entity_subscribe_duration_milliseconds_bucket[$__rate_interval])))", "legendFormat": "{{state_type}} p99", "refId": "C" }
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, state_type) (rate(sharedmeta_entity_subscribe_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{state_type}} p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, state_type) (rate(sharedmeta_entity_subscribe_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{state_type}} p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, state_type) (rate(sharedmeta_entity_subscribe_duration_milliseconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{state_type}} p99",
+          "refId": "C"
+        }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "Grain activations/sec (cold-start rate)",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 41 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 84
+      },
       "id": 42,
       "fieldConfig": {
-        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 25, "showPoints": "never" } },
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean"] } },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean"
+          ]
+        }
+      },
       "targets": [
-        { "expr": "sum by (state_type) (rate(sharedmeta_grain_activation_count_total[$__rate_interval]))", "legendFormat": "{{state_type}}", "refId": "A" }
+        {
+          "expr": "sum by (state_type) (rate(sharedmeta_grain_activation_count_total[$__rate_interval]))",
+          "legendFormat": "{{state_type}}",
+          "refId": "A"
+        }
       ]
     },
-
     {
       "type": "row",
       "title": ".NET runtime (GC, threads, JIT)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 49 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 92
+      },
       "id": 105,
       "collapsed": false
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "Allocation rate (MB/sec)",
-      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 50 },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 93
+      },
       "id": 50,
       "fieldConfig": {
-        "defaults": { "unit": "Bps", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 25, "showPoints": "never" } },
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": { "tooltip": { "mode": "single" }, "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false } },
-      "targets": [{ "expr": "rate(dotnet_gc_heap_total_allocated_bytes_total[$__rate_interval])", "legendFormat": "allocations", "refId": "A" }]
+      "options": {
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(dotnet_gc_heap_total_allocated_bytes_total[$__rate_interval])",
+          "legendFormat": "allocations",
+          "refId": "A"
+        }
+      ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "GC pause time (fraction)",
-      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 50 },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 93
+      },
       "id": 51,
       "fieldConfig": {
-        "defaults": { "unit": "percentunit", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 25, "showPoints": "never" } },
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": { "tooltip": { "mode": "single" }, "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false } },
-      "targets": [{ "expr": "rate(dotnet_gc_pause_time_seconds_total[$__rate_interval])", "legendFormat": "pause", "refId": "A" }]
+      "options": {
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(dotnet_gc_pause_time_seconds_total[$__rate_interval])",
+          "legendFormat": "pause",
+          "refId": "A"
+        }
+      ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "Working set memory",
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 50 },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 93
+      },
       "id": 52,
       "fieldConfig": {
-        "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" } },
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": { "tooltip": { "mode": "single" }, "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false } },
-      "targets": [{ "expr": "dotnet_process_memory_working_set_bytes", "legendFormat": "working set", "refId": "A" }]
+      "options": {
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "dotnet_process_memory_working_set_bytes",
+          "legendFormat": "working set",
+          "refId": "A"
+        }
+      ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-clanwars"
+      },
       "type": "timeseries",
       "title": "Lock contentions/sec",
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 50 },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 93
+      },
       "id": 53,
       "fieldConfig": {
-        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 25, "showPoints": "never" } },
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never"
+          }
+        },
         "overrides": []
       },
-      "options": { "tooltip": { "mode": "single" }, "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false } },
-      "targets": [{ "expr": "rate(dotnet_monitor_lock_contentions_total[$__rate_interval])", "legendFormat": "contentions", "refId": "A" }]
-    },
-
-    {
-      "type": "row",
-      "title": "Pooled payload buffers",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 58 },
-      "id": 106,
-      "collapsed": false
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
-      "type": "timeseries",
-      "title": "Pool slots in use (allocated)",
-      "description": "Live PooledPayloadRegistry slots — buffers with refCount > 0. Should stay bounded under steady load (response/broadcast/event payloads in flight + retained in SessionManager._pendingPackets until ack/evict). An upward drift indicates a missing Release somewhere.",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 59 },
-      "id": 60,
-      "fieldConfig": {
-        "defaults": { "unit": "none", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15, "showPoints": "never" } },
-        "overrides": []
+      "options": {
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        }
       },
-      "options": { "tooltip": { "mode": "single" }, "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false } },
       "targets": [
-        { "expr": "sharedmeta_pool_allocated_slots", "legendFormat": "allocated", "refId": "A" }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
-      "type": "timeseries",
-      "title": "Pool acquire / release rate (slots/sec)",
-      "description": "Cumulative-counter rate of slot acquisitions vs final releases (refCount → 0). Lines should track each other closely; persistent divergence reveals a leak (acquire > release) or double-release (release > acquire).",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 59 },
-      "id": 61,
-      "fieldConfig": {
-        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" } },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "acquire" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }] },
-          { "matcher": { "id": "byName", "options": "release" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] }
-        ]
-      },
-      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean"] } },
-      "targets": [
-        { "expr": "rate(sharedmeta_pool_acquire_count_total[$__rate_interval])", "legendFormat": "acquire", "refId": "A" },
-        { "expr": "rate(sharedmeta_pool_release_count_total[$__rate_interval])", "legendFormat": "release", "refId": "B" }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prometheus-clanwars" },
-      "type": "timeseries",
-      "title": "Net slot drift (acquire − release over window)",
-      "description": "If this is non-zero on average, the pool is leaking (or double-releasing). Should hover around 0 under steady load. Spikes are normal during burst; sustained drift is a bug.",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 59 },
-      "id": 62,
-      "fieldConfig": {
-        "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 15, "showPoints": "never" } },
-        "overrides": []
-      },
-      "options": { "tooltip": { "mode": "single" }, "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false } },
-      "targets": [
-        { "expr": "rate(sharedmeta_pool_acquire_count_total[$__rate_interval]) - rate(sharedmeta_pool_release_count_total[$__rate_interval])", "legendFormat": "net", "refId": "A" }
+        {
+          "expr": "rate(dotnet_monitor_lock_contentions_total[$__rate_interval])",
+          "legendFormat": "contentions",
+          "refId": "A"
+        }
       ]
     }
   ],
   "refresh": "5s",
   "schemaVersion": 39,
-  "tags": ["sharedmeta", "clanwars", "observability"],
-  "templating": { "list": [] },
-  "time": { "from": "now-15m", "to": "now" },
+  "tags": [
+    "sharedmeta",
+    "clanwars",
+    "observability"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "",
   "title": "SharedMeta / ClanWars",
   "uid": "sharedmeta-clanwars",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

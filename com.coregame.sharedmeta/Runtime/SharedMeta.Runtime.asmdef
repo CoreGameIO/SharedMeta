@@ -24,6 +24,11 @@
             "name": "org.nuget.microsoft.extensions.logging.abstractions",
             "expression": "0.0.0",
             "define": "HAS_MEL"
+        },
+        {
+            "name": "org.nuget.system.diagnostics.diagnosticsource",
+            "expression": "0.0.0",
+            "define": "SHAREDMETA_CLIENT_TELEMETRY"
         }
   ],
   "noEngineReferences": true

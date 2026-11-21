@@ -1661,6 +1661,7 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `[Transform]` | Parameter | Explicit transformer for parameter |
 | `[SkipTransform]` | Parameter | Disable auto-transformation |
 | `[MetaMethod(ReplayEvents = ...)]` | Method | Client-side UI events around an incoming broadcast: `On{Method}_Replaying` / `On{Method}_Replayed`. Opt-in; default `None`. |
+| `[MetaMethod(Metrics = ...)]` / `[MetaService(Metrics = ...)]` | Method / Interface | Own metric series for the method (`MetaMetrics.On` / `Off`); others fold into `method="_other"`. Host `MetaTelemetryOptions` decides the default. Not in any signature hash. (0.47.0+) |
 | `[OrderedExecution]` | Interface | Broadcast ordering mode |
 | `[MetaSerializer]` | Assembly | Serializer type configuration |
 | `[MemoryPackable]` | Class | MemoryPack transport serialization |
@@ -1688,6 +1689,7 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `DefaultConfig` | bool | false | **Obsolete** — use `[ServiceConfig]`. Uses the `[MetaConfig(Default = true)]` class and opts into an auto `StaticConfigProvider<T>(new T())` on the client |
 | `AccessPolicy` | EntityAccessPolicy | Open | Subscribe access control |
 | `PatchTracking` | bool | true | (0.24.2+) Allow the auto-generated `{Impl}_PatchTracked` copy for force-patch. `false` = opt out: no copy, force-patch clients rejected at negotiation/subscribe instead of served an empty patch. Set false only when the body can't be copy-compatible. See *ServerPatch → Patch-tracking copy* |
+| `Metrics` | MetaMetrics | Default | (0.47.0+) Default per-method metric series for the service's methods; `[MetaMethod(Metrics)]` wins |
 
 ---
 
@@ -1853,9 +1855,29 @@ app.MapPrometheusScrapingEndpoint();
 
 No OpenTelemetry NuGet dependency in framework packages — meters use only built-in `System.Diagnostics.Metrics`. When no listener is attached, every `Counter.Add` / `Histogram.Record` is a volatile-flag check, no allocation.
 
-Server-side instrumentation covers: `session.connect.duration`, `session.active`, `entity.subscribe.duration`, `entity.rpc.duration` (per service+method+result), `entity.rpc.request_bytes`, `cross_entity.call.duration` (kind = `normal | notification`), `broadcast.fan_out_size`, `broadcast.payload_bytes` (kind = `replay | patch | state`), `broadcast.tailored.count`, `persistence.write.duration`, `compat.force_patch.applied`, `grain.activation.count`, `grain.active`. Plus distributed-tracing spans nested via in-process `Activity.Current`.
+Server-side instrumentation covers: `session.connect.duration`, `session.active`, `session.terminated.count{reason}`, `entity.subscribe.duration`, `entity.rpc.duration` (service, method, mode, result, error_kind), `entity.rpc.request_bytes` / `response_bytes`, `entity.query.duration`, `entity.signal.count`, `server.rpc.total_duration` (service, method, result), `cross_entity.call.duration` (kind = `normal | notification`), `broadcast.*`, `persistence.write.duration`, `compat.force_patch.applied`, `compat.method_rejected.count`, `desync.detected`, `rpc.out_of_order.*`, `grain.*`, opt-in `transport.requests` / `transport.request.duration` / `auth.requests`.
 
-Client → server W3C `traceparent` propagation on RPC envelopes is **not yet implemented** — client and server traces are independent for now.
+### Call context and log correlation (0.47.0+)
+
+Every call has a **call id = W3C trace id**. The generated API client opens `MetaCallScope` before local execution; the id travels as `TraceParent` on Rpc/Query/Signal/DesyncReport requests; the server carries it in `RpcCall.TraceParent` (handler → SessionManagerGrain → EntityGrain → cross-entity; subscribe uses Orleans `RequestContext`). Each server hop opens an `ILogger` scope with `CallId`, `SpanId`, `PlayerId`, `EntityId`, `StateType`, `Service`, `Method`, `ClientRequestId`, `Op` — `Context.Log` inside service code inherits it. Service code reads the identity via `Context.Call` (e.g. to tag business/analytics events). Never feed `Context.Call` into state or deterministic logic — it differs between client and server runs only in span id, but it is not part of the replay contract.
+
+```csharp
+services.AddSharedMetaTelemetry(o =>          // web host AND silo container
+{
+    o.MethodMetrics = MethodMetricsMode.All;   // Off | Annotated (default) | All
+    o.IncludeMethods.Add("IShopService.*");    // patterns override attributes; Exclude wins
+    o.TransportMetrics = true;                 // hub/endpoint metrics, startup-only
+    o.AnalyticsLog = false;                    // SharedMeta.Analytics log category
+});
+builder.Services.AddSignalR().AddMetaSignalRTelemetry();   // MetaHub filter (+ AddMetaMuxTelemetry)
+
+[MetaMethod(Mode = ExecutionMode.Server, Metrics = MetaMetrics.On)]  // own series under Annotated
+Task Buy(int itemId);
+```
+
+Per-method rules: a method without its own series is recorded as `method="_other"` of its service (totals stay complete); unresolvable ids and client-supplied names become `_unknown`. `Metrics`/`Mode` never enter signature hashes.
+
+Hooks for analytics: `IMetaServerObserver` (server DI: `OnCallCompleted`, `OnSessionStarted`, `OnSessionEnded(MetaSessionEndReason)`), `IMetaClientCallObserver` (`MetaClientOptions.Telemetry.CallObserver`, works on Unity without DiagnosticSource). Hand-built `MetaConnectionHandlerFactory` must pass `telemetry: sp.GetService<SharedMetaTelemetry>()`. Unity: client meters compile with `SHAREDMETA_CLIENT_TELEMETRY` (versionDefine on the DiagnosticSource UPM package; define it manually under NuGetForUnity).
 
 Reference wire-up: `examples/ClanWars/ClanWars.Server/Program.cs` (Prometheus exporter on `/metrics`). Full catalog: [docs/GUIDE.md § Observability](../docs/GUIDE.md#observability-0230).
 
