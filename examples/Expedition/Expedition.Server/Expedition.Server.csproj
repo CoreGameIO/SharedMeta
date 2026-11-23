@@ -19,6 +19,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\SharedMeta.Auth\SharedMeta.Auth.csproj" />
+    <!-- Inspector + MCP endpoint; referencing it also makes the generator emit the call tap. -->
+    <ProjectReference Include="..\..\..\src\SharedMeta.Inspector.Mcp\SharedMeta.Inspector.Mcp.csproj" />
     <ProjectReference Include="..\..\..\src\SharedMeta.Server\SharedMeta.Server.csproj" />
     <ProjectReference Include="..\..\..\src\SharedMeta.Orleans\SharedMeta.Orleans.csproj" />
     <ProjectReference Include="..\..\..\src\SharedMeta.Transport.SignalR\SharedMeta.Transport.SignalR.csproj" />

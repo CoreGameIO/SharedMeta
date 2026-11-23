@@ -980,6 +980,9 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState>, SharedMe
             return new HandleCallResult { Error = "Provider not initialized" };
         }
 
+        // Before migration: a lazy [MetaInit] run belongs to this operation.
+        if (entitySequenceNumber != 0) CurrentEntitySequence = entitySequenceNumber;
+
         // Per-call migration policy. Two caps stack:
         //   [NoMigrate]            → skip lazy migration AND pin config to schema-floor branch.
         //   [MinStateVersion(N)]   → migrate only up to N (no further).
@@ -1067,7 +1070,6 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState>, SharedMe
 
         try
         {
-            if (entitySequenceNumber != 0) CurrentEntitySequence = entitySequenceNumber;
             MetaContext.CallerId = call.CallerId;
             // Effective, not raw: service code branching on the caller's version must see the same
             // version the configs around it were resolved against.

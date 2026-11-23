@@ -18,6 +18,8 @@ using SharedMeta.Transport.SignalR;
 #endif
 using SharedMeta.Orleans.Framework;
 using SharedMeta.Auth;
+using SharedMeta.Inspector;
+using SharedMeta.Inspector.Mcp;
 using SharedMeta.Server.Core.Storage;
 using SharedMeta.Core.Network;
 using Expedition.Shared;
@@ -151,6 +153,17 @@ builder.Services.AddCors(options =>
     });
 });
 
+// Inspector: MCP access to calls, arguments, results and entity state (TimeMachine).
+// Captures nothing until a client asks (watch_entity / watch_player / set_capture_config).
+// Connect: claude mcp add --transport http expedition http://localhost:5100/mcp
+builder.Services.AddSharedMetaInspector(o =>
+{
+    // Example server: allow invoking methods from the MCP client. Loopback-only by default.
+    o.AllowInvoke = true;
+    o.InvokeMethods.Add("*");
+});
+builder.Services.AddSharedMetaInspectorMcp();
+
 var app = builder.Build();
 
 app.UseCors();
@@ -189,6 +202,8 @@ app.MapPost("/meta/desync/{playerId}/{enabled:bool}", async (string playerId, bo
     await grains.GetGrain<IDesyncReportGrain>(playerId).SetAnalysisEnabledAsync(enabled);
     return Results.Ok(new { playerId, analysisEnabled = enabled, appliesOn = "next session" });
 });
+
+app.MapSharedMetaInspectorMcp("/mcp");
 
 #if USE_HTTP_POLLING
 app.MapMetaHttpPolling("/meta");
