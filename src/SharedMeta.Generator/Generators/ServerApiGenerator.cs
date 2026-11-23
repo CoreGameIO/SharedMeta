@@ -296,7 +296,7 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("    }");
         }
 
-        private static (string alias, int version) ReadAliasAndVersion(IMethodSymbol method)
+        internal static (string alias, int version) ReadAliasAndVersion(IMethodSymbol method)
         {
             var alias = method.Name;
             var version = 0;
@@ -315,7 +315,7 @@ namespace SharedMeta.Generator.Generators
             return (alias, version);
         }
 
-        private static bool IsMode(IMethodSymbol method, string modeName)
+        internal static bool IsMode(IMethodSymbol method, string modeName)
         {
             var attr = method.GetAttributes().FirstOrDefault(a =>
                 a.AttributeClass?.ToDisplayString() == "SharedMeta.Core.MetaMethodAttribute");

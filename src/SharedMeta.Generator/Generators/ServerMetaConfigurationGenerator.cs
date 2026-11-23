@@ -555,7 +555,8 @@ namespace SharedMeta.Generator.Generators
         /// Generate all server-side configuration code for Server projects.
         /// This version does NOT use #if SHAREDMETA_SERVER since it runs directly in the Server project.
         /// </summary>
-        public static string? GenerateForServerProject(string rootNamespace, IEnumerable<ServiceImplInfo> serviceImpls, bool hasOrleansConfig = true)
+        public static string? GenerateForServerProject(string rootNamespace, IEnumerable<ServiceImplInfo> serviceImpls, bool hasOrleansConfig = true,
+            bool emitCallTap = false)
         {
             var allServices = serviceImpls.Where(s => s != null).ToList();
             if (allServices.Count == 0) return null;
@@ -616,7 +617,9 @@ namespace SharedMeta.Generator.Generators
             // MetaProvider for each state type
             foreach (var kvp in byStateType)
             {
+                int providerStart = sb.Length;
                 GenerateMetaProvider(sb, kvp.Key, kvp.Value, allServerDeps);
+                if (emitCallTap) CallTapEmitter.Apply(sb, providerStart);
                 sb.AppendLine();
                 GenerateMetaProviderFactory(sb, kvp.Key, kvp.Value.First().StateTypeName);
                 sb.AppendLine();
@@ -639,7 +642,7 @@ namespace SharedMeta.Generator.Generators
             GenerateContractApis(sb, services);
 
             // 4. Generate ConfigureMeta extension method
-            GenerateConfigureMetaExtension(sb, byStateType, allServerDeps, rootNamespace, hasOrleansConfig);
+            GenerateConfigureMetaExtension(sb, byStateType, allServerDeps, rootNamespace, hasOrleansConfig, emitCallTap);
             sb.AppendLine();
 
             // 0.24.0+ legacy MetaMethodSignatureValidator emit removed — replaced by
@@ -2393,7 +2396,8 @@ namespace SharedMeta.Generator.Generators
             Dictionary<string, List<ServiceImplInfo>> byStateType,
             List<string> serverDeps,
             string rootNamespace,
-            bool hasOrleansConfig)
+            bool hasOrleansConfig,
+            bool emitCallTap = false)
         {
             sb.AppendLine("    /// <summary>");
             sb.AppendLine("    /// Extension methods for configuring meta services.");
@@ -2450,6 +2454,12 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            // Register entity grain resolver");
             sb.AppendLine("            services.AddSingleton<SharedMeta.Server.Core.Grains.IEntityGrainResolver>(GeneratedEntityGrainResolver.Instance);");
             sb.AppendLine();
+            if (emitCallTap)
+            {
+                sb.AppendLine("            // Method table and argument codecs for the referenced call tap.");
+                sb.AppendLine($"            services.AddSingleton<SharedMeta.Server.Core.Diagnostics.IMetaMethodDescriptors>({MetaMethodDescriptorGenerator.ClassName}.Instance);");
+                sb.AppendLine();
+            }
             sb.AppendLine("            // DI handle for the generated {Service}ServerApi accessors, so callers never have to");
             sb.AppendLine("            // resolve and pass a serializer that DI already holds.");
             sb.AppendLine("            Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions");

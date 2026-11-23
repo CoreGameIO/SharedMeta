@@ -232,4 +232,7 @@ internal static partial class Log
 
     [LoggerMessage(EventId = 2502, EventName = "ProviderEventError", Level = LogLevel.Error, Message = "Event error in {SubscriberInterface}.{MethodName}")]
     public static partial void ProviderEventError(this ILogger logger, Exception ex, string subscriberInterface, string methodName);
+
+    [LoggerMessage(EventId = 2503, EventName = "CallTapError", Level = LogLevel.Warning, Message = "Call tap failed in {Stage} for methodId={MethodId}; the call itself is unaffected")]
+    public static partial void CallTapError(this ILogger logger, Exception ex, string stage, ushort methodId);
 }

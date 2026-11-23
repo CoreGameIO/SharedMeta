@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Server.Core needs the ASP.NET shared framework; the compilations under test reference
+         whatever this process has loaded, so it must be on the runtime's probing path too. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <!-- Orleans (via Server.Core) pins Microsoft.CodeAnalysis.Common >= 5.0.0. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" VersionOverride="5.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Referenced as a library, not as an analyzer: the tests drive it with CSharpGeneratorDriver. -->
+    <ProjectReference Include="..\..\src\SharedMeta.Generator\SharedMeta.Generator.csproj" />
+    <!-- Metadata for the compilations under test. -->
+    <ProjectReference Include="..\..\src\SharedMeta.Client\SharedMeta.Client.csproj" />
+    <ProjectReference Include="..\..\src\SharedMeta.Server.Core\SharedMeta.Server.Core.csproj" />
+  </ItemGroup>
+
+</Project>

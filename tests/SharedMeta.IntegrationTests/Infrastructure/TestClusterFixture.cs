@@ -186,6 +186,9 @@ public class TestClusterFixture : IAsyncLifetime
                     // Register execution mode provider (shared with tests)
                     services.AddSingleton<IExecutionModeProvider>(SharedModeProvider);
 
+                    // Idle until a call-tap test arms it.
+                    services.AddSingleton<SharedMeta.Server.Core.Diagnostics.IMetaCallTap>(RecordingCallTap.Instance);
+
                     services.AddKeyedSingleton<global::Orleans.Storage.IGrainStorage>(
                         "Default",
                         (sp, _) => new CountingGrainStorage(

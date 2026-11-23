@@ -100,7 +100,9 @@ namespace SharedMeta.Server.Core.Telemetry
             else
                 own = startSpan ? parent.WithNewSpan() : parent;
 
-            var context = new MetaCallContext(own, op, playerId, entityId, stateType, service, method, sessionId, requestId);
+            // Only a hop with its own span has a parent span; a pass-through hop logs under the parent's.
+            ulong parentSpanId = parent.IsValid && own.SpanId != parent.SpanId ? parent.SpanId : 0;
+            var context = new MetaCallContext(own, op, playerId, entityId, stateType, service, method, sessionId, requestId, parentSpanId);
             if (activity != null) Tag(activity, context);
 
             var logScope = logScopes && logger != null ? logger.BeginScope(context) : null;

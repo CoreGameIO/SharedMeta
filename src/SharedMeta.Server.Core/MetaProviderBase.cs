@@ -18,7 +18,8 @@ namespace SharedMeta.Server.Core;
 /// Base class for generated MetaProvider implementations.
 /// Provides common functionality for handling RPC calls and external events.
 /// </summary>
-public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TState : class, ISharedState, new()
+public abstract class MetaProviderBase<TState> : IMetaProvider<TState>, SharedMeta.Server.Core.Diagnostics.IMetaCallTapTarget
+    where TState : class, ISharedState, new()
 {
     protected IMetaProviderContext Context { get; private set; } = null!;
     protected TState State { get; private set; } = null!;
@@ -519,6 +520,164 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     /// </summary>
     protected abstract ValueTask<DispatchResult> DispatchCall(ushort methodId, ReadOnlyMemory<byte> payload);
 
+    // ── Call tap ────────────────────────────────────────────────────────────────
+    // The generator routes DispatchCall / DispatchSignal / RunInitAsync through the Tap*
+    // helpers only when the server project references a [MetaCallTapProvider] assembly;
+    // otherwise none of this is reached. The fields below are plain assignments on paths
+    // that already exist, so they cost nothing measurable when no tap is present.
+
+    private static readonly string s_stateTypeName = typeof(TState).FullName ?? typeof(TState).Name;
+
+    /// <summary>Tap set by the hosting grain; null when the host registered none.</summary>
+    public SharedMeta.Server.Core.Diagnostics.IMetaCallTap? CallTap { get; set; }
+
+    /// <summary>True when the generated provider routes its dispatch through the tap.</summary>
+    public virtual bool SupportsCallTap => false;
+
+    /// <summary>
+    /// Sets <see cref="CurrentEntitySequence"/> from the grain's persisted counter — at activation,
+    /// and when a failed call rolls the counter back.
+    /// </summary>
+    public void SeedEntitySequence(long sequence) => CurrentEntitySequence = sequence;
+
+    /// <summary>Kind of the dispatch about to run; set right before every <see cref="DispatchCall"/>.</summary>
+    protected SharedMeta.Server.Core.Diagnostics.MetaDispatchKind DispatchKind { get; private set; }
+
+    /// <summary>Sequence of the operation in progress, or of the last applied one between operations.</summary>
+    public long CurrentEntitySequence { get; private set; }
+
+    string SharedMeta.Server.Core.Diagnostics.IMetaCallTapTarget.EntityId => Context.EntityId;
+    string SharedMeta.Server.Core.Diagnostics.IMetaCallTapTarget.StateTypeName => s_stateTypeName;
+    object? SharedMeta.Server.Core.Diagnostics.IMetaCallTapTarget.TapState { get; set; }
+
+    /// <summary>True when the tap wants this dispatch; generated code calls it before anything else.</summary>
+    protected bool ShouldTap(SharedMeta.Server.Core.Diagnostics.MetaDispatchKind kind, ushort methodId)
+    {
+        var tap = CallTap;
+        if (tap is null || !tap.IsEnabled) return false;
+        try { return tap.ShouldCapture(kind, methodId, Context.EntityId); }
+        catch (Exception ex) { Logger.CallTapError(ex, "ShouldCapture", methodId); return false; }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="core"/> between tap Begin/End. Stays synchronous when the dispatch
+    /// completes synchronously, so the sync-first dispatcher keeps its no-state-machine path.
+    /// </summary>
+    protected ValueTask<DispatchResult> TapDispatchCall(ushort methodId, ReadOnlyMemory<byte> payload,
+        Func<ushort, ReadOnlyMemory<byte>, ValueTask<DispatchResult>> core)
+    {
+        var tap = CallTap!;
+        var scope = TapBegin(tap, DispatchKind, methodId, payload);
+        // Declined (or Begin failed): no End, and no async tail of ours around the dispatch.
+        if (scope is null) return core(methodId, payload);
+        ValueTask<DispatchResult> pending;
+        try
+        {
+            pending = core(methodId, payload);
+        }
+        catch (Exception ex)
+        {
+            TapEndCall(tap, scope, methodId, default, ex);
+            throw;
+        }
+
+        if (pending.IsCompletedSuccessfully)
+        {
+            // Read once and return a fresh ValueTask: a source-backed ValueTask may not be consumed twice.
+            var result = pending.Result;
+            TapEndCall(tap, scope, methodId, result.ResultBytes, null);
+            return new ValueTask<DispatchResult>(result);
+        }
+        return AwaitTappedCall(tap, scope, methodId, pending);
+    }
+
+    private async ValueTask<DispatchResult> AwaitTappedCall(SharedMeta.Server.Core.Diagnostics.IMetaCallTap tap,
+        object scope, ushort methodId, ValueTask<DispatchResult> pending)
+    {
+        DispatchResult result;
+        try
+        {
+            result = await pending;
+        }
+        catch (Exception ex)
+        {
+            TapEndCall(tap, scope, methodId, default, ex);
+            throw;
+        }
+        TapEndCall(tap, scope, methodId, result.ResultBytes, null);
+        return result;
+    }
+
+    protected Task TapDispatchSignal(ushort methodId, ReadOnlyMemory<byte> payload,
+        Func<ushort, ReadOnlyMemory<byte>, Task> core)
+    {
+        var tap = CallTap!;
+        var scope = TapBegin(tap, SharedMeta.Server.Core.Diagnostics.MetaDispatchKind.Signal, methodId, payload);
+        return scope is null ? core(methodId, payload) : RunTappedSignal(tap, scope, methodId, payload, core);
+    }
+
+    private async Task RunTappedSignal(SharedMeta.Server.Core.Diagnostics.IMetaCallTap tap, object scope,
+        ushort methodId, ReadOnlyMemory<byte> payload, Func<ushort, ReadOnlyMemory<byte>, Task> core)
+    {
+        try
+        {
+            await core(methodId, payload);
+        }
+        catch (Exception ex)
+        {
+            try { tap.EndSignal(scope, ex); } catch (Exception tapEx) { Logger.CallTapError(tapEx, "EndSignal", methodId); }
+            throw;
+        }
+        try { tap.EndSignal(scope, null); } catch (Exception tapEx) { Logger.CallTapError(tapEx, "EndSignal", methodId); }
+    }
+
+    protected Task<int> TapRunInit(int currentVersion, Func<int, Task<int>> core)
+    {
+        var tap = CallTap!;
+        var scope = TapBegin(tap, SharedMeta.Server.Core.Diagnostics.MetaDispatchKind.Init, 0, default);
+        return scope is null ? core(currentVersion) : RunTappedInit(tap, scope, currentVersion, core);
+    }
+
+    private async Task<int> RunTappedInit(SharedMeta.Server.Core.Diagnostics.IMetaCallTap tap, object scope,
+        int currentVersion, Func<int, Task<int>> core)
+    {
+        int newVersion;
+        try
+        {
+            newVersion = await core(currentVersion);
+        }
+        catch (Exception ex)
+        {
+            try { tap.EndInit(scope, currentVersion, currentVersion, ex); } catch (Exception tapEx) { Logger.CallTapError(tapEx, "EndInit", 0); }
+            throw;
+        }
+        try { tap.EndInit(scope, currentVersion, newVersion, null); } catch (Exception tapEx) { Logger.CallTapError(tapEx, "EndInit", 0); }
+        return newVersion;
+    }
+
+    private object? TapBegin(SharedMeta.Server.Core.Diagnostics.IMetaCallTap tap,
+        SharedMeta.Server.Core.Diagnostics.MetaDispatchKind kind, ushort methodId, ReadOnlyMemory<byte> payload)
+    {
+        try
+        {
+            var call = new SharedMeta.Server.Core.Diagnostics.MetaTapCall(kind, methodId, payload,
+                MetaContext?.CallerId, SharedMeta.Core.Diagnostics.MetaCallContext.Current, this);
+            return tap.Begin(in call);
+        }
+        catch (Exception ex)
+        {
+            Logger.CallTapError(ex, "Begin", methodId);
+            return null;
+        }
+    }
+
+    private void TapEndCall(SharedMeta.Server.Core.Diagnostics.IMetaCallTap tap, object scope, ushort methodId,
+        ReadOnlyMemory<byte> resultBytes, Exception? error)
+    {
+        try { tap.EndCall(scope, resultBytes, error); }
+        catch (Exception ex) { Logger.CallTapError(ex, "EndCall", methodId); }
+    }
+
     /// <summary>
     /// Resolves a sibling-service impl by interface type. Default returns null; generated
     /// providers override with a switch over services hosted on this entity's TState so
@@ -908,6 +1067,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
 
         try
         {
+            if (entitySequenceNumber != 0) CurrentEntitySequence = entitySequenceNumber;
             MetaContext.CallerId = call.CallerId;
             // Effective, not raw: service code branching on the caller's version must see the same
             // version the configs around it were resolved against.
@@ -969,6 +1129,9 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // Dispatch the call. The generated dispatcher emits serializer.Pack(result) via
             // Context.Serializer (GrainScopedSerializer) — result.ResultBytes is a ROM slice
             // over the per-grain scratch buffer, valid until the next Handle*Async entry.
+            DispatchKind = isClientOriginated
+                ? SharedMeta.Server.Core.Diagnostics.MetaDispatchKind.Rpc
+                : SharedMeta.Server.Core.Diagnostics.MetaDispatchKind.CrossEntity;
             var result = await DispatchCall(call.MethodId, call.Payload);
 
             // For cross-entity calls, the inner result IS the outgoing payload (the source
@@ -1119,6 +1282,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
                     }
 
                     MetaContext.BeginOperation();
+                    DispatchKind = SharedMeta.Server.Core.Diagnostics.MetaDispatchKind.Trigger;
                     var triggerResult = await DispatchCall(triggerMethodId, default(ReadOnlyMemory<byte>));
                     // triggerResult.ResultBytes is byte[]-backed (dispatcher no longer pools).
                     // Embedded into the trigger op below; GC reclaims when the op resets.
@@ -1312,13 +1476,16 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
         var frame = MetaContext.PushNestedOperation();
 
         DispatchResult result;
+        var outerKind = DispatchKind;
         try
         {
             // Sibling nested call.
+            DispatchKind = SharedMeta.Server.Core.Diagnostics.MetaDispatchKind.Nested;
             result = await DispatchCall(methodId, argsBytes);
         }
         finally
         {
+            DispatchKind = outerKind;
             // Always pop, even on exception, to keep outer recorder state coherent.
             MetaContext.PopNestedOperation(frame, out _);
         }
@@ -1436,6 +1603,7 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             // result.ResultBytes is byte[]-backed (dispatcher no longer uses PooledPayload
             // for intermediate dispatcher results); the byte[] survives the EntityGrain →
             // SessionManager grain hop normally and reaches the client.
+            DispatchKind = SharedMeta.Server.Core.Diagnostics.MetaDispatchKind.Query;
             var result = await DispatchCall(call.MethodId, call.Payload);
 
             return new QueryCallResponse
