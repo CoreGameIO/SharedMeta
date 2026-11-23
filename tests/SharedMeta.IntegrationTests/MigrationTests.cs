@@ -88,7 +88,7 @@ public class MigrationTests
     }
 
     [Fact(Timeout = 60_000)]
-    public async Task Migration_ConfigAt2_0_AppliesSchema1Then2_WithCorrectPinnedConfigs()
+    public async Task Migration_ConfigAt2_0_AppliesSchema1Then2()
     {
         var server = CreateServer();
         var playerId = UniqueId("mig-v2-");
@@ -98,9 +98,8 @@ public class MigrationTests
 
         var value = await GetQueryApi(client, playerId).GetValueAsync();
 
-        // Config 2.0 meets thresholds for schema 1 and 2. Sequential migration:
-        //   step 1 with Config@1.0 → Value=1
-        //   step 2 with Config@2.0 → Value=2
+        // Config 2.0 meets thresholds for schema 1 and 2. The one-arg ladder init stops at
+        // schema 1, so the schema-2 step still runs — both under this client's Config@2.0.
         // Final Value = 2 (last step wins), schema stored = 2.
         Assert.Equal(2, value);
     }
@@ -116,10 +115,8 @@ public class MigrationTests
 
         var value = await GetQueryApi(client, playerId).GetValueAsync();
 
-        // Config 3.0 meets all three thresholds → sequential migration 1→2→3.
-        // Each [MetaInit] call receives the config pinned to that step's transition
-        // version (1.0 / 2.0 / 3.0 respectively), not the current 3.0.
-        // Value = 3 after all steps complete.
+        // Config 3.0 meets all three thresholds; the ladder init climbs 1→2→3, every call
+        // under this client's Config@3.0. Value = 3 after all steps complete.
         Assert.Equal(3, value);
     }
 

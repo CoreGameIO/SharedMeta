@@ -716,14 +716,15 @@ namespace SharedMeta.Core
     /// <list type="bullet">
     ///   <item><c>Task&lt;int&gt; Init(int version)</c> — receives current schema version.</item>
     ///   <item><c>Task&lt;int&gt; Init(int version, int targetVersion)</c> — also receives the
-    ///   target schema for this step. On first init (version == 0), the framework computes target
-    ///   as the highest <see cref="MetaStateVersionAttribute.StateVersion"/> whose config conditions
-    ///   are satisfied by the current provider config (or 1 when no <c>[MetaStateVersion]</c> is
-    ///   declared). On subsequent migration steps, target equals that step's
-    ///   <see cref="MetaStateVersionAttribute.StateVersion"/>. Use the two-arg form to write
-    ///   idempotent migrations: <c>if (version &lt; N &amp;&amp; target &gt;= N) { ... }</c>.</item>
+    ///   target schema. A fresh entity (version == 0) gets a single call whose target is the
+    ///   highest <see cref="MetaStateVersionAttribute.StateVersion"/> the triggering client's configs
+    ///   satisfy (1 when no <c>[MetaStateVersion]</c> is declared) — build the current shape and
+    ///   return target. A persisted entity gets one call per remaining step with target = that
+    ///   step's <see cref="MetaStateVersionAttribute.StateVersion"/>. If a call returns less than
+    ///   target, the remaining steps still run.</item>
     /// </list>
-    /// Returns the new version number to persist.
+    /// Every call sees the configs resolved for the client that triggered it, never a historical
+    /// threshold branch. Returns the new version number to persist.
     /// </summary>
     [AttributeUsage(AttributeTargets.Method)]
     public class MetaInitAttribute : Attribute
@@ -1223,12 +1224,11 @@ namespace SharedMeta.Core
     /// <summary>
     /// Declares a state schema migration breakpoint on an <see cref="ISharedState"/> class.
     ///
-    /// When all config conditions for a given <see cref="StateVersion"/> are met (AND semantics
-    /// across multiple attributes with the same <see cref="StateVersion"/>), the source generator
-    /// emits code that calls <c>[MetaInit]</c> with <see cref="IMetaConfigProvider{TConfig}.GetConfig"/>
-    /// pinned to the transition version — not the current latest config. Sequential migrations
-    /// (profiles that skipped intermediate versions) receive one <c>[MetaInit]</c> call per
-    /// unprocessed step in ascending order.
+    /// A client may bring an entity to schema N only when its resolved configs meet every
+    /// condition for N (AND semantics across attributes with the same <see cref="StateVersion"/>).
+    /// A fresh entity is initialized directly at the highest such schema with one <c>[MetaInit]</c>
+    /// call; a persisted one receives one call per unprocessed step in ascending order. All calls
+    /// run under the triggering client's configs — the threshold gates, it is not the config used.
     ///
     /// Only declare breakpoints — points where the schema actually changes.
     /// Config bumps that require no schema change need no entry.

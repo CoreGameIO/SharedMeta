@@ -540,17 +540,22 @@ public partial class ProfileServiceImpl : IProfileService
     [MetaInit]
     public Task<int> InitState(int version, int target)
     {
-        if (version < 1 && target >= 1) {
-            State.Energy = Config.StartEnergy;   // Config pinned to 1.x branch
-            State.Money  = Config.StartMoney;
+        if (version == 0) {                       // fresh entity: one call, build at target
+            State.Energy   = Config.StartEnergy;
+            State.Money    = Config.StartMoney;
+            State.NewField = Config.NewFieldDefault;
+            return Task.FromResult(target);
         }
-        if (version < 2 && target >= 2) {
-            State.NewField = Config.NewFieldDefault;   // Config pinned to 2.0 transition
+        if (version < 2 && target >= 2) {         // persisted entity: 1→2 step
+            State.NewField = Config.NewFieldDefault;
+            return Task.FromResult(2);
         }
-        return Task.FromResult(Math.Max(version, target));
+        return Task.FromResult(version);
     }
 }
 ```
+
+Fresh entity → one call, `target` = highest schema its client allows. Persisted entity → one call per remaining step. Returning less than `target` makes the remaining steps run too. All calls see the triggering client's configs — never a historical threshold branch.
 
 **When `[MetaInit]` runs (changed in 0.19.0):**
 - **Activation no longer drives migration.** First-time init and lazy migration are deferred to `SubscribeAsync` (subscriber-driven) or to the first RPC call (`HandleCallAsync` / `HandleQueryAsync`). Both paths cap migration to the connecting client's resolved config branch.
@@ -560,7 +565,7 @@ public partial class ProfileServiceImpl : IProfileService
 
 **Available during `[MetaInit]`:**
 - `Context.Random` / `Context.ServerRandom` — deterministic randomness
-- `Config` — pinned to the appropriate branch for this step (see [Per-Client Config Branches & State Migration](#per-client-config-branches--state-migration))
+- `Config` / `[ServiceConfig]` accessors — resolved for the client that triggered init, same as its method calls (see [Per-Client Config Branches & State Migration](#per-client-config-branches--state-migration))
 - `Context.Version` / `Context.ConfigVersion` — current schema and config version (0.19.0+)
 
 ### Normalizing Loaded State (`IStateLoadedHook`)
@@ -792,7 +797,7 @@ public partial class ProfileState : ISharedState { … }
 
 Multiple `[MetaStateVersion(N, ...)]` with the same `N` form an **AND gate** (e.g. schema 3 needs `GameConfig >= 3.1` AND `SeasonConfig >= 1.4`).
 
-The framework runs `[MetaInit]` once per applicable step, with `Context.Config` pinned to that step's transition version (not the latest). Sequential migrations get one call per unprocessed step in order.
+A fresh entity gets one `[MetaInit]` call targeting the highest schema its client allows; a persisted entity gets one call per unprocessed step in order. Thresholds gate which schema a client may reach — every call runs under the triggering client's configs, not the threshold version.
 
 #### `[NoMigrate]` and `[MinStateVersion(N)]` — per-method control
 

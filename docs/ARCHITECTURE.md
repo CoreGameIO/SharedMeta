@@ -466,7 +466,7 @@ State classes declare migration breakpoints:
 public partial class ProfileState { ... }
 ```
 
-Generator emits a `RunInitAsync` walker that fires `[MetaInit]` once per migration step in ascending order, with `Context.Config` pinned to the step's transition version. Two caps stack:
+Generator emits a `RunInitAsync` walker: a fresh entity gets one `[MetaInit]` call targeting the capped schema; a persisted one gets one call per remaining step in ascending order. Configs are bound once by `MetaProviderBase.InitializeStateAsync` for the client driving init — steps never fetch threshold versions. Two caps stack:
 
 - **Per-client cap:** the connecting client's resolved branch limits how far migration runs (a 1.x client doesn't trigger 2.0 migration on a fresh entity).
 - **Per-method cap:** `[MinStateVersion(N)]` on a `[MetaMethod]` caps lazy migration to schema N. `[NoMigrate]` skips migration entirely and pins `Context.Config` to the schema-floor branch (used for cross-entity "administrative" calls like gift sending — the recipient isn't force-upgraded).
@@ -595,6 +595,7 @@ The same business code runs on Orleans server and local backend without modifica
 
 | Version | Architectural change |
 |---|---|
+| 0.48.0 | **Init under the triggering client's configs** — `MetaProviderBase.InitializeStateAsync` binds `Config` / `Configs` for the driving client before `[MetaInit]` (all init paths). Fresh entities get one call at the client's capped schema; persisted ones climb steps. `[MetaStateVersion]` thresholds gate reachability only — no historical config fetches. **Behaviour-breaking** |
 | 0.47.0 | **Call identity and opt-in observability** — W3C trace id per call (client `MetaCallScope` → `TraceParent` on requests and `RpcCall`), `ILogger` scope on every server hop, `MetaTelemetryOptions` (per-method series, hub/endpoint metrics, log scopes, analytics log), `IMetaServerObserver` / `IMetaClientCallObserver`. The trace travels inside `RpcCall`, not Orleans `RequestContext` (too costly on the hot path). **Breaking** |
 | 0.46.0 | **`ILogger` is the only logging abstraction** — `IMetaLogger` and its implementations removed; `MetaLog.SetLogger(ILogger)`, `MetaContext.Log : ILogger`, structured templates on the server (`EntityLogger` prefixes the entity id). UPM ships a signature-exact M.E.L. shim under `#if !HAS_MEL`. Config download helpers (`AddMetaConfigPublicUrl`, `MapMetaConfigDownload`) move to `Server.Core`, transport-agnostic. Grain-touching shutdown work runs before the silo stops. **Breaking** |
 | 0.45.0 | **Read-only cross-entity Query calls** — `GetI{Service}(id)` calls to `Mode = Query` methods route to `HandleQueryFromEntityAsync` on the target (no sequence advance, broadcast or persistence). New `IServerRecordContext.QueryEntityAsync` / `IMetaProvider.HandleQueryFromEntityAsync` with full-call fallback defaults; non-breaking |

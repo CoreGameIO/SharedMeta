@@ -37,7 +37,7 @@ namespace SharedMeta.Client.Telemetry
     public static class SharedMetaClientMeters
     {
         public const string MeterName = "SharedMeta.Client";
-        public const string MeterVersion = "0.47.0";
+        public const string MeterVersion = "0.48.0";
 
         public static readonly Meter Meter = new(MeterName, MeterVersion);
 
@@ -83,7 +83,7 @@ namespace SharedMeta.Client.Telemetry
     public static class SharedMetaClientActivities
     {
         public const string SourceName = "SharedMeta.Client";
-        public const string SourceVersion = "0.47.0";
+        public const string SourceVersion = "0.48.0";
 
         public static readonly ActivitySource Source = new(SourceName, SourceVersion);
 

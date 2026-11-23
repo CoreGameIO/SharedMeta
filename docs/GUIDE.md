@@ -250,7 +250,9 @@ Use `[MetaInit]` on a method in your `[MetaServiceImpl]` class to initialize or 
 [MetaInit] public Task<int> Init(int version, int target) { ... }
 ```
 
-The two-arg form pairs naturally with `[MetaStateVersion]` migration breakpoints (see [Per-Client Config Branches & State Migration](#per-client-config-branches--state-migration)) — `target` is the schema version the framework wants to reach in this step, so you can branch independently of which migration step triggered the call:
+The two-arg form pairs naturally with `[MetaStateVersion]` migration breakpoints (see [Per-Client Config Branches & State Migration](#per-client-config-branches--state-migration)) — `target` is the schema version the framework wants to reach in this call.
+
+**Fresh vs persisted entities.** A fresh entity (`version == 0`) gets **one** call with `target` = the highest schema its client allows — build the current shape directly and return `target`. A persisted entity gets one call per remaining schema, in ascending order. Every call — fresh or migration — sees the configs of the client that triggered it, never a historical branch:
 
 ```csharp
 [MetaServiceImpl(typeof(IProfileService), typeof(ProfileState))]
@@ -259,21 +261,26 @@ public partial class ProfileServiceImpl : IProfileService
     [MetaInit]
     public Task<int> InitState(int version, int target)
     {
-        if (version < 1 && target >= 1)
+        if (version == 0)
         {
-            // Base init — Context.Config pinned to 1.x branch.
-            State.Energy = Config.StartEnergy;
-            State.Money  = Config.StartMoney;
+            // Fresh entity — create directly at `target` with the current balance.
+            State.Energy   = Config.StartEnergy;
+            State.Money    = Config.StartMoney;
+            State.NewField = Config.NewFieldDefault;
+            return Task.FromResult(target);
         }
         if (version < 2 && target >= 2)
         {
-            // 1→2 migration — Context.Config pinned to 2.0 transition version.
+            // 1→2 migration of a persisted entity.
             State.NewField = Config.NewFieldDefault;
+            return Task.FromResult(2);
         }
-        return Task.FromResult(Math.Max(version, target));
+        return Task.FromResult(version);
     }
 }
 ```
+
+If init returns less than `target` (e.g. the one-arg ladder style `if (version < 1) { …; return 1; }`), the framework continues with the per-step calls — so a migration step must then also be correct for a just-created entity.
 
 **When `[MetaInit]` runs (changed in 0.19.0):**
 - **Activation no longer drives migration.** `OnActivateAsync` only loads persisted state.
@@ -286,9 +293,9 @@ public partial class ProfileServiceImpl : IProfileService
 
 **Available during `[MetaInit]`:**
 - `Context.Random` and `Context.ServerRandom` — available for deterministic initialization (e.g., map generation)
-- `Config` — pinned to the appropriate branch for this step. For base init (target=1) without an explicit `[MetaStateVersion(1, …)]`, pinned to `(1, 0, 0)`. For migration steps, pinned to the step's transition version (so a 1→2 migration sees `Config@2.0`, not the latest).
+- `Config` / `[ServiceConfig]` accessors — resolved for the client that triggered init (subscriber, caller, or entity owner / `IConfigVersionResolver.CurrentClientVersion` for server-originated calls), exactly as a method dispatched by that client would see them. Never a historical transition branch.
 - `Context.Version` — current schema version (the source version of this step).
-- `Context.ConfigVersion` — the `MetaConfigVersion` matching `Config`.
+- `Context.ConfigVersion` / `Context.ConfigVersions` — the versions matching those configs.
 - `State` — the entity state to initialize/migrate
 
 **Note:** `[MetaInit]` is a server-only step. Random values used during init are not replayed on the client — the client receives the already-initialized state snapshot.
@@ -636,7 +643,7 @@ Multiple attributes with the same `StateVersion` form an **AND gate** — useful
 [MetaStateVersion(3, "1.4", typeof(SeasonConfig))] //   GameConfig >= 3.1 AND SeasonConfig >= 1.4
 ```
 
-The framework calls `[MetaInit]` once per applicable step, with `Context.Config` pinned to that step's transition version (not the latest), so each migration runs against the config it was authored against. Sequential migrations (a profile that skipped intermediate versions) get one `[MetaInit]` call per unprocessed step in ascending order.
+A fresh entity gets one `[MetaInit]` call targeting the highest schema its client allows. A persisted entity that skipped intermediate versions gets one call per unprocessed step in ascending order. Thresholds only gate *which* schema a client may reach — every call runs under the triggering client's own configs, not the threshold version, so retired config branches are never fetched.
 
 #### Client-aware migration cap
 

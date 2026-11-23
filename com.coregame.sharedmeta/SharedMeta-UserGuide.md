@@ -229,21 +229,26 @@ public partial class GameServiceImpl : IGameService
     [MetaInit]
     public Task<int> InitState(int version, int target)
     {
-        if (version < 1 && target >= 1)
+        if (version == 0)
         {
-            // Base init — Config pinned to 1.x branch
+            // Fresh entity — one call, created directly at `target` with the current config
             State.Score = 0;
             State.Items = new List<string> { "starter-sword" };
+            State.NewField = Config.NewFieldDefault;
+            return Task.FromResult(target);
         }
         if (version < 2 && target >= 2)
         {
-            // 1→2 migration — Config pinned to 2.0 transition version
+            // 1→2 migration of a persisted entity
             State.NewField = Config.NewFieldDefault;
+            return Task.FromResult(2);
         }
-        return Task.FromResult(Math.Max(version, target));
+        return Task.FromResult(version);
     }
 }
 ```
+
+A fresh entity gets one call targeting the highest schema its client allows; a persisted one gets one call per remaining step. If init returns less than `target`, the remaining steps still run — so with the ladder style a migration step must also be correct for a just-created entity.
 
 **When `[MetaInit]` runs (changed in 0.19.0):**
 - Activation no longer pre-migrates fresh entities. Init/migration is deferred to the first client `SubscribeAsync` or RPC call, capped to that client's resolved config branch — so a 1.x client never triggers a 2.0 migration on a fresh entity.
@@ -251,7 +256,7 @@ public partial class GameServiceImpl : IGameService
 
 **Available during `[MetaInit]`:**
 - `Context.Random` and `Context.ServerRandom` — deterministic randomness for init
-- `Config` — pinned to the appropriate branch for this step
+- `Config` / `[ServiceConfig]` accessors — resolved for the client that triggered init, same as a method call from that client (never a historical branch)
 - `Context.Version` / `Context.ConfigVersion` — current schema and config version (0.19.0+)
 
 ### Normalizing Loaded State (`IStateLoadedHook`)
@@ -477,7 +482,7 @@ Declare on a state class that schema N requires config ≥ X:
 public partial class ProfileState : ISharedState { … }
 ```
 
-Migration is **client-aware** — a 1.x client connecting to a fresh entity gets schema 1 (base init only). A 2.x client triggers lazy migration to schema 2 with `Context.Config` pinned to the 2.0 transition version. The per-entity `IsClientConfigCompatible` gate rejects subscribes from clients whose config branch can't satisfy the entity's persisted schema.
+Migration is **client-aware** — a 1.x client connecting to a fresh entity gets schema 1. A 2.x client creating a fresh entity gets it directly at schema 2; reaching an existing schema-1 entity, it triggers the 1→2 step. Both run under the 2.x client's own config. The per-entity `IsClientConfigCompatible` gate rejects subscribes from clients whose config branch can't satisfy the entity's persisted schema.
 
 #### Per-method controls
 

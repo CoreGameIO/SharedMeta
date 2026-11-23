@@ -41,6 +41,15 @@ public static class TestServerConfiguration
         new(v => new AsyncRolloutExtraConfig { Bonus = v });
 
     /// <summary>
+    /// Async-only, like a production BroadcastingConfigProvider: a sync read of a version nobody
+    /// warmed throws, so init must reach its config through the async warm path.
+    /// </summary>
+    public static readonly AsyncOnlyEchoConfigProvider<InitStartKitConfig> InitStartKitProvider =
+        new(v => new InitStartKitConfig { Major = v.Major, StartGold = 100 * v.Major });
+    public static readonly AsyncOnlyEchoConfigProvider<FreshInitConfig> FreshInitProvider =
+        new(v => new FreshInitConfig { Major = v.Major, Minor = v.Minor });
+
+    /// <summary>
     /// Register all test meta services using generated ConfigureMeta.
     /// </summary>
     public static IServiceCollection ConfigureTestMeta(
@@ -80,6 +89,9 @@ public static class TestServerConfiguration
         services.AddSingleton<IMetaConfigProvider<RolloutConfig>>(RolloutConfigProvider);
         services.AddSingleton<IMetaConfigProvider<AsyncRolloutPrimaryConfig>>(AsyncRolloutPrimaryProvider);
         services.AddSingleton<IMetaConfigProvider<AsyncRolloutExtraConfig>>(AsyncRolloutExtraProvider);
+        // [MetaInit] reading a [ServiceConfig] without [MetaStateVersion].
+        services.AddSingleton<IMetaConfigProvider<InitStartKitConfig>>(InitStartKitProvider);
+        services.AddSingleton<IMetaConfigProvider<FreshInitConfig>>(FreshInitProvider);
         // Config-aware argument transformer fixture.
         services.AddSingleton<IMetaConfigProvider<ItemCatalogConfig>>(new TestItemCatalogConfigProvider());
         // _PatchTracked copy dependency fixture: the [ServerMetaService] bridge.
@@ -221,6 +233,27 @@ public class TestAdditionalFixtureSeasonConfigProvider : IMetaConfigProvider<Add
         Major = version.Major,
         Minor = version.Minor,
     };
+}
+
+/// <summary>
+/// Version-echo provider with the BroadcastingConfigProvider contract: sync <see cref="GetConfig"/>
+/// serves only what <see cref="GetConfigAsync"/> materialized, so any sync read of a version the
+/// framework did not warm throws — the way an unwarmed historical branch fails in production.
+/// </summary>
+public class AsyncOnlyEchoConfigProvider<TConfig> : IMetaConfigProvider<TConfig> where TConfig : class
+{
+    private readonly Func<MetaConfigVersion, TConfig> _create;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<MetaConfigVersion, TConfig> _cache = new();
+
+    public AsyncOnlyEchoConfigProvider(Func<MetaConfigVersion, TConfig> create) => _create = create;
+
+    public TConfig GetConfig(MetaConfigVersion version)
+        => _cache.TryGetValue(version, out var cached)
+            ? cached
+            : throw new InvalidOperationException($"no cached {typeof(TConfig).Name} for {version}");
+
+    public Task<TConfig> GetConfigAsync(MetaConfigVersion version)
+        => Task.FromResult(_cache.GetOrAdd(version, _create));
 }
 
 /// <summary>Server side of <see cref="IPatchCopyBridge"/>.</summary>

@@ -1535,6 +1535,8 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
     {
         if (MetaContext == null) return currentVersion;
 
+        await BindConfigsForInitAsync();
+
         // Set up ServerRandom so [MetaInit] methods can use it
         MetaContext.ServerRandom = new MetaRandomRecorder(_serverRandom, MetaContext);
         MetaContext.Random = _optimisticRandom;
@@ -1557,6 +1559,38 @@ public abstract class MetaProviderBase<TState> : IMetaProvider<TState> where TSt
             MetaContext.ServerRandom = null;
         }
     }
+
+    /// <summary>
+    /// [MetaInit] reads configs through the same context as a method body, but init runs before
+    /// any dispatch has set them: on a fresh entity they were null (NRE on the first
+    /// <c>[ServiceConfig]</c> read), on an active one they were whatever the previous call left,
+    /// possibly resolved for another client. Binds them for the version driving this init — the
+    /// same resolution a dispatch under that version would see. [MetaStateVersion] steps still
+    /// override per step inside <see cref="RunInitAsync"/>.
+    /// </summary>
+    private async Task BindConfigsForInitAsync()
+    {
+        var version = string.IsNullOrEmpty(MigrationClientVersion) ? OwnerClientVersion : MigrationClientVersion;
+        if (!CanResolveConfigsFor(version)) return;
+
+        await WarmConfigCachesAsync(version);
+        var config = GetCachedConfigForClient(version);
+        if (config != null)
+        {
+            MetaContext!.Config = config;
+            MetaContext.ConfigVersion = ResolveClientConfigVersion(version);
+        }
+        MetaContext!.Configs = GetCachedServiceConfigsForClient(version);
+        MetaContext.ConfigVersions = GetCachedServiceConfigVersionsForClient(version);
+    }
+
+    /// <summary>
+    /// True when the per-call config getters can resolve for <paramref name="clientVersion"/>
+    /// without throwing. Init with no resolvable version leaves the context as it is rather than
+    /// failing — the entity may have no configs that init reads at all. Generated providers
+    /// override when the state has any config provider; default: nothing to bind.
+    /// </summary>
+    protected virtual bool CanResolveConfigsFor(string? clientVersion) => false;
 
     /// <summary>
     /// Override in generated code to call [MetaInit] methods.

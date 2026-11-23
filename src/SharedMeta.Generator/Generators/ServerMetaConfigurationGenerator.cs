@@ -906,6 +906,14 @@ namespace SharedMeta.Generator.Generators
                 sb.AppendLine("        private string? EffectiveClientVersion(string? clientVersion)");
                 sb.AppendLine("            => string.IsNullOrEmpty(clientVersion) ? _configVersionResolver?.CurrentClientVersion : clientVersion;");
 
+                // Guard for binding configs before [MetaInit]: the sync getters throw when no
+                // version resolves. Global resolves only through the server's CurrentClientVersion.
+                sb.AppendLine();
+                sb.AppendLine("        protected override bool CanResolveConfigsFor(string? clientVersion)");
+                sb.AppendLine(stateScope == 2
+                    ? "            => !string.IsNullOrEmpty(_configVersionResolver?.CurrentClientVersion);"
+                    : "            => !string.IsNullOrEmpty(EffectiveClientVersion(clientVersion));");
+
                 sb.AppendLine();
                 sb.AppendLine("        protected override void OnInitialize(Microsoft.Extensions.Logging.ILogger? logger)");
                 sb.AppendLine("        {");
@@ -1716,72 +1724,40 @@ namespace SharedMeta.Generator.Generators
 
                 if (hasMigration)
                 {
-                    // Schema 1 is "explicit" when the user declared [MetaStateVersion(1, …)] —
-                    // meaning they want schema 1 gated by its own config threshold. If no such
-                    // entry exists, schema 1 is "implicit base init" and we emit Step 0 to run
-                    // it unconditionally for fresh entities.
-                    bool hasExplicitSchemaOne = migStepGroups.Any(g => g.Key == 1);
+                    // Services whose [MetaInit] is not tied to any [MetaStateVersion] condition
+                    // keep their own version-counter logic and run once at the end.
+                    var handledConfigTypes = new HashSet<string?>(allMigConds.Select(c => c.ConfigTypeFullName));
+                    var uncoveredServices = servicesWithInit
+                        .Where(s => !handledConfigTypes.Contains(s.ConfigTypeFullName)
+                                 && !handledConfigTypes.Contains(null)
+                                 && !s.ServiceConfigTypeFullNames.Any(t => handledConfigTypes.Contains(t)))
+                        .ToList();
+                    var steppedServices = servicesWithInit.Except(uncoveredServices).ToList();
 
-                    // Step 0 — base init for primary-config services. Always runs for fresh
-                    // entities (currentVersion < 1) regardless of which migration steps fire.
-                    // Pinned to (1, 0, 0) so the user's base init has a well-defined config
-                    // branch (the "1.x" baseline). This decouples first-time init from the
-                    // schema-2+ migration steps gated by client-resolved config.
-                    var primaryServicesWithInit = servicesWithInit
-                        .Where(s => s.ConfigTypeFullName == null || s.ConfigTypeFullName == configType)
-                        .ToList();
-                    // 0.33.0+ services whose [MetaInit] is tied ONLY to [ServiceConfig] entries
-                    // (no legacy primary at all) also need a Step 0 base-init branch when schema 1
-                    // isn't explicitly gated — same "give it a well-defined 1.0 baseline" reasoning
-                    // as the primary case, just targeting Context.Configs[i] for each declared
-                    // entry instead of the legacy Context.Config.
-                    var serviceConfigServicesWithInit = servicesWithInit
-                        .Where(s => s.ConfigTypeFullName == null && s.ServiceConfigTypeFullNames.Count > 0)
-                        .ToList();
-                    bool step0HasPrimaryWork = primaryServicesWithInit.Count > 0 && configType != null;
-                    bool step0HasServiceConfigWork = serviceConfigServicesWithInit.Count > 0 && serviceConfigTypes.Count > 0;
-                    if (!hasExplicitSchemaOne && (step0HasPrimaryWork || step0HasServiceConfigWork))
+                    // Every step runs under the configs MetaProviderBase bound for the client
+                    // driving this init — never a historical branch: old branches get retired,
+                    // and their data references content the current code no longer has.
+                    //
+                    // Fresh entity: one [MetaInit] call per service, targeting the highest schema
+                    // this client allows (_migrationCap), so init can build the current shape
+                    // directly. The per-step blocks below only run for schemas init stopped short
+                    // of — persisted entities climb them one at a time.
+                    if (steppedServices.Count > 0)
                     {
-                        var guard = step0HasPrimaryWork ? "currentVersion < 1 && 1 <= _migrationCap && _configProvider != null" : "currentVersion < 1 && 1 <= _migrationCap";
-                        sb.AppendLine($"            if ({guard})");
+                        sb.AppendLine("            if (currentVersion < 1 && 1 <= _migrationCap)");
                         sb.AppendLine("            {");
-                        sb.AppendLine("                var _savedConfig0 = MetaContext!.Config;");
-                        sb.AppendLine("                var _savedConfigs0 = MetaContext!.Configs;");
-                        sb.AppendLine("                var _savedConfigVersions0 = MetaContext!.ConfigVersions;");
-                        sb.AppendLine("                try");
-                        sb.AppendLine("                {");
-                        if (step0HasPrimaryWork)
-                        {
-                            sb.AppendLine("                    MetaContext!.Config = _configProvider!.GetConfig(new SharedMeta.Core.MetaConfigVersion(1, 0, 0));");
-                            sb.AppendLine("                    MetaContext!.ConfigVersion = new SharedMeta.Core.MetaConfigVersion(1, 0, 0);");
-                        }
-                        if (step0HasServiceConfigWork)
-                        {
-                            sb.AppendLine($"                    var _step0Configs = new object[{serviceConfigTypes.Count}];");
-                            sb.AppendLine($"                    var _step0Versions = new SharedMeta.Core.MetaConfigVersion[{serviceConfigTypes.Count}];");
-                            for (int i = 0; i < serviceConfigTypes.Count; i++)
-                            {
-                                var sc = serviceConfigTypes[i];
-                                sb.AppendLine($"                    if (_serviceConfigProvider_{sc.Ident} != null) {{ _step0Configs[{i}] = _serviceConfigProvider_{sc.Ident}.GetConfig(new SharedMeta.Core.MetaConfigVersion(1, 0, 0)); _step0Versions[{i}] = new SharedMeta.Core.MetaConfigVersion(1, 0, 0); }}");
-                            }
-                            sb.AppendLine("                    MetaContext!.Configs = _step0Configs;");
-                            sb.AppendLine("                    MetaContext!.ConfigVersions = _step0Versions;");
-                        }
-                        sb.AppendLine("                    MetaContext!.Version = currentVersion;");
-                        foreach (var svc in primaryServicesWithInit.Concat(serviceConfigServicesWithInit))
+                        foreach (var svc in steppedServices)
                         {
                             var baseName = GetBaseName(svc.InterfaceName);
-                            var initArgs = svc.MetaInitParameterCount == 2 ? "currentVersion, 1" : "currentVersion";
-                            sb.AppendLine($"                    maxVersion = System.Math.Max(maxVersion, await (({svc.ImplClassFullName})Get{baseName}()).{svc.MetaInitMethodName}({initArgs}));");
+                            var initArgs = svc.MetaInitParameterCount == 2 ? "currentVersion, _migrationCap" : "currentVersion";
+                            sb.AppendLine("                MetaContext!.Version = currentVersion;");
+                            sb.AppendLine($"                maxVersion = System.Math.Max(maxVersion, await (({svc.ImplClassFullName})Get{baseName}()).{svc.MetaInitMethodName}({initArgs}));");
                         }
-                        sb.AppendLine("                }");
-                        sb.AppendLine("                finally { MetaContext!.Config = _savedConfig0; MetaContext!.Configs = _savedConfigs0; MetaContext!.ConfigVersions = _savedConfigVersions0; }");
                         sb.AppendLine("                currentVersion = maxVersion;");
                         sb.AppendLine("            }");
                     }
 
-                    // Migration-aware path: for each schema step above currentVersion, check AND
-                    // conditions and call each service's [MetaInit] with the transition config.
+                    // Persisted entities: one step per schema above currentVersion, in order.
                     foreach (var group in migStepGroups)
                     {
                         var targetSchema = group.Key;
@@ -1804,74 +1780,38 @@ namespace SharedMeta.Generator.Generators
                             ? $"currentVersion < {targetSchema} && {capGuard} && {string.Join(" && ", providerGuards)}"
                             : $"currentVersion < {targetSchema} && {capGuard}";
 
-                        sb.AppendLine($"            if ({guardExpr})");
-                        sb.AppendLine("            {");
-
-                        // 0.21.0: inner step conditions are no longer evaluated here against
-                        // provider.CurrentVersion. _migrationCap (set by CheckAndRunLazyMigrationAsync
-                        // from ComputeRequiredStateSchema(MigrationClientVersion)) already gates
-                        // each step by the caller's resolved config — running the same AND-check
-                        // twice was redundant. The outer guard `targetSchema <= _migrationCap`
-                        // is the only gate; if we reach here, all AND-conditions are satisfied.
-                        // 0.33.0+ also save/restore Configs/ConfigVersions — a condition whose type
-                        // is a [ServiceConfig] entry (rather than the legacy primary) needs its
-                        // transition version written into Context.Configs[i], since that's what the
-                        // generated per-entry accessor reads, not the legacy Context.Config.
-                        sb.AppendLine("                var _savedConfig = MetaContext!.Config;");
-                        sb.AppendLine("                var _savedConfigs = MetaContext!.Configs;");
-                        sb.AppendLine("                var _savedConfigVersions = MetaContext!.ConfigVersions;");
-                        sb.AppendLine("                try");
-                        sb.AppendLine("                {");
-
-                        // For each condition: find the service whose config type matches, set config, call [MetaInit].
-                        foreach (var cond in conds)
-                        {
-                            bool isPrimary = cond.ConfigTypeFullName == null || cond.ConfigTypeFullName == configType;
-                            var provField = isPrimary ? "_configProvider" : $"_configProvider_{cond.ConfigTypeIdent}";
-                            int scIndex = isPrimary ? -1 : serviceConfigTypes.FindIndex(sc => sc.ConfigType == cond.ConfigTypeFullName);
-                            // Find matching service: legacy ConfigType match (primary/secondary), OR
-                            // a service that declares this condition's type via [ServiceConfig].
-                            var matchingSvc = servicesWithInit.FirstOrDefault(s =>
+                        // The guard is the only gate: _migrationCap comes from
+                        // ComputeRequiredStateSchema(MigrationClientVersion), which already applied
+                        // this group's AND-conditions to the caller's resolved configs.
+                        // One call per service, even when several conditions of the group name the
+                        // same service — a second call at the same currentVersion would re-apply
+                        // the step.
+                        var stepServices = conds
+                            .Select(cond => servicesWithInit.FirstOrDefault(s =>
                                 (cond.ConfigTypeFullName == null && (s.ConfigTypeFullName == null || s.ConfigTypeFullName == configType))
                                 || s.ConfigTypeFullName == cond.ConfigTypeFullName
-                                || (cond.ConfigTypeFullName != null && s.ServiceConfigTypeFullNames.Contains(cond.ConfigTypeFullName)));
-                            if (matchingSvc == null) continue;
+                                || (cond.ConfigTypeFullName != null && s.ServiceConfigTypeFullNames.Contains(cond.ConfigTypeFullName))))
+                            .Where(s => s != null)
+                            .Distinct()
+                            .ToList();
 
-                            var baseName = GetBaseName(matchingSvc.InterfaceName);
-                            var initArgs = matchingSvc.MetaInitParameterCount == 2
+                        sb.AppendLine($"            if ({guardExpr})");
+                        sb.AppendLine("            {");
+                        foreach (var svc in stepServices)
+                        {
+                            var baseName = GetBaseName(svc!.InterfaceName);
+                            var initArgs = svc.MetaInitParameterCount == 2
                                 ? $"currentVersion, {targetSchema}"
                                 : "currentVersion";
-                            sb.AppendLine($"                    MetaContext!.Config = {provField}!.GetConfig(new SharedMeta.Core.MetaConfigVersion({cond.Major}, {cond.Minor}, 0));");
-                            sb.AppendLine($"                    MetaContext!.ConfigVersion = new SharedMeta.Core.MetaConfigVersion({cond.Major}, {cond.Minor}, 0);");
-                            if (scIndex >= 0)
-                            {
-                                sb.AppendLine($"                    {{ var _stepConfigs = new object[{serviceConfigTypes.Count}]; var _priorConfigs = MetaContext!.Configs; if (_priorConfigs != null) for (int _i = 0; _i < _priorConfigs.Count && _i < {serviceConfigTypes.Count}; _i++) _stepConfigs[_i] = _priorConfigs[_i]; _stepConfigs[{scIndex}] = {provField}!.GetConfig(new SharedMeta.Core.MetaConfigVersion({cond.Major}, {cond.Minor}, 0)); MetaContext!.Configs = _stepConfigs; }}");
-                                sb.AppendLine($"                    {{ var _stepVersions = new SharedMeta.Core.MetaConfigVersion[{serviceConfigTypes.Count}]; var _priorVersions = MetaContext!.ConfigVersions; if (_priorVersions != null) for (int _i = 0; _i < _priorVersions.Count && _i < {serviceConfigTypes.Count}; _i++) _stepVersions[_i] = _priorVersions[_i]; _stepVersions[{scIndex}] = new SharedMeta.Core.MetaConfigVersion({cond.Major}, {cond.Minor}, 0); MetaContext!.ConfigVersions = _stepVersions; }}");
-                            }
-                            sb.AppendLine($"                    MetaContext!.Version = currentVersion;");
-                            sb.AppendLine($"                    maxVersion = System.Math.Max(maxVersion, await (({matchingSvc.ImplClassFullName})Get{baseName}()).{matchingSvc.MetaInitMethodName}({initArgs}));");
+                            sb.AppendLine("                MetaContext!.Version = currentVersion;");
+                            sb.AppendLine($"                maxVersion = System.Math.Max(maxVersion, await (({svc.ImplClassFullName})Get{baseName}()).{svc.MetaInitMethodName}({initArgs}));");
                         }
-
-                        sb.AppendLine("                }");
-                        sb.AppendLine("                finally { MetaContext!.Config = _savedConfig; MetaContext!.Configs = _savedConfigs; MetaContext!.ConfigVersions = _savedConfigVersions; }");
                         sb.AppendLine("            }");
 
                         // After successful step, currentVersion tracks progress for next step guard.
                         sb.AppendLine("            currentVersion = maxVersion;");
                     }
 
-                    // Call [MetaInit] for services whose config type doesn't appear in any migration
-                    // condition — backward-compatible path (they use version-counter logic internally).
-                    // 0.33.0+ also exclude services already handled via a [ServiceConfig]-linked
-                    // condition above (checked via ServiceConfigTypeFullNames) — otherwise a
-                    // ServiceConfig-only service (no legacy ConfigTypeFullName) whose type IS
-                    // covered by a migration condition would double-run [MetaInit].
-                    var handledConfigTypes = new HashSet<string?>(allMigConds.Select(c => c.ConfigTypeFullName));
-                    var uncoveredServices = servicesWithInit
-                        .Where(s => !handledConfigTypes.Contains(s.ConfigTypeFullName)
-                                 && !handledConfigTypes.Contains(null)
-                                 && !s.ServiceConfigTypeFullNames.Any(t => handledConfigTypes.Contains(t)))
-                        .ToList();
                     foreach (var svc in uncoveredServices)
                     {
                         var baseName = GetBaseName(svc.InterfaceName);

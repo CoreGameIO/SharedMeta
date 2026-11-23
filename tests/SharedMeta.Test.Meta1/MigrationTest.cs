@@ -9,7 +9,7 @@ namespace SharedMeta.Test.Meta1
 
     /// <summary>
     /// Config for migration tests. Reports its version so [MetaInit] can record
-    /// which config version was pinned to each migration step.
+    /// which config version each migration step ran under.
     ///
     /// <para>0.21.0: declares <c>[MetaConfigVersion]</c> rules mapping the client app version
     /// passed via <c>MetaClientOptions.ClientAppVersion</c> to a config version. The test
@@ -46,7 +46,7 @@ namespace SharedMeta.Test.Meta1
 
         /// <summary>
         /// Each element = (configMajor, configMinor) seen at a [MetaInit] invocation.
-        /// Lets tests assert that each step received the correctly pinned config version.
+        /// Lets tests assert which config version each step ran under.
         /// </summary>
         [MemoryPackOrder(1)] public List<(int Major, int Minor)> InitLog { get; set; } = new();
     }
@@ -78,7 +78,7 @@ namespace SharedMeta.Test.Meta1
         [MetaInit]
         public Task<int> Init(int version)
         {
-            // Record the config version pinned by the framework for this step.
+            // Record the config version this step runs under.
             var cfg = Config;                          // typed via generated Context partial
             S.InitLog.Add((cfg.Major, cfg.Minor));
 

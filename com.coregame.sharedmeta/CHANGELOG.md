@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.48.0] - 2026-11-23
+
+`[MetaInit]` sees the triggering client's configs; fresh entities start at the current schema.
+
+### Changed
+
+- **Breaking (behaviour):** a fresh entity gets one `[MetaInit]` call with `target` = the highest schema its client allows; build the current shape and return `target`. Ladder-style inits still run the remaining steps.
+- **Breaking (behaviour):** `[MetaInit]` and every `[MetaStateVersion]` step run under the triggering client's configs; `(1,0,0)` and threshold-version pinning removed. Migration: a step that relied on its threshold config must read the current one.
+
+### Fixed
+
+- `[MetaInit]` on a new entity threw NRE reading a `[ServiceConfig]` (`Context.Configs` was unset before init).
+- Lazy init on an active entity could see configs left by a previous call from another client.
+- Migration steps no longer read unwarmed config versions synchronously (failed on `BroadcastingConfigProvider`).
+- A step whose conditions named one service twice ran its `[MetaInit]` twice.
+
 ## [0.47.0] - 2026-11-21
 
 Call ids across client and server logs, opt-in per-method and per-endpoint metrics, analytics hooks.
