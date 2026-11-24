@@ -18,6 +18,8 @@ using SharedMeta.Transport.SignalR;
 #endif
 using SharedMeta.Orleans.Framework;
 using SharedMeta.Server.Core.Storage;
+using SharedMeta.Inspector;
+using SharedMeta.Inspector.Mcp;
 using CardGame.Shared;
 using CardGame.Shared.Server;
 
@@ -120,9 +122,17 @@ builder.Services.AddCors(options =>
     });
 });
 
+// Inspector: MCP access to calls, arguments, results and entity state (TimeMachine). Read-only
+// here; captures nothing until a client asks (watch_entity / watch_player / set_capture_config).
+// Connect: claude mcp add --transport http thefool http://localhost:5000/mcp
+builder.Services.AddSharedMetaInspector();
+builder.Services.AddSharedMetaInspectorMcp();
+
 var app = builder.Build();
 
 app.UseCors();
+app.MapSharedMetaInspectorMcp("/mcp");
+app.MapSharedMetaInspectorUi("/inspector", "/mcp");
 
 #if USE_HTTP_POLLING
 // Map HTTP polling endpoints
@@ -133,6 +143,7 @@ app.MapGet("/", () => "CardGame Server (Orleans + HTTP Polling) is running");
 
 app.Logger.LogInformation("=== CardGame Server (Orleans + HTTP Polling) ===");
 app.Logger.LogInformation("Listening on http://localhost:{Port}", port);
+app.Logger.LogInformation("Inspector UI: http://localhost:{Port}/inspector/ (MCP: /mcp)", port);
 app.Logger.LogInformation("HTTP Polling: /meta");
 #else
 // Map SignalR hub
@@ -143,6 +154,7 @@ app.MapGet("/", () => "TheFool Server (Orleans) is running");
 
 app.Logger.LogInformation("=== TheFool Server (Orleans) ===");
 app.Logger.LogInformation("Listening on http://localhost:{Port}", port);
+app.Logger.LogInformation("Inspector UI: http://localhost:{Port}/inspector/ (MCP: /mcp)", port);
 app.Logger.LogInformation("SignalR Hub: /meta");
 #endif
 

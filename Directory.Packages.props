@@ -49,6 +49,12 @@
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
     <PackageVersion Include="coverlet.collector" Version="8.0.1" />
 
+    <!-- Model Context Protocol (Inspector MCP endpoint) -->
+    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="2.4.0" />
+
+    <!-- NATS JetStream (Inspector event broker + control channel) -->
+    <PackageVersion Include="NATS.Net" Version="3.4.1" />
+
     <!-- UI -->
     <PackageVersion Include="Spectre.Console" Version="0.55.2" />
   </ItemGroup>

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net8.0;net10.0;net11.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <PackageId>CoreGame.SharedMeta.Inspector.Service</PackageId>
+    <IsPackable>true</IsPackable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>sharedmeta-inspector</ToolCommandName>
+    <Description>Preview: the API may change in minor versions. Standalone SharedMeta Inspector: reads the captured events of a whole cluster from NATS JetStream and serves the inspector MCP tools (timelines, graphs, call trees, history, capture settings) without running inside a silo.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharedMeta.Inspector.Mcp\SharedMeta.Inspector.Mcp.csproj" />
+    <ProjectReference Include="..\SharedMeta.Inspector.Nats\SharedMeta.Inspector.Nats.csproj" />
+  </ItemGroup>
+
+</Project>

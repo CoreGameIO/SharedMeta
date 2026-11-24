@@ -514,10 +514,17 @@ namespace SharedMeta.Generator
                 var rootNamespace = implInfos.First().Namespace;
                 var hasOrleansConfig = compilation.ReferencedAssemblyNames
                     .Any(a => a.Name == "SharedMeta.Orleans");
-                var source = ServerMetaConfigurationGenerator.GenerateForServerProject(rootNamespace, implInfos, hasOrleansConfig);
+                var emitCallTap = CallTapEmitter.IsTapReferenced(compilation);
+                var source = ServerMetaConfigurationGenerator.GenerateForServerProject(rootNamespace, implInfos, hasOrleansConfig, emitCallTap);
                 if (!string.IsNullOrEmpty(source))
                 {
                     spc.AddSource("ServerMetaConfiguration.g.cs", source!);
+                }
+
+                if (emitCallTap)
+                {
+                    spc.AddSource("MetaMethodDescriptors.g.cs",
+                        MetaMethodDescriptorGenerator.Generate(rootNamespace, implInfos, compilation));
                 }
 
                 // Server APIs for the referenced services. The shared assembly emits these too, but

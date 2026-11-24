@@ -72,9 +72,11 @@ namespace SharedMeta.Core.Diagnostics
             string? service = null,
             string? method = null,
             string? sessionId = null,
-            long requestId = 0)
+            long requestId = 0,
+            ulong parentSpanId = 0)
         {
             Trace = trace;
+            ParentSpanId = parentSpanId;
             Op = op;
             PlayerId = playerId;
             EntityId = entityId;
@@ -101,6 +103,12 @@ namespace SharedMeta.Core.Diagnostics
         /// <summary>Client's per-session request id, 0 when the call has none.</summary>
         public long RequestId { get; }
 
+        /// <summary>
+        /// Span id of the hop that caused this one, 0 at the root or when this hop has no span of
+        /// its own. Lets a call tree be rebuilt from flat records; not written to log scopes.
+        /// </summary>
+        public ulong ParentSpanId { get; }
+
         /// <summary>Copy with the given fields replaced; null keeps the current value.</summary>
         public MetaCallContext With(
             MetaTraceContext? trace = null,
@@ -111,7 +119,8 @@ namespace SharedMeta.Core.Diagnostics
             string? service = null,
             string? method = null,
             string? sessionId = null,
-            long? requestId = null)
+            long? requestId = null,
+            ulong? parentSpanId = null)
             => new MetaCallContext(
                 trace ?? Trace,
                 op ?? Op,
@@ -121,7 +130,8 @@ namespace SharedMeta.Core.Diagnostics
                 service ?? Service,
                 method ?? Method,
                 sessionId ?? SessionId,
-                requestId ?? RequestId);
+                requestId ?? RequestId,
+                parentSpanId ?? ParentSpanId);
 
         /// <summary>
         /// Sets <see cref="Current"/> and returns a token that restores the previous value on

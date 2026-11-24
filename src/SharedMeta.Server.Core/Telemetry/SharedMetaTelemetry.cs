@@ -40,11 +40,13 @@ namespace SharedMeta.Server.Core.Telemetry
         {
             _monitor = options;
             _observers = observers?.ToArray() ?? Array.Empty<IMetaServerObserver>();
-            _hasCustomObservers = _observers.Any(o => o is not LoggingServerObserver);
+            _callGates = _observers.OfType<IMetaCallObservationGate>().ToArray();
+            _hasUngatedCustomObservers = _observers.Any(o => o is not LoggingServerObserver && o is not IMetaCallObservationGate);
             _logger = loggerFactory?.CreateLogger("SharedMeta.Telemetry") ?? NullLogger.Instance;
         }
 
-        private readonly bool _hasCustomObservers;
+        private readonly bool _hasUngatedCustomObservers;
+        private readonly IMetaCallObservationGate[] _callGates;
 
         /// <summary>Current options (follows reloads).</summary>
         public MetaTelemetryOptions Options => _monitor?.CurrentValue ?? _fixed;
@@ -53,7 +55,14 @@ namespace SharedMeta.Server.Core.Telemetry
         /// True when some observer will act on a call — guard before building a <see cref="MetaCallInfo"/>.
         /// The built-in analytics-log observer only counts while <see cref="MetaTelemetryOptions.AnalyticsLog"/> is on.
         /// </summary>
-        public bool HasObservers => _hasCustomObservers || (_observers.Length > 0 && Options.AnalyticsLog);
+        public bool HasObservers => _hasUngatedCustomObservers || AnyCallGateOpen() || (_observers.Length > 0 && Options.AnalyticsLog);
+
+        private bool AnyCallGateOpen()
+        {
+            foreach (var gate in _callGates)
+                if (gate.ObservesCalls) return true;
+            return false;
+        }
 
         /// <summary>Method tag table for <paramref name="signature"/> under the current options.</summary>
         public MethodTelemetryTable GetTable(MetaServerSignature? signature)
@@ -98,6 +107,7 @@ namespace SharedMeta.Server.Core.Telemetry
         {
             foreach (var o in _observers)
             {
+                if (o is IMetaCallObservationGate { ObservesCalls: false }) continue;
                 try { o.OnCallCompleted(call); }
                 catch (Exception ex) { _logger.LogWarning(ex, "IMetaServerObserver {Observer} failed in OnCallCompleted", o.GetType().Name); }
             }

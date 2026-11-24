@@ -18,6 +18,9 @@ using SharedMeta.Transport.SignalR;
 #endif
 using SharedMeta.Orleans.Framework;
 using SharedMeta.Auth;
+using SharedMeta.Inspector;
+using SharedMeta.Inspector.Mcp;
+using SharedMeta.Inspector.Nats;
 using SharedMeta.Server.Core.Storage;
 using SharedMeta.Core.Network;
 using Expedition.Shared;
@@ -151,6 +154,22 @@ builder.Services.AddCors(options =>
     });
 });
 
+// Inspector: MCP access to calls, arguments, results and entity state (TimeMachine).
+// Captures nothing until a client asks (watch_entity / watch_player / set_capture_config).
+// Connect: claude mcp add --transport http expedition http://localhost:5100/mcp
+builder.Services.AddSharedMetaInspector(o =>
+{
+    // Example server: allow invoking methods from the MCP client. Loopback-only by default.
+    o.AllowInvoke = true;
+    o.InvokeMethods.Add("*");
+});
+builder.Services.AddSharedMetaInspectorMcp();
+// Multi-silo: with SHAREDMETA_INSPECTOR_NATS set (e.g. nats://127.0.0.1:4222, JetStream on), every
+// silo publishes its events to one stream and every inspector — here or the standalone
+// sharedmeta-inspector — sees the whole cluster, with history and shared watches.
+if (Environment.GetEnvironmentVariable("SHAREDMETA_INSPECTOR_NATS") is { Length: > 0 } natsUrl)
+    builder.Services.AddSharedMetaInspectorNats(o => o.Url = natsUrl);
+
 var app = builder.Build();
 
 app.UseCors();
@@ -190,12 +209,16 @@ app.MapPost("/meta/desync/{playerId}/{enabled:bool}", async (string playerId, bo
     return Results.Ok(new { playerId, analysisEnabled = enabled, appliesOn = "next session" });
 });
 
+app.MapSharedMetaInspectorMcp("/mcp");
+app.MapSharedMetaInspectorUi("/inspector", "/mcp");
+
 #if USE_HTTP_POLLING
 app.MapMetaHttpPolling("/meta");
 app.MapGet("/", () => "Expedition Server (HTTP Polling) is running");
 
 app.Logger.LogInformation("=== Expedition Server (HTTP Polling) ===");
 app.Logger.LogInformation("Listening on http://localhost:{Port}", port);
+app.Logger.LogInformation("Inspector UI: http://localhost:{Port}/inspector/ (MCP: /mcp)", port);
 app.Logger.LogInformation("HTTP Polling: /meta");
 if (useServerPatch)
     app.Logger.LogInformation("ServerPatch mode ENABLED for Move and RemoveObstacle");
@@ -205,6 +228,7 @@ app.MapGet("/", () => "Expedition Server is running");
 
 app.Logger.LogInformation("=== Expedition Server ===");
 app.Logger.LogInformation("Listening on http://localhost:{Port}", port);
+app.Logger.LogInformation("Inspector UI: http://localhost:{Port}/inspector/ (MCP: /mcp)", port);
 app.Logger.LogInformation("SignalR Hub: /meta");
 if (useServerPatch)
     app.Logger.LogInformation("ServerPatch mode ENABLED for Move and RemoveObstacle");

@@ -16,6 +16,7 @@ Framework for shared game meta-logic between Client and Server with deterministi
 - **Pluggable transport** — SignalR, HTTP polling, in-process (testing)
 - **Pluggable serialization** — MemoryPack, MessagePack
 - **Observability** — call id shared by client and server logs, OpenTelemetry metrics and traces, opt-in per-method metrics, call observers for analytics
+- **Inspector & MCP** *(preview)* — server-side call capture, TimeMachine timeline and web viewer, MCP tools for AI agents
 
 ## Installation
 
@@ -87,6 +88,8 @@ await api.SetName("Alice");
 ## Tooling
 
 **Rider plugin** — [`SharedLibs/RiderPlugin`](https://github.com/CoreGameIO/SharedLibs/tree/main/RiderPlugin) extends Find Usages and Go to Declaration so they walk both the user-authored `[MetaMethod]` and every generated counterpart (`*ApiClient`, `*EntityQueryApi`, cross-entity callers). Requires SharedMeta ≥ 0.16.0 — uses the `[GeneratedFromMetaMethod]` attribute that the generator now stamps on every emitted client-side mirror.
+
+**Inspector, MCP & TimeMachine** *(preview, server-side NuGet)* — `CoreGame.SharedMeta.Inspector` + `CoreGame.SharedMeta.Inspector.Mcp` on the server add a web viewer and an MCP endpoint for AI agents: captured calls with arguments, results and state, entity timelines and graphs, live state. Off until something is watched; the Unity package is unaffected. See [docs/INSPECTOR.md](https://github.com/CoreGameIO/SharedMeta/blob/main/docs/INSPECTOR.md).
 
 ## Documentation
 

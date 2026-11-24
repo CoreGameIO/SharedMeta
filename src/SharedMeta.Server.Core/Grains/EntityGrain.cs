@@ -120,9 +120,11 @@ namespace SharedMeta.Server.Core.Grains
             IExecutionModeProvider? executionModeProvider = null,
             IConfigVersionResolver? configVersionResolver = null,
             IClientSignatureRegistry? signatureRegistry = null,
-            SharedMeta.Server.Core.Telemetry.SharedMetaTelemetry? telemetry = null)
+            SharedMeta.Server.Core.Telemetry.SharedMetaTelemetry? telemetry = null,
+            SharedMeta.Server.Core.Diagnostics.IMetaCallTap? callTap = null)
         {
             _telemetry = telemetry ?? SharedMeta.Server.Core.Telemetry.SharedMetaTelemetry.Default;
+            _callTap = callTap;
             _persistentState = persistentState ?? throw new ArgumentNullException(nameof(persistentState));
             _subscribersState = subscribersState ?? throw new ArgumentNullException(nameof(subscribersState));
             _providerFactory = providerFactory ?? throw new ArgumentNullException(nameof(providerFactory));
@@ -141,6 +143,7 @@ namespace SharedMeta.Server.Core.Grains
         private readonly MetaServerSignature _serverSignature;
 
         private readonly SharedMeta.Server.Core.Telemetry.SharedMetaTelemetry _telemetry;
+        private readonly SharedMeta.Server.Core.Diagnostics.IMetaCallTap? _callTap;
 
         private SharedMeta.Server.Core.Telemetry.MethodTags TagsOf(ushort methodId)
             => _telemetry.GetTags(_serverSignature, methodId);
@@ -205,6 +208,8 @@ namespace SharedMeta.Server.Core.Grains
             if (_provider is MetaProviderBase<TState> providerBase)
             {
                 providerBase.ExecutionModeProvider = _executionModeProvider;
+                providerBase.CallTap = _callTap;
+                providerBase.SeedEntitySequence(state.EntitySequenceNumber);
                 _activeProviderBase = providerBase;
                 providerBase.EntityCallHandler = HandleCrossEntityCallAsync;
                 providerBase.EntityQueryHandler = HandleCrossEntityQueryAsync;
@@ -995,6 +1000,7 @@ namespace SharedMeta.Server.Core.Grains
             if (rejected)
             {
                 _persistentState.State.EntitySequenceNumber = operationSequence - 1;
+                _activeProviderBase?.SeedEntitySequence(operationSequence - 1);
                 return (operationSequence - 1, refusalOp);
             }
 

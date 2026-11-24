@@ -29,6 +29,10 @@
     <Project Path="src/SharedMeta.Auth.Apple/SharedMeta.Auth.Apple.csproj" />
     <Project Path="src/SharedMeta.Auth.Steam/SharedMeta.Auth.Steam.csproj" />
     <Project Path="src/SharedMeta.Debug/SharedMeta.Debug.csproj" />
+    <Project Path="src/SharedMeta.Inspector/SharedMeta.Inspector.csproj" />
+    <Project Path="src/SharedMeta.Inspector.Mcp/SharedMeta.Inspector.Mcp.csproj" />
+    <Project Path="src/SharedMeta.Inspector.Nats/SharedMeta.Inspector.Nats.csproj" />
+    <Project Path="src/SharedMeta.Inspector.Service/SharedMeta.Inspector.Service.csproj" />
     <Project Path="src/SharedMeta.Orleans/SharedMeta.Orleans.csproj" />
     <Project Path="src/SharedMeta.Serialization.MessagePack/SharedMeta.Serialization.MessagePack.csproj" />
     <Project Path="src/SharedMeta.Server.Core/SharedMeta.Server.Core.csproj" />
@@ -45,6 +49,7 @@
     <Project Path="tests/SharedMeta.Test.Meta1/SharedMeta.Test.Meta1.csproj" />
     <Project Path="tests/SharedMeta.Test.Server/SharedMeta.Test.Server.csproj" />
     <Project Path="tests/SharedMeta.GenericSerializerTests/SharedMeta.GenericSerializerTests.csproj" />
+    <Project Path="tests/SharedMeta.Generator.Tests/SharedMeta.Generator.Tests.csproj" />
     <Project Path="tests/SharedMeta.Test.Meta2.Generic/SharedMeta.Test.Meta2.Generic.csproj" />
     <Project Path="tests/SharedMeta.Test.SplitConfig.Models/SharedMeta.Test.SplitConfig.Models.csproj" />
     <Project Path="tests/SharedMeta.Test.SplitConfig.Services/SharedMeta.Test.SplitConfig.Services.csproj" />
