@@ -72,20 +72,8 @@ public static class InspectorMcpExtensions
 
     internal static (int Status, string Message)? Check(HttpContext context, InspectorOptions options)
     {
-        if (options.LocalhostOnly)
-        {
-            var remote = context.Connection.RemoteIpAddress;
-            // A dual-stack listener reports IPv4 peers as ::ffff:a.b.c.d, which IsLoopback rejects.
-            if (remote is { IsIPv4MappedToIPv6: true }) remote = remote.MapToIPv4();
-            if (remote != null && !IPAddress.IsLoopback(remote))
-                return (StatusCodes.Status403Forbidden, "Inspector MCP accepts loopback connections only.");
-            if (!IsLocalHost(context.Request.Host.Host))
-                return (StatusCodes.Status403Forbidden, "Inspector MCP requires a localhost Host header.");
-            var origin = context.Request.Headers.Origin.ToString();
-            if (!string.IsNullOrEmpty(origin)
-                && (!Uri.TryCreate(origin, UriKind.Absolute, out var originUri) || !IsLocalHost(originUri.Host)))
-                return (StatusCodes.Status403Forbidden, "Inspector MCP refuses cross-origin requests.");
-        }
+        var hostRefusal = CheckHostAndOrigin(context, options);
+        if (hostRefusal != null) return hostRefusal;
 
         if (!string.IsNullOrEmpty(options.ApiKey))
         {
@@ -98,6 +86,24 @@ public static class InspectorMcpExtensions
             if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(presented), Encoding.UTF8.GetBytes(options.ApiKey!)))
                 return (StatusCodes.Status401Unauthorized, "Inspector MCP key missing or wrong.");
         }
+        return null;
+    }
+
+    internal static (int Status, string Message)? CheckHostAndOrigin(HttpContext context, InspectorOptions options)
+    {
+        if (!options.LocalhostOnly) return null;
+
+        var remote = context.Connection.RemoteIpAddress;
+        // A dual-stack listener reports IPv4 peers as ::ffff:a.b.c.d, which IsLoopback rejects.
+        if (remote is { IsIPv4MappedToIPv6: true }) remote = remote.MapToIPv4();
+        if (remote != null && !IPAddress.IsLoopback(remote))
+            return (StatusCodes.Status403Forbidden, "Inspector MCP accepts loopback connections only.");
+        if (!IsLocalHost(context.Request.Host.Host))
+            return (StatusCodes.Status403Forbidden, "Inspector MCP requires a localhost Host header.");
+        var origin = context.Request.Headers.Origin.ToString();
+        if (!string.IsNullOrEmpty(origin)
+            && (!Uri.TryCreate(origin, UriKind.Absolute, out var originUri) || !IsLocalHost(originUri.Host)))
+            return (StatusCodes.Status403Forbidden, "Inspector MCP refuses cross-origin requests.");
         return null;
     }
 

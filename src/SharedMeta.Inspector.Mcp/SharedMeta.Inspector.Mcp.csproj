@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" />
+    <EmbeddedResource Include="Ui\*" LogicalName="SharedMeta.Inspector.Mcp.Ui.%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

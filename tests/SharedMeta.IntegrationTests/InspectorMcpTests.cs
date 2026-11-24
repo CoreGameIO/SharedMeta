@@ -120,6 +120,44 @@ public class InspectorMcpTests
         Assert.Equal(HttpStatusCode.OK, (await http.SendAsync(right)).StatusCode);
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task InspectorUi_ServesEmbeddedAssets_AndEnforcesLocalhostRules()
+    {
+        await using var host = await StartAsync(_fixture.Runtime);
+        using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        using var http = new HttpClient(handler);
+
+        // Bare path redirects to trailing-slash path so relative JS/CSS imports resolve
+        var redirect = await http.GetAsync(host.BaseUrl + "/inspector");
+        Assert.Equal(HttpStatusCode.Redirect, redirect.StatusCode);
+        Assert.Equal("/inspector/", redirect.Headers.Location?.ToString());
+
+        // Root HTML injects the configured MCP path
+        var index = await http.GetAsync(host.BaseUrl + "/inspector/");
+        Assert.Equal(HttpStatusCode.OK, index.StatusCode);
+        Assert.Equal("text/html", index.Content.Headers.ContentType?.MediaType);
+        var html = await index.Content.ReadAsStringAsync();
+        Assert.Contains("name=\"sharedmeta-mcp-path\" content=\"/mcp\"", html);
+
+        // Static assets serve with expected media types
+        var css = await http.GetAsync(host.BaseUrl + "/inspector/styles.css");
+        Assert.Equal(HttpStatusCode.OK, css.StatusCode);
+        Assert.Equal("text/css", css.Content.Headers.ContentType?.MediaType);
+
+        var js = await http.GetAsync(host.BaseUrl + "/inspector/app.js");
+        Assert.Equal(HttpStatusCode.OK, js.StatusCode);
+        Assert.Equal("application/javascript", js.Content.Headers.ContentType?.MediaType);
+
+        // Foreign Origin/Host is refused just like /mcp
+        using var evilHost = new HttpRequestMessage(HttpMethod.Get, host.BaseUrl + "/inspector/");
+        evilHost.Headers.Host = "evil.example";
+        Assert.Equal(HttpStatusCode.Forbidden, (await http.SendAsync(evilHost)).StatusCode);
+
+        using var evilOrigin = new HttpRequestMessage(HttpMethod.Get, host.BaseUrl + "/inspector/");
+        evilOrigin.Headers.Add("Origin", "http://evil.example");
+        Assert.Equal(HttpStatusCode.Forbidden, (await http.SendAsync(evilOrigin)).StatusCode);
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────────
 
     private static HttpRequestMessage InitializeRequest(string baseUrl)
@@ -150,6 +188,7 @@ public class InspectorMcpTests
         builder.Services.AddSharedMetaInspectorMcp();
         var app = builder.Build();
         app.MapSharedMetaInspectorMcp("/mcp");
+        app.MapSharedMetaInspectorUi("/inspector", "/mcp");
         await app.StartAsync();
         var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
         return new HostHandle(app, address.TrimEnd('/'));

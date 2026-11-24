@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="sharedmeta-mcp-path" content="{{MCP_PATH}}" />
+  <title>SharedMeta Inspector · TimeMachine &amp; MCP Viewer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Header -->
+    <header class="topbar">
+      <div class="topbar-brand">
+        <div class="brand-badge">SM</div>
+        <div class="brand-text">
+          <div class="brand-title">SharedMeta Inspector</div>
+          <div class="brand-sub" id="status-silo">Connecting to MCP…</div>
+        </div>
+      </div>
+
+      <nav class="nav-tabs" id="nav-tabs" aria-label="Inspector Views">
+        <button type="button" class="nav-tab is-active" data-view="timeline">Timeline</button>
+        <button type="button" class="nav-tab" data-view="graph">Graph</button>
+        <button type="button" class="nav-tab" data-view="stream">Live Stream</button>
+        <button type="button" class="nav-tab" data-view="entities">Entities &amp; State</button>
+        <button type="button" class="nav-tab" data-view="methods">Methods &amp; Invoke</button>
+        <button type="button" class="nav-tab" data-view="capture">Capture</button>
+      </nav>
+
+      <div class="topbar-controls">
+        <button type="button" class="status-pill" id="btn-capture-pill" title="Capture status — click to configure">
+          <span class="dot" id="conn-dot"></span>
+          <span id="capture-pill-text">OFF</span>
+        </button>
+
+        <div class="live-poll-group">
+          <button type="button" class="btn btn-xs" id="btn-live-toggle" title="Toggle auto-refresh">● Live</button>
+          <select id="sel-poll-interval" class="input input-xs" title="Polling interval">
+            <option value="1500">1.5s</option>
+            <option value="3000" selected>3s</option>
+            <option value="5000">5s</option>
+          </select>
+        </div>
+
+        <button type="button" class="btn btn-xs" id="btn-endpoint" title="Configure MCP URL &amp; API Key">Endpoint</button>
+        <button type="button" class="btn btn-xs btn-cyan" id="btn-refresh" title="Refresh active view">↻</button>
+      </div>
+    </header>
+
+    <!-- Main Body -->
+    <div class="workspace">
+      <!-- Persistent Sidebar: Watched & Seen Entities -->
+      <aside class="sidebar">
+        <div class="sidebar-section">
+          <div class="sidebar-header">
+            <span>WATCHED</span>
+            <button type="button" class="btn-icon" id="btn-quick-watch" title="Add entity or player watch">+</button>
+          </div>
+          <div class="sidebar-list" id="sidebar-watches">
+            <div class="muted-note">No active watches</div>
+          </div>
+        </div>
+
+        <div class="sidebar-section sidebar-section-grow">
+          <div class="sidebar-header">
+            <span>ENTITIES</span>
+            <span class="count-chip" id="sidebar-entity-count">0</span>
+          </div>
+          <div class="sidebar-search">
+            <input type="search" id="sidebar-entity-filter" class="input input-sm" placeholder="Filter entities…" />
+          </div>
+          <div class="sidebar-list" id="sidebar-entities">
+            <div class="muted-note">No entities seen yet</div>
+          </div>
+        </div>
+
+        <div class="sidebar-footer" id="sidebar-metrics">
+          <span>Events: <strong id="m-stored">0</strong></span>
+          <span>Sessions: <strong id="m-sessions">0</strong></span>
+          <span>Dropped: <strong id="m-dropped">0</strong></span>
+        </div>
+      </aside>
+
+      <!-- Main View Host -->
+      <main class="main-content">
+        <!-- VIEW 1: TIMEMACHINE TIMELINE -->
+        <section class="view-pane is-active" id="view-timeline">
+          <div class="view-toolbar">
+            <div class="toolbar-group">
+              <label class="field-inline">
+                <span>State</span>
+                <input type="text" id="tl-state-type" class="input input-sm" list="datalist-state-types" placeholder="StateType" />
+              </label>
+              <label class="field-inline">
+                <span>Entity</span>
+                <input type="text" id="tl-entity-id" class="input input-sm" list="datalist-entity-ids" placeholder="entityId" />
+              </label>
+              <label class="field-inline field-narrow">
+                <span>From #</span>
+                <input type="number" id="tl-from-seq" class="input input-sm" placeholder="0" />
+              </label>
+              <label class="field-inline field-narrow">
+                <span>To #</span>
+                <input type="number" id="tl-to-seq" class="input input-sm" placeholder="latest" />
+              </label>
+              <label class="field-inline field-narrow">
+                <span>Limit</span>
+                <input type="number" id="tl-limit" class="input input-sm" value="200" min="1" max="2000" />
+              </label>
+              <button type="button" class="btn btn-sm btn-amber" id="tl-load-btn">Load Timeline</button>
+            </div>
+            <div class="toolbar-group">
+              <button type="button" class="btn btn-sm" id="tl-watch-btn">Watch Full</button>
+              <select id="tl-zoom" class="input input-sm" title="Timeline zoom">
+                <option value="compact">Compact</option>
+                <option value="normal" selected>Normal</option>
+                <option value="detailed">Detailed</option>
+              </select>
+              <button type="button" class="btn btn-sm" id="tl-mermaid-btn">Mermaid</button>
+              <button type="button" class="btn btn-sm" id="tl-graph-btn">Open Graph</button>
+            </div>
+          </div>
+
+          <div class="tl-info-strip" id="tl-info-strip" hidden></div>
+
+          <div class="tl-split">
+            <div class="tl-card-col" id="tl-card"></div>
+            <div class="tl-board-col">
+              <div class="tl-board" id="tl-canvas"></div>
+              <div id="tl-scrubber"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW 2: DEPENDENCY GRAPH -->
+        <section class="view-pane" id="view-graph">
+          <div class="view-toolbar">
+            <div class="toolbar-group">
+              <label class="field-inline">
+                <span>State</span>
+                <input type="text" id="g-state-type" class="input input-sm" list="datalist-state-types" placeholder="StateType" />
+              </label>
+              <label class="field-inline">
+                <span>Entity</span>
+                <input type="text" id="g-entity-id" class="input input-sm" list="datalist-entity-ids" placeholder="entityId" />
+              </label>
+              <label class="field-inline field-narrow">
+                <span>Depth</span>
+                <input type="number" id="g-depth" class="input input-sm" value="2" min="1" max="6" />
+              </label>
+              <label class="field-inline field-narrow">
+                <span>Window</span>
+                <input type="number" id="g-window" class="input input-sm" value="5000" min="10" max="100000" />
+              </label>
+              <button type="button" class="btn btn-sm btn-amber" id="g-load-btn">Build Graph</button>
+            </div>
+            <div class="toolbar-group">
+              <button type="button" class="btn btn-sm" id="g-mermaid-btn">Mermaid</button>
+            </div>
+          </div>
+          <div class="graph-split">
+            <div class="graph-canvas" id="g-canvas"></div>
+            <div class="graph-detail" id="g-detail"></div>
+          </div>
+        </section>
+
+        <!-- VIEW 3: LIVE STREAM & CALL TREE -->
+        <section class="view-pane" id="view-stream">
+          <div class="view-toolbar">
+            <div class="toolbar-group">
+              <input type="text" id="st-entity" class="input input-sm" list="datalist-entity-ids" placeholder="Entity ID" />
+              <input type="text" id="st-state-type" class="input input-sm" list="datalist-state-types" placeholder="StateType" />
+              <input type="text" id="st-player" class="input input-sm" placeholder="Player ID" />
+              <input type="text" id="st-method" class="input input-sm" list="datalist-methods" placeholder="IService.Method" />
+              <select id="st-kind" class="input input-sm">
+                <option value="">All kinds</option>
+                <option value="call_completed">call_completed</option>
+                <option value="call_sent">call_sent</option>
+                <option value="broadcast_sent">broadcast_sent</option>
+                <option value="client_responded">client_responded</option>
+                <option value="subscribed">subscribed</option>
+                <option value="reclaimed">reclaimed</option>
+                <option value="unsubscribed">unsubscribed</option>
+                <option value="session_started">session_started</option>
+                <option value="session_ended">session_ended</option>
+              </select>
+              <select id="st-call-kind" class="input input-sm">
+                <option value="">All callKinds</option>
+                <option value="rpc">rpc</option>
+                <option value="cross_entity">cross_entity</option>
+                <option value="trigger">trigger</option>
+                <option value="nested">nested</option>
+                <option value="query">query</option>
+                <option value="signal">signal</option>
+                <option value="init">init</option>
+              </select>
+              <label class="checkbox-inline">
+                <input type="checkbox" id="st-errors-only" />
+                <span>Errors</span>
+              </label>
+              <label class="checkbox-inline">
+                <input type="checkbox" id="st-payloads" checked />
+                <span>Payloads</span>
+              </label>
+              <button type="button" class="btn btn-sm btn-amber" id="st-load-btn">Query</button>
+            </div>
+            <div class="toolbar-group">
+              <input type="text" id="st-call-id-input" class="input input-sm" placeholder="Lookup CallId (32-hex)…" />
+              <button type="button" class="btn btn-sm btn-cyan" id="st-lookup-call-btn">Call Tree</button>
+            </div>
+          </div>
+
+          <div class="stream-split">
+            <div class="table-wrap">
+              <table class="data-table" id="stream-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Time</th>
+                    <th>Kind</th>
+                    <th>Entity</th>
+                    <th>Seq</th>
+                    <th>Method</th>
+                    <th>Caller / Target</th>
+                    <th>Result</th>
+                    <th>Dur</th>
+                    <th>CallId</th>
+                  </tr>
+                </thead>
+                <tbody id="stream-tbody">
+                  <tr><td colspan="10" class="muted-note">No events loaded yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="stream-detail-panel" id="stream-detail">
+              <div class="muted-note">Click a row to inspect event details, or click a CallId to open its full span tree.</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW 4: ENTITIES, SESSIONS & LIVE STATE -->
+        <section class="view-pane" id="view-entities">
+          <div class="entities-grid">
+            <div class="panel">
+              <div class="panel-header">
+                <h3>Seen Entities</h3>
+                <div class="toolbar-group">
+                  <input type="text" id="ent-state-filter" class="input input-xs" list="datalist-state-types" placeholder="Filter StateType…" />
+                  <button type="button" class="btn btn-xs btn-amber" id="ent-refresh-btn">Refresh</button>
+                </div>
+              </div>
+              <div class="table-wrap panel-table">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>State Type</th>
+                      <th>Entity ID</th>
+                      <th>Last Seq</th>
+                      <th>Last Seen</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ent-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-header">
+                <h3>Open Sessions</h3>
+                <button type="button" class="btn btn-xs" id="sess-refresh-btn">Refresh</button>
+              </div>
+              <div class="table-wrap panel-table">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Player ID</th>
+                      <th>Session ID</th>
+                      <th>Client Version</th>
+                      <th>Started</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sess-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel live-state-panel">
+            <div class="panel-header">
+              <h3>Live Entity State (<code>get_entity_state</code>)</h3>
+              <div class="toolbar-group">
+                <input type="text" id="ls-state-type" class="input input-sm" list="datalist-state-types" placeholder="StateType" />
+                <input type="text" id="ls-entity-id" class="input input-sm" list="datalist-entity-ids" placeholder="Entity ID" />
+                <input type="text" id="ls-path" class="input input-sm" placeholder="Path e.g. Inventory.Items[0]" />
+                <label class="checkbox-inline" title="Read even if never seen (activates grain; unknown id yields default state)">
+                  <input type="checkbox" id="ls-activate" />
+                  <span>activate</span>
+                </label>
+                <button type="button" class="btn btn-sm btn-amber" id="ls-load-btn">Read Live State</button>
+              </div>
+            </div>
+            <div class="live-state-body" id="ls-result">
+              <div class="muted-note">Select an entity and click <strong>Read Live State</strong>. Click any JSON key to drill into its path.</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW 5: METHODS SCHEMA & INVOKE PLAYGROUND -->
+        <section class="view-pane" id="view-methods">
+          <div class="methods-split">
+            <div class="panel methods-list-panel">
+              <div class="panel-header">
+                <h3>Server Methods (<code>list_methods</code>)</h3>
+                <input type="search" id="meth-search" class="input input-xs" placeholder="Search service / method / state…" />
+              </div>
+              <div id="meth-note" class="info-banner" hidden></div>
+              <div class="methods-catalog" id="meth-catalog"></div>
+            </div>
+
+            <div class="panel invoke-panel">
+              <div class="panel-header">
+                <h3>Invoke Method (<code>invoke_method</code>)</h3>
+                <span class="badge" id="invoke-allowed-badge">checking…</span>
+              </div>
+              <div class="invoke-body" id="invoke-body">
+                <div class="muted-note">Pick any method from the catalog on the left to inspect its signature and invoke it.</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW 6: CAPTURE SETTINGS & STATUS -->
+        <section class="view-pane" id="view-capture">
+          <div class="status-cards-grid" id="cap-status-cards"></div>
+
+          <div class="capture-grid">
+            <div class="panel">
+              <div class="panel-header">
+                <h3>Global Capture Configuration</h3>
+                <button type="button" class="btn btn-sm btn-amber" id="cap-save-btn">Apply Settings</button>
+              </div>
+              <div class="panel-body">
+                <div class="form-row">
+                  <label>Global Level</label>
+                  <div class="segmented" id="cap-level-seg">
+                    <button type="button" data-level="Off">Off</button>
+                    <button type="button" data-level="Ids">Ids</button>
+                    <button type="button" data-level="Args">Args</button>
+                    <button type="button" data-level="ArgsResult">ArgsResult</button>
+                    <button type="button" data-level="Full">Full</button>
+                  </div>
+                  <div class="field-help">Off = zero overhead. Ids = metadata. Args = +args. ArgsResult = +result. Full = +state snapshot after each call (required for TimeMachine diffs).</div>
+                </div>
+
+                <div class="form-row form-row-inline">
+                  <label>Sample Rate: <strong id="cap-sample-val">100%</strong></label>
+                  <input type="range" id="cap-sample-rate" min="0" max="1" step="0.05" value="1" />
+                </div>
+
+                <div class="form-row">
+                  <label class="checkbox-inline">
+                    <input type="checkbox" id="cap-broadcast-sub" />
+                    <span>Record one broadcast event per subscriber (instead of folding per operation)</span>
+                  </label>
+                </div>
+
+                <div class="form-row">
+                  <label>Per-Method Overrides (<code>IService.Method</code>, <code>IService.*</code>, <code>*</code>)</label>
+                  <div class="inline-add-row">
+                    <input type="text" id="cap-rule-pattern" class="input input-sm" list="datalist-methods" placeholder="IShopService.Buy or IShopService.*" />
+                    <select id="cap-rule-level" class="input input-sm">
+                      <option value="Full">Full</option>
+                      <option value="ArgsResult">ArgsResult</option>
+                      <option value="Args">Args</option>
+                      <option value="Ids">Ids</option>
+                      <option value="Off">Off</option>
+                    </select>
+                    <button type="button" class="btn btn-sm btn-cyan" id="cap-rule-add">Add Rule</button>
+                  </div>
+                  <div class="rules-list" id="cap-rules-list"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-header">
+                <h3>Focused Watches (Never Sampled)</h3>
+              </div>
+              <div class="panel-body">
+                <div class="form-row">
+                  <label>Watch Entity</label>
+                  <div class="inline-add-row">
+                    <input type="text" id="cap-watch-entity-id" class="input input-sm" list="datalist-entity-ids" placeholder="Entity ID (grain key)" />
+                    <select id="cap-watch-entity-level" class="input input-sm">
+                      <option value="Full" selected>Full</option>
+                      <option value="ArgsResult">ArgsResult</option>
+                      <option value="Args">Args</option>
+                      <option value="Ids">Ids</option>
+                    </select>
+                    <button type="button" class="btn btn-sm btn-amber" id="cap-watch-entity-btn">Watch</button>
+                  </div>
+                  <div class="rules-list" id="cap-watched-entities"></div>
+                </div>
+
+                <div class="form-row">
+                  <label>Watch Player</label>
+                  <div class="inline-add-row">
+                    <input type="text" id="cap-watch-player-id" class="input input-sm" placeholder="Player ID" />
+                    <select id="cap-watch-player-level" class="input input-sm">
+                      <option value="Full">Full</option>
+                      <option value="ArgsResult" selected>ArgsResult</option>
+                      <option value="Args">Args</option>
+                      <option value="Ids">Ids</option>
+                    </select>
+                    <button type="button" class="btn btn-sm btn-cyan" id="cap-watch-player-btn">Watch</button>
+                  </div>
+                  <div class="rules-list" id="cap-watched-players"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- Shared Datalists -->
+  <datalist id="datalist-state-types"></datalist>
+  <datalist id="datalist-entity-ids"></datalist>
+  <datalist id="datalist-methods"></datalist>
+
+  <!-- Modal: Endpoint & API Key -->
+  <div class="modal-backdrop" id="modal-endpoint" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h3>MCP Endpoint &amp; Authentication</h3>
+        <button type="button" class="btn-icon" data-close-modal>✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <label for="inp-mcp-url">MCP URL (Streamable HTTP)</label>
+          <input type="text" id="inp-mcp-url" class="input" placeholder="/mcp or http://localhost:5100/mcp" />
+        </div>
+        <div class="form-row">
+          <label for="inp-api-key">API Key (<code>X-Inspector-Key</code>, optional)</label>
+          <input type="password" id="inp-api-key" class="input" placeholder="Leave blank if server has no ApiKey" />
+        </div>
+        <div class="field-help" id="endpoint-auth-note"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-sm" data-close-modal>Cancel</button>
+        <button type="button" class="btn btn-sm btn-amber" id="btn-save-endpoint">Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Call Tree Waterfall -->
+  <div class="modal-backdrop" id="modal-call-tree" hidden>
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <div>
+          <h3>Call Span Tree</h3>
+          <div class="modal-sub" id="ct-subtitle"></div>
+        </div>
+        <button type="button" class="btn-icon" data-close-modal>✕</button>
+      </div>
+      <div class="modal-body ct-split">
+        <div class="ct-tree" id="ct-tree"></div>
+        <div class="ct-inspector" id="ct-inspector">
+          <div class="muted-note">Select a span event to inspect its args, result, and state.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Mermaid Export -->
+  <div class="modal-backdrop" id="modal-mermaid" hidden>
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h3 id="mermaid-title">Mermaid Diagram</h3>
+        <div class="toolbar-group">
+          <button type="button" class="btn btn-xs btn-cyan" id="btn-copy-mermaid">Copy</button>
+          <button type="button" class="btn-icon" data-close-modal>✕</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <pre class="code-block" id="mermaid-code"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Stack -->
+  <div class="toast-stack" id="toast-stack"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

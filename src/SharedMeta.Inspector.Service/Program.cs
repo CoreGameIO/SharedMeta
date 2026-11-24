@@ -52,6 +52,9 @@ builder.Services.AddSharedMetaInspectorMcp();
 
 var app = builder.Build();
 app.MapSharedMetaInspectorMcp("/mcp");
+app.MapSharedMetaInspectorUi("/inspector", "/mcp");
+app.MapGet("/", () => Results.Redirect("/inspector/"));
 var hostLabel = allowRemote ? "0.0.0.0" : "localhost";
 app.Logger.LogInformation("SharedMeta inspector MCP at http://{Host}:{Port}/mcp", hostLabel, port);
+app.Logger.LogInformation("SharedMeta inspector UI  at http://{Host}:{Port}/inspector/", hostLabel, port);
 app.Run();
