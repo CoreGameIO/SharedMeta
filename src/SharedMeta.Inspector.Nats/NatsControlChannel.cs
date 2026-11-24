@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using NATS.Client.KeyValueStore;
@@ -8,11 +9,13 @@ namespace SharedMeta.Inspector.Nats;
 /// <summary>
 /// Capture settings in one key of a JetStream key-value bucket. Changes are compare-and-set on the
 /// key's revision, so concurrent watches from two inspectors both land; every process watches the
-/// key and applies what it sees.
+/// key and applies what it sees. Silos also publish their method schema under <c>schema</c> so
+/// standalone inspectors can serve <c>list_methods</c> and resolve short state type names.
 /// </summary>
 internal sealed class NatsControlChannel : IInspectorControlChannel
 {
     private const string Key = "capture";
+    private const string SchemaKey = "schema";
     private const int MaxAttempts = 16;
     private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(2);
 
@@ -78,6 +81,46 @@ internal sealed class NatsControlChannel : IInspectorControlChannel
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Inspector capture-settings watch on bucket {Bucket} failed; retrying", _kv.Bucket);
+                try { await Task.Delay(RetryDelay, cancellationToken).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return; }
+            }
+        }
+    }
+
+    /// <summary>Publishes this silo's method table under <c>schema</c> so standalone inspectors can read it.</summary>
+    public async Task PublishSchemaAsync(JsonObject schema, CancellationToken cancellationToken)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(schema);
+        await _kv.PutAsync(SchemaKey, bytes, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Watches <c>schema</c> in the bucket and forwards every published method table to <paramref name="apply"/>.</summary>
+    public async Task WatchSchemaAsync(Action<JsonObject?> apply, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await foreach (var entry in _kv.WatchAsync<byte[]>(SchemaKey, cancellationToken: cancellationToken).ConfigureAwait(false))
+                {
+                    if (entry.Operation != NatsKVOperation.Put || entry.Value is not { Length: > 0 }) continue;
+                    try
+                    {
+                        if (JsonNode.Parse(entry.Value) is JsonObject obj) apply(obj);
+                    }
+                    catch (JsonException ex)
+                    {
+                        _logger.LogWarning(ex, "Inspector ignored unreadable method schema in bucket {Bucket}", _kv.Bucket);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Inspector method-schema watch on bucket {Bucket} failed; retrying", _kv.Bucket);
                 try { await Task.Delay(RetryDelay, cancellationToken).ConfigureAwait(false); }
                 catch (OperationCanceledException) { return; }
             }

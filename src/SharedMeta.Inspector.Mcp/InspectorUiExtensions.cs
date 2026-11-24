@@ -1,5 +1,4 @@
 using System.Net;
-using System.Reflection;
 using System.Text;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -11,6 +10,7 @@ namespace SharedMeta.Inspector.Mcp;
 public static class InspectorUiExtensions
 {
     private const string ResourcePrefix = "SharedMeta.Inspector.Mcp.Ui.";
+    private const string McpPathToken = "{{MCP_PATH}}";
 
     private static readonly Dictionary<string, string> s_assets = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -24,12 +24,12 @@ public static class InspectorUiExtensions
 
     /// <summary>
     /// Maps the embedded Inspector Web Viewer (TimeMachine timeline, dependency graph, live event
-    /// stream, entity/session explorer, live state, method invoker and capture settings). All data
-    /// calls go through the MCP endpoint at <paramref name="mcpPath"/>, which continues to enforce
-    /// <see cref="InspectorOptions.ApiKey"/>; static UI routes enforce
-    /// <see cref="InspectorOptions.LocalhostOnly"/> host/origin checks.
+    /// stream, entity/session explorer, live state, method invoker and capture settings) as a
+    /// <see cref="RouteGroupBuilder"/> so hosts can chain conventions such as
+    /// <c>.RequireAuthorization("DevAdmin")</c>. Redirects and the injected MCP endpoint path honor
+    /// <see cref="HttpRequest.PathBase"/> for reverse-proxy subpath deployments.
     /// </summary>
-    public static IEndpointRouteBuilder MapSharedMetaInspectorUi(
+    public static RouteGroupBuilder MapSharedMetaInspectorUi(
         this IEndpointRouteBuilder endpoints,
         string path = "/inspector",
         string mcpPath = "/mcp")
@@ -40,27 +40,37 @@ public static class InspectorUiExtensions
             ? "/mcp"
             : mcpPath.StartsWith('/') ? mcpPath : "/" + mcpPath;
 
-        var indexBytes = Encoding.UTF8.GetBytes(
-            ReadResource("index.html").Replace("{{MCP_PATH}}", WebUtility.HtmlEncode(normalizedMcp)));
+        var indexTemplate = ReadResource("index.html");
+        var tokenIndex = indexTemplate.IndexOf(McpPathToken, StringComparison.Ordinal);
+        if (tokenIndex < 0)
+            throw new InvalidOperationException($"Embedded index.html is missing '{McpPathToken}'.");
+        var indexPrefix = Encoding.UTF8.GetBytes(indexTemplate.Substring(0, tokenIndex));
+        var indexSuffix = Encoding.UTF8.GetBytes(indexTemplate.Substring(tokenIndex + McpPathToken.Length));
 
-        var rootRoute = basePath.Length > 0 ? basePath : "/";
-        endpoints.MapGet(rootRoute, async context =>
+        var group = endpoints.MapGroup(basePath);
+
+        group.MapGet(basePath.Length > 0 ? "" : "/", async context =>
         {
             if (!await PassHostCheckAsync(context, options)) return;
+            var pathBase = (context.Request.PathBase.Value ?? "").TrimEnd('/');
             if (basePath.Length > 0 && !(context.Request.Path.Value?.EndsWith('/') ?? false))
             {
-                context.Response.Redirect(basePath + "/" + context.Request.QueryString.Value, permanent: false);
+                context.Response.Redirect(pathBase + basePath + "/" + context.Request.QueryString.Value, permanent: false);
                 return;
             }
+            var resolvedMcp = WebUtility.HtmlEncode(pathBase + normalizedMcp);
+            var mcpBytes = Encoding.UTF8.GetBytes(resolvedMcp);
             context.Response.ContentType = "text/html; charset=utf-8";
             context.Response.Headers.CacheControl = "no-cache";
-            await context.Response.Body.WriteAsync(indexBytes);
+            await context.Response.Body.WriteAsync(indexPrefix);
+            await context.Response.Body.WriteAsync(mcpBytes);
+            await context.Response.Body.WriteAsync(indexSuffix);
         });
 
         foreach (var (fileName, contentType) in s_assets)
         {
             var payload = Encoding.UTF8.GetBytes(ReadResource(fileName));
-            endpoints.MapGet(basePath + "/" + fileName, async context =>
+            group.MapGet("/" + fileName, async context =>
             {
                 if (!await PassHostCheckAsync(context, options)) return;
                 context.Response.ContentType = contentType;
@@ -69,7 +79,7 @@ public static class InspectorUiExtensions
             });
         }
 
-        return endpoints;
+        return group;
     }
 
     private static async ValueTask<bool> PassHostCheckAsync(HttpContext context, InspectorOptions options)

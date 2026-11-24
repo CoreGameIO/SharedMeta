@@ -55,8 +55,10 @@ public class NatsInspectorTests
         var silos = siloOf.Values.Distinct().ToList();
         Assert.Equal(2, silos.Count);
 
-        // No method table in a standalone inspector: short state type names resolve from the events.
+        // Standalone inspector receives the silos' method schema over NATS KV.
+        await Eventually(() => standalone.RemoteSchema != null);
         var inspector = new InspectorService(standalone);
+        Assert.NotEmpty(inspector.Schema()["methods"]!.AsArray());
         Assert.Equal(Key<CounterState>(entities[0]), inspector.EntityKey(nameof(CounterState), entities[0]));
 
         // A hop between silos: call_sent recorded on one, the query it caused on the other.

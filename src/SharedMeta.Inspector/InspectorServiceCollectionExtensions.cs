@@ -60,7 +60,9 @@ public static class InspectorServiceCollectionExtensions
     {
         public Task StartAsync(CancellationToken cancellationToken)
         {
-            if (IsSilo(services)) BoundRuntime(services);
+            var runtime = services.GetRequiredService<InspectorRuntime>();
+            runtime.SetDefaultEnvironmentName(services.GetService<IHostEnvironment>()?.EnvironmentName);
+            if (IsSilo(services)) runtime.Bind(services);
             return Task.CompletedTask;
         }
 

@@ -41,6 +41,12 @@ public sealed class InspectorCaptureSettings
     /// <summary>One event per subscriber for broadcasts instead of one per operation.</summary>
     public bool BroadcastPerSubscriber { get; set; }
 
+    /// <summary>
+    /// Optional UTC deadline after which a non-Off global <see cref="Level"/> automatically reverts
+    /// to <see cref="InspectorLevel.Off"/> (watches and per-method rules stay intact).
+    /// </summary>
+    public DateTime? GlobalLevelExpiresAtUtc { get; set; }
+
     public InspectorCaptureSettings Clone() => new()
     {
         Level = Level,
@@ -49,6 +55,7 @@ public sealed class InspectorCaptureSettings
         WatchedPlayers = new Dictionary<string, InspectorLevel>(WatchedPlayers, StringComparer.Ordinal),
         SampleRate = SampleRate,
         BroadcastPerSubscriber = BroadcastPerSubscriber,
+        GlobalLevelExpiresAtUtc = GlobalLevelExpiresAtUtc,
     };
 }
 
@@ -101,4 +108,16 @@ public sealed class InspectorOptions
 
     /// <summary>Accept MCP requests only from loopback with a localhost Host and no foreign Origin.</summary>
     public bool LocalhostOnly { get; set; } = true;
+
+    /// <summary>
+    /// Environment label shown in <c>inspector_status</c> and the Web UI badge (e.g. <c>Development</c>,
+    /// <c>Staging</c>, <c>Production</c>). Defaults to <c>IHostEnvironment.EnvironmentName</c> when omitted.
+    /// </summary>
+    public string? EnvironmentName { get; set; }
+
+    /// <summary>
+    /// Optional upper bound on how long a non-Off global capture level may stay active before
+    /// automatically reverting to <see cref="InspectorLevel.Off"/>. Null = no server-enforced limit.
+    /// </summary>
+    public TimeSpan? MaxGlobalCaptureDuration { get; set; }
 }

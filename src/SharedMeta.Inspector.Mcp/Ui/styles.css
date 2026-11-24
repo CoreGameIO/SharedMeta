@@ -71,10 +71,11 @@ code, pre { font-family: var(--font-mono); }
 /* Top Bar */
 .topbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  padding: 8px 16px;
+  gap: 8px 12px;
+  padding: 8px 14px;
   background: rgba(11, 29, 44, 0.88);
   border-bottom: 1px solid var(--border);
   backdrop-filter: blur(8px);
@@ -84,8 +85,8 @@ code, pre { font-family: var(--font-mono); }
 .topbar-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-width: 190px;
+  gap: 9px;
+  min-width: 0;
 }
 
 .brand-badge {
@@ -102,8 +103,32 @@ code, pre { font-family: var(--font-mono); }
   box-shadow: 0 4px 14px rgba(245, 184, 46, 0.30);
 }
 
-.brand-title { font-weight: 700; font-size: 14px; letter-spacing: 0.01em; }
+.brand-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.brand-title { font-weight: 700; font-size: 14px; letter-spacing: 0.01em; white-space: nowrap; }
 .brand-sub { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+
+.env-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  font-size: 9.5px;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.env-badge[hidden] { display: none; }
+.env-dev { background: var(--cyan-soft); color: var(--cyan); border-color: rgba(91, 192, 235, 0.45); }
+.env-staging { background: var(--amber-soft); color: var(--amber); border-color: rgba(245, 184, 46, 0.5); }
+.env-prod { background: var(--red-soft); color: #fecaca; border-color: rgba(248, 113, 113, 0.65); }
+.env-other { background: var(--violet-soft); color: var(--violet); border-color: rgba(167, 139, 250, 0.45); }
 
 .nav-tabs {
   display: flex;
@@ -432,6 +457,7 @@ textarea.input { resize: vertical; min-height: 84px; }
   white-space: nowrap;
   flex-shrink: 0;
 }
+.badge[hidden] { display: none; }
 .badge-ok { background: var(--green-soft); color: var(--green); border-color: rgba(52, 211, 153, 0.35); }
 .badge-error { background: var(--red-soft); color: var(--red); border-color: rgba(248, 113, 113, 0.4); }
 .badge-amber { background: var(--amber-soft); color: var(--amber); border-color: rgba(245, 184, 46, 0.4); }
@@ -1131,6 +1157,26 @@ textarea.input { resize: vertical; min-height: 84px; }
   border: 1px solid rgba(91, 192, 235, 0.35);
   color: #d6f1fd;
   font-size: 11.5px;
+}
+
+.warn-banner {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--amber-soft);
+  border: 1px solid rgba(245, 184, 46, 0.45);
+  color: #fef3c7;
+  font-size: 11.5px;
+}
+.warn-banner[hidden] { display: none; }
+
+.offline-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: rgba(167, 139, 250, 0.16);
+  border-color: rgba(167, 139, 250, 0.48);
+  color: #ede9fe;
 }
 
 /* JSON Tree Viewer & Diff */

@@ -35,12 +35,17 @@ public sealed class InspectorService
         return new JsonObject
         {
             ["silo"] = _runtime.Silo,
+            ["environment"] = _runtime.EnvironmentName,
             ["captureAvailable"] = _runtime.CaptureAvailable,
             ["captureNote"] = _runtime.CaptureAvailable ? null
                 : _runtime.GrainFactory == null
                     ? "Standalone inspector: no silo here, so it captures nothing itself and shows the events the silos publish to the broker."
                     : "No method table registered: the server project was built without a [MetaCallTapProvider] reference (or in legacy shared-project mode), so calls are not reported.",
             ["level"] = settings.Level.ToString(),
+            ["globalLevelExpiresAtUtc"] = settings.GlobalLevelExpiresAtUtc,
+            ["maxGlobalCaptureMinutes"] = _runtime.Options.MaxGlobalCaptureDuration is { } cap && cap > TimeSpan.Zero
+                ? Math.Round(cap.TotalMinutes, 2)
+                : null,
             ["watchedEntities"] = settings.WatchedEntities.Count,
             ["watchedPlayers"] = settings.WatchedPlayers.Count,
             ["storedEvents"] = _runtime.Store.Count,
@@ -59,48 +64,19 @@ public sealed class InspectorService
 
     public JsonObject Schema()
     {
-        var methods = new JsonArray();
-        var descriptors = _runtime.Descriptors;
-        var signature = _runtime.Signature;
-        foreach (var d in descriptors?.Methods ?? Array.Empty<MetaMethodDescriptor>())
+        if (_runtime.BuildLocalSchema() is { } local) return local;
+        if (_runtime.RemoteSchema is { } remote)
         {
-            var entry = signature?.GetMethodEntry(d.MethodId);
-            methods.Add(new JsonObject
-            {
-                ["id"] = d.MethodId,
-                ["service"] = d.ServiceName,
-                ["method"] = d.Alias,
-                ["version"] = d.Version,
-                ["csharpName"] = d.MethodName,
-                ["mode"] = entry?.Mode.ToString(),
-                ["stateType"] = d.StateType.FullName,
-                ["parameters"] = new JsonArray(d.Parameters.Select(p => (JsonNode)new JsonObject
-                {
-                    ["name"] = p.Name,
-                    ["declaredType"] = p.DeclaredTypeName,
-                    ["wireType"] = TypeName(p.WireType),
-                    ["transformed"] = p.IsTransformed,
-                }).ToArray()),
-                ["result"] = d.ResultType != null ? TypeName(d.ResultType) : null,
-            });
+            var copy = (JsonObject)remote.DeepClone();
+            copy["note"] = "Method table published by a silo over the broker (standalone inspector: read-only, invoke_method unavailable). Arguments are in wire form.";
+            return copy;
         }
         return new JsonObject
         {
-            ["stateTypes"] = new JsonArray((descriptors?.StateTypes ?? Array.Empty<Type>()).Select(t => (JsonNode)JsonValue.Create(t.FullName)!).ToArray()),
-            ["methods"] = methods,
-            ["note"] = descriptors == null
-                ? "No method table in this process (standalone inspector, or a server built without a call tap): service and method names still appear on events."
-                : "Arguments are in wire form: a transformed parameter appears as its boxed type.",
+            ["stateTypes"] = new JsonArray(),
+            ["methods"] = new JsonArray(),
+            ["note"] = "No method table in this process (standalone inspector before a silo has published one, or a server built without a call tap): service and method names still appear on events.",
         };
-    }
-
-    private static string TypeName(Type t)
-    {
-        if (!t.IsGenericType) return t.FullName ?? t.Name;
-        var name = t.Name;
-        var tick = name.IndexOf('`');
-        if (tick > 0) name = name.Substring(0, tick);
-        return (t.Namespace != null ? t.Namespace + "." : "") + name + "<" + string.Join(", ", t.GetGenericArguments().Select(TypeName)) + ">";
     }
 
     // ── events ─────────────────────────────────────────────────────────────────

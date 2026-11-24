@@ -63,6 +63,7 @@ export class TimelineView {
     this._applySelectionStyles();
     this._renderCard();
     this._renderScrubber();
+    if (this.callbacks.onSelectEvent) this.callbacks.onSelectEvent(ev);
   }
 
   selectGroupIndex(index) {

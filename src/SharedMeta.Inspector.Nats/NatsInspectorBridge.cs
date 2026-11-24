@@ -120,6 +120,24 @@ internal sealed class NatsInspectorBridge : IHostedService, IAsyncDisposable
             {
                 _runtime.UseControlChannel(control);
                 _loops.Add(Task.Run(() => control.WatchAsync(_runtime.SetCaptureSettings, _stop.Token)));
+                if (_options.Publish)
+                {
+                    var ctrl = control;
+                    _runtime.OnBound(() =>
+                    {
+                        if (_runtime.BuildLocalSchema() is not { } schema) return;
+                        _ = Task.Run(async () =>
+                        {
+                            try { await ctrl.PublishSchemaAsync(schema, _stop.Token).ConfigureAwait(false); }
+                            catch (OperationCanceledException) { }
+                            catch (Exception ex) { _logger.LogWarning(ex, "Inspector failed to publish method schema to NATS KV"); }
+                        });
+                    });
+                }
+                else
+                {
+                    _loops.Add(Task.Run(() => control.WatchSchemaAsync(_runtime.SetRemoteSchema, _stop.Token)));
+                }
             }
             if (_options.Consume)
             {

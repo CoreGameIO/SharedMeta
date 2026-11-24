@@ -47,13 +47,21 @@ public sealed class InspectorTools
         [Description("Global level for methods without a specific rule: Off, Ids, Args, ArgsResult, Full.")] InspectorLevel? level = null,
         [Description("Per-method levels, e.g. {\"IShopService.Buy\": \"Full\", \"IChatService.*\": \"Off\"}.")] Dictionary<string, InspectorLevel>? methodLevels = null,
         [Description("Fraction (0..1) of calls kept at method/global level. Watches are never sampled.")] double? sampleRate = null,
-        [Description("One broadcast event per subscriber instead of one per operation.")] bool? broadcastPerSubscriber = null)
+        [Description("One broadcast event per subscriber instead of one per operation.")] bool? broadcastPerSubscriber = null,
+        [Description("Auto-revert a non-Off global level back to Off after this many minutes (0 clears the timer; watches stay).")] int? globalTtlMinutes = null)
         => await Explain(async () => Write(await Runtime.UpdateCaptureSettingsAsync(s =>
         {
             if (level.HasValue) s.Level = level.Value;
             if (methodLevels != null) s.MethodLevels = new Dictionary<string, InspectorLevel>(methodLevels, StringComparer.Ordinal);
             if (sampleRate.HasValue) s.SampleRate = sampleRate.Value;
             if (broadcastPerSubscriber.HasValue) s.BroadcastPerSubscriber = broadcastPerSubscriber.Value;
+            if (globalTtlMinutes.HasValue)
+            {
+                s.GlobalLevelExpiresAtUtc = globalTtlMinutes.Value > 0 && s.Level != InspectorLevel.Off
+                    ? DateTime.UtcNow.AddMinutes(globalTtlMinutes.Value)
+                    : null;
+            }
+            if (s.Level == InspectorLevel.Off) s.GlobalLevelExpiresAtUtc = null;
         })));
 
     [McpServerTool(Name = "watch_entity", Idempotent = true)]

@@ -17,8 +17,11 @@ using SharedMeta.Inspector.Nats;
 //   warm-minutes    events loaded on start                       (60)
 //   max-events      events kept in memory                        (200000)
 //   manage-stream   create the stream / bucket if missing        (false: the silos do)
-//   api-key         required on MCP requests when set
-//   allow-remote    listen on all interfaces (set api-key too)   (false)
+//   api-key            required on MCP requests when set
+//   allow-remote       listen on all interfaces (set api-key too)   (false)
+//   env                environment badge label (e.g. DEV, STAGING)
+//   path-base          optional reverse-proxy subpath (e.g. /dev/inspector)
+//   max-global-minutes optional auto-revert cap for global capture level
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddEnvironmentVariables("SHAREDMETA_INSPECTOR_");
@@ -30,6 +33,8 @@ T Value<T>(string key, T fallback) => config.GetValue(key, config.GetValue(key.R
 
 var port = Value("port", 5300);
 var allowRemote = Value("allow-remote", false);
+var pathBase = Setting("path-base");
+var maxGlobalMinutes = Value("max-global-minutes", 0);
 builder.WebHost.UseUrls($"http://{(allowRemote ? "0.0.0.0" : "localhost")}:{port}");
 
 builder.Services.AddSharedMetaInspector(o =>
@@ -37,6 +42,8 @@ builder.Services.AddSharedMetaInspector(o =>
     o.MaxEvents = Value("max-events", 200_000);
     o.ApiKey = Setting("api-key");
     o.LocalhostOnly = !allowRemote;
+    o.EnvironmentName = Setting("env");
+    if (maxGlobalMinutes > 0) o.MaxGlobalCaptureDuration = TimeSpan.FromMinutes(maxGlobalMinutes);
 });
 builder.Services.AddSharedMetaInspectorNats(o =>
 {
@@ -51,10 +58,15 @@ builder.Services.AddSharedMetaInspectorNats(o =>
 builder.Services.AddSharedMetaInspectorMcp();
 
 var app = builder.Build();
+if (!string.IsNullOrWhiteSpace(pathBase))
+{
+    app.UsePathBase(pathBase.StartsWith('/') ? pathBase : "/" + pathBase);
+}
 app.MapSharedMetaInspectorMcp("/mcp");
 app.MapSharedMetaInspectorUi("/inspector", "/mcp");
-app.MapGet("/", () => Results.Redirect("/inspector/"));
+app.MapGet("/", (HttpContext ctx) => Results.Redirect((ctx.Request.PathBase.Value ?? "").TrimEnd('/') + "/inspector/"));
 var hostLabel = allowRemote ? "0.0.0.0" : "localhost";
-app.Logger.LogInformation("SharedMeta inspector MCP at http://{Host}:{Port}/mcp", hostLabel, port);
-app.Logger.LogInformation("SharedMeta inspector UI  at http://{Host}:{Port}/inspector/", hostLabel, port);
+var prefixDisplay = string.IsNullOrWhiteSpace(pathBase) ? "" : (pathBase.StartsWith('/') ? pathBase.TrimEnd('/') : "/" + pathBase.TrimEnd('/'));
+app.Logger.LogInformation("SharedMeta inspector MCP at http://{Host}:{Port}{Prefix}/mcp", hostLabel, port, prefixDisplay);
+app.Logger.LogInformation("SharedMeta inspector UI  at http://{Host}:{Port}{Prefix}/inspector/", hostLabel, port, prefixDisplay);
 app.Run();

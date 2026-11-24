@@ -27,6 +27,10 @@ const state = {
   methodSearch: '',
   captureDraft: null,
   captureDirty: false,
+  activeCallTree: null,
+  offlineTimeline: null,
+  pendingInvoke: null,
+  skipInvokeConfirm: sessionStorage.getItem('sharedmeta.inspector.skipInvokeConfirm') === '1',
 };
 
 const $ = (id) => document.getElementById(id);
@@ -48,7 +52,13 @@ function openModal(id) {
 }
 
 function closeModals() {
+  const ctWasOpen = !$('modal-call-tree').hidden;
   document.querySelectorAll('.modal-backdrop').forEach(m => { m.hidden = true; });
+  state.pendingInvoke = null;
+  if (ctWasOpen) {
+    state.activeCallTree = null;
+    syncHash();
+  }
 }
 
 document.querySelectorAll('[data-close-modal]').forEach(btn => btn.addEventListener('click', closeModals));
@@ -73,7 +83,8 @@ const timelineView = new TimelineView({
   callbacks: {
     onOpenCallTree: (callId) => openCallTree(callId),
     onOpenEntity: (stateType, entityId) => openEntityTimeline(stateType, entityId),
-    fetchStateAt: (stateType, entityId, seq) => mcp.entityStateAt(stateType, entityId, seq),
+    onSelectEvent: () => syncHash(),
+    fetchStateAt: (stateType, entityId, seq) => state.offlineTimeline ? Promise.resolve(null) : mcp.entityStateAt(stateType, entityId, seq),
   },
 });
 
@@ -94,9 +105,104 @@ const graphView = new GraphView({
   },
 });
 
+// ── Deep-Link URL Hash ───────────────────────────────────────────────────────
+
+function parseHash() {
+  const raw = (location.hash || '').replace(/^#/, '');
+  const params = new URLSearchParams(raw);
+  const out = {};
+  for (const [k, v] of params.entries()) out[k] = v;
+  return out;
+}
+
+function buildDeepLink(overrides = {}) {
+  const params = new URLSearchParams();
+  const view = overrides.view ?? state.view;
+  params.set('view', view);
+
+  if (view === 'timeline') {
+    const st = overrides.stateType ?? $('tl-state-type').value.trim();
+    const id = overrides.entityId ?? $('tl-entity-id').value.trim();
+    const fromSeq = overrides.fromSeq ?? $('tl-from-seq').value.trim();
+    const toSeq = overrides.toSeq ?? $('tl-to-seq').value.trim();
+    const selEv = timelineView._getSelectedEvent();
+    const seq = overrides.seq ?? (selEv ? String(selEv.entitySequence) : '');
+    if (st) params.set('stateType', st);
+    if (id) params.set('entityId', id);
+    if (fromSeq) params.set('fromSeq', fromSeq);
+    if (toSeq) params.set('toSeq', toSeq);
+    if (seq) params.set('seq', seq);
+  } else if (view === 'graph') {
+    const st = overrides.stateType ?? $('g-state-type').value.trim();
+    const id = overrides.entityId ?? $('g-entity-id').value.trim();
+    const depth = overrides.depth ?? $('g-depth').value.trim();
+    const win = overrides.window ?? $('g-window').value.trim();
+    if (st) params.set('stateType', st);
+    if (id) params.set('entityId', id);
+    if (depth) params.set('depth', depth);
+    if (win) params.set('window', win);
+  }
+
+  const callId = overrides.callId !== undefined ? overrides.callId : state.activeCallTree?.callId;
+  if (callId) params.set('callId', callId);
+
+  return `${location.origin}${location.pathname}${location.search}#${params.toString()}`;
+}
+
+function syncHash() {
+  const next = new URL(buildDeepLink()).hash;
+  if (location.hash !== next) {
+    history.replaceState(null, '', next);
+  }
+}
+
+async function copyDeepLink(overrides = {}) {
+  const url = buildDeepLink(overrides);
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('Deep link copied to clipboard.', 'ok');
+  } catch {
+    toast('Clipboard access denied.', 'error');
+  }
+}
+
+async function applyHashState() {
+  const h = parseHash();
+  const validViews = new Set(['timeline', 'graph', 'stream', 'entities', 'methods', 'capture']);
+  const targetView = validViews.has(h.view) ? h.view : null;
+  let loadedSomething = false;
+
+  if (targetView) switchView(targetView, { skipHash: true });
+
+  if (h.stateType && h.entityId) {
+    if (!targetView || targetView === 'timeline') {
+      $('tl-state-type').value = shortType(h.stateType);
+      $('tl-entity-id').value = h.entityId;
+      if (h.fromSeq !== undefined) $('tl-from-seq').value = h.fromSeq;
+      if (h.toSeq !== undefined) $('tl-to-seq').value = h.toSeq;
+      await loadTimeline(false, h.seq !== undefined ? Number(h.seq) : null);
+      loadedSomething = true;
+    } else if (targetView === 'graph') {
+      $('g-state-type').value = shortType(h.stateType);
+      $('g-entity-id').value = h.entityId;
+      if (h.depth) $('g-depth').value = h.depth;
+      if (h.window) $('g-window').value = h.window;
+      await loadGraph();
+      loadedSomething = true;
+    }
+  }
+
+  if (h.callId) {
+    await openCallTree(h.callId);
+    loadedSomething = true;
+  }
+
+  return loadedSomething;
+}
+
 // ── Navigation ───────────────────────────────────────────────────────────────
 
-function switchView(viewName) {
+function switchView(viewName, { skipHash = false } = {}) {
   state.view = viewName;
   document.querySelectorAll('.nav-tab').forEach(btn => {
     btn.classList.toggle('is-active', btn.dataset.view === viewName);
@@ -109,6 +215,7 @@ function switchView(viewName) {
   if (viewName === 'methods' && !state.schema) loadSchema();
   if (viewName === 'capture') renderCaptureView();
   if (viewName === 'graph' && state.graphData) graphView.render();
+  if (!skipHash) syncHash();
 }
 
 document.querySelectorAll('.nav-tab').forEach(btn => {
@@ -175,14 +282,17 @@ async function bootstrapAll() {
     renderCaptureView();
     renderEntitiesTables();
 
-    // Auto-select most recent entity for Timeline if none selected yet
-    if (!$('tl-entity-id').value && state.entities.length > 0) {
-      const first = state.entities[0];
-      $('tl-state-type').value = shortType(first.stateType);
-      $('tl-entity-id').value = first.entityId;
-      await loadTimeline();
-    } else {
-      timelineView.render();
+    // Restore URL hash deep-link if present, else auto-select most recent entity
+    const appliedFromHash = await applyHashState();
+    if (!appliedFromHash) {
+      if (!$('tl-entity-id').value && state.entities.length > 0) {
+        const first = state.entities[0];
+        $('tl-state-type').value = shortType(first.stateType);
+        $('tl-entity-id').value = first.entityId;
+        await loadTimeline();
+      } else {
+        timelineView.render();
+      }
     }
   } catch (err) {
     setConnectionError(err.message);
@@ -204,7 +314,7 @@ async function refreshActiveView(silent = false) {
     updateDatalists();
     renderSidebar();
 
-    if (state.view === 'timeline' && $('tl-state-type').value && $('tl-entity-id').value) {
+    if (state.view === 'timeline' && !state.offlineTimeline && $('tl-state-type').value && $('tl-entity-id').value) {
       await loadTimeline(silent);
     } else if (state.view === 'graph' && $('g-state-type').value && $('g-entity-id').value) {
       await loadGraph(silent);
@@ -230,18 +340,75 @@ function setConnectionError(msg) {
   $('btn-capture-pill').title = msg;
 }
 
+function formatRemainingTtl(isoUtc) {
+  if (!isoUtc) return '';
+  const diffMs = new Date(isoUtc).getTime() - Date.now();
+  if (Number.isNaN(diffMs) || diffMs <= 0) return 'expiring…';
+  const totalSec = Math.ceil(diffMs / 1000);
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  return mins > 0 ? `${mins}m ${String(secs).padStart(2, '0')}s` : `${secs}s`;
+}
+
+function updateEnvironmentBadge(envName) {
+  const badge = $('env-badge');
+  if (!badge) return;
+  if (!envName) {
+    badge.hidden = true;
+    document.title = 'SharedMeta Inspector · TimeMachine & MCP Viewer';
+    return;
+  }
+  const lower = envName.toLowerCase();
+  const cls = lower.includes('prod') ? 'env-prod'
+    : lower.includes('stag') || lower.includes('qa') ? 'env-staging'
+    : lower.includes('dev') || lower.includes('local') ? 'env-dev'
+    : 'env-other';
+  const shortLabel = lower === 'development' ? 'DEV'
+    : lower === 'production' ? 'PROD'
+    : lower === 'staging' ? 'STAGING'
+    : envName.toUpperCase();
+  badge.hidden = false;
+  badge.className = `env-badge ${cls}`;
+  badge.textContent = shortLabel;
+  badge.title = `Server environment: ${envName}`;
+  document.title = `[${shortLabel}] SharedMeta Inspector`;
+}
+
+function updateTtlDisplays() {
+  const s = state.status;
+  if (!s) return;
+  const expiresAt = s.globalLevelExpiresAtUtc || state.capture?.globalLevelExpiresAtUtc;
+  const ttlText = s.level && s.level !== 'Off' && expiresAt ? formatRemainingTtl(expiresAt) : '';
+
+  const watchCount = (s.watchedEntities || 0) + (s.watchedPlayers || 0);
+  const parts = [String(s.level || 'Off').toUpperCase()];
+  if (ttlText) parts.push(ttlText);
+  if (watchCount > 0) parts.push(`${watchCount} watch${watchCount === 1 ? '' : 'es'}`);
+  $('capture-pill-text').textContent = parts.join(' · ');
+
+  const cd = $('cap-ttl-countdown');
+  if (cd) {
+    if (ttlText) {
+      cd.hidden = false;
+      cd.textContent = `Reverts to Off in ${ttlText}`;
+    } else {
+      cd.hidden = true;
+    }
+  }
+}
+
+setInterval(updateTtlDisplays, 1000);
+
 function updateStatusUi() {
   const s = state.status;
   if (!s) return;
+  updateEnvironmentBadge(s.environment);
   const capturing = s.level !== 'Off' || (s.watchedEntities > 0) || (s.watchedPlayers > 0);
   $('conn-dot').className = capturing ? 'dot is-active' : 'dot is-online';
   const distShort = s.sharedCaptureSettings ? 'NATS' : 'local';
   $('status-silo').textContent = `${s.silo || 'inspector'} · ${distShort}${s.liveAccess ? '' : ' (standalone)'}`;
 
-  const watchCount = (s.watchedEntities || 0) + (s.watchedPlayers || 0);
-  $('capture-pill-text').textContent = watchCount > 0
-    ? `${s.level} · ${watchCount} watch${watchCount === 1 ? '' : 'es'}`
-    : String(s.level || 'Off').toUpperCase();
+  updateTtlDisplays();
 
   $('m-stored').textContent = s.storedEvents ?? 0;
   $('m-sessions').textContent = s.openSessions ?? 0;
@@ -387,13 +554,14 @@ function renderSidebar() {
 // ── View 1: Timeline ─────────────────────────────────────────────────────────
 
 function openEntityTimeline(stateType, entityId) {
+  state.offlineTimeline = null;
   $('tl-state-type').value = shortType(stateType);
   $('tl-entity-id').value = entityId;
   switchView('timeline');
   loadTimeline();
 }
 
-async function loadTimeline(silent = false) {
+async function loadTimeline(silent = false, targetSeq = null) {
   const stateType = $('tl-state-type').value.trim();
   const entityId = $('tl-entity-id').value.trim();
   if (!stateType || !entityId) {
@@ -414,14 +582,20 @@ async function loadTimeline(silent = false) {
       limit,
       includePayloads: true,
     });
+    state.offlineTimeline = null;
     state.timelineMeta = res;
     timelineView.setData(res.entity || `${stateType}:${entityId}`, res.events || []);
+    if (targetSeq !== null && !Number.isNaN(targetSeq)) {
+      timelineView.selectSequence(targetSeq);
+    }
     updateTimelineWatchButton();
     renderSidebar();
+    syncHash();
 
     const strip = $('tl-info-strip');
     const hist = res.history;
     strip.hidden = false;
+    strip.className = 'tl-info-strip';
     strip.innerHTML = `
       <span>Entity: <code>${escapeHtml(res.entity)}</code></span>
       <span>Events: <strong>${res.count ?? 0}</strong></span>
@@ -431,6 +605,61 @@ async function loadTimeline(silent = false) {
   } catch (err) {
     if (!silent) toast(err.message, 'error');
   }
+}
+
+function downloadJson(fileName, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function sanitizeFilePart(s) {
+  return String(s || 'unknown').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 64);
+}
+
+function loadOfflineTimeline(snapshot, fileName) {
+  const timeline = snapshot.timeline || snapshot;
+  const entityKey = timeline.entity || 'Offline:unknown';
+  const events = Array.isArray(timeline.events) ? timeline.events : [];
+  const { stateType, entityId } = splitEntityKey(entityKey);
+
+  state.offlineTimeline = {
+    fileName,
+    exportedAtUtc: snapshot.exportedAtUtc || null,
+    environment: snapshot.environment || null,
+    silo: snapshot.silo || null,
+  };
+  state.timelineMeta = timeline;
+  if (stateType) $('tl-state-type').value = shortType(stateType);
+  if (entityId) $('tl-entity-id').value = entityId;
+  switchView('timeline', { skipHash: true });
+  timelineView.setData(entityKey, events);
+
+  const strip = $('tl-info-strip');
+  strip.hidden = false;
+  strip.className = 'tl-info-strip offline-banner';
+  const metaParts = [
+    `<strong>OFFLINE SNAPSHOT</strong>`,
+    `<code>${escapeHtml(fileName)}</code>`,
+    `<span>Entity: <code>${escapeHtml(entityKey)}</code> (${events.length} events)</span>`,
+    snapshot.environment ? `<span class="badge badge-violet">${escapeHtml(snapshot.environment)}</span>` : '',
+    snapshot.exportedAtUtc ? `<span>Exported: ${escapeHtml(formatTime(snapshot.exportedAtUtc))}</span>` : '',
+  ].filter(Boolean).join(' ');
+  strip.innerHTML = `
+    <div class="toolbar-group">${metaParts}</div>
+    <button type="button" class="btn btn-xs btn-cyan" id="btn-exit-offline">Back to Live</button>
+  `;
+  strip.querySelector('#btn-exit-offline')?.addEventListener('click', () => {
+    state.offlineTimeline = null;
+    loadTimeline();
+  });
+  toast(`Loaded offline timeline (${events.length} events).`, 'ok');
 }
 
 function updateTimelineWatchButton() {
@@ -475,6 +704,51 @@ $('tl-graph-btn').addEventListener('click', () => {
   else switchView('graph');
 });
 
+$('tl-copy-link-btn').addEventListener('click', () => copyDeepLink({ view: 'timeline' }));
+
+$('tl-export-btn').addEventListener('click', () => {
+  if (!state.timelineMeta || !Array.isArray(state.timelineMeta.events)) {
+    toast('Load a timeline first before exporting.', 'error');
+    return;
+  }
+  const { stateType, entityId } = splitEntityKey(state.timelineMeta.entity || '');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const fileName = `sharedmeta-timeline-${sanitizeFilePart(shortType(stateType))}-${sanitizeFilePart(entityId)}-${stamp}.json`;
+  downloadJson(fileName, {
+    format: 'sharedmeta-inspector-timeline',
+    version: 1,
+    exportedAtUtc: new Date().toISOString(),
+    environment: state.status?.environment || null,
+    silo: state.status?.silo || null,
+    timeline: state.timelineMeta,
+  });
+  toast(`Exported ${fileName}`, 'ok');
+});
+
+$('tl-import-btn').addEventListener('click', () => {
+  const input = $('tl-import-file');
+  input.value = '';
+  input.click();
+});
+
+$('tl-import-file').addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  try {
+    const parsed = JSON.parse(await file.text());
+    if (parsed.format === 'sharedmeta-inspector-call-tree' || (parsed.callId && Array.isArray(parsed.roots))) {
+      renderCallTreeModal(parsed.callTree || parsed, { offlineLabel: file.name });
+      toast(`Loaded offline Call Tree from ${file.name}`, 'ok');
+    } else if (parsed.format === 'sharedmeta-inspector-timeline' || (parsed.entity && Array.isArray(parsed.events))) {
+      loadOfflineTimeline(parsed, file.name);
+    } else {
+      toast('Unrecognized JSON snapshot format (expected timeline or call tree export).', 'error');
+    }
+  } catch (err) {
+    toast(`Failed to import JSON: ${err.message}`, 'error');
+  }
+});
+
 $('btn-copy-mermaid').addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText($('mermaid-code').textContent);
@@ -506,12 +780,14 @@ async function loadGraph(silent = false) {
     const data = await mcp.entityGraph({ stateType, entityId, depth, window: windowSize });
     state.graphData = data;
     graphView.setData(data);
+    syncHash();
   } catch (err) {
     if (!silent) toast(err.message, 'error');
   }
 }
 
 $('g-load-btn').addEventListener('click', () => loadGraph());
+$('g-copy-link-btn').addEventListener('click', () => copyDeepLink({ view: 'graph' }));
 $('g-mermaid-btn').addEventListener('click', () => {
   if (!state.graphData?.mermaid) { toast('Build a graph first.', 'error'); return; }
   $('mermaid-title').textContent = `Graph Mermaid — ${shortType(state.graphData.center)}`;
@@ -632,67 +908,93 @@ $('st-lookup-call-btn').addEventListener('click', () => {
 async function openCallTree(callId) {
   try {
     const tree = await mcp.getCall(callId, true);
-    $('ct-subtitle').textContent = `CallId ${tree.callId} · ${tree.events ?? 0} event(s)`;
-    const treeEl = $('ct-tree');
-    const inspEl = $('ct-inspector');
-    treeEl.innerHTML = '';
-    inspEl.innerHTML = `<div class="muted-note">Select a span event to inspect its payload and state.</div>`;
-
-    const selectSpanEv = (btn, ev) => {
-      treeEl.querySelectorAll('.ct-event-btn').forEach(b => b.classList.remove('is-selected'));
-      btn.classList.add('is-selected');
-      inspEl.innerHTML = '';
-      renderJsonTree(inspEl, ev, { maxDepthExpand: 3 });
-    };
-
-    let firstBtn = null;
-    let firstEv = null;
-
-    const renderNode = (node, container) => {
-      const wrap = document.createElement('div');
-      wrap.className = 'ct-span';
-      const sorted = [...(node.events || [])].sort((a, b) =>
-        (a.entitySequence - b.entitySequence) || (a.subOrder - b.subOrder) || ((a.id ?? 0) - (b.id ?? 0)));
-      for (const ev of sorted) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'ct-event-btn';
-        const isErr = ev.result && ev.result !== 'success';
-        const title = `${ev.kind === 'call_sent' ? '→ ' : ''}${ev.service ? ev.service + '.' : ''}${ev.method || ev.kind}`;
-        btn.innerHTML = `
-          <span>
-            <span class="badge ${kindBadgeClass(ev)}">${escapeHtml(ev.callKind || ev.kind)}</span>
-            <strong>${escapeHtml(title)}</strong>
-            <span class="muted-note">${escapeHtml(shortType(ev.entityKey || ''))} #${ev.entitySequence}</span>
-          </span>
-          <span class="badge ${isErr ? 'badge-error' : 'badge-neutral'}">${formatMs(ev.durationMs)}</span>
-        `;
-        btn.addEventListener('click', () => selectSpanEv(btn, ev));
-        wrap.appendChild(btn);
-        if (!firstBtn) { firstBtn = btn; firstEv = ev; }
-      }
-      for (const child of node.children || []) {
-        renderNode(child, wrap);
-      }
-      container.appendChild(wrap);
-    };
-
-    for (const root of tree.roots || []) renderNode(root, treeEl);
-    if ((tree.unspanned || []).length > 0) {
-      const title = document.createElement('div');
-      title.className = 'kv-title';
-      title.style.marginTop = '8px';
-      title.textContent = 'Unspanned (e.g. client_responded)';
-      treeEl.appendChild(title);
-      renderNode({ events: tree.unspanned, children: [] }, treeEl);
-    }
-
-    if (firstBtn && firstEv) selectSpanEv(firstBtn, firstEv);
-    openModal('modal-call-tree');
+    renderCallTreeModal(tree);
+    syncHash();
   } catch (err) {
     toast(err.message, 'error');
   }
 }
+
+function renderCallTreeModal(tree, { offlineLabel = null } = {}) {
+  state.activeCallTree = tree;
+  $('ct-subtitle').textContent = `CallId ${tree.callId} · ${tree.events ?? 0} event(s)${offlineLabel ? ` · offline (${offlineLabel})` : ''}`;
+  const treeEl = $('ct-tree');
+  const inspEl = $('ct-inspector');
+  treeEl.innerHTML = '';
+  inspEl.innerHTML = `<div class="muted-note">Select a span event to inspect its payload and state.</div>`;
+
+  const selectSpanEv = (btn, ev) => {
+    treeEl.querySelectorAll('.ct-event-btn').forEach(b => b.classList.remove('is-selected'));
+    btn.classList.add('is-selected');
+    inspEl.innerHTML = '';
+    renderJsonTree(inspEl, ev, { maxDepthExpand: 3 });
+  };
+
+  let firstBtn = null;
+  let firstEv = null;
+
+  const renderNode = (node, container) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'ct-span';
+    const sorted = [...(node.events || [])].sort((a, b) =>
+      (a.entitySequence - b.entitySequence) || (a.subOrder - b.subOrder) || ((a.id ?? 0) - (b.id ?? 0)));
+    for (const ev of sorted) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ct-event-btn';
+      const isErr = ev.result && ev.result !== 'success';
+      const title = `${ev.kind === 'call_sent' ? '→ ' : ''}${ev.service ? ev.service + '.' : ''}${ev.method || ev.kind}`;
+      btn.innerHTML = `
+        <span>
+          <span class="badge ${kindBadgeClass(ev)}">${escapeHtml(ev.callKind || ev.kind)}</span>
+          <strong>${escapeHtml(title)}</strong>
+          <span class="muted-note">${escapeHtml(shortType(ev.entityKey || ''))} #${ev.entitySequence}</span>
+        </span>
+        <span class="badge ${isErr ? 'badge-error' : 'badge-neutral'}">${formatMs(ev.durationMs)}</span>
+      `;
+      btn.addEventListener('click', () => selectSpanEv(btn, ev));
+      wrap.appendChild(btn);
+      if (!firstBtn) { firstBtn = btn; firstEv = ev; }
+    }
+    for (const child of node.children || []) {
+      renderNode(child, wrap);
+    }
+    container.appendChild(wrap);
+  };
+
+  for (const root of tree.roots || []) renderNode(root, treeEl);
+  if ((tree.unspanned || []).length > 0) {
+    const title = document.createElement('div');
+    title.className = 'kv-title';
+    title.style.marginTop = '8px';
+    title.textContent = 'Unspanned (e.g. client_responded)';
+    treeEl.appendChild(title);
+    renderNode({ events: tree.unspanned, children: [] }, treeEl);
+  }
+
+  if (firstBtn && firstEv) selectSpanEv(firstBtn, firstEv);
+  openModal('modal-call-tree');
+}
+
+$('btn-ct-copy-link').addEventListener('click', () => {
+  if (!state.activeCallTree?.callId) return;
+  copyDeepLink({ callId: state.activeCallTree.callId });
+});
+
+$('btn-ct-export').addEventListener('click', () => {
+  if (!state.activeCallTree) return;
+  const cid = sanitizeFilePart(state.activeCallTree.callId || 'call');
+  const fileName = `sharedmeta-call-${cid}.json`;
+  downloadJson(fileName, {
+    format: 'sharedmeta-inspector-call-tree',
+    version: 1,
+    exportedAtUtc: new Date().toISOString(),
+    environment: state.status?.environment || null,
+    silo: state.status?.silo || null,
+    callTree: state.activeCallTree,
+  });
+  toast(`Exported ${fileName}`, 'ok');
+});
 
 // ── View 4: Entities, Sessions & Live State ──────────────────────────────────
 
@@ -1024,43 +1326,76 @@ function renderInvokeForm() {
       }
     }
 
-    const out = $('inv-output');
-    out.innerHTML = `<div class="muted-note">Executing ${escapeHtml(m.service)}.${escapeHtml(m.method)}…</div>`;
-    try {
-      const res = await mcp.invokeMethod({
-        stateType,
-        entityId,
-        service: m.service,
-        method: m.method,
-        version: m.version,
-        args,
-        callerId,
-        callerClientVersion,
-      });
-      out.innerHTML = `
-        <div class="kv-section">
-          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-            <span class="badge ${res.success ? 'badge-ok' : 'badge-error'}">${res.success ? '✓ Success' : '✗ Failed'}</span>
-            <div class="toolbar-group">
-              ${res.callId ? `<button type="button" class="btn btn-xs btn-cyan" id="inv-inspect-call">Inspect Call Tree</button>` : ''}
-              <button type="button" class="btn btn-xs btn-amber" id="inv-open-tl">Open Timeline</button>
-            </div>
-          </div>
-          ${res.error ? `<div class="card-error-box">${escapeHtml(res.error)}</div>` : ''}
-          ${res.note ? `<div class="muted-note">${escapeHtml(res.note)}</div>` : ''}
-          <div class="kv-body" id="inv-res-tree"></div>
-        </div>
+    const payload = {
+      stateType,
+      entityId,
+      service: m.service,
+      method: m.method,
+      version: m.version,
+      args,
+      callerId,
+      callerClientVersion,
+    };
+
+    if (m.mode !== 'Query' && !state.skipInvokeConfirm) {
+      state.pendingInvoke = payload;
+      const env = state.status?.environment || state.status?.silo || 'server';
+      $('inv-confirm-summary').innerHTML = `
+        <tr><th>Environment</th><td><code>${escapeHtml(env)}</code></td></tr>
+        <tr><th>Entity</th><td><code>${escapeHtml(stateType)}:${escapeHtml(entityId)}</code></td></tr>
+        <tr><th>Method</th><td><code>${escapeHtml(m.service)}.${escapeHtml(m.method)} v${m.version}</code> (${escapeHtml(m.mode || 'Default')})</td></tr>
+        ${callerId ? `<tr><th>CallerId</th><td><code>${escapeHtml(callerId)}</code></td></tr>` : ''}
+        ${callerClientVersion ? `<tr><th>ClientVersion</th><td><code>${escapeHtml(callerClientVersion)}</code></td></tr>` : ''}
       `;
-      renderJsonTree(out.querySelector('#inv-res-tree'), res, { maxDepthExpand: 3 });
-      out.querySelector('#inv-inspect-call')?.addEventListener('click', () => openCallTree(res.callId));
-      out.querySelector('#inv-open-tl')?.addEventListener('click', () => openEntityTimeline(stateType, entityId));
-      toast(`Invoked ${m.service}.${m.method}`, res.success ? 'ok' : 'error');
-      refreshActiveView(true);
-    } catch (err) {
-      out.innerHTML = `<div class="card-error-box">${escapeHtml(err.message)}</div>`;
+      $('inv-confirm-args').textContent = args !== undefined ? JSON.stringify(args, null, 2) : '(no arguments)';
+      $('inv-confirm-skip').checked = false;
+      openModal('modal-invoke-confirm');
+      return;
     }
+
+    await executeInvoke(payload);
   });
 }
+
+async function executeInvoke(payload) {
+  const out = $('inv-output');
+  if (!out) return;
+  out.innerHTML = `<div class="muted-note">Executing ${escapeHtml(payload.service)}.${escapeHtml(payload.method)}…</div>`;
+  try {
+    const res = await mcp.invokeMethod(payload);
+    out.innerHTML = `
+      <div class="kv-section">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+          <span class="badge ${res.success ? 'badge-ok' : 'badge-error'}">${res.success ? '✓ Success' : '✗ Failed'}</span>
+          <div class="toolbar-group">
+            ${res.callId ? `<button type="button" class="btn btn-xs btn-cyan" id="inv-inspect-call">Inspect Call Tree</button>` : ''}
+            <button type="button" class="btn btn-xs btn-amber" id="inv-open-tl">Open Timeline</button>
+          </div>
+        </div>
+        ${res.error ? `<div class="card-error-box">${escapeHtml(res.error)}</div>` : ''}
+        ${res.note ? `<div class="muted-note">${escapeHtml(res.note)}</div>` : ''}
+        <div class="kv-body" id="inv-res-tree"></div>
+      </div>
+    `;
+    renderJsonTree(out.querySelector('#inv-res-tree'), res, { maxDepthExpand: 3 });
+    out.querySelector('#inv-inspect-call')?.addEventListener('click', () => openCallTree(res.callId));
+    out.querySelector('#inv-open-tl')?.addEventListener('click', () => openEntityTimeline(payload.stateType, payload.entityId));
+    toast(`Invoked ${payload.service}.${payload.method}`, res.success ? 'ok' : 'error');
+    refreshActiveView(true);
+  } catch (err) {
+    out.innerHTML = `<div class="card-error-box">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+$('btn-inv-confirm-go').addEventListener('click', async () => {
+  const payload = state.pendingInvoke;
+  if ($('inv-confirm-skip').checked) {
+    state.skipInvokeConfirm = true;
+    sessionStorage.setItem('sharedmeta.inspector.skipInvokeConfirm', '1');
+  }
+  closeModals();
+  if (payload) await executeInvoke(payload);
+});
 
 const INT_WIRE_TYPES = new Set([
   'system.byte', 'byte',
@@ -1135,11 +1470,15 @@ function coerceArgValue(raw, wireType) {
 // ── View 6: Capture Config & Telemetry ───────────────────────────────────────
 
 function syncCaptureDraft(capture) {
+  const defaultTtl = state.status?.maxGlobalCaptureMinutes
+    ? Math.min(15, Math.max(1, Math.round(state.status.maxGlobalCaptureMinutes)))
+    : 15;
   state.captureDraft = {
     level: capture?.level || 'Off',
     sampleRate: capture?.sampleRate ?? 1,
     broadcastPerSubscriber: Boolean(capture?.broadcastPerSubscriber),
     methodLevels: { ...(capture?.methodLevels || {}) },
+    globalTtlMinutes: state.captureDraft?.globalTtlMinutes ?? defaultTtl,
   };
   state.captureDirty = false;
 }
@@ -1193,6 +1532,23 @@ function renderCaptureView({ updateForm = true } = {}) {
     document.querySelectorAll('#cap-level-seg button').forEach(btn => {
       btn.classList.toggle('is-active', btn.dataset.level === draft.level);
     });
+
+    const warnEl = $('cap-global-warn');
+    if (warnEl) warnEl.hidden = draft.level === 'Off';
+
+    const ttlSel = $('cap-global-ttl');
+    if (ttlSel) {
+      ttlSel.disabled = draft.level === 'Off';
+      const valStr = String(draft.globalTtlMinutes ?? 15);
+      if ([...ttlSel.options].some(o => o.value === valStr)) ttlSel.value = valStr;
+    }
+    const ttlHelp = $('cap-ttl-help');
+    if (ttlHelp) {
+      ttlHelp.textContent = s?.maxGlobalCaptureMinutes
+        ? `Server enforces a maximum global capture duration of ${s.maxGlobalCaptureMinutes} min. Watches stay active.`
+        : 'Automatically resets global level to Off when the timer expires (entity/player watches stay active).';
+    }
+    updateTtlDisplays();
 
     $('cap-sample-rate').value = draft.sampleRate;
     $('cap-sample-val').textContent = `${Math.round(draft.sampleRate * 100)}%`;
@@ -1296,6 +1652,13 @@ $('cap-rule-add').addEventListener('click', () => {
   renderCaptureView();
 });
 
+$('cap-global-ttl').addEventListener('change', (e) => {
+  ensureCaptureDraft().globalTtlMinutes = Number(e.target.value);
+  state.captureDirty = true;
+  const saveBtn = $('cap-save-btn');
+  if (saveBtn) saveBtn.textContent = 'Apply Settings *';
+});
+
 $('cap-save-btn').addEventListener('click', async () => {
   const draft = ensureCaptureDraft();
   try {
@@ -1304,6 +1667,7 @@ $('cap-save-btn').addEventListener('click', async () => {
       methodLevels: draft.methodLevels,
       sampleRate: draft.sampleRate,
       broadcastPerSubscriber: draft.broadcastPerSubscriber,
+      globalTtlMinutes: draft.level === 'Off' ? 0 : (draft.globalTtlMinutes ?? 15),
     });
     state.capture = updated;
     syncCaptureDraft(updated);
@@ -1390,5 +1754,7 @@ async function unwatchPlayer(playerId) {
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
+
+window.addEventListener('hashchange', () => { applyHashState(); });
 
 bootstrapAll();

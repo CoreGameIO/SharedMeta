@@ -111,6 +111,7 @@ export class McpClient {
     if (cfg.methodLevels !== undefined) args.methodLevels = cfg.methodLevels;
     if (cfg.sampleRate !== undefined) args.sampleRate = cfg.sampleRate;
     if (cfg.broadcastPerSubscriber !== undefined) args.broadcastPerSubscriber = cfg.broadcastPerSubscriber;
+    if (cfg.globalTtlMinutes !== undefined && cfg.globalTtlMinutes !== null) args.globalTtlMinutes = cfg.globalTtlMinutes;
     return this.callTool('set_capture_config', args);
   }
   watchEntity(entityId, level = 'Full') { return this.callTool('watch_entity', { entityId, level }); }

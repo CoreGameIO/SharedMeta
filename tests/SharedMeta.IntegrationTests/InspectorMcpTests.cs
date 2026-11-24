@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
@@ -158,6 +159,91 @@ public class InspectorMcpTests
         Assert.Equal(HttpStatusCode.Forbidden, (await http.SendAsync(evilOrigin)).StatusCode);
     }
 
+    [Fact(Timeout = 60_000)]
+    public async Task InspectorUi_HonorsPathBase_AndSupportsRouteGroupConventions()
+    {
+        await using var host = await StartAsync(_fixture.Runtime, pathBase: "/dev/game", requireHeader: "X-Dev-Gate");
+        using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        using var http = new HttpClient(handler);
+
+        // Chained RouteGroupBuilder filter blocks requests missing the gate header
+        var denied = await http.GetAsync(host.BaseUrl + "/dev/game/inspector/");
+        Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
+
+        // Redirect preserves PathBase
+        using var reqRedirect = new HttpRequestMessage(HttpMethod.Get, host.BaseUrl + "/dev/game/inspector");
+        reqRedirect.Headers.Add("X-Dev-Gate", "ok");
+        var redirect = await http.SendAsync(reqRedirect);
+        Assert.Equal(HttpStatusCode.Redirect, redirect.StatusCode);
+        Assert.Equal("/dev/game/inspector/", redirect.Headers.Location?.ToString());
+
+        // HTML injects PathBase-prefixed MCP path
+        using var reqIndex = new HttpRequestMessage(HttpMethod.Get, host.BaseUrl + "/dev/game/inspector/");
+        reqIndex.Headers.Add("X-Dev-Gate", "ok");
+        var index = await http.SendAsync(reqIndex);
+        Assert.Equal(HttpStatusCode.OK, index.StatusCode);
+        var html = await index.Content.ReadAsStringAsync();
+        Assert.Contains("name=\"sharedmeta-mcp-path\" content=\"/dev/game/mcp\"", html);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task GlobalCaptureTtl_RevertsGlobalLevel_KeepingWatches_AndHonorsCap()
+    {
+        await using var runtime = new InspectorRuntime(new InspectorOptions
+        {
+            EnvironmentName = "Staging",
+            MaxGlobalCaptureDuration = TimeSpan.FromMinutes(10),
+        });
+        var inspector = new InspectorService(runtime);
+
+        var status = inspector.Status();
+        Assert.Equal("Staging", status["environment"]!.GetValue<string>());
+        Assert.Equal(10d, status["maxGlobalCaptureMinutes"]!.GetValue<double>());
+
+        // A global TTL above the cap is clamped to MaxGlobalCaptureDuration
+        var clamped = runtime.UpdateCaptureSettings(s =>
+        {
+            s.Level = InspectorLevel.Args;
+            s.GlobalLevelExpiresAtUtc = DateTime.UtcNow.AddHours(2);
+            s.WatchedEntities["keep-me"] = InspectorLevel.Full;
+        });
+        Assert.NotNull(clamped.GlobalLevelExpiresAtUtc);
+        Assert.True(clamped.GlobalLevelExpiresAtUtc <= DateTime.UtcNow.AddMinutes(11));
+
+        // Short deadline expires automatically and reverts only the global level
+        runtime.UpdateCaptureSettings(s =>
+        {
+            s.Level = InspectorLevel.Ids;
+            s.GlobalLevelExpiresAtUtc = DateTime.UtcNow.AddMilliseconds(120);
+        });
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (runtime.GetCaptureSettings().Level != InspectorLevel.Off && DateTime.UtcNow < deadline)
+            await Task.Delay(30);
+
+        var after = runtime.GetCaptureSettings();
+        Assert.Equal(InspectorLevel.Off, after.Level);
+        Assert.Null(after.GlobalLevelExpiresAtUtc);
+        Assert.Equal(InspectorLevel.Full, after.WatchedEntities["keep-me"]);
+    }
+
+    [Fact(Timeout = 60_000)]
+    public async Task StandaloneInspector_ServesRemoteSchema_AndResolvesShortStateTypes()
+    {
+        var siloSchema = _fixture.Runtime.BuildLocalSchema();
+        Assert.NotNull(siloSchema);
+
+        await using var standalone = new InspectorRuntime();
+        var service = new InspectorService(standalone);
+        Assert.Empty(service.Schema()["methods"]!.AsArray());
+
+        standalone.SetRemoteSchema(siloSchema);
+        var resolved = service.Schema();
+        Assert.NotEmpty(resolved["methods"]!.AsArray());
+        Assert.Contains("published by a silo", resolved["note"]!.GetValue<string>());
+        Assert.Equal(typeof(ForcePatchFixtureState).FullName, standalone.ResolveStateTypeName(nameof(ForcePatchFixtureState)));
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────────
 
     private static HttpRequestMessage InitializeRequest(string baseUrl)
@@ -179,7 +265,7 @@ public class InspectorMcpTests
         return JsonNode.Parse(text)!;
     }
 
-    private static async Task<HostHandle> StartAsync(InspectorRuntime runtime)
+    private static async Task<HostHandle> StartAsync(InspectorRuntime runtime, string? pathBase = null, string? requireHeader = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -187,8 +273,18 @@ public class InspectorMcpTests
         builder.Services.AddSharedMetaInspector(runtime);
         builder.Services.AddSharedMetaInspectorMcp();
         var app = builder.Build();
+        if (!string.IsNullOrEmpty(pathBase)) app.UsePathBase(pathBase);
         app.MapSharedMetaInspectorMcp("/mcp");
-        app.MapSharedMetaInspectorUi("/inspector", "/mcp");
+        var ui = app.MapSharedMetaInspectorUi("/inspector", "/mcp");
+        if (!string.IsNullOrEmpty(requireHeader))
+        {
+            ui.AddEndpointFilter(async (ctx, next) =>
+            {
+                if (!ctx.HttpContext.Request.Headers.ContainsKey(requireHeader))
+                    return Microsoft.AspNetCore.Http.Results.Unauthorized();
+                return await next(ctx);
+            });
+        }
         await app.StartAsync();
         var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
         return new HostHandle(app, address.TrimEnd('/'));

@@ -30,16 +30,22 @@ public sealed class InspectorRuntime : IAsyncDisposable
     private readonly Channel<RawEvent> _queue;
     private readonly List<IMetaEventSink> _sinks = new();
     private readonly Task _encoder;
+    private readonly Task _ttlLoop;
+    private readonly SemaphoreSlim _ttlWake = new(0, 1);
     private readonly CancellationTokenSource _stop = new();
+    private readonly CancellationTokenSource _ttlStop = new();
     private readonly object _settingsLock = new();
+    private readonly List<Action> _boundCallbacks = new();
     private readonly SeenEntities _seen;
     private volatile CaptureRules _rules;
+    private volatile JsonObject? _remoteSchema;
     private long _dropped;
     private int _bound;
 
     public InspectorRuntime(InspectorOptions? options = null)
     {
         Options = options ?? new InspectorOptions();
+        EnvironmentName = Options.EnvironmentName;
         Json = new MetaJson(Options.RedactMembers);
         Store = new InMemoryEventStore(Options.MaxEvents, Options.MaxBytes);
         _sinks.Add(Store);
@@ -57,6 +63,7 @@ public sealed class InspectorRuntime : IAsyncDisposable
         ServerObserver = new InspectorServerObserver(this);
         _encoder = Task.Factory.StartNew(EncodeLoopAsync, CancellationToken.None,
             TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
+        _ttlLoop = Task.Run(GlobalTtlLoopAsync);
     }
 
     public InspectorOptions Options { get; }
@@ -133,7 +140,90 @@ public sealed class InspectorRuntime : IAsyncDisposable
     public IGrainFactory? GrainFactory { get; private set; }
     public IEntityGrainResolver? EntityGrainResolver { get; private set; }
     public string Silo { get; private set; } = Environment.MachineName;
+    public string? EnvironmentName { get; private set; }
     private ILogger _logger = NullLogger.Instance;
+
+    /// <summary>Method schema received from a silo over a broker (used by standalone inspectors).</summary>
+    public JsonObject? RemoteSchema => _remoteSchema;
+
+    /// <summary>Sets the environment label if not already configured explicitly in <see cref="InspectorOptions.EnvironmentName"/>.</summary>
+    public void SetDefaultEnvironmentName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(EnvironmentName) && !string.IsNullOrWhiteSpace(name))
+            EnvironmentName = name;
+    }
+
+    /// <summary>Applies a method schema published by a silo over a broker, and learns its short state type names.</summary>
+    public void SetRemoteSchema(JsonObject? schema)
+    {
+        _remoteSchema = schema;
+        if (schema?["stateTypes"] is JsonArray stateTypes)
+        {
+            foreach (var item in stateTypes)
+            {
+                if (item?.GetValue<string>() is { Length: > 0 } fullName)
+                    LearnStateType(fullName);
+            }
+        }
+    }
+
+    /// <summary>Builds the JSON method schema from this silo's local descriptors, or null when absent.</summary>
+    public JsonObject? BuildLocalSchema()
+    {
+        var descriptors = Descriptors;
+        if (descriptors == null) return null;
+        var signature = Signature;
+        var methods = new JsonArray();
+        foreach (var d in descriptors.Methods)
+        {
+            var entry = signature?.GetMethodEntry(d.MethodId);
+            methods.Add(new JsonObject
+            {
+                ["id"] = d.MethodId,
+                ["service"] = d.ServiceName,
+                ["method"] = d.Alias,
+                ["version"] = d.Version,
+                ["csharpName"] = d.MethodName,
+                ["mode"] = entry?.Mode.ToString(),
+                ["stateType"] = d.StateType.FullName,
+                ["parameters"] = new JsonArray(d.Parameters.Select(p => (JsonNode)new JsonObject
+                {
+                    ["name"] = p.Name,
+                    ["declaredType"] = p.DeclaredTypeName,
+                    ["wireType"] = FormatTypeName(p.WireType),
+                    ["transformed"] = p.IsTransformed,
+                }).ToArray()),
+                ["result"] = d.ResultType != null ? FormatTypeName(d.ResultType) : null,
+            });
+        }
+        return new JsonObject
+        {
+            ["stateTypes"] = new JsonArray(descriptors.StateTypes.Select(t => (JsonNode)JsonValue.Create(t.FullName)!).ToArray()),
+            ["methods"] = methods,
+            ["note"] = "Arguments are in wire form: a transformed parameter appears as its boxed type.",
+        };
+    }
+
+    private static string FormatTypeName(Type t)
+    {
+        if (!t.IsGenericType) return t.FullName ?? t.Name;
+        var name = t.Name;
+        var tick = name.IndexOf('`');
+        if (tick > 0) name = name.Substring(0, tick);
+        return (t.Namespace != null ? t.Namespace + "." : "") + name + "<" + string.Join(", ", t.GetGenericArguments().Select(FormatTypeName)) + ">";
+    }
+
+    /// <summary>Runs <paramref name="callback"/> now if already bound to a silo, otherwise once <see cref="Bind"/> completes.</summary>
+    public void OnBound(Action callback)
+    {
+        bool alreadyBound;
+        lock (_settingsLock)
+        {
+            alreadyBound = Volatile.Read(ref _bound) == 1;
+            if (!alreadyBound) _boundCallbacks.Add(callback);
+        }
+        if (alreadyBound) callback();
+    }
 
     /// <summary>True when the generated providers report calls (a call tap was referenced at build time).</summary>
     public bool CaptureAvailable => Descriptors != null;
@@ -148,13 +238,24 @@ public sealed class InspectorRuntime : IAsyncDisposable
         GrainFactory = services.GetService<IGrainFactory>();
         EntityGrainResolver = services.GetService<IEntityGrainResolver>();
         _logger = services.GetService<ILoggerFactory>()?.CreateLogger("SharedMeta.Inspector") ?? NullLogger.Instance;
+        SetDefaultEnvironmentName(services.GetService<Microsoft.Extensions.Hosting.IHostEnvironment>()?.EnvironmentName);
         try
         {
             var siloName = services.GetService<Orleans.Runtime.ILocalSiloDetails>()?.Name;
             if (!string.IsNullOrEmpty(siloName)) Silo = siloName!;
         }
         catch (InvalidOperationException) { /* not a silo container */ }
-        lock (_settingsLock) _rules = new CaptureRules(_rules.Settings, Signature);
+        Action[] callbacks;
+        lock (_settingsLock)
+        {
+            _rules = new CaptureRules(_rules.Settings, Signature);
+            callbacks = _boundCallbacks.ToArray();
+            _boundCallbacks.Clear();
+        }
+        foreach (var cb in callbacks)
+        {
+            try { cb(); } catch (Exception ex) { _logger.LogWarning(ex, "Inspector OnBound callback failed"); }
+        }
     }
 
     /// <summary>Adds a sink after the in-memory store (e.g. a broker).</summary>
@@ -169,7 +270,9 @@ public sealed class InspectorRuntime : IAsyncDisposable
 
     public void SetCaptureSettings(InspectorCaptureSettings settings)
     {
-        lock (_settingsLock) _rules = new CaptureRules(settings.Clone(), Signature);
+        var copy = NormalizeCaptureSettings(settings.Clone());
+        lock (_settingsLock) _rules = new CaptureRules(copy, Signature);
+        WakeTtlLoop();
     }
 
     /// <summary>
@@ -180,7 +283,11 @@ public sealed class InspectorRuntime : IAsyncDisposable
     {
         var control = Control;
         if (control == null) return UpdateCaptureSettings(change);
-        var next = await control.UpdateAsync(change, cancellationToken).ConfigureAwait(false);
+        var next = await control.UpdateAsync(s =>
+        {
+            change(s);
+            NormalizeCaptureSettings(s);
+        }, cancellationToken).ConfigureAwait(false);
         SetCaptureSettings(next);
         return next.Clone();
     }
@@ -188,12 +295,88 @@ public sealed class InspectorRuntime : IAsyncDisposable
     /// <summary>Applies <paramref name="change"/> to a copy of this process's settings atomically.</summary>
     public InspectorCaptureSettings UpdateCaptureSettings(Action<InspectorCaptureSettings> change)
     {
+        InspectorCaptureSettings snapshot;
         lock (_settingsLock)
         {
             var next = _rules.Settings.Clone();
             change(next);
+            NormalizeCaptureSettings(next);
             _rules = new CaptureRules(next, Signature);
-            return next.Clone();
+            snapshot = next.Clone();
+        }
+        WakeTtlLoop();
+        return snapshot;
+    }
+
+    private InspectorCaptureSettings NormalizeCaptureSettings(InspectorCaptureSettings settings)
+    {
+        if (settings.Level == InspectorLevel.Off)
+        {
+            settings.GlobalLevelExpiresAtUtc = null;
+            return settings;
+        }
+        if (Options.MaxGlobalCaptureDuration is { } cap && cap > TimeSpan.Zero)
+        {
+            var maxDeadline = DateTime.UtcNow + cap;
+            if (settings.GlobalLevelExpiresAtUtc == null || settings.GlobalLevelExpiresAtUtc > maxDeadline)
+                settings.GlobalLevelExpiresAtUtc = maxDeadline;
+        }
+        return settings;
+    }
+
+    private void WakeTtlLoop()
+    {
+        try
+        {
+            if (_ttlWake.CurrentCount == 0) _ttlWake.Release();
+        }
+        catch (ObjectDisposedException) { }
+        catch (SemaphoreFullException) { }
+    }
+
+    private async Task GlobalTtlLoopAsync()
+    {
+        var ct = _ttlStop.Token;
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var settings = _rules.Settings;
+                if (settings.Level == InspectorLevel.Off || settings.GlobalLevelExpiresAtUtc == null)
+                {
+                    await _ttlWake.WaitAsync(ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                var remaining = settings.GlobalLevelExpiresAtUtc.Value - DateTime.UtcNow;
+                if (remaining > TimeSpan.Zero)
+                {
+                    var wait = remaining > TimeSpan.FromMinutes(1) ? TimeSpan.FromMinutes(1) : remaining;
+                    await _ttlWake.WaitAsync(wait, ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                var now = DateTime.UtcNow;
+                await UpdateCaptureSettingsAsync(s =>
+                {
+                    if (s.Level != InspectorLevel.Off && s.GlobalLevelExpiresAtUtc != null && s.GlobalLevelExpiresAtUtc <= now)
+                    {
+                        s.Level = InspectorLevel.Off;
+                        s.GlobalLevelExpiresAtUtc = null;
+                    }
+                }, ct).ConfigureAwait(false);
+                _logger.LogInformation("Inspector global capture level expired and reverted to Off.");
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Inspector global capture TTL revert failed; retrying");
+                try { await Task.Delay(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return; }
+            }
         }
     }
 
@@ -500,12 +683,16 @@ public sealed class InspectorRuntime : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 1) return;
+        _ttlStop.Cancel();
         _queue.Writer.TryComplete();
         _stop.CancelAfter(TimeSpan.FromSeconds(2));
+        try { await _ttlLoop.ConfigureAwait(false); } catch { /* shutting down */ }
         try { await _encoder.ConfigureAwait(false); } catch { /* shutting down */ }
         IDisposable[] disposables;
         lock (_sinks) disposables = _sinks.OfType<IDisposable>().ToArray();
         foreach (var sink in disposables) sink.Dispose();
+        _ttlWake.Dispose();
+        _ttlStop.Dispose();
         _stop.Dispose();
     }
 }
