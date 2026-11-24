@@ -1872,10 +1872,10 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                if (response.PatchBytes is { Length: > 0 } patchData)");
             sb.AppendLine("                {");
             sb.AppendLine($"                    var patch = _serializer.Unpack<PatchNode>(patchData);");
-            sb.AppendLine($"                    {applierName}.Apply(_state, patch, _serializer);");
-            sb.AppendLine($"                    _stateContainer.NotifyMutated();");
             sb.AppendLine("                    _optimisticRandom?.Skip(response.RandomScrollDelta);");
             sb.AppendLine("                    ApplyNamedScrollSkips(response.NamedRandomScrollDeltas);");
+            sb.AppendLine($"                    {applierName}.Apply(_state, patch, _serializer);");
+            sb.AppendLine($"                    _stateContainer.NotifyMutated();");
             sb.AppendLine("                }");
             sb.AppendLine("                else");
             sb.AppendLine("                {");
@@ -1959,11 +1959,12 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("                {");
             sb.AppendLine("                if (response.StateBytes is { Length: > 0 } stateData)");
             sb.AppendLine("                {");
-            sb.AppendLine($"                    // Replace through the container — bumps MutationCount, fires OnMutated.");
-            sb.AppendLine($"                    _stateContainer.Replace(_serializer.Unpack<{stateTypeName}>(stateData)!);");
+            sb.AppendLine($"                    var newState = _serializer.Unpack<{stateTypeName}>(stateData)!;");
             sb.AppendLine("                    _optimisticRandom?.Skip(response.RandomScrollDelta);");
             sb.AppendLine("                    ApplyNamedScrollSkips(response.NamedRandomScrollDeltas);");
             sb.AppendLine("                    SkipTriggerRandoms(response.TriggerOperations);");
+            sb.AppendLine($"                    // Replace through the container — bumps MutationCount, fires OnMutated.");
+            sb.AppendLine($"                    _stateContainer.Replace(newState);");
             sb.AppendLine("                }");
             sb.AppendLine("                else");
             sb.AppendLine("                {");
@@ -2316,17 +2317,18 @@ namespace SharedMeta.Generator.Generators
             sb.AppendLine("            {");
             sb.AppendLine("                if (triggerOp.StateBytes is { Length: > 0 } stateData)");
             sb.AppendLine("                {");
-            sb.AppendLine($"                    _stateContainer.Replace(_serializer.Unpack<{stateTypeName}>(stateData)!);");
+            sb.AppendLine($"                    var newState = _serializer.Unpack<{stateTypeName}>(stateData)!;");
             sb.AppendLine("                    _optimisticRandom?.Skip(triggerOp.RandomScrollDelta);");
             sb.AppendLine("                    ApplyNamedScrollSkips(triggerOp.NamedRandomScrollDeltas);");
+            sb.AppendLine($"                    _stateContainer.Replace(newState);");
             sb.AppendLine("                }");
             sb.AppendLine("                else if (triggerOp.PatchBytes is { Length: > 0 } patchData)");
             sb.AppendLine("                {");
             sb.AppendLine($"                    var patch = _serializer.Unpack<PatchNode>(patchData);");
-            sb.AppendLine($"                    {applierName}.Apply(_state, patch, _serializer);");
-            sb.AppendLine($"                    _stateContainer.NotifyMutated();");
             sb.AppendLine("                    _optimisticRandom?.Skip(triggerOp.RandomScrollDelta);");
             sb.AppendLine("                    ApplyNamedScrollSkips(triggerOp.NamedRandomScrollDeltas);");
+            sb.AppendLine($"                    {applierName}.Apply(_state, patch, _serializer);");
+            sb.AppendLine($"                    _stateContainer.NotifyMutated();");
             sb.AppendLine("                }");
             sb.AppendLine("                else");
             sb.AppendLine("                {");
@@ -2497,18 +2499,13 @@ namespace SharedMeta.Generator.Generators
                 : new List<string>();
             var callArgsStr = string.Join(", ", argNames);
 
-            // The replaced state already includes the triggers' effects: only their random scrolls
-            // are left to catch up on.
+            // State replacement, patch application, and their random skips already ran in
+            // EntityConnection.HandleEntityBroadcast before OnMutated fired.
             sb.AppendLine($"{indent}if (broadcast.StateBytes is {{ Length: > 0 }})");
             sb.AppendLine($"{indent}{{");
-            sb.AppendLine($"{indent}    _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
-            sb.AppendLine($"{indent}    ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
-            sb.AppendLine($"{indent}    SkipTriggerRandoms(broadcast.TriggerOperations);");
             sb.AppendLine($"{indent}}}");
             sb.AppendLine($"{indent}else if (broadcast.PatchBytes is {{ Length: > 0 }})");
             sb.AppendLine($"{indent}{{");
-            sb.AppendLine($"{indent}    _optimisticRandom?.Skip(broadcast.RandomScrollDelta);");
-            sb.AppendLine($"{indent}    ApplyNamedScrollSkips(broadcast.NamedRandomScrollDeltas);");
             sb.AppendLine($"{indent}    ReplayTriggerOperations(broadcast.TriggerOperations, broadcast.CallerId, broadcast.ServerTimeTicks);");
             sb.AppendLine($"{indent}}}");
             // Only this branch executes anything locally. The two above take the server's word —

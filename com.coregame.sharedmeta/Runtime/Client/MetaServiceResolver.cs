@@ -1446,14 +1446,22 @@ namespace SharedMeta.Client
                 var owningConfig = _configByMethodId?.Invoke(broadcast.MethodId);
                 if (owningConfig != null && owningConfig.StateType != StateType) return;
 
-                // A locally registered ApiClient finishes its own methods: random skips, trigger
-                // ops and events. For anything else — a service held by no local ApiClient, or a
-                // method this build does not know — this handler is the only one that runs.
+                // EntityConnection owns state replacement, patch application, and their random
+                // skips for every broadcast (owned or unowned) — advancing randoms BEFORE mutating
+                // state so any synchronous OnMutated / ChangeTracker handler already sees them in
+                // step. A locally registered ApiClient still owns its own trigger replay and
+                // per-method events; for anything else (unowned service or unknown method), this
+                // handler applies trigger ops too.
                 bool ownedLocally = LocalMethodIds.Contains(broadcast.MethodId);
 
                 if (broadcast.StateBytes is { Length: > 0 } sb)
                 {
                     var newState = _serializer!.Unpack(StateType, sb);
+                    SkipRandoms(broadcast.RandomScrollDelta, broadcast.NamedRandomScrollDeltas);
+                    // The replaced state already includes the triggers' effects.
+                    if (broadcast.TriggerOperations != null)
+                        foreach (var t in broadcast.TriggerOperations)
+                            SkipRandoms(t.RandomScrollDelta, t.NamedRandomScrollDeltas);
                     if (newState != null)
                     {
                         // Diagnostic: ServerReplace broadcast ships fresh state that overwrites
@@ -1463,25 +1471,15 @@ namespace SharedMeta.Client
                             $"[MetaServiceResolver] State REPLACED for entity {EntityId} via ServerReplace broadcast — methodId={broadcast.MethodId}, stateBytes={sb.Length}");
                         StateContainer.ReplaceObject(newState);
                     }
-                    if (!ownedLocally)
-                    {
-                        SkipRandoms(broadcast.RandomScrollDelta, broadcast.NamedRandomScrollDeltas);
-                        // The replaced state already includes the triggers' effects.
-                        if (broadcast.TriggerOperations != null)
-                            foreach (var t in broadcast.TriggerOperations)
-                                SkipRandoms(t.RandomScrollDelta, t.NamedRandomScrollDeltas);
-                    }
                     return;
                 }
 
                 if (broadcast.PatchBytes is { Length: > 0 } pb)
                 {
+                    SkipRandoms(broadcast.RandomScrollDelta, broadcast.NamedRandomScrollDeltas);
                     ApplyPatch(pb);
                     if (!ownedLocally)
-                    {
-                        SkipRandoms(broadcast.RandomScrollDelta, broadcast.NamedRandomScrollDeltas);
                         ApplyTriggerOperations(broadcast);
-                    }
                     return;
                 }
 
@@ -1572,8 +1570,8 @@ namespace SharedMeta.Client
                 {
                     if (!t.PatchBytes.IsEmpty)
                     {
-                        ApplyPatch(t.PatchBytes.ToArray());
                         SkipRandoms(t.RandomScrollDelta, t.NamedRandomScrollDeltas);
+                        ApplyPatch(t.PatchBytes.ToArray());
                         continue;
                     }
                     var triggerConfig = _configByMethodId?.Invoke(t.MethodId);

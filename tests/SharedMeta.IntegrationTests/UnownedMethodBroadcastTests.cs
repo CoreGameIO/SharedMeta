@@ -32,7 +32,7 @@ public class UnownedMethodBroadcastTests
         await using var pair = await ConnectPairAsync(LegacySignature(BumpRandomId));
 
         var value = await pair.BobApi.BumpRandomAsync();
-        await WaitUntilAsync(() => pair.AliceView.State.Value == value);
+        await WaitUntilAsync(() => pair.AliceView.MutationCount > 0 && pair.AliceView.State.Value == value);
 
         // Bob's random is in step with the server (he ran BumpRandom himself) and he replays
         // Alice's roll from its broadcast, so his LastRoll is the server's.
@@ -62,6 +62,48 @@ public class UnownedMethodBroadcastTests
         await WaitUntilAsync(() => pair.AliceView.State.Value == value);
 
         Assert.Equal(1, pair.AliceView.State.Bumps);
+    }
+
+    /// <summary>
+    /// Owned-service counterpart: even when Alice holds ForcePatchFixtureServiceApiClient herself,
+    /// an OnStateMutated listener fires during HandleEntityBroadcast's ApplyPatch — before the
+    /// ApiClient's own broadcast handler runs. The optimistic random must already be advanced so a
+    /// synchronous optimistic call from OnStateMutated stays in step with the server.
+    /// </summary>
+    [Fact(Timeout = 30_000)]
+    public async Task OwnedPatchBroadcast_OnStateMutatedSeesAdvancedOptimisticRandom()
+    {
+        var entityId = $"owned_patch_mut_{Guid.NewGuid():N}";
+        var server = new InProcessServer(_fixture.CreateHandlerFactory());
+        await using var alice = new TestClientSetup(server, $"alice-{Guid.NewGuid():N}",
+            clientSignature: LegacySignature(BumpRandomId));
+        await using var bob = new TestClientSetup(server, $"bob-{Guid.NewGuid():N}");
+        await alice.ConnectAsync();
+        await bob.ConnectAsync();
+
+        var aliceApi = await alice.CreateResolver().GetServiceAsync<ForcePatchFixtureServiceApiClient>(entityId);
+        var aliceView = await alice.CreateResolver().GetServiceAsync<ForcePatchFixtureViewServiceApiClient>(entityId);
+        var bobApi = await bob.CreateResolver().GetServiceAsync<ForcePatchFixtureServiceApiClient>(entityId);
+
+        bool triggered = false;
+        Task<int>? rollFromMutated = null;
+        aliceApi.OnStateMutated += () =>
+        {
+            if (!triggered && aliceApi.State.Value > 0)
+            {
+                triggered = true;
+                rollFromMutated = aliceView.RollAsync();
+            }
+        };
+
+        await bobApi.BumpRandomAsync();
+        await WaitUntilAsync(() => rollFromMutated != null);
+
+        var aliceRoll = await rollFromMutated!;
+        await WaitUntilAsync(() => bobApi.State.Rolls == 1);
+
+        Assert.Equal(bobApi.State.LastRoll, aliceRoll);
+        Assert.Empty(alice.DetectedIssues);
     }
 
     /// <summary>Alice holds only the view service on the entity; Bob holds the fixture service.</summary>

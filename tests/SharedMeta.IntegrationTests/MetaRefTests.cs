@@ -159,15 +159,23 @@ public class MetaRefTests
         for (int i = 0; i < 1_000; i++)
             handle.TryGet(out _);
 
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 100_000; i++)
+        // Measure up to 3 passes and take the minimum: a real per-call allocation over 100k
+        // iterations produces >= 2.4 MB on every pass, whereas a one-time runtime/JIT/GC
+        // bookkeeping spike on the thread can perturb a single pass.
+        long minAllocated = long.MaxValue;
+        for (int attempt = 0; attempt < 3 && minAllocated > 0; attempt++)
         {
-            handle.TryGet(out var api);
-            if (api == null) throw new InvalidOperationException("unexpected null on cached hot path");
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 100_000; i++)
+            {
+                handle.TryGet(out var api);
+                if (api == null) throw new InvalidOperationException("unexpected null on cached hot path");
+            }
+            long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            if (allocated < minAllocated) minAllocated = allocated;
         }
-        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
-        Assert.Equal(0, allocated);
+        Assert.Equal(0, minAllocated);
     }
 
     /// <summary>

@@ -14,6 +14,10 @@ Inspector (preview): call capture, TimeMachine timeline and graph, MCP endpoint 
 - `MetaCallContext.ParentSpanId` — span of the hop that caused this one; not written to log scopes.
 - `IMetaCallObservationGate` — lets an `IMetaServerObserver` switch per-call notifications off; while it is closed the transport skips building `MetaCallInfo`.
 
+### Fixed
+
+- Client: `ServerPatch` and `ServerReplace` broadcasts (both owned and unowned services) and direct responses advance optimistic and named randoms before applying state and firing `OnMutated`, so synchronous mutation handlers see them in step.
+
 Guide: [docs/INSPECTOR.md](https://github.com/CoreGameIO/SharedMeta/blob/main/docs/INSPECTOR.md).
 
 ## [0.48.0] - 2026-11-23

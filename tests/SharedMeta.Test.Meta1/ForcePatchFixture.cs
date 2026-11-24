@@ -72,7 +72,7 @@ namespace SharedMeta.Test.Meta1
 
         public int BumpRandom()
         {
-            State.Value += Context.Random!.Next(100);
+            State.Value += Context.Random!.Next(1, 100);
             return State.Value;
         }
 
