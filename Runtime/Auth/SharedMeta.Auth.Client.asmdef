@@ -1,0 +1,16 @@
+{
+    "name": "SharedMeta.Auth.Client",
+    "rootNamespace": "SharedMeta.Client.Auth",
+    "references": [
+        "SharedMeta.Runtime"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

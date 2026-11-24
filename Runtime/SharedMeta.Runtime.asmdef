@@ -1,0 +1,35 @@
+{
+  "name": "SharedMeta.Runtime",
+  "rootNamespace": "SharedMeta",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [
+        {
+            "name": "com.cysharp.memorypack",
+            "expression": "0.0.0",
+            "define": "HAS_MEMORYPACK"
+        },
+        {
+            "name": "com.github.messagepack-csharp",
+            "expression": "0.0.0",
+            "define": "HAS_MESSAGEPACK"
+        },
+        {
+            "name": "org.nuget.microsoft.extensions.logging.abstractions",
+            "expression": "0.0.0",
+            "define": "HAS_MEL"
+        },
+        {
+            "name": "org.nuget.system.diagnostics.diagnosticsource",
+            "expression": "0.0.0",
+            "define": "SHAREDMETA_CLIENT_TELEMETRY"
+        }
+  ],
+  "noEngineReferences": true
+}
