@@ -29,6 +29,7 @@
     <ProjectReference Include="..\..\src\SharedMeta.Client\SharedMeta.Client.csproj" />
     <ProjectReference Include="..\..\src\SharedMeta.Debug\SharedMeta.Debug.csproj" />
     <ProjectReference Include="..\..\src\SharedMeta.Inspector.Mcp\SharedMeta.Inspector.Mcp.csproj" />
+    <ProjectReference Include="..\..\src\SharedMeta.Inspector.Nats\SharedMeta.Inspector.Nats.csproj" />
     <!-- Auth -->
     <ProjectReference Include="..\..\src\SharedMeta.Auth\SharedMeta.Auth.csproj" />
     <!-- 0.21.0 versioned config subsystem — grain-backed registry + observer provider -->

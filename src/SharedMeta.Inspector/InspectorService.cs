@@ -37,7 +37,9 @@ public sealed class InspectorService
             ["silo"] = _runtime.Silo,
             ["captureAvailable"] = _runtime.CaptureAvailable,
             ["captureNote"] = _runtime.CaptureAvailable ? null
-                : "No method table registered: the server project was built without a [MetaCallTapProvider] reference (or in legacy shared-project mode), so calls are not reported.",
+                : _runtime.GrainFactory == null
+                    ? "Standalone inspector: no silo here, so it captures nothing itself and shows the events the silos publish to the broker."
+                    : "No method table registered: the server project was built without a [MetaCallTapProvider] reference (or in legacy shared-project mode), so calls are not reported.",
             ["level"] = settings.Level.ToString(),
             ["watchedEntities"] = settings.WatchedEntities.Count,
             ["watchedPlayers"] = settings.WatchedPlayers.Count,
@@ -48,6 +50,10 @@ public sealed class InspectorService
             ["queuedEvents"] = _runtime.Queued,
             ["openSessions"] = _runtime.Sessions.Snapshot().Count,
             ["invokeAllowed"] = _runtime.Options.AllowInvoke,
+            ["liveAccess"] = _runtime.GrainFactory != null,
+            ["distribution"] = _runtime.Distribution ?? "none: events and capture settings of this process only",
+            ["sharedCaptureSettings"] = _runtime.Control != null,
+            ["history"] = _runtime.History != null,
         };
     }
 
@@ -82,7 +88,9 @@ public sealed class InspectorService
         {
             ["stateTypes"] = new JsonArray((descriptors?.StateTypes ?? Array.Empty<Type>()).Select(t => (JsonNode)JsonValue.Create(t.FullName)!).ToArray()),
             ["methods"] = methods,
-            ["note"] = "Arguments are in wire form: a transformed parameter appears as its boxed type.",
+            ["note"] = descriptors == null
+                ? "No method table in this process (standalone inspector, or a server built without a call tap): service and method names still appear on events."
+                : "Arguments are in wire form: a transformed parameter appears as its boxed type.",
         };
     }
 
@@ -152,29 +160,45 @@ public sealed class InspectorService
         };
     }
 
-    /// <summary>The entity's own events in entity order: what reached it, what it sent, who heard.</summary>
+    /// <summary>The entity's own events in entity order, from the in-memory store only.</summary>
     public List<MetaInspectorEvent> Timeline(string entityKey, long? fromSequence, long? toSequence, int limit, bool includePayloads)
+        => Shape(OwnEvents(StoreEvents(entityKey), entityKey), fromSequence, toSequence, limit, includePayloads);
+
+    /// <summary>
+    /// The entity's own events in entity order: what reached it, what it sent, who heard. Older
+    /// events come from the broker's history when one is attached.
+    /// </summary>
+    public async Task<TimelineResult> TimelineAsync(string entityKey, long? fromSequence, long? toSequence, int limit,
+        bool includePayloads, CancellationToken cancellationToken = default)
     {
-        var events = _runtime.Store.Query(new InspectorQuery { EntityKey = entityKey })
-            .Where(e => e.EntityKey == entityKey)
-            .Where(e => fromSequence == null || e.EntitySequence >= fromSequence)
-            .Where(e => toSequence == null || e.EntitySequence <= toSequence)
-            .OrderBy(e => e.EntitySequence).ThenBy(e => e.SubOrder).ThenBy(e => e.Id)
-            .ToList();
-        if (limit > 0 && events.Count > limit) events = events.GetRange(events.Count - limit, limit);
-        return includePayloads ? events : events.Select(e => e.Summary()).ToList();
+        var (key, events, history) = await EntityEventsAsync(entityKey, cancellationToken).ConfigureAwait(false);
+        return new TimelineResult(key, Shape(events, fromSequence, toSequence, limit, includePayloads), history);
     }
+
+    /// <summary>
+    /// Events of a timeline plus where they came from. <see cref="EntityKey"/> is the one the
+    /// events belong to — the asked key, or its full form when the history resolved a short name.
+    /// </summary>
+    public sealed record TimelineResult(string EntityKey, List<MetaInspectorEvent> Events, JsonObject? History);
 
     /// <summary>
     /// State after <paramref name="sequence"/>: from the last event of that operation that carries
     /// state (after its triggers), else from the nearest earlier one — reported as not exact.
+    /// From the in-memory store only.
     /// </summary>
     public JsonObject StateAt(string entityKey, long sequence)
+        => StateAtOf(entityKey, sequence, OwnEvents(StoreEvents(entityKey), entityKey), null);
+
+    /// <summary>Same as <see cref="StateAt"/>, reaching into the broker's history when one is attached.</summary>
+    public async Task<JsonObject> StateAtAsync(string entityKey, long sequence, CancellationToken cancellationToken = default)
     {
-        var withState = _runtime.Store.Query(new InspectorQuery { EntityKey = entityKey })
-            .Where(e => e.EntityKey == entityKey && e.State != null && e.EntitySequence <= sequence)
-            .OrderBy(e => e.EntitySequence).ThenBy(e => e.SubOrder).ThenBy(e => e.Id)
-            .LastOrDefault();
+        var (key, events, history) = await EntityEventsAsync(entityKey, cancellationToken).ConfigureAwait(false);
+        return StateAtOf(key, sequence, events, history);
+    }
+
+    private static JsonObject StateAtOf(string entityKey, long sequence, List<MetaInspectorEvent> events, JsonObject? history)
+    {
+        var withState = InEntityOrder(events.Where(e => e.State != null && e.EntitySequence <= sequence)).LastOrDefault();
         return new JsonObject
         {
             ["entity"] = entityKey,
@@ -183,8 +207,108 @@ public sealed class InspectorService
             ["isExact"] = withState != null && withState.EntitySequence == sequence,
             ["eventId"] = withState?.Id,
             ["state"] = withState?.State?.DeepClone(),
+            ["history"] = history,
             ["note"] = withState == null ? "No captured state at or before this sequence — capture at level Full (watch_entity) to record state." : null,
         };
+    }
+
+    private List<MetaInspectorEvent> StoreEvents(string entityKey)
+        => _runtime.Store.Query(new InspectorQuery { EntityKey = entityKey });
+
+    private static List<MetaInspectorEvent> OwnEvents(IEnumerable<MetaInspectorEvent> events, string entityKey)
+        => PlaceReplies(events.Where(e => e.EntityKey == entityKey).ToList());
+
+    /// <summary>
+    /// Store events of the entity, merged with the broker's history. The same event can be in
+    /// both: matched by its stream position, or by content when one side never went through the
+    /// broker (store ids are per process).
+    /// </summary>
+    private async Task<(string EntityKey, List<MetaInspectorEvent> Events, JsonObject? History)> EntityEventsAsync(
+        string entityKey, CancellationToken cancellationToken)
+    {
+        var own = StoreEvents(entityKey).Where(e => e.EntityKey == entityKey).ToList();
+        var history = _runtime.History;
+        if (history == null || !MetaInspectorEvent.TrySplitEntityKey(entityKey, out var stateType, out var entityId))
+            return (entityKey, PlaceReplies(own), null);
+
+        JsonObject info;
+        try
+        {
+            var (stored, truncated) = await history.ReadEntityAsync(stateType, entityId, _runtime.Options.MaxHistoryEvents, cancellationToken).ConfigureAwait(false);
+
+            // A short name the store could not resolve: the history matched it by entity id.
+            if (own.Count == 0 && stored.Count > 0 && stored[0].EntityKey is { } found && found != entityKey)
+            {
+                if (stored.Any(e => e.EntityKey != found))
+                    return (entityKey, own, new JsonObject { ["error"] = $"'{stateType}' matches several state types for entity {entityId}; use the full name." });
+                entityKey = found;
+                _runtime.LearnStateType(stored[0].StateType!);
+                own = StoreEvents(entityKey).Where(e => e.EntityKey == entityKey).ToList();
+            }
+
+            var seenSequences = new HashSet<ulong>(own.Where(e => e.BrokerSequence.HasValue).Select(e => e.BrokerSequence!.Value));
+            var seenContent = new HashSet<string>(own.Where(e => !e.BrokerSequence.HasValue).Select(ContentKey), StringComparer.Ordinal);
+            int added = 0;
+            foreach (var e in stored)
+            {
+                if (e.EntityKey != entityKey) continue;
+                var known = (e.BrokerSequence is { } seq && seenSequences.Contains(seq)) || seenContent.Contains(ContentKey(e));
+                if (known) continue;
+                own.Add(e);
+                added++;
+            }
+            info = new JsonObject { ["read"] = stored.Count, ["olderThanStore"] = added, ["truncated"] = truncated };
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            // History is best effort: the store's events still answer.
+            info = new JsonObject { ["error"] = ex.GetType().Name + ": " + ex.Message };
+        }
+        return (entityKey, PlaceReplies(own), info);
+    }
+
+    private static string ContentKey(MetaInspectorEvent e)
+        => string.Join("|", e.Kind, e.EntitySequence, e.SubOrder, e.SpanId, e.StartedAtUtc.Ticks, e.Silo, e.CallId, e.TargetEntity, e.TargetPlayer,
+            e.TargetPlayers == null ? "" : string.Join(",", e.TargetPlayers));
+
+    /// <summary>
+    /// A client reply is reported where the client is connected, not where the entity ran it, so it
+    /// may reach the store before (or without) the dispatch it answers. Placed at query time: it
+    /// takes the sequence of its dispatch and goes last in that operation.
+    /// </summary>
+    private static List<MetaInspectorEvent> PlaceReplies(List<MetaInspectorEvent> events)
+    {
+        Dictionary<string, long>? dispatches = null;
+        foreach (var e in events)
+        {
+            if (e.Kind == InspectorEventKinds.CallCompleted && e.CallId != null && e.CallKind is "rpc" or "query" or "signal")
+                (dispatches ??= new(StringComparer.Ordinal))[e.CallId] = e.EntitySequence;
+        }
+        if (dispatches == null) return events;
+        for (int i = 0; i < events.Count; i++)
+        {
+            var e = events[i];
+            if (e.Kind != InspectorEventKinds.ClientResponded || e.CallId == null || !dispatches.TryGetValue(e.CallId, out var seq)) continue;
+            if (e.EntitySequence == seq && e.SubOrder == InspectorRuntime.ReplySubOrder) continue;
+            var placed = e.Clone();
+            placed.EntitySequence = seq;
+            placed.SubOrder = InspectorRuntime.ReplySubOrder;
+            events[i] = placed;
+        }
+        return events;
+    }
+
+    private static IEnumerable<MetaInspectorEvent> InEntityOrder(IEnumerable<MetaInspectorEvent> events)
+        => events.OrderBy(e => e.EntitySequence).ThenBy(e => e.SubOrder).ThenBy(e => e.StartedAtUtc).ThenBy(e => e.Id);
+
+    private static List<MetaInspectorEvent> Shape(List<MetaInspectorEvent> events, long? fromSequence, long? toSequence, int limit, bool includePayloads)
+    {
+        var shaped = InEntityOrder(events
+                .Where(e => fromSequence == null || e.EntitySequence >= fromSequence)
+                .Where(e => toSequence == null || e.EntitySequence <= toSequence))
+            .ToList();
+        if (limit > 0 && shaped.Count > limit) shaped = shaped.GetRange(shaped.Count - limit, limit);
+        return includePayloads ? shaped : shaped.Select(e => e.Summary()).ToList();
     }
 
     /// <summary>
@@ -492,7 +616,8 @@ public sealed class InspectorService
 
     private IEntityGrainBase Grain(string stateType, string entityId)
     {
-        var factory = _runtime.GrainFactory ?? throw new InvalidOperationException("No grain factory bound.");
+        var factory = _runtime.GrainFactory ?? throw new InvalidOperationException(
+            "Live entity access needs a silo: this inspector has no grain factory (standalone, events only). Use the inspector of a silo for live state and invoke.");
         var resolver = _runtime.EntityGrainResolver ?? throw new InvalidOperationException("No entity grain resolver bound.");
         return resolver.GetEntityGrain(factory, _runtime.ResolveStateTypeName(stateType) ?? stateType, entityId)
                ?? throw new InvalidOperationException($"Unknown state type '{stateType}'.");

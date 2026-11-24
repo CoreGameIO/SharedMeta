@@ -79,6 +79,9 @@ public sealed class InspectorOptions
     /// <summary>Optional JSON-lines file every event is appended to.</summary>
     public string? JsonlPath { get; set; }
 
+    /// <summary>Most events of one entity read back from a broker's history per query (the newest are kept).</summary>
+    public int MaxHistoryEvents { get; set; } = 20_000;
+
     // ── Security: set from code / configuration only, never through MCP ────────
 
     /// <summary>Allow <c>invoke_method</c>. Off by default.</summary>

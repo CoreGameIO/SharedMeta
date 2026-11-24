@@ -20,6 +20,7 @@ using SharedMeta.Orleans.Framework;
 using SharedMeta.Auth;
 using SharedMeta.Inspector;
 using SharedMeta.Inspector.Mcp;
+using SharedMeta.Inspector.Nats;
 using SharedMeta.Server.Core.Storage;
 using SharedMeta.Core.Network;
 using Expedition.Shared;
@@ -163,6 +164,11 @@ builder.Services.AddSharedMetaInspector(o =>
     o.InvokeMethods.Add("*");
 });
 builder.Services.AddSharedMetaInspectorMcp();
+// Multi-silo: with SHAREDMETA_INSPECTOR_NATS set (e.g. nats://127.0.0.1:4222, JetStream on), every
+// silo publishes its events to one stream and every inspector â€” here or the standalone
+// sharedmeta-inspector â€” sees the whole cluster, with history and shared watches.
+if (Environment.GetEnvironmentVariable("SHAREDMETA_INSPECTOR_NATS") is { Length: > 0 } natsUrl)
+    builder.Services.AddSharedMetaInspectorNats(o => o.Url = natsUrl);
 
 var app = builder.Build();
 

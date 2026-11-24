@@ -77,6 +77,13 @@ public sealed class MetaInspectorEvent
     public string? ClientVersion { get; set; }
     public string? Reason { get; set; }
 
+    /// <summary>
+    /// Position in the broker's stream when the event came through one: the same event read again
+    /// (store vs. history) has the same position.
+    /// </summary>
+    [JsonIgnore]
+    public ulong? BrokerSequence { get; set; }
+
     /// <summary>Approximate in-memory size, for the store budget.</summary>
     [JsonIgnore]
     public int ApproxBytes { get; set; }
@@ -91,5 +98,16 @@ public sealed class MetaInspectorEvent
         return copy;
     }
 
+    internal MetaInspectorEvent Clone() => (MetaInspectorEvent)MemberwiseClone();
+
     public static string MakeEntityKey(string stateType, string entityId) => stateType + ":" + entityId;
+
+    /// <summary>Splits an entity key at its first colon (state type names have none; ids may).</summary>
+    public static bool TrySplitEntityKey(string entityKey, out string stateType, out string entityId)
+    {
+        var i = entityKey.IndexOf(':');
+        stateType = i > 0 ? entityKey.Substring(0, i) : "";
+        entityId = i > 0 ? entityKey.Substring(i + 1) : "";
+        return i > 0;
+    }
 }

@@ -74,6 +74,15 @@ public class InspectorMcpTests
             ["path"] = "Value",
         });
         Assert.Equal(2, live["state"]!.GetValue<int>());
+
+        // A refusal reaches the client with its explanation, not the SDK's generic error text.
+        var refused = await client.CallToolAsync("get_entity_state", new Dictionary<string, object?>
+        {
+            ["stateType"] = nameof(ForcePatchFixtureState),
+            ["entityId"] = $"never_seen_{Guid.NewGuid():N}",
+        });
+        Assert.True(refused.IsError);
+        Assert.Contains("activate=true", Assert.IsType<TextContentBlock>(Assert.Single(refused.Content)).Text);
     }
 
     [Theory(Timeout = 60_000)]

@@ -72,6 +72,59 @@ public sealed class InspectorRuntime : IAsyncDisposable
 
     internal CaptureRules Rules => _rules;
 
+    // ── distribution (broker) ──────────────────────────────────────────────────
+
+    private volatile bool _storeFedBySource;
+
+    /// <summary>Shared capture settings; null = this process only.</summary>
+    public IInspectorControlChannel? Control { get; private set; }
+
+    /// <summary>Durable per-entity history beyond the in-memory window; null = store only.</summary>
+    public IMetaEventHistory? History { get; private set; }
+
+    /// <summary>Human-readable description of the broker wiring, for status output.</summary>
+    public string? Distribution { get; private set; }
+
+    /// <summary>
+    /// Feeds the store from a broker instead of from this process's encoder: the local events go
+    /// to the sinks (the broker) and come back with everyone else's through <see cref="IngestAsync"/>.
+    /// </summary>
+    public void UseEventSource()
+    {
+        _storeFedBySource = true;
+        lock (_sinks) _sinks.Remove(Store);
+    }
+
+    public void UseControlChannel(IInspectorControlChannel control) => Control = control;
+
+    public void UseHistory(IMetaEventHistory history) => History = history;
+
+    public void DescribeDistribution(string description) => Distribution = description;
+
+    /// <summary>Adds events from a source (other silos included) to the store.</summary>
+    public ValueTask IngestAsync(IReadOnlyList<MetaInspectorEvent> events)
+    {
+        foreach (var e in events) TouchSeen(e);
+        return Store.WriteAsync(events);
+    }
+
+    private void TouchSeen(MetaInspectorEvent e)
+    {
+        if (e.StateType != null) LearnStateType(e.StateType);
+        if (e.EntityKey != null && e.StateType != null && e.EntityId != null)
+            _seen.Touch(e.EntityKey, e.StateType, e.EntityId, e.EntitySequence, e.StartedAtUtc);
+    }
+
+    // Short → full state type names seen on events: a standalone inspector has no method table to
+    // resolve "ProfileState" with, but its events carry the full names.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _stateTypesByShortName = new(StringComparer.Ordinal);
+
+    internal void LearnStateType(string fullName)
+    {
+        var dot = fullName.LastIndexOfAny(new[] { '.', '+' });
+        _stateTypesByShortName.TryAdd(dot >= 0 ? fullName.Substring(dot + 1) : fullName, fullName);
+    }
+
     // ── services bound from the silo container ─────────────────────────────────
 
     public IMetaSerializer? Serializer { get; private set; }
@@ -119,7 +172,20 @@ public sealed class InspectorRuntime : IAsyncDisposable
         lock (_settingsLock) _rules = new CaptureRules(settings.Clone(), Signature);
     }
 
-    /// <summary>Applies <paramref name="change"/> to a copy of the current settings atomically.</summary>
+    /// <summary>
+    /// Changes the capture settings everywhere they are shared: through the control channel when
+    /// one is attached (and here at once, before the channel echoes it back), else in this process.
+    /// </summary>
+    public async Task<InspectorCaptureSettings> UpdateCaptureSettingsAsync(Action<InspectorCaptureSettings> change, CancellationToken cancellationToken = default)
+    {
+        var control = Control;
+        if (control == null) return UpdateCaptureSettings(change);
+        var next = await control.UpdateAsync(change, cancellationToken).ConfigureAwait(false);
+        SetCaptureSettings(next);
+        return next.Clone();
+    }
+
+    /// <summary>Applies <paramref name="change"/> to a copy of this process's settings atomically.</summary>
     public InspectorCaptureSettings UpdateCaptureSettings(Action<InspectorCaptureSettings> change)
     {
         lock (_settingsLock)
@@ -224,10 +290,9 @@ public sealed class InspectorRuntime : IAsyncDisposable
                     }
                 }
 
-                foreach (var e in batch)
+                if (!_storeFedBySource)
                 {
-                    if (e.EntityKey != null && e.StateType != null && e.EntityId != null)
-                        _seen.Touch(e.EntityKey, e.StateType, e.EntityId, e.EntitySequence, e.StartedAtUtc);
+                    foreach (var e in batch) TouchSeen(e);
                 }
 
                 if (batch.Count > 0)
@@ -283,7 +348,7 @@ public sealed class InspectorRuntime : IAsyncDisposable
             e.EntitySequence = last;
     }
 
-    private const int ReplySubOrder = int.MaxValue;
+    internal const int ReplySubOrder = int.MaxValue;
 
     private void CompleteFlush(RawEvent marker)
     {
@@ -410,7 +475,8 @@ public sealed class InspectorRuntime : IAsyncDisposable
     public string? ResolveStateTypeName(string? name)
     {
         if (name == null) return null;
-        return Descriptors?.GetStateType(name)?.FullName ?? name;
+        return Descriptors?.GetStateType(name)?.FullName
+               ?? (_stateTypesByShortName.TryGetValue(name, out var full) ? full : name);
     }
 
     // Estimated from the wire bytes: a decoded JSON tree takes several times its binary form.

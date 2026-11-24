@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0;net11.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <PackageId>CoreGame.SharedMeta.Inspector.Nats</PackageId>
+    <IsPackable>true</IsPackable>
+    <Description>NATS JetStream broker for the SharedMeta Inspector: silos publish captured events to a stream, every inspector (in a silo or standalone) consumes the whole cluster's events, reads entity history back from the stream, and shares capture settings through a key-value bucket.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharedMeta.Inspector\SharedMeta.Inspector.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NATS.Net" />
+  </ItemGroup>
+
+</Project>

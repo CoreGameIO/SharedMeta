@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
 namespace SharedMeta.Inspector.Mcp;
@@ -41,38 +42,38 @@ public sealed class InspectorTools
     public string GetCaptureConfig() => Write(Runtime.GetCaptureSettings());
 
     [McpServerTool(Name = "set_capture_config", Idempotent = true)]
-    [Description("Changes what is captured, effective immediately on this server. Omitted arguments keep their value. methodLevels maps 'IService.Method', 'IService.*' or '*' to a level; pass an empty object to clear. Prefer watch_entity / watch_player for focused capture.")]
-    public string SetCaptureConfig(
+    [Description("Changes what is captured, effective immediately — on every silo when the inspector shares settings through a broker (see inspector_status), else on this server. Omitted arguments keep their value. methodLevels maps 'IService.Method', 'IService.*' or '*' to a level; pass an empty object to clear. Prefer watch_entity / watch_player for focused capture.")]
+    public async Task<string> SetCaptureConfig(
         [Description("Global level for methods without a specific rule: Off, Ids, Args, ArgsResult, Full.")] InspectorLevel? level = null,
         [Description("Per-method levels, e.g. {\"IShopService.Buy\": \"Full\", \"IChatService.*\": \"Off\"}.")] Dictionary<string, InspectorLevel>? methodLevels = null,
         [Description("Fraction (0..1) of calls kept at method/global level. Watches are never sampled.")] double? sampleRate = null,
         [Description("One broadcast event per subscriber instead of one per operation.")] bool? broadcastPerSubscriber = null)
-        => Write(Runtime.UpdateCaptureSettings(s =>
+        => await Explain(async () => Write(await Runtime.UpdateCaptureSettingsAsync(s =>
         {
             if (level.HasValue) s.Level = level.Value;
             if (methodLevels != null) s.MethodLevels = new Dictionary<string, InspectorLevel>(methodLevels, StringComparer.Ordinal);
             if (sampleRate.HasValue) s.SampleRate = sampleRate.Value;
             if (broadcastPerSubscriber.HasValue) s.BroadcastPerSubscriber = broadcastPerSubscriber.Value;
-        }));
+        })));
 
     [McpServerTool(Name = "watch_entity", Idempotent = true)]
     [Description("Captures everything about one entity from now on — calls into it, its triggers, calls it sends, broadcasts — at the given level (default Full, which records the state after every call; needed for entity_state_at).")]
-    public string WatchEntity(
+    public async Task<string> WatchEntity(
         [Description("Entity id (the grain key).")] string entityId,
         [Description("Level: Ids, Args, ArgsResult or Full.")] InspectorLevel level = InspectorLevel.Full)
-        => Write(Runtime.UpdateCaptureSettings(s => SetWatch(s.WatchedEntities, entityId, level)));
+        => await Explain(async () => Write(await Runtime.UpdateCaptureSettingsAsync(s => SetWatch(s.WatchedEntities, entityId, level))));
 
     [McpServerTool(Name = "unwatch_entity", Idempotent = true)]
     [Description("Stops the entity watch; already captured events stay.")]
-    public string UnwatchEntity([Description("Entity id.")] string entityId)
-        => Write(Runtime.UpdateCaptureSettings(s => s.WatchedEntities.Remove(entityId)));
+    public async Task<string> UnwatchEntity([Description("Entity id.")] string entityId)
+        => await Explain(async () => Write(await Runtime.UpdateCaptureSettingsAsync(s => s.WatchedEntities.Remove(entityId))));
 
     [McpServerTool(Name = "watch_player", Idempotent = true)]
     [Description("Captures every call made by a player and every broadcast sent to them, at the given level.")]
-    public string WatchPlayer(
+    public async Task<string> WatchPlayer(
         [Description("Player id.")] string playerId,
         [Description("Level: Ids, Args, ArgsResult or Full.")] InspectorLevel level = InspectorLevel.ArgsResult)
-        => Write(Runtime.UpdateCaptureSettings(s => SetWatch(s.WatchedPlayers, playerId, level)));
+        => await Explain(async () => Write(await Runtime.UpdateCaptureSettingsAsync(s => SetWatch(s.WatchedPlayers, playerId, level))));
 
     private static void SetWatch(Dictionary<string, InspectorLevel> watches, string id, InspectorLevel level)
     {
@@ -82,8 +83,8 @@ public sealed class InspectorTools
 
     [McpServerTool(Name = "unwatch_player", Idempotent = true)]
     [Description("Stops the player watch.")]
-    public string UnwatchPlayer([Description("Player id.")] string playerId)
-        => Write(Runtime.UpdateCaptureSettings(s => s.WatchedPlayers.Remove(playerId)));
+    public async Task<string> UnwatchPlayer([Description("Player id.")] string playerId)
+        => await Explain(async () => Write(await Runtime.UpdateCaptureSettingsAsync(s => s.WatchedPlayers.Remove(playerId))));
 
     // ── events ─────────────────────────────────────────────────────────────────
 
@@ -128,25 +129,26 @@ public sealed class InspectorTools
     // ── TimeMachine ────────────────────────────────────────────────────────────
 
     [McpServerTool(Name = "entity_timeline", ReadOnly = true)]
-    [Description("TimeMachine: the entity's events in entity order (sequence, then order within the operation) — calls that reached it and from whom, its triggers, calls it sent, broadcasts, subscriptions — with a Mermaid sequence diagram.")]
-    public string EntityTimeline(
+    [Description("TimeMachine: the entity's events in entity order (sequence, then order within the operation) — calls that reached it and from whom, its triggers, calls it sent, broadcasts, subscriptions — with a Mermaid sequence diagram. With a broker, events older than the in-memory window are read from its history.")]
+    public async Task<string> EntityTimeline(
         [Description("State type (short or full name).")] string stateType,
         [Description("Entity id.")] string entityId,
         [Description("From entity sequence (inclusive).")] long? fromSeq = null,
         [Description("To entity sequence (inclusive).")] long? toSeq = null,
         [Description("Newest N events at most.")] int limit = 200,
         [Description("Include decoded args / result / state.")] bool includePayloads = false)
-    {
-        var key = _inspector.EntityKey(stateType, entityId);
-        var events = _inspector.Timeline(key, fromSeq, toSeq, Math.Clamp(limit, 1, 2000), includePayloads);
-        return Write(new JsonObject
+        => await Explain(async () =>
         {
-            ["entity"] = key,
-            ["count"] = events.Count,
-            ["events"] = InspectorService.ToJson(events, includePayloads),
-            ["mermaid"] = _inspector.TimelineMermaid(key, events),
+            var timeline = await _inspector.TimelineAsync(_inspector.EntityKey(stateType, entityId), fromSeq, toSeq, Math.Clamp(limit, 1, 2000), includePayloads);
+            return Write(new JsonObject
+            {
+                ["entity"] = timeline.EntityKey,
+                ["count"] = timeline.Events.Count,
+                ["history"] = timeline.History,
+                ["events"] = InspectorService.ToJson(timeline.Events, includePayloads),
+                ["mermaid"] = _inspector.TimelineMermaid(timeline.EntityKey, timeline.Events),
+            });
         });
-    }
 
     [McpServerTool(Name = "entity_graph", ReadOnly = true)]
     [Description("TimeMachine: entities and players connected to this entity through calls, cross-entity hops and broadcasts, up to `depth` hops, from the newest `window` events; with a Mermaid flowchart.")]
@@ -159,11 +161,11 @@ public sealed class InspectorTools
 
     [McpServerTool(Name = "entity_state_at", ReadOnly = true)]
     [Description("TimeMachine: the entity's state after operation `seq`, from events captured at level Full. Reports the sequence actually used and whether it is exact.")]
-    public string EntityStateAt(
+    public async Task<string> EntityStateAt(
         [Description("State type (short or full name).")] string stateType,
         [Description("Entity id.")] string entityId,
         [Description("Entity sequence number.")] long seq)
-        => Write(_inspector.StateAt(_inspector.EntityKey(stateType, entityId), seq));
+        => await Explain(async () => Write(await _inspector.StateAtAsync(_inspector.EntityKey(stateType, entityId), seq)));
 
     // ── live ───────────────────────────────────────────────────────────────────
 
@@ -174,7 +176,7 @@ public sealed class InspectorTools
         [Description("Entity id.")] string entityId,
         [Description("Optional dot/index path into the state.")] string? path = null,
         [Description("Read even if never seen (activates the grain; an unknown id yields a default state).")] bool activate = false)
-        => Write(await _inspector.LiveStateAsync(stateType, entityId, path, activate));
+        => await Explain(async () => Write(await _inspector.LiveStateAsync(stateType, entityId, path, activate)));
 
     [McpServerTool(Name = "list_entities", ReadOnly = true)]
     [Description("Entities that produced events recently (most recent first) with their last sequence.")]
@@ -205,7 +207,18 @@ public sealed class InspectorTools
         [Description("Method version; latest when omitted.")] int? version = null,
         [Description("Caller id seen by the method (Context.CallerId).")] string? callerId = null,
         [Description("Client version to run under (selects config branch); needed for a cold entity with service configs.")] string? callerClientVersion = null)
-        => Write(await _inspector.InvokeAsync(stateType, entityId, service, method, args, version, callerId, callerClientVersion));
+        => await Explain(async () => Write(await _inspector.InvokeAsync(stateType, entityId, service, method, args, version, callerId, callerClientVersion)));
 
     private static string Write<T>(T value) => JsonSerializer.Serialize(value, s_json);
+
+    // The SDK replaces the message of any exception but McpException with a generic one; the
+    // inspector's refusals say what to do instead (activate=true, use a silo, allow-list …).
+    private static async Task<string> Explain(Func<Task<string>> body)
+    {
+        try { return await body(); }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or TimeoutException)
+        {
+            throw new McpException(ex.Message, ex);
+        }
+    }
 }
