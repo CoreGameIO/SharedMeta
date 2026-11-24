@@ -1621,6 +1621,7 @@ The SharedMeta source generator (`CoreGame.SharedMeta.Generator`) produces:
 | `ISharedState` class | `*PatchWrapper.g.cs` — change tracking for ServerPatch mode (nested-object fields have get+set via implicit operator; collections have get+set for reassignment) |
 | `ISharedState` class | `*PatchApplier.g.cs` — client-side patch application |
 | All `[MetaService]` in assembly | `ServerMetaConfiguration.g.cs` — MetaProvider + service registration |
+| Server project referencing `[assembly: MetaCallTapProvider]` (`SharedMeta.Inspector`) | `MetaMethodDescriptors.g.cs` (`GeneratedMetaMethodDescriptors`: method table + wire-type arg/result codecs) and `IMetaCallTap` wrappers around `DispatchCall` / `DispatchSignal` / init. Absent marker → output unchanged (0.49.0+) |
 
 **Do not write** dispatcher, API client, or context injection code manually — it's all generated.
 
@@ -1716,6 +1717,10 @@ bool PlayCardV2(Card card, bool autoDefend);
 | `CoreGame.SharedMeta.Serialization.MessagePack` | MessagePack serializer |
 | `CoreGame.SharedMeta.Auth` | JWT authentication |
 | `CoreGame.SharedMeta.Debug` | InProcess transport for testing |
+| `CoreGame.SharedMeta.Inspector` | *(preview)* Server call capture + event store; referencing it turns on call-tap codegen |
+| `CoreGame.SharedMeta.Inspector.Mcp` | *(preview)* MCP endpoint (17 tools) + embedded web viewer |
+| `CoreGame.SharedMeta.Inspector.Nats` | *(preview)* Multi-silo events, history and shared settings over NATS JetStream |
+| `CoreGame.SharedMeta.Inspector.Service` | *(preview)* `sharedmeta-inspector` dotnet tool — standalone viewer + MCP over NATS |
 
 ---
 
@@ -1885,6 +1890,26 @@ Per-method rules: a method without its own series is recorded as `method="_other
 Hooks for analytics: `IMetaServerObserver` (server DI: `OnCallCompleted`, `OnSessionStarted`, `OnSessionEnded(MetaSessionEndReason)`), `IMetaClientCallObserver` (`MetaClientOptions.Telemetry.CallObserver`, works on Unity without DiagnosticSource). Hand-built `MetaConnectionHandlerFactory` must pass `telemetry: sp.GetService<SharedMetaTelemetry>()`. Unity: client meters compile with `SHAREDMETA_CLIENT_TELEMETRY` (versionDefine on the DiagnosticSource UPM package; define it manually under NuGetForUnity).
 
 Reference wire-up: `examples/ClanWars/ClanWars.Server/Program.cs` (Prometheus exporter on `/metrics`). Full catalog: [docs/GUIDE.md § Observability](../docs/GUIDE.md#observability-0230).
+
+### Inspector, MCP & TimeMachine (0.49.0+, preview)
+
+Server-only module; shared code is untouched. Captures calls (args, results, state after the call), triggers/nested as child spans (`MetaCallContext.ParentSpanId`), cross-entity `call_sent`, broadcasts, client replies, sessions — and serves them over MCP and a web viewer.
+
+```csharp
+builder.Services.AddSharedMetaInspector(o => { o.AllowInvoke = isDev; o.InvokeMethods.Add("*"); });
+builder.Services.AddSharedMetaInspectorMcp();
+builder.Services.AddSharedMetaInspectorNats(o => o.Url = natsUrl);   // optional, multi-silo
+app.MapSharedMetaInspectorMcp("/mcp");
+app.MapSharedMetaInspectorUi("/inspector", "/mcp");
+```
+
+- Capture is `Off` until a watch/level is set: `Off` → `Ids` → `Args` → `ArgsResult` → `Full`; global, per method (`"ISvc.Method"`, `"ISvc.*"`), per entity/player watch; runtime-changeable via `watch_entity` / `watch_player` / `set_capture_config`. Security fields (`AllowInvoke`, `InvokeMethods`, `RedactMembers`, `ApiKey`, `LocalhostOnly`) are code/config only.
+- Debugging a running server through MCP: `inspector_status` → `watch_entity(entityId, level: Full)` → reproduce → `entity_timeline` / `get_call(callId)` / `entity_state_at(seq)` / `entity_graph`; `get_entity_state` reads live state; `invoke_method` only with `AllowInvoke`. Arguments are in **wire types** (a `[Transformer]` parameter shows its wire value).
+- Not captured: sibling calls (`Get{I}SiblingAsync`, plain C# call) and server-originated calls refused before dispatch.
+- Standalone `sharedmeta-inspector` (NATS) has no live state or invoke.
+- An `IMetaServerObserver` that also implements `IMetaCallObservationGate` (`ObservesCalls`) stops the transport building `MetaCallInfo` while it is false.
+
+Full reference: [docs/INSPECTOR.md](../docs/INSPECTOR.md).
 
 ---
 

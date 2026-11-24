@@ -1295,6 +1295,24 @@ Launch and manage the server directly from Unity without switching to a terminal
 
 ---
 
+## Inspector & MCP — Seeing What the Server Did (0.49.0+, preview)
+
+A server-side module: nothing changes in the Unity project or the shared code. Add `CoreGame.SharedMeta.Inspector` and `CoreGame.SharedMeta.Inspector.Mcp` to the **server** project:
+
+```csharp
+builder.Services.AddSharedMetaInspector();
+builder.Services.AddSharedMetaInspectorMcp();
+// after builder.Build():
+app.MapSharedMetaInspectorMcp("/mcp");
+app.MapSharedMetaInspectorUi("/inspector", "/mcp");
+```
+
+Start the server (e.g. from the Server Runner), open `http://localhost:<port>/inspector/`, watch the entity you are testing at level `Full`, then play in the Editor: the timeline shows every call your client made, what the server computed, the state after each step, and what it sent to other entities and players. AI agents connect to the same data over MCP: `claude mcp add --transport http mygame http://localhost:<port>/mcp`.
+
+Capture is off until you watch something, and the endpoint accepts localhost only by default. Preview: tool names and options may change in minor versions. Full guide: [docs/INSPECTOR.md](https://github.com/CoreGameIO/SharedMeta/blob/main/docs/INSPECTOR.md).
+
+---
+
 ## Rider Plugin (optional)
 
 [`SharedLibs/RiderPlugin`](https://github.com/CoreGameIO/SharedLibs/tree/main/RiderPlugin) is a Rider plugin that links each `[MetaMethod]` on a `[MetaService]` interface to every method generated for it (`*ApiClient.{Name}Async / Sync / Signal`, `*EntityQueryApi.{Name}Async`, the `{I}EntityCaller` cross-entity proxy and its three runtime impls). With it installed:

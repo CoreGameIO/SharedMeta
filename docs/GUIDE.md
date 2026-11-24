@@ -4641,6 +4641,7 @@ The source generator (`SharedMeta.Generator`) scans assemblies for attributes an
 | `[MetaServiceImpl]` class | `*.Context.g.cs` | Context injection (State, CallerId, dependencies) |
 | Assembly with `[MetaService]` | `ServerMetaConfiguration.g.cs` | MetaProvider generation, service wiring |
 | `[Tracked]` field | `ChangeTracking.g.cs` | Push-based change tracking properties for UI binding (client-only) |
+| Server project referencing `[assembly: MetaCallTapProvider]` (e.g. `SharedMeta.Inspector`) | `MetaMethodDescriptors.g.cs` + call-tap wrappers in `ServerMetaConfiguration.g.cs` | `GeneratedMetaMethodDescriptors` (method table, argument/result codecs on wire types) and `DispatchCall` / `DispatchSignal` / init wrapped in `IMetaCallTap`. Without the marker the output is byte-for-byte unchanged |
 
 ### Dispatcher Pattern (generated)
 
@@ -5071,6 +5072,36 @@ Transport metrics: `builder.Services.AddSignalR().AddMetaSignalRTelemetry()` (Me
 
 Unity: client meters compile with `SHAREDMETA_CLIENT_TELEMETRY`, set automatically when `System.Diagnostics.DiagnosticSource` comes as a UPM package; through NuGetForUnity add the scripting define by hand (same as `HAS_MEMORYPACK`). The NuGet `SharedMeta.Client` always has it.
 
+#### Inspector, MCP & TimeMachine (0.49.0+, preview)
+
+A server module that records what the server did — calls with arguments, results and state, triggers, cross-entity hops, broadcasts, client replies, sessions — and serves it to a web viewer and to AI agents over MCP. Full walkthrough, tool reference and deployment notes: [docs/INSPECTOR.md](INSPECTOR.md). Preview: tool names, options and the event format may change in minor versions.
+
+```csharp
+// Server project only — shared game code is untouched.
+builder.Services.AddSharedMetaInspector(o =>
+{
+    o.AllowInvoke = builder.Environment.IsDevelopment();   // invoke_method; off by default
+    o.InvokeMethods.Add("*");
+});
+builder.Services.AddSharedMetaInspectorMcp();
+// Multi-silo (optional): builder.Services.AddSharedMetaInspectorNats(o => o.Url = "nats://127.0.0.1:4222");
+
+app.MapSharedMetaInspectorMcp("/mcp");                    // Streamable HTTP MCP
+app.MapSharedMetaInspectorUi("/inspector", "/mcp");       // web viewer
+```
+
+| Topic | Behaviour |
+|---|---|
+| How calls are seen | Referencing `SharedMeta.Inspector` (carries `[assembly: MetaCallTapProvider]`) makes the generator wrap the server provider's dispatches in `IMetaCallTap` and emit `GeneratedMetaMethodDescriptors`. Grain call filters add outgoing cross-entity calls, broadcasts and subscriptions; an `IMetaServerObserver` adds client replies and sessions |
+| Cost | Nothing is captured until a watch or level is set (`Level = Off` by default). A call that is not captured costs a flag check and a table lookup; encoding to JSON runs on a background worker, never in the grain turn. Without the package the generated code is unchanged |
+| Levels | `Off` → `Ids` → `Args` → `ArgsResult` → `Full` (state after the call, needed for `entity_state_at`). Set globally, per method (`"ISvc.Method"`, `"ISvc.*"`), per watched entity or player; changeable at runtime (`watch_entity`, `set_capture_config`) |
+| Ordering | Timeline order is `(EntitySequence, SubOrder)`; triggers and nested calls are child spans of the call that caused them (`MetaCallContext.ParentSpanId`) |
+| Security | Loopback and localhost `Host` / `Origin` only by default; `ApiKey` (`X-Inspector-Key` or Bearer) for remote access; `RedactMembers` masks matching members and dictionary keys; invoke is off unless `AllowInvoke` and `InvokeMethods` allow it |
+| Multi-silo | `SharedMeta.Inspector.Nats`: every silo publishes to one JetStream stream; every inspector sees the cluster, reads entity history from the stream, shares watches and the method table through KV. `sharedmeta-inspector` (dotnet tool, `SharedMeta.Inspector.Service`) serves the same viewer and MCP standalone, without live state or invoke |
+| Not captured | Sibling calls (`Get{I}SiblingAsync` — a direct C# call; its effect is in the outer call's state) and server-originated calls refused before dispatch (seen only as the sender's `call_sent` error) |
+
+`IMetaCallObservationGate` (Server.Core) is the hook that keeps an idle Inspector free: an `IMetaServerObserver` implementing it with `ObservesCalls = false` stops the transport from building a `MetaCallInfo` per client call.
+
 ---
 
 ## 23. Capability Overview
@@ -5090,6 +5121,7 @@ Unity: client meters compile with `SHAREDMETA_CLIENT_TELEMETRY`, set automatical
 | **Serialization** | MemoryPack (transport) + Orleans GenerateSerializer (persistence). MessagePack alternative via `IMetaSerializer` |
 | **Persistence** | FileGrainStorage, configurable persistence policy (5 modes), per-method ForcePersist override |
 | **Code Generation** | Service dispatchers, typed API clients, context injection, DI registration, MetaProvider routing, PatchWrapper / PatchApplier / PatchSchema per state — all generated at compile time |
+| **Inspector (preview)** | Opt-in server call capture (args, results, state), TimeMachine entity timeline / graph / state-at-sequence, call trees, embedded web viewer, MCP tools for AI agents, multi-silo history over NATS JetStream (0.49.0+) |
 
 ### Planned
 

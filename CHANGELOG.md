@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.49.0] - 2026-11-24
+
+Inspector (preview): call capture, TimeMachine timeline and graph, MCP endpoint and web viewer for a running server.
+
+### Added
+
+- **Preview:** `CoreGame.SharedMeta.Inspector` — opt-in server module (`AddSharedMetaInspector`) capturing meta calls with arguments, results and state, cross-entity hops, broadcasts and sessions, at a level set per method, entity and player. Off by default; its API may still change in minor versions.
+- **Preview:** `CoreGame.SharedMeta.Inspector.Mcp` — Streamable HTTP MCP endpoint with 17 tools (`MapSharedMetaInspectorMcp`) and an embedded web viewer (`MapSharedMetaInspectorUi`): timelines, graphs, call trees, state at a sequence, live state, opt-in `invoke_method`. Loopback only by default, `ApiKey` for remote access.
+- **Preview:** `CoreGame.SharedMeta.Inspector.Nats` — multi-silo over NATS JetStream: every inspector sees the whole cluster, reads entity history back from the stream, shares capture settings and the method table through KV.
+- **Preview:** `CoreGame.SharedMeta.Inspector.Service` — `sharedmeta-inspector` dotnet tool: standalone viewer and MCP over the NATS stream.
+- Generator: when the server references an assembly with `[assembly: MetaCallTapProvider]` (the Inspector does), the provider routes dispatches through `IMetaCallTap` and `GeneratedMetaMethodDescriptors` (method table with argument and result codecs) is emitted. Without it the generated code is unchanged.
+- `MetaCallContext.ParentSpanId` — span of the hop that caused this one; not written to log scopes.
+- `IMetaCallObservationGate` — lets an `IMetaServerObserver` switch per-call notifications off; while it is closed the transport skips building `MetaCallInfo`.
+
+Guide: [docs/INSPECTOR.md](https://github.com/CoreGameIO/SharedMeta/blob/main/docs/INSPECTOR.md).
+
 ## [0.48.0] - 2026-11-23
 
 `[MetaInit]` sees the triggering client's configs; fresh entities start at the current schema.

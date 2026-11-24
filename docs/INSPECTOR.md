@@ -2,6 +2,8 @@
 
 **SharedMeta Inspector** is a zero-overhead runtime debugger, **TimeMachine** timeline & state-diff viewer, and **Model Context Protocol (MCP)** server for running SharedMeta / Orleans game servers.
 
+> **Preview (0.49.0).** The Inspector packages are new: tool names, options and the event format may still change in minor versions. The framework hooks they rely on (call tap, method descriptors) are stable and cost nothing when the Inspector is not referenced.
+
 It attaches as an optional server module without modifying a single line of your shared game code:
 - **Zero cost when idle (`Level = Off`)** — compile-time code generation (`[MetaCallTapProvider]`) emits fast-path call taps and wire-level method descriptors only when `SharedMeta.Inspector` is referenced. When capture is off, no arguments, results, or state snapshots are copied or decoded.
 - **TimeMachine** — pick any entity and inspect every RPC, `[MetaInit]` migration, `[Trigger]`, cross-entity hop, broadcast, and client reply in exact `(EntitySequence, SubOrder)` order, with per-sequence state snapshots and automatic field diffs.

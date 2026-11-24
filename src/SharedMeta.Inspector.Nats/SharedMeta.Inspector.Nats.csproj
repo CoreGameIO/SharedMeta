@@ -7,7 +7,7 @@
     <LangVersion>latest</LangVersion>
     <PackageId>CoreGame.SharedMeta.Inspector.Nats</PackageId>
     <IsPackable>true</IsPackable>
-    <Description>NATS JetStream broker for the SharedMeta Inspector: silos publish captured events to a stream, every inspector (in a silo or standalone) consumes the whole cluster's events, reads entity history back from the stream, and shares capture settings through a key-value bucket.</Description>
+    <Description>Preview: the API may change in minor versions. NATS JetStream broker for the SharedMeta Inspector: silos publish captured events to a stream, every inspector (in a silo or standalone) consumes the whole cluster's events, reads entity history back from the stream, and shares capture settings through a key-value bucket.</Description>
   </PropertyGroup>
 
   <ItemGroup>

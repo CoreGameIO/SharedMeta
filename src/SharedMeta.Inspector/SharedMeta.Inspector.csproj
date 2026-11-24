@@ -7,7 +7,7 @@
     <LangVersion>latest</LangVersion>
     <PackageId>CoreGame.SharedMeta.Inspector</PackageId>
     <IsPackable>true</IsPackable>
-    <Description>Silo-side call inspector: captures meta calls (arguments, results, state), cross-entity hops, broadcasts and sessions into a queryable event store, with configurable detail per method, entity and player. Referencing it makes the generator emit the call-tap wrappers.</Description>
+    <Description>Preview: the API may change in minor versions. Silo-side call inspector: captures meta calls (arguments, results, state), cross-entity hops, broadcasts and sessions into a queryable event store, with configurable detail per method, entity and player. Referencing it makes the generator emit the call-tap wrappers.</Description>
   </PropertyGroup>
 
   <ItemGroup>

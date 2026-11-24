@@ -196,7 +196,7 @@ bool owned = api.HasItemSync("sword_01");       // Synchronous read over local s
 - **Pluggable transport & serialization** — SignalR (WebSocket, JSON or native MessagePack protocol), HTTP Long-Polling, BestHTTP / BestHTTP SignalR (Unity incl. WebGL), In-Process (tests), and Mux (multi-player socket multiplexing for load tests). Serializers: MemoryPack and MessagePack.
 - **Session resilience & auth** — session resume with missed-packet replay, request idempotency, single-session supersede, optional server RPC reordering, JWT authentication with device/Google/Apple/Steam validators, and `Open` / `Authorized` / `OwnerOnly` / `UserOwned` entity access policies.
 - **Observability** — built-in `System.Diagnostics.Metrics.Meter` and `ActivitySource` instrumentation on both server and client for OpenTelemetry / Prometheus; one call id (W3C trace id) in client and server logs of every call, opt-in per-method and hub/endpoint metrics, and observer hooks for analytics.
-- **Runtime Inspector, TimeMachine & MCP** — opt-in zero-overhead call tap, built-in Web Viewer (`/inspector/`), 17 Streamable HTTP MCP tools (`/mcp`) for AI agents, per-sequence state diffs, cross-entity graphs, live state / opt-in invoke, and multi-silo NATS JetStream history. See [`docs/INSPECTOR.md`](docs/INSPECTOR.md).
+- **Runtime Inspector, TimeMachine & MCP** *(preview)* — opt-in zero-overhead call tap, built-in Web Viewer (`/inspector/`), 17 Streamable HTTP MCP tools (`/mcp`) for AI agents, per-sequence state diffs, cross-entity graphs, live state / opt-in invoke, and multi-silo NATS JetStream history. See [`docs/INSPECTOR.md`](docs/INSPECTOR.md).
 
 <p align="center">
   <img src="docs/images/deterministic-prng.gif" alt="Deterministic PRNG & State Sync" width="760"/>
@@ -283,6 +283,8 @@ dotnet run --project examples/CardGame_TheFool/CardGame.Client -f net10.0
 ## Tooling
 
 ### Inspector, MCP & TimeMachine
+
+> **Preview** — new in 0.49.0; tool names, options and the event format may change in minor versions.
 
 Attach the Inspector to any SharedMeta server (zero changes to shared game code, zero overhead when capture is `Off`) to inspect calls, arguments, return values, cross-entity hops, and per-sequence **TimeMachine** state diffs — from the embedded **Web Viewer** (`/inspector/`) or from AI agents over **MCP** (`/mcp`):
 

@@ -520,7 +520,7 @@ Methods declared with `GenerateClientApi = false` are reserved for sibling/cross
 
 ### 9.2 .NET (NuGet Packages)
 
-21 NuGet packages in `src/`, organized by layer:
+22 NuGet packages in `src/`, organized by layer:
 - `SharedMeta.Core`, `SharedMeta.Client` — shared + client
 - `SharedMeta.Server.Core`, `SharedMeta.Server` — server
 - `SharedMeta.Orleans` — Orleans-specific grains (Lobby, etc.)
@@ -530,6 +530,7 @@ Methods declared with `GenerateClientApi = false` are reserved for sibling/cross
 - `SharedMeta.Auth[.Google|.Apple|.Steam]` — authentication
 - `SharedMeta.Generator` — source generator (analyzer)
 - `SharedMeta.Debug` — InProcess transport for testing
+- `SharedMeta.Inspector[.Mcp|.Nats|.Service]` — call capture, MCP endpoint + web viewer, NATS broker, standalone `sharedmeta-inspector` tool (preview)
 
 **Client-only NuGet packages** (`*.Client`) have no server dependencies — no Orleans, no ASP.NET `FrameworkReference`. Safe for Godot/.NET desktop clients.
 
@@ -595,6 +596,7 @@ The same business code runs on Orleans server and local backend without modifica
 
 | Version | Architectural change |
 |---|---|
+| 0.49.0 | **Inspector call tap (preview module)** — a server project referencing an assembly with `[assembly: MetaCallTapProvider]` gets `IMetaCallTap` wrappers around the provider's non-async `DispatchCall` / `DispatchSignal` / init (async tail only on a real suspend) and `GeneratedMetaMethodDescriptors` with wire-type codecs; without the marker the generated code is unchanged. `MetaCallContext.ParentSpanId` rebuilds call trees; `IMetaCallObservationGate` keeps an idle observer from costing a `MetaCallInfo` per call. Capture is copied raw in the grain turn and encoded to JSON on a background worker; multi-silo goes through a broker contract (`IMetaEventSource` / `IMetaEventHistory` / `IInspectorControlChannel`), first implementation NATS JetStream + KV |
 | 0.48.0 | **Init under the triggering client's configs** — `MetaProviderBase.InitializeStateAsync` binds `Config` / `Configs` for the driving client before `[MetaInit]` (all init paths). Fresh entities get one call at the client's capped schema; persisted ones climb steps. `[MetaStateVersion]` thresholds gate reachability only — no historical config fetches. **Behaviour-breaking** |
 | 0.47.0 | **Call identity and opt-in observability** — W3C trace id per call (client `MetaCallScope` → `TraceParent` on requests and `RpcCall`), `ILogger` scope on every server hop, `MetaTelemetryOptions` (per-method series, hub/endpoint metrics, log scopes, analytics log), `IMetaServerObserver` / `IMetaClientCallObserver`. The trace travels inside `RpcCall`, not Orleans `RequestContext` (too costly on the hot path). **Breaking** |
 | 0.46.0 | **`ILogger` is the only logging abstraction** — `IMetaLogger` and its implementations removed; `MetaLog.SetLogger(ILogger)`, `MetaContext.Log : ILogger`, structured templates on the server (`EntityLogger` prefixes the entity id). UPM ships a signature-exact M.E.L. shim under `#if !HAS_MEL`. Config download helpers (`AddMetaConfigPublicUrl`, `MapMetaConfigDownload`) move to `Server.Core`, transport-agnostic. Grain-touching shutdown work runs before the silo stops. **Breaking** |
